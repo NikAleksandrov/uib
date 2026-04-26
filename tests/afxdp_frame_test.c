@@ -1,0 +1,70 @@
+#include <stdio.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <netinet/ip.h>
+
+#include "uib/afxdp_frame.h"
+
+static int g_fail;
+
+static void check(const char *tag, int ok)
+{
+	printf("%-24s %s\n", tag, ok ? "OK" : "FAIL");
+	if (!ok)
+		g_fail = 1;
+}
+
+int main(void)
+{
+	struct uib_frame_hdr hi;
+	uint8_t frame[2048];
+	uint8_t pay[1000];
+	struct sockaddr_in src;
+	const uint8_t *rpay;
+	size_t rlen;
+	int flen;
+	unsigned int i;
+
+	for (i = 0; i < sizeof(pay); i++)
+		pay[i] = (uint8_t)(i * 3 + 1);
+
+	memset(&hi, 0, sizeof(hi));
+	memcpy(hi.src_mac, "\x02\x00\x00\x00\x00\x01", 6);
+	memcpy(hi.dst_mac, "\x02\x00\x00\x00\x00\x02", 6);
+	inet_pton(AF_INET, "10.0.0.1", &hi.src_ip);
+	inet_pton(AF_INET, "10.0.0.2", &hi.dst_ip);
+	hi.src_port = htons(4791);
+	hi.dst_port = htons(4791);
+
+	flen = uib_frame_build(frame, sizeof(frame), &hi, pay, sizeof(pay));
+	check("build.len", flen == (int)(UIB_L2_HDRS_LEN + sizeof(pay)));
+
+	{
+		struct iphdr *ip = (struct iphdr *)(frame + 14);
+
+		check("build.ip_csum_valid", uib_inet_csum(ip, sizeof(*ip)) == 0);
+	}
+
+	check("build.overflow", uib_frame_build(frame, 40, &hi, pay, sizeof(pay)) == -1);
+
+	memset(&src, 0, sizeof(src));
+	check("parse.ok", uib_frame_parse(frame, flen, htons(4791), &src,
+					  &rpay, &rlen) == 0);
+	check("parse.paylen", rlen == sizeof(pay));
+	check("parse.payload", rpay && memcmp(rpay, pay, sizeof(pay)) == 0);
+	check("parse.src_ip", src.sin_addr.s_addr == hi.src_ip);
+	check("parse.src_port", src.sin_port == hi.src_port);
+
+	check("parse.wrong_dport",
+	      uib_frame_parse(frame, flen, htons(1234), &src, &rpay, &rlen) == -1);
+
+	check("parse.truncated",
+	      uib_frame_parse(frame, 20, htons(4791), &src, &rpay, &rlen) == -1);
+
+	frame[12] = 0x08; frame[13] = 0x06;
+	check("parse.non_ip",
+	      uib_frame_parse(frame, flen, htons(4791), &src, &rpay, &rlen) == -1);
+
+	printf("RESULT %s\n", g_fail ? "FAIL" : "PASS");
+	return g_fail ? 1 : 0;
+}

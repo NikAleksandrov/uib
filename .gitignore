@@ -1,0 +1,13 @@
+# build artifacts
+*.o
+*.a
+*.so
+*.so.*
+
+# test binaries
+/tests/loopback
+/tests/afxdp_frame_test
+/tests/dmabuf_mr_test
+/tests/neigh_test
+/tests/bth_test
+/tests/rxe_interop
