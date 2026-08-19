@@ -128,7 +128,7 @@ struct uib_mr *uib_mr_check_remote_address(struct uib_pd *pd, uint64_t va,
 	for (mr = pd->mr_list; mr; mr = mr->next) {
 		if (region_contains(mr, va, len) &&
 		    (mr->access & access) == access)
-		break;
+			break;
 	}
 	pthread_mutex_unlock(&pd->lock);
 	return mr;

@@ -17,10 +17,13 @@ static pthread_once_t crc_once = PTHREAD_ONCE_INIT;
 
 static void crc_table_init(void)
 {
-	for (uint32_t i = 0; i < 256; i++) {
+	uint32_t i;
+	int k;
+
+	for (i = 0; i < 256; i++) {
 		uint32_t c = i;
 
-		for (int k = 0; k < 8; k++)
+		for (k = 0; k < 8; k++)
 			c = (c & 1) ? (0xedb88320u ^ (c >> 1)) : (c >> 1);
 		crc_table[i] = c;
 	}
@@ -89,12 +92,12 @@ uint32_t uib_rocev2_icrc_ipv4(uint32_t src_ip, uint32_t dst_ip,
 void uib_bth_pack(struct uib_bth *bth, uint8_t opcode, uint16_t pkey,
 		  uint32_t dqpn, uint32_t psn, int ack_request)
 {
+	uint32_t apsn = psn & UIB_BTH_PSN_MASK;
+
 	bth->opcode = opcode;
 	bth->flags  = 0;
 	bth->pkey   = htons(pkey);
-	bth->dqpn   = htonl(dqpn & 0x00ffffff);
-	uint32_t apsn = (psn & 0x00ffffff);
-
+	bth->dqpn   = htonl(dqpn & UIB_BTH_PSN_MASK);
 	if (ack_request)
 		apsn |= UIB_BTH_ACK_REQ;
 	bth->apsn = htonl(apsn);
@@ -108,9 +111,9 @@ void uib_bth_unpack(const struct uib_bth *bth, uint8_t *opcode,
 	if (opcode)
 		*opcode = bth->opcode;
 	if (dqpn)
-		*dqpn = ntohl(bth->dqpn) & 0x00ffffff;
+		*dqpn = ntohl(bth->dqpn) & UIB_BTH_PSN_MASK;
 	if (psn)
-		*psn = apsn & 0x00ffffff;
+		*psn = apsn & UIB_BTH_PSN_MASK;
 	if (ack_request)
 		*ack_request = (apsn & UIB_BTH_ACK_REQ) ? 1 : 0;
 }

@@ -23,8 +23,9 @@ static int wait_wc(struct uib_cq *cq, struct uib_wc *wc)
 	struct timespec delay = {
 		.tv_nsec = 1000000,
 	};
+	int i;
 
-	for (int i = 0; i < 2000; i++) {
+	for (i = 0; i < 2000; i++) {
 		int n = uib_poll_cq(cq, 1, wc);
 
 		if (n > 0)
@@ -75,6 +76,7 @@ int main(void)
 	struct uib_sge send_sge = {0}, recv_sge = {0};
 	struct uib_wc wc;
 	struct uib_send_wr *bad = NULL;
+	size_t i;
 
 	check("select.rocev2.default",
 	      uib_protocol_find(NULL) == &uib_rocev2_protocol_ops);
@@ -110,7 +112,7 @@ int main(void)
 	check("dummy.connect", !connect_qp(aqp, bqp, 18517) &&
 	      !connect_qp(bqp, aqp, 18516));
 
-	for (size_t i = 0; i < sizeof(send_buf); i++)
+	for (i = 0; i < sizeof(send_buf); i++)
 		send_buf[i] = (uint8_t)(i ^ 0xa5);
 	memset(recv_buf, 0, sizeof(recv_buf));
 	smr = uib_reg_mr(apd, send_buf, sizeof(send_buf), 0);

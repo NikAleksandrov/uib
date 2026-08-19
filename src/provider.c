@@ -290,22 +290,26 @@ static int provider_post_send(struct ibv_qp *qp_ibv, struct ibv_send_wr *wr_ibv,
 			      struct ibv_send_wr **bad_ibv)
 {
 	struct uibv_qp_wrap *qp = WRAP_OF(qp_ibv, struct uibv_qp_wrap, ibv);
+	struct uib_send_wr *bad_u = NULL;
+	struct ibv_send_wr *p;
+	struct uib_send_wr *uwrs;
 	int n = 0;
+	int rc;
+	int i;
 
-	for (struct ibv_send_wr *p = wr_ibv; p; p = p->next)
+	for (p = wr_ibv; p; p = p->next)
 		n++;
 	if (n == 0)
 		return 0;
 
-	struct uib_send_wr *uwrs = calloc(n, sizeof(*uwrs));
+	uwrs = calloc(n, sizeof(*uwrs));
 
 	if (!uwrs)
 		return ENOMEM;
 
 	struct ibv_send_wr *origs[n];
-	int i = 0;
 
-	for (struct ibv_send_wr *p = wr_ibv; p; p = p->next, i++) {
+	for (p = wr_ibv, i = 0; p; p = p->next, i++) {
 		origs[i] = p;
 		uwrs[i].wr_id      = p->wr_id;
 		uwrs[i].opcode     = map_wr_op_in(p->opcode);
@@ -325,8 +329,7 @@ static int provider_post_send(struct ibv_qp *qp_ibv, struct ibv_send_wr *wr_ibv,
 		uwrs[i].next       = (i + 1 < n) ? &uwrs[i + 1] : NULL;
 	}
 
-	struct uib_send_wr *bad_u = NULL;
-	int rc = uib_post_send(qp->core, uwrs, &bad_u);
+	rc = uib_post_send(qp->core, uwrs, &bad_u);
 
 	if (rc < 0 && bad_u && bad_ibv) {
 		ptrdiff_t bi = bad_u - uwrs;
@@ -342,21 +345,25 @@ static int provider_post_recv(struct ibv_qp *qp_ibv, struct ibv_recv_wr *wr_ibv,
 			      struct ibv_recv_wr **bad_ibv)
 {
 	struct uibv_qp_wrap *qp = WRAP_OF(qp_ibv, struct uibv_qp_wrap, ibv);
+	struct uib_recv_wr *bad_u = NULL;
+	struct ibv_recv_wr *p;
+	struct uib_recv_wr *uwrs;
 	int n = 0;
+	int rc;
+	int i;
 
-	for (struct ibv_recv_wr *p = wr_ibv; p; p = p->next)
+	for (p = wr_ibv; p; p = p->next)
 		n++;
 	if (n == 0)
 		return 0;
 
-	struct uib_recv_wr *uwrs = calloc(n, sizeof(*uwrs));
+	uwrs = calloc(n, sizeof(*uwrs));
 
 	if (!uwrs)
 		return ENOMEM;
 	struct ibv_recv_wr *origs[n];
-	int i = 0;
 
-	for (struct ibv_recv_wr *p = wr_ibv; p; p = p->next, i++) {
+	for (p = wr_ibv, i = 0; p; p = p->next, i++) {
 		origs[i] = p;
 		uwrs[i].wr_id   = p->wr_id;
 		uwrs[i].sg_list = (struct uib_sge *)p->sg_list;
@@ -364,8 +371,7 @@ static int provider_post_recv(struct ibv_qp *qp_ibv, struct ibv_recv_wr *wr_ibv,
 		uwrs[i].next    = (i + 1 < n) ? &uwrs[i + 1] : NULL;
 	}
 
-	struct uib_recv_wr *bad_u = NULL;
-	int rc = uib_post_recv(qp->core, uwrs, &bad_u);
+	rc = uib_post_recv(qp->core, uwrs, &bad_u);
 
 	if (rc < 0 && bad_u && bad_ibv) {
 		ptrdiff_t bi = bad_u - uwrs;
@@ -382,8 +388,9 @@ static int provider_poll_cq(struct ibv_cq *cq_ibv, int n, struct ibv_wc *wc)
 	struct uibv_cq_wrap *cq = WRAP_OF(cq_ibv, struct uibv_cq_wrap, ibv);
 	struct uib_wc tmp[n];
 	int got = uib_poll_cq(cq->core, n, tmp);
+	int i;
 
-	for (int i = 0; i < got; i++) {
+	for (i = 0; i < got; i++) {
 		memset(&wc[i], 0, sizeof(wc[i]));
 		wc[i].wr_id    = tmp[i].wr_id;
 		wc[i].status   = map_wc_status_out(tmp[i].status);
@@ -405,14 +412,16 @@ static int provider_req_notify_cq(struct ibv_cq *cq, int solicited_only)
 struct ibv_device **ibv_get_device_list(int *num)
 {
 	struct ibv_device **real = real_get_device_list ? real_get_device_list(NULL) : NULL;
+	struct ibv_device **list;
 	int real_n = 0;
+	int i;
 
 	if (real) {
 		while (real[real_n])
 			real_n++;
 	}
 
-	struct ibv_device **list = calloc((size_t)real_n + 2, sizeof(*list));
+	list = calloc((size_t)real_n + 2, sizeof(*list));
 
 	if (!list) {
 		if (real && real_free_device_list)
@@ -420,7 +429,7 @@ struct ibv_device **ibv_get_device_list(int *num)
 		return NULL;
 	}
 	list[0] = &g_uibv_dev.ibv;
-	for (int i = 0; i < real_n; i++)
+	for (i = 0; i < real_n; i++)
 		list[i + 1] = real[i];
 	if (real && real_free_device_list)
 		real_free_device_list(real);

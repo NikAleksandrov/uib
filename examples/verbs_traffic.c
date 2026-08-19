@@ -31,7 +31,9 @@ static uint64_t monotonic_ns(void)
 static struct ibv_device *find_uib_device(struct ibv_device **devices,
 					 int count)
 {
-	for (int i = 0; i < count; i++) {
+	int i;
+
+	for (i = 0; i < count; i++) {
 		if (!strcmp(ibv_get_device_name(devices[i]), "uib0"))
 			return devices[i];
 	}
@@ -223,6 +225,7 @@ int main(int argc, char **argv)
 	int full_rdma = strcmp(protocol, "dummy");
 	int is_uet = !strcmp(protocol, "uet");
 	int rc = 1;
+	uint32_t i;
 
 	setenv("UIB_PROTOCOL", protocol, 1);
 	devices = ibv_get_device_list(&device_count);
@@ -241,7 +244,7 @@ int main(int argc, char **argv)
 	receive = receiver.buffer;
 	remote = receiver.buffer + 16384;
 	atomic_target = (uint64_t *)(receiver.buffer + 32768);
-	for (uint32_t i = 0; i < VERBS_MESSAGE_SIZE; i++)
+	for (i = 0; i < VERBS_MESSAGE_SIZE; i++)
 		source[i] = (uint8_t)(i * 29 + 7);
 
 	if (post_receive(&receiver, 0x2001, receive, VERBS_MESSAGE_SIZE) < 0 ||

@@ -27,16 +27,20 @@ void uib_transport_deliver(struct uib_context *ctx, const struct sockaddr_in *sr
 void uib_transport_retransmit_walk(struct uib_context *ctx)
 {
 	uint64_t now = uib_now_ns();
+	struct uib_qp **snap;
+	uint32_t n;
+	uint32_t i;
+
 	pthread_mutex_lock(&ctx->qp_lock);
-	uint32_t n = ctx->qp_table_size;
-	struct uib_qp **snap = malloc(n * sizeof(*snap));
+	n = ctx->qp_table_size;
+	snap = malloc(n * sizeof(*snap));
 
 	if (snap)
 		memcpy(snap, ctx->qp_table, n * sizeof(*snap));
 	pthread_mutex_unlock(&ctx->qp_lock);
 	if (!snap)
 		return;
-	for (uint32_t i = 1; i < n; i++) {
+	for (i = 1; i < n; i++) {
 		struct uib_qp *qp = snap[i];
 
 		if (qp && qp->qp_type == UIB_QPT_RC)

@@ -13,10 +13,12 @@ static const struct uib_protocol_ops *const protocols[] = {
 
 const struct uib_protocol_ops *uib_protocol_find(const char *name)
 {
+	size_t i;
+
 	if (!name || !*name)
 		return &uib_rocev2_protocol_ops;
 
-	for (size_t i = 0; i < ARRAY_SIZE(protocols); i++) {
+	for (i = 0; i < ARRAY_SIZE(protocols); i++) {
 		if (!strcmp(name, protocols[i]->name))
 			return protocols[i];
 	}

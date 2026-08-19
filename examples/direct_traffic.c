@@ -87,6 +87,7 @@ int main(int argc, char **argv)
 	int full_rdma = strcmp(protocol, "dummy");
 	int is_uet = !strcmp(protocol, "uet");
 	int rc = 1;
+	size_t i;
 
 	if (direct_endpoint_open(&sender, protocol, "127.0.0.1", 19000,
 				 EXAMPLE_BUFFER_SIZE, 32) < 0 ||
@@ -112,7 +113,7 @@ int main(int argc, char **argv)
 	receive_buffer = receiver.buffer;
 	remote_buffer = receiver.buffer + 16384;
 	atomic_target = (uint64_t *)(receiver.buffer + 32768);
-	for (size_t i = 0; i < EXAMPLE_MESSAGE_SIZE; i++)
+	for (i = 0; i < EXAMPLE_MESSAGE_SIZE; i++)
 		send_buffer[i] = (uint8_t)(i * 17 + 3);
 
 	if (direct_post_receive(&receiver, 0x2001, receive_buffer,

@@ -10,6 +10,7 @@
 #define PORT_A 18515
 #define PORT_B 18516
 #define BIG_LEN 10003
+#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 
 static int g_fail;
 
@@ -256,7 +257,7 @@ static void test_uet_atomic_matrix(struct uib_qp *qp, struct uib_cq *cq,
 	uint8_t datatype;
 	size_t i;
 
-	for (i = 0; i < sizeof(operations) / sizeof(operations[0]); i++)
+	for (i = 0; i < ARRAY_SIZE(operations); i++)
 		run_uet_atomic(qp, cq, local_mr, remote_mr, result, target,
 			       UIB_UET_AMO_UINT64, operations[i].opcode, 6,
 			       operations[i].operand, operations[i].swap,

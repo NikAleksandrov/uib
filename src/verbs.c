@@ -73,9 +73,11 @@ struct uibv_device **uibv_get_device_list(int *num)
 
 void uibv_free_device_list(struct uibv_device **list)
 {
+	int i;
+
 	if (!list)
 		return;
-	for (int i = 0; list[i]; i++)
+	for (i = 0; list[i]; i++)
 		free(list[i]);
 	free(list);
 }

@@ -76,6 +76,9 @@ static void free_outstanding(struct uib_outstanding *o)
 
 int uib_destroy_qp(struct uib_qp *qp)
 {
+	struct uib_outstanding *o;
+	uint32_t i;
+
 	if (!qp)
 		return -EINVAL;
 	uib_unregister_qp(qp->ctx, qp);
@@ -83,7 +86,7 @@ int uib_destroy_qp(struct uib_qp *qp)
 		qp->ctx->pops->qp_fini(qp);
 
 	pthread_mutex_lock(&qp->lock);
-	struct uib_outstanding *o = qp->out_head;
+	o = qp->out_head;
 
 	while (o) {
 		struct uib_outstanding *n = o->next;
@@ -94,7 +97,7 @@ int uib_destroy_qp(struct uib_qp *qp)
 	qp->out_head = qp->out_tail = NULL;
 	if (qp->frag_recv_active)
 		free(qp->frag_recv.sg_list);
-	for (uint32_t i = 0; i < qp->rq_size; i++) {
+	for (i = 0; i < qp->rq_size; i++) {
 		if (qp->rq[i].valid)
 			free(qp->rq[i].sg_list);
 	}
@@ -119,11 +122,13 @@ int uib_modify_qp(struct uib_qp *qp, const struct uib_qp_attr *attr, int attr_ma
 		qp->dest_qp_num = attr->dest_qp_num;
 	if (attr_mask & UIB_QP_RQ_PSN) {
 		qp->rq_psn       = attr->rq_psn;
-		qp->last_acked_psn = attr->rq_psn ? attr->rq_psn - 1 : 0xffffffu;
+		qp->last_acked_psn = attr->rq_psn ? attr->rq_psn - 1 :
+			UIB_BTH_PSN_MASK;
 	}
 	if (attr_mask & UIB_QP_SQ_PSN) {
 		qp->sq_psn       = attr->sq_psn;
-		qp->last_acked_psn = attr->sq_psn ? attr->sq_psn - 1 : 0xffffffu;
+		qp->last_acked_psn = attr->sq_psn ? attr->sq_psn - 1 :
+			UIB_BTH_PSN_MASK;
 	}
 	if ((attr_mask & UIB_QP_PATH_MTU) && attr->path_mtu)
 		qp->path_mtu = attr->path_mtu;
@@ -141,8 +146,9 @@ static int gather_total(struct uib_pd *pd, const struct uib_sge *sgl, int n,
 			uint8_t *out, size_t cap)
 {
 	size_t off = 0;
+	int i;
 
-	for (int i = 0; i < n; i++) {
+	for (i = 0; i < n; i++) {
 		const struct uib_sge *s = &sgl[i];
 
 		if (off + s->length > cap)
@@ -482,9 +488,9 @@ static uint8_t pick_opcode(enum uib_qp_type qpt, enum uib_wr_opcode op,
 	case UIB_WR_ATOMIC_FETCH_ADD:
 	case UIB_WR_ATOMIC_CMP_SWAP:
 	case UIB_WR_UET_ATOMIC:
-		return 0xff;
+		return UIB_BTH_INVALID_OPCODE;
 	}
-	return 0xff;
+	return UIB_BTH_INVALID_OPCODE;
 }
 
 static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
@@ -492,10 +498,10 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 	int with_imm = (wr->opcode == UIB_WR_SEND_WITH_IMM);
 	int is_ud = (qp->qp_type == UIB_QPT_UD);
 	int is_rc = (qp->qp_type == UIB_QPT_RC);
-
 	size_t total = 0;
+	uint32_t i;
 
-	for (int i = 0; i < wr->num_sge; i++)
+	for (i = 0; i < (uint32_t)wr->num_sge; i++)
 		total += wr->sg_list[i].length;
 
 	if (wr->opcode == UIB_WR_RDMA_READ)
@@ -530,14 +536,14 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 
 	int err = 0;
 
-	for (uint32_t i = 0; i < n; i++) {
+	for (i = 0; i < n; i++) {
 		size_t off    = (size_t)i * mtu;
 		size_t chunk  = (off + mtu > total) ? (total - off) : mtu;
 		int    is_first = (i == 0);
 		int    is_last  = (i == n - 1);
 		uint8_t op = pick_opcode(qp->qp_type, wr->opcode, with_imm, n, i);
 
-		if (op == 0xff) {
+		if (op == UIB_BTH_INVALID_OPCODE) {
 			err = -EINVAL;
 			break;
 		}
@@ -598,6 +604,8 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 int uib_rocev2_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 			 struct uib_send_wr **bad)
 {
+	struct uib_send_wr *cur;
+
 	if (!qp || !wr)
 		return -EINVAL;
 
@@ -610,7 +618,7 @@ int uib_rocev2_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 	}
 	pthread_mutex_unlock(&qp->lock);
 
-	for (struct uib_send_wr *cur = wr; cur; cur = cur->next) {
+	for (cur = wr; cur; cur = cur->next) {
 		int rc = post_one_send(qp, cur);
 
 		if (rc < 0) {
@@ -648,11 +656,13 @@ int uib_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
 		  struct uib_recv_wr **bad)
 {
+	struct uib_recv_wr *cur;
+
 	if (!qp || !wr)
 		return -EINVAL;
 
 	pthread_mutex_lock(&qp->lock);
-	for (struct uib_recv_wr *cur = wr; cur; cur = cur->next) {
+	for (cur = wr; cur; cur = cur->next) {
 		uint32_t next = (qp->rq_head + 1) % qp->rq_size;
 
 		if (next == qp->rq_tail) {
@@ -724,8 +734,10 @@ static int psn_cmp(uint32_t a, uint32_t b)
 
 static void retire_tail(struct uib_qp *qp)
 {
+	struct uib_outstanding *o;
+
 	qp->out_tail = NULL;
-	for (struct uib_outstanding *o = qp->out_head; o; o = o->next)
+	for (o = qp->out_head; o; o = o->next)
 		qp->out_tail = o;
 }
 
@@ -778,20 +790,25 @@ static void send_read_response(struct uib_qp *qp, const struct sockaddr_in *dst,
 			       uint32_t start_psn, uint64_t va, uint32_t rkey,
 			       uint32_t length)
 {
-	struct uib_mr *mr = uib_mr_check_remote(qp->pd, rkey, va, length,
-						UIB_ACCESS_REMOTE_READ);
+	struct uib_mr *mr;
+	uint32_t mtu;
+	uint32_t n;
+	uint32_t i;
+
+	mr = uib_mr_check_remote(qp->pd, rkey, va, length,
+				  UIB_ACCESS_REMOTE_READ);
 	if (!mr) {
 		send_ack(qp, dst, start_psn, UIB_AETH_NAK_REM_ACC);
 		return;
 	}
 
-	uint32_t mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
-	uint32_t n = (length + mtu - 1) / mtu;
+	mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
+	n = (length + mtu - 1) / mtu;
 
 	if (n == 0)
 		n = 1;
 
-	for (uint32_t i = 0; i < n; i++) {
+	for (i = 0; i < n; i++) {
 		uint32_t off   = i * mtu;
 		uint32_t chunk = (off + mtu > length) ? (length - off) : mtu;
 		uint8_t pad = (uint8_t)((-(int)chunk) & 3);

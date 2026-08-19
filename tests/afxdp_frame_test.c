@@ -61,7 +61,8 @@ int main(void)
 	check("parse.truncated",
 	      uib_frame_parse(frame, 20, htons(4791), &src, &rpay, &rlen) == -1);
 
-	frame[12] = 0x08; frame[13] = 0x06;
+	frame[12] = 0x08;
+	frame[13] = 0x06;
 	check("parse.non_ip",
 	      uib_frame_parse(frame, flen, htons(4791), &src, &rpay, &rlen) == -1);
 

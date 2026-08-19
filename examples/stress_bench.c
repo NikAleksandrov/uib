@@ -135,8 +135,10 @@ static int run_batch(struct direct_endpoint *sender,
 	uint32_t send_completions = 0;
 	uint32_t receive_completions = 0;
 	uint64_t deadline;
+	uint32_t slot;
+	int i;
 
-	for (uint32_t slot = 0; slot < count; slot++) {
+	for (slot = 0; slot < count; slot++) {
 		uint32_t sequence = first + slot;
 		uint8_t *source = sender->buffer +
 			(size_t)slot * options->message_size;
@@ -160,7 +162,7 @@ static int run_batch(struct direct_endpoint *sender,
 		int completed;
 
 		completed = uib_poll_cq(sender->cq, 32, completions);
-		for (int i = 0; i < completed; i++) {
+		for (i = 0; i < completed; i++) {
 			uint64_t sequence;
 
 			if (completions[i].status != UIB_WC_SUCCESS ||
@@ -173,7 +175,7 @@ static int run_batch(struct direct_endpoint *sender,
 			send_completions++;
 		}
 		completed = uib_poll_cq(receiver->cq, 32, completions);
-		for (int i = 0; i < completed; i++) {
+		for (i = 0; i < completed; i++) {
 			uint64_t sequence;
 			uint32_t slot;
 
@@ -208,8 +210,9 @@ static void print_stats(const struct options *options, uint64_t wall_ns,
 		timeval_ns(&before->ru_utime);
 	uint64_t system_ns = timeval_ns(&after->ru_stime) -
 		timeval_ns(&before->ru_stime);
+	uint32_t i;
 
-	for (uint32_t i = 0; i < options->iterations; i++)
+	for (i = 0; i < options->iterations; i++)
 		average += latency_ns[i];
 	average /= options->iterations;
 	qsort(latency_ns, options->iterations, sizeof(*latency_ns), compare_u64);
@@ -261,6 +264,7 @@ int main(int argc, char **argv)
 	uint64_t wall_start, wall_end, cpu_start, cpu_end;
 	size_t buffer_length;
 	int rc = 1;
+	uint32_t first;
 
 	if (parse_options(argc, argv, &options) < 0) {
 		fprintf(stderr, "usage: %s [--protocol rocev2|uet|dummy] [--iterations N] [--size BYTES] [--window N]\n",
@@ -284,7 +288,7 @@ int main(int argc, char **argv)
 	getrusage(RUSAGE_SELF, &usage_before);
 	wall_start = now_ns(CLOCK_MONOTONIC);
 	cpu_start = now_ns(CLOCK_PROCESS_CPUTIME_ID);
-	for (uint32_t first = 0; first < options.iterations;
+	for (first = 0; first < options.iterations;
 	     first += options.window) {
 		uint32_t count = options.iterations - first;
 

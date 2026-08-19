@@ -40,7 +40,9 @@ static int dummy_packet_qpn(const void *packet, size_t len, uint32_t *qpn)
 static int dummy_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 			   struct uib_send_wr **bad)
 {
-	for (struct uib_send_wr *cur = wr; cur; cur = cur->next) {
+	struct uib_send_wr *cur;
+
+	for (cur = wr; cur; cur = cur->next) {
 		struct sockaddr_in dst = qp->remote_addr;
 		struct uib_dummy_hdr *hdr;
 		uint8_t *packet;

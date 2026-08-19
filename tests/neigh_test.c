@@ -19,6 +19,7 @@ static int oracle_entry(char *ip_out, size_t ipcap, uint8_t mac[6])
 	char line[512];
 	FILE *fp = popen("ip -4 neigh show 2>/dev/null", "r");
 	int found = 0;
+	int i;
 
 	if (!fp)
 		return 0;
@@ -39,7 +40,7 @@ static int oracle_entry(char *ip_out, size_t ipcap, uint8_t mac[6])
 			   &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6)
 			continue;
 		snprintf(ip_out, ipcap, "%s", ip);
-		for (int i = 0; i < 6; i++)
+		for (i = 0; i < 6; i++)
 			mac[i] = (uint8_t)v[i];
 		found = 1;
 	}

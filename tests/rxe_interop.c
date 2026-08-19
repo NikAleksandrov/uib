@@ -68,6 +68,7 @@ static int recv_byte(int fd, char expected)
 
 static int open_control(int server, const char *host)
 {
+	int i;
 	int fd = socket(AF_INET, SOCK_STREAM, 0);
 	struct sockaddr_in addr = { .sin_family = AF_INET,
 		.sin_port = htons(CTRL_PORT) };
@@ -90,7 +91,7 @@ static int open_control(int server, const char *host)
 		close(fd);
 		return -1;
 	}
-	for (int i = 0; i < 100; i++) {
+	for (i = 0; i < 100; i++) {
 		if (!connect(fd, (struct sockaddr *)&addr, sizeof(addr)))
 			return fd;
 		if (errno != ECONNREFUSED)
@@ -106,7 +107,9 @@ static int open_control(int server, const char *host)
 static struct ibv_device *find_device(struct ibv_device **list, int count,
 				      const char *name)
 {
-	for (int i = 0; i < count; i++)
+	int i;
+
+	for (i = 0; i < count; i++)
 		if (!strcmp(ibv_get_device_name(list[i]), name))
 			return list[i];
 	return NULL;
@@ -114,13 +117,17 @@ static struct ibv_device *find_device(struct ibv_device **list, int count,
 
 static void fill_pattern(uint8_t *buf, uint8_t seed)
 {
-	for (size_t i = 0; i < MSG_LEN; i++)
+	size_t i;
+
+	for (i = 0; i < MSG_LEN; i++)
 		buf[i] = (uint8_t)(seed + i * 13u);
 }
 
 static int check_pattern(const char *name, const uint8_t *buf, uint8_t seed)
 {
-	for (size_t i = 0; i < MSG_LEN; i++) {
+	size_t i;
+
+	for (i = 0; i < MSG_LEN; i++) {
 		uint8_t expected = (uint8_t)(seed + i * 13u);
 
 		if (buf[i] != expected) {
@@ -135,7 +142,9 @@ static int check_pattern(const char *name, const uint8_t *buf, uint8_t seed)
 
 static int wait_wc(struct peer *p, uint64_t wr_id)
 {
-	for (int i = 0; i < 10000; i++) {
+	int i;
+
+	for (i = 0; i < 10000; i++) {
 		struct ibv_wc wc;
 		int n = ibv_poll_cq(p->cq, 1, &wc);
 

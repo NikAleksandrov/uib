@@ -1305,7 +1305,9 @@ static int uet_response_cache_lookup(struct uib_uet_qp *uet, uint32_t psn,
 				     uint32_t *modified_len, uint8_t *data,
 				     size_t *data_len)
 {
-	for (uint32_t i = 0; i < UIB_UET_PDC_MPR; i++) {
+	uint32_t i;
+
+	for (i = 0; i < UIB_UET_PDC_MPR; i++) {
 		if (!uet->response_cache[i].valid ||
 		    uet->response_cache[i].psn != psn ||
 		    uet->response_cache[i].msg_id != msg_id)
@@ -1548,8 +1550,9 @@ static int uet_track_read_fragment(struct uib_uet_wr_track *track,
 {
 	struct uib_uet_read_fragment *fragments;
 	uint32_t capacity;
+	uint32_t i;
 
-	for (uint32_t i = 0; i < track->read_fragment_count; i++) {
+	for (i = 0; i < track->read_fragment_count; i++) {
 		uint32_t old_offset = track->read_fragments[i].offset;
 		uint32_t old_length = track->read_fragments[i].length;
 
@@ -1922,13 +1925,15 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 	uint8_t request_header = UIB_UET_NEXT_REQ_STD;
 	int fetching_atomic;
 	int rc = 0;
+	int i;
+	uint32_t packet_index;
 
 	fetching_atomic = wr->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
 		wr->opcode == UIB_WR_ATOMIC_CMP_SWAP ||
 		(wr->opcode == UIB_WR_UET_ATOMIC &&
 		 wr->atomic.uet_fetching);
 
-	for (int i = 0; i < wr->num_sge; i++) {
+	for (i = 0; i < wr->num_sge; i++) {
 		if (UINT32_MAX - total_len < wr->sg_list[i].length)
 			return -EMSGSIZE;
 		total_len += wr->sg_list[i].length;
@@ -2012,8 +2017,8 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 	wr_msg_id = uet->next_msg_id++;
 	pthread_mutex_unlock(&qp->lock);
 
-	for (uint32_t i = 0; i < packets; i++) {
-		uint32_t offset = i * chunk_max;
+	for (packet_index = 0; packet_index < packets; packet_index++) {
+		uint32_t offset = packet_index * chunk_max;
 		uint32_t chunk = wr->opcode == UIB_WR_RDMA_READ || fetching_atomic ?
 			total_len :
 			total_len - offset;
@@ -2044,9 +2049,9 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 				 wr->atomic.uet_opcode) ? 2 * width :
 				 wr->atomic.uet_opcode == UIB_UET_AMO_READ ? 0 :
 				 width);
-		}
-		else
+		} else {
 			data_len = chunk;
+		}
 		request_header_len = request_header == UIB_UET_NEXT_REQ_SMALL ?
 			sizeof(struct uib_uet_ses_req_small) :
 			request_header == UIB_UET_NEXT_REQ_MEDIUM ?
@@ -2100,9 +2105,9 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 		ses->opcode = ses_opcode;
 		if (uet->session.relative_addressing)
 			ses->flags |= UIB_UET_SES_FLAG_REL;
-		if (i == 0)
+		if (packet_index == 0)
 			ses->flags |= UIB_UET_SES_FLAG_SOM;
-		if (i == packets - 1)
+		if (packet_index == packets - 1)
 			ses->flags |= UIB_UET_SES_FLAG_EOM;
 		ses->msg_id = htons(out->msg_id);
 		ses->index_gen_job_id = htonl(
@@ -2116,7 +2121,8 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 		if (wr->opcode == UIB_WR_SEND ||
 		    wr->opcode == UIB_WR_SEND_WITH_IMM) {
 			ses->buffer_offset = 0;
-			if (i == 0 && wr->opcode == UIB_WR_SEND_WITH_IMM) {
+			if (packet_index == 0 &&
+			    wr->opcode == UIB_WR_SEND_WITH_IMM) {
 				ses->flags |= UIB_UET_SES_FLAG_HD;
 				ses->header_data = htobe64(wr->imm_data);
 			}
@@ -2170,7 +2176,7 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 				memcpy(operands + 24, &value, sizeof(value));
 			}
 		}
-		if (i)
+		if (packet_index)
 			ses->header_data = uib_uet_ses_fragment_info(chunk, offset);
 		if (data_len && !fetching_atomic)
 			memcpy(wire_data, message + offset, data_len);
@@ -2243,7 +2249,9 @@ fail_track:
 static int uet_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 			 struct uib_send_wr **bad)
 {
-	for (struct uib_send_wr *current = wr; current; current = current->next) {
+	struct uib_send_wr *current;
+
+	for (current = wr; current; current = current->next) {
 		int rc = uet_post_one(qp, current);
 
 		if (rc < 0) {

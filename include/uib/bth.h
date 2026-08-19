@@ -10,6 +10,8 @@
 
 #define UIB_ROCE_V2_UDP_DPORT 4791
 #define UIB_DEFAULT_PKEY      0xffff
+#define UIB_BTH_PSN_MASK      0x00ffffffU
+#define UIB_BTH_INVALID_OPCODE UINT8_MAX
 
 #define UIB_OP_SEND_FIRST                0x00
 #define UIB_OP_SEND_MIDDLE               0x01
