@@ -116,6 +116,12 @@ rxe-test-build: $(RXE_TEST)
 rxe-test: all rxe-test-build
 	./tests/run_rxe_interop.sh
 
+rxe-tools-test: all
+	./tests/run_rxe_tools.sh
+
+uib-tools-test: all
+	./tests/run_uib_tools.sh
+
 test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
@@ -123,6 +129,17 @@ test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(B
 	./$(NEIGH_TEST)
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	./$(TEST_BIN)
+
+guest-test: all rxe-test-build
+	$(MAKE) test
+	$(MAKE) rxe-test
+	$(MAKE) rxe-tools-test
+	$(MAKE) uib-tools-test
+
+virtme-test:
+	./tests/run_virtme_tests.sh
+
+test-all: virtme-test
 
 install: $(LIB_STATIC) $(LIB_SHARED) $(LIB_PROVIDER)
 	install -d $(DESTDIR)$(PREFIX)/lib
@@ -137,4 +154,5 @@ install: $(LIB_STATIC) $(LIB_SHARED) $(LIB_PROVIDER)
 clean:
 	rm -f $(OBJS) $(PROV_OBJS) $(LIB_STATIC) $(LIB_SHARED) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) $(LIB_PROVIDER) $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST) $(RXE_TEST)
 
-.PHONY: shared-abi-test all clean install test rxe-test-build rxe-test
+.PHONY: shared-abi-test all clean install test rxe-test-build rxe-test rxe-tools-test \
+	uib-tools-test guest-test virtme-test test-all
