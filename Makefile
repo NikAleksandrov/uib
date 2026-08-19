@@ -71,6 +71,9 @@ LIB_PROVIDER := libuibv.so
 
 all: $(LIB_STATIC) $(LIB_SHARED) $(LIB_PROVIDER)
 
+examples: all
+	$(MAKE) -C examples
+
 shared-abi-test: $(LIB_SHARED)
 	./tests/run_shared_abi_test.sh
 
@@ -156,6 +159,19 @@ uet-congestion-test: all $(TEST_BIN) $(NSCC_TEST)
 	./$(NSCC_TEST)
 	UIB_PROTOCOL=uet UIB_UET_NSCC_MAX_WND=5000 ./$(TEST_BIN)
 
+examples-test: examples
+	./examples/direct_traffic rocev2
+	./examples/direct_traffic uet
+	./examples/direct_traffic dummy
+	./examples/verbs_traffic rocev2
+	./examples/verbs_traffic uet
+	./examples/verbs_traffic dummy
+
+examples-stress-test: examples
+	./examples/stress_bench --protocol rocev2 --iterations 256 --size 1024 --window 32
+	./examples/stress_bench --protocol uet --iterations 256 --size 1024 --window 32
+	./examples/stress_bench --protocol dummy --iterations 256 --size 1024 --window 32
+
 uet-test: all $(TEST_BIN) $(UET_TEST)
 	./$(UET_TEST)
 	./$(NSCC_TEST)
@@ -183,6 +199,8 @@ guest-test: all rxe-test-build
 	$(MAKE) uet-tools-test
 	$(MAKE) uet-loss-test
 	$(MAKE) uet-congestion-test
+	$(MAKE) examples-test
+	$(MAKE) examples-stress-test
 
 virtme-test:
 	./tests/run_virtme_tests.sh
@@ -200,14 +218,15 @@ install: $(LIB_STATIC) $(LIB_SHARED) $(LIB_PROVIDER)
 	install -m 644 include/uib/*.h $(DESTDIR)$(PREFIX)/include/uib/
 
 clean:
+	$(MAKE) -C examples clean
 	rm -f $(OBJS) $(PROV_OBJS) $(DEPS) $(LIB_STATIC) $(LIB_SHARED) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) \
 		$(LIB_PROVIDER) $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) \
 		$(NEIGH_TEST) $(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST) \
 		$(UET_TEST) $(NSCC_TEST)
 
-.PHONY: shared-abi-test all clean install test rxe-test-build rxe-test rxe-tools-test \
+.PHONY: shared-abi-test all examples clean install test rxe-test-build rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test \
-	uet-congestion-test guest-test \
+	uet-congestion-test examples-test examples-stress-test guest-test \
 	virtme-test test-all
 
 -include $(DEPS)
