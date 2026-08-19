@@ -11,3 +11,4 @@
 /tests/neigh_test
 /tests/bth_test
 /tests/rxe_interop
+/tests/protocol_test

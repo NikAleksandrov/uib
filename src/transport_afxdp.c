@@ -5,7 +5,7 @@
 
 #include "uib/transport.h"
 #include "uib/context.h"
-#include "uib/bth.h"
+#include "uib/protocol.h"
 #include "uib/afxdp_frame.h"
 #include "uib/neigh.h"
 
@@ -18,7 +18,6 @@
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <arpa/inet.h>
-#include <endian.h>
 #include <linux/if_ether.h>
 #include <linux/if_xdp.h>
 #include <netinet/ip.h>
@@ -137,27 +136,26 @@ static int afxdp_probe(void)
 	return (ifn && *ifn) ? 1 : 0;
 }
 
-static int afxdp_decode_icrc(uint8_t *frame, size_t frame_len,
-			    const uint8_t *payload, size_t paylen)
+static int afxdp_decode_packet(struct uib_context *ctx, uint8_t *frame,
+			       size_t frame_len, const uint8_t *payload,
+			       size_t paylen)
 {
 	const struct iphdr *ip;
 	const struct udphdr *udp;
-	uint8_t *rdma = (uint8_t *)payload;
-	uint32_t wire_le, wire, got, internal;
+	struct uib_wire_meta meta;
 
-	if (frame_len < UIB_L2_HDRS_LEN || paylen < UIB_BTH_BYTES + UIB_ICRC_BYTES)
+	if (frame_len < UIB_L2_HDRS_LEN || paylen < ctx->pops->min_packet)
 		return -1;
 	ip = (const struct iphdr *)(frame + ETH_HLEN);
 	udp = (const struct udphdr *)((const uint8_t *)ip + (size_t)ip->ihl * 4);
-	memcpy(&wire_le, rdma + paylen - UIB_ICRC_BYTES, sizeof(wire_le));
-	wire = le32toh(wire_le);
-	got = uib_rocev2_icrc_ipv4(ip->saddr, ip->daddr, udp->source, udp->dest,
-				  ntohs(ip->id), rdma,
-				  paylen - UIB_ICRC_BYTES);
-	if (wire != got)
+	meta.src_ip = ip->saddr;
+	meta.dst_ip = ip->daddr;
+	meta.src_port = udp->source;
+	meta.dst_port = udp->dest;
+	meta.ip_id = ntohs(ip->id);
+	if (ctx->pops->wire_decode &&
+	    ctx->pops->wire_decode(&meta, (void *)payload, paylen) < 0)
 		return -1;
-	internal = htonl(uib_icrc(rdma, paylen - UIB_ICRC_BYTES));
-	memcpy(rdma + paylen - UIB_ICRC_BYTES, &internal, sizeof(internal));
 	return 0;
 }
 
@@ -208,7 +206,8 @@ static void *worker_loop(void *arg)
 
 				if (uib_frame_parse(frame, d->len, be->port, &src,
 						    &pay, &paylen) == 0 &&
-				    afxdp_decode_icrc(frame, d->len, pay, paylen) == 0)
+				    afxdp_decode_packet(ctx, frame, d->len, pay,
+						 paylen) == 0)
 					uib_transport_deliver(ctx, &src, pay, paylen);
 
 				*xsk_ring_prod__fill_addr(&be->fq, idx_fq + i) = addr;
@@ -225,6 +224,7 @@ static int afxdp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 {
 	struct uib_afxdp_backend *be = ctx->backend;
 	struct uib_frame_hdr hi;
+	struct uib_wire_meta meta;
 	const uint8_t *dmac;
 	uint8_t dmac_buf[6];
 	uint32_t idx = 0;
@@ -266,19 +266,22 @@ static int afxdp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 		rc = -EMSGSIZE;
 		goto out;
 	}
-	if (len < UIB_BTH_BYTES + UIB_ICRC_BYTES) {
+	if (len < ctx->pops->min_packet) {
 		be->tx_free[be->tx_free_n++] = addr;
 		rc = -EINVAL;
 		goto out;
 	}
-	uint32_t crc = uib_rocev2_icrc_ipv4(hi.src_ip, hi.dst_ip,
-					      hi.src_port, hi.dst_port, 0,
-					      frame + UIB_L2_HDRS_LEN,
-					      len - UIB_ICRC_BYTES);
-	uint32_t wire_crc = htole32(crc);
-
-	memcpy(frame + UIB_L2_HDRS_LEN + len - UIB_ICRC_BYTES,
-	       &wire_crc, sizeof(wire_crc));
+	meta.src_ip = hi.src_ip;
+	meta.dst_ip = hi.dst_ip;
+	meta.src_port = hi.src_port;
+	meta.dst_port = hi.dst_port;
+	meta.ip_id = 0;
+	if (ctx->pops->wire_encode &&
+	    ctx->pops->wire_encode(&meta, frame + UIB_L2_HDRS_LEN, len) < 0) {
+		be->tx_free[be->tx_free_n++] = addr;
+		rc = -EBADMSG;
+		goto out;
+	}
 
 	struct xdp_desc *txd = xsk_ring_prod__tx_desc(&be->tx, idx);
 
@@ -347,7 +350,8 @@ static int afxdp_init(struct uib_context *ctx)
 	if (!be)
 		return -ENOMEM;
 	be->timer_fd = -1;
-	be->port = htons(UIB_ROCE_V2_UDP_DPORT);
+	be->port = htons(ctx->bind_port ? ctx->bind_port :
+			 ctx->pops->default_port);
 	be->queue_id = qs ? (uint32_t)atoi(qs) : 0;
 	ctx->backend = be;
 	pthread_mutex_init(&be->tx_lock, NULL);

@@ -9,17 +9,32 @@
 #include "uib/context.h"
 #include "uib/qp.h"
 #include "uib/transport.h"
-#include "uib/bth.h"
+#include "uib/protocol.h"
 
 struct uib_context *uib_open_device(const char *bind_ip, uint16_t bind_port)
+{
+	const char *protocol = getenv("UIB_PROTOCOL");
+
+	return uib_open_device_protocol(bind_ip, bind_port, protocol);
+}
+
+struct uib_context *uib_open_device_protocol(const char *bind_ip,
+					     uint16_t bind_port,
+					     const char *protocol)
 {
 	struct uib_context *ctx = calloc(1, sizeof(*ctx));
 
 	if (!ctx)
 		return NULL;
 
-	ctx->mode      = uib_transport_mode_from_env();
-	ctx->bind_port = bind_port;
+	ctx->pops = uib_protocol_find(protocol);
+	if (!ctx->pops) {
+		errno = EPROTONOSUPPORT;
+		free(ctx);
+		return NULL;
+	}
+	ctx->mode = uib_transport_mode_from_env();
+	ctx->bind_port = bind_port ? bind_port : ctx->pops->default_port;
 	if (bind_ip && *bind_ip)
 		snprintf(ctx->bind_ip, sizeof(ctx->bind_ip), "%s", bind_ip);
 
@@ -29,12 +44,17 @@ struct uib_context *uib_open_device(const char *bind_ip, uint16_t bind_port)
 	if (!ctx->qp_table)
 		goto err_lock;
 	ctx->qp_next_hint = 1;
+	if (ctx->pops->init && ctx->pops->init(ctx) < 0)
+		goto err_table;
 
 	if (uib_transport_init(ctx) < 0)
-		goto err_table;
+		goto err_protocol;
 
 	return ctx;
 
+err_protocol:
+	if (ctx->pops->fini)
+		ctx->pops->fini(ctx);
 err_table:
 	free(ctx->qp_table);
 err_lock:
@@ -48,6 +68,8 @@ int uib_close_device(struct uib_context *ctx)
 	if (!ctx)
 		return -EINVAL;
 	uib_transport_fini(ctx);
+	if (ctx->pops && ctx->pops->fini)
+		ctx->pops->fini(ctx);
 	pthread_mutex_destroy(&ctx->qp_lock);
 	free(ctx->qp_table);
 	free(ctx);

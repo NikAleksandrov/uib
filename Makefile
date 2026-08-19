@@ -41,6 +41,9 @@ SRCS := \
 	src/cq.c \
 	src/utils.c \
 	src/qp.c \
+	src/protocol.c \
+	src/protocol_rocev2.c \
+	src/protocol_dummy.c \
 	src/context.c \
 	src/transport.c \
 	src/transport_udp.c \
@@ -92,6 +95,7 @@ DMABUF_TEST := tests/dmabuf_mr_test
 NEIGH_TEST  := tests/neigh_test
 BTH_TEST    := tests/bth_test
 RXE_TEST    := tests/rxe_interop
+PROTOCOL_TEST := tests/protocol_test
 
 $(TEST_BIN): tests/loopback.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
@@ -111,6 +115,9 @@ $(BTH_TEST): tests/bth_test.c $(LIB_STATIC)
 $(RXE_TEST): tests/rxe_interop.c
 	$(CC) $(CFLAGS) -o $@ $< -libverbs
 
+$(PROTOCOL_TEST): tests/protocol_test.c $(LIB_STATIC)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_STATIC) $(LDFLAGS) $(LDLIBS)
+
 rxe-test-build: $(RXE_TEST)
 
 rxe-test: all rxe-test-build
@@ -122,11 +129,13 @@ rxe-tools-test: all
 uib-tools-test: all
 	./tests/run_uib_tools.sh
 
-test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST)
+test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST) \
+	$(PROTOCOL_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
 	./$(DMABUF_TEST)
 	./$(NEIGH_TEST)
+	./$(PROTOCOL_TEST)
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	./$(TEST_BIN)
 
@@ -141,18 +150,18 @@ virtme-test:
 
 test-all: virtme-test
 
-install: $(LIB_STATIC) $(LIB_SHARED) $(LIB_PROVIDER)
+install: $(LIB_STATIC) $(LIB_STATIC) $(LIB_PROVIDER)
 	install -d $(DESTDIR)$(PREFIX)/lib
 	install -d $(DESTDIR)$(PREFIX)/include/uib
 	install -m 644 $(LIB_STATIC) $(DESTDIR)$(PREFIX)/lib/
 	install -m 755 $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/
 	ln -sfn $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/$(LIB_SHARED_SONAME)
-	ln -sfn $(LIB_SHARED_SONAME) $(DESTDIR)$(PREFIX)/lib/$(LIB_SHARED)
+	ln -sfn $(LIB_SHARED_SONAME) $(DESTDIR)$(PREFIX)/lib/$(LIB_STATIC)
 	install -m 755 $(LIB_PROVIDER) $(DESTDIR)$(PREFIX)/lib/
 	install -m 644 include/uib/*.h $(DESTDIR)$(PREFIX)/include/uib/
 
 clean:
-	rm -f $(OBJS) $(PROV_OBJS) $(LIB_STATIC) $(LIB_SHARED) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) $(LIB_PROVIDER) $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST) $(RXE_TEST)
+	rm -f $(OBJS) $(PROV_OBJS) $(LIB_STATIC) $(LIB_STATIC) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) $(LIB_PROVIDER) $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST)
 
 .PHONY: shared-abi-test all clean install test rxe-test-build rxe-test rxe-tools-test \
 	uib-tools-test guest-test virtme-test test-all

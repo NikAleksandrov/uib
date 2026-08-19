@@ -120,6 +120,7 @@ struct uib_qp {
 	uint32_t            path_mtu;
 	struct sockaddr_in  remote_addr;
 	uint32_t            access_flags;
+	void               *protocol_private;
 
 	struct uib_rq_slot *rq;
 	uint32_t            rq_size;
@@ -166,5 +167,25 @@ int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr, struct uib_recv_wr 
 
 int uib_qp_handle_packet(struct uib_qp *qp, const struct sockaddr_in *src,
 			 const void *pkt, size_t len);
+
+int uib_qp_gather(struct uib_pd *pd, const struct uib_sge *sgl, int n,
+		  uint8_t *out, size_t cap);
+int uib_qp_scatter(struct uib_pd *pd, struct uib_sge *sgl, int n,
+		   uint32_t msg_offset, const uint8_t *in, size_t in_len,
+		   size_t *consumed_out);
+int uib_qp_pop_recv(struct uib_qp *qp, struct uib_rq_slot *out);
+void uib_qp_emit_send(struct uib_qp *qp, uint64_t wr_id,
+		      enum uib_wr_opcode wr_op, int signaled,
+		      enum uib_wc_status status, uint32_t byte_len);
+void uib_qp_emit_recv(struct uib_qp *qp, uint64_t wr_id,
+		      enum uib_wc_status status, enum uib_wc_opcode opcode,
+		      uint32_t byte_len, uint32_t src_qp, uint32_t imm_data);
+
+int uib_rocev2_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
+			 struct uib_send_wr **bad);
+int uib_rocev2_handle_packet(struct uib_qp *qp,
+			    const struct sockaddr_in *src,
+			    const void *packet, size_t len);
+void uib_rocev2_retransmit_tick(struct uib_qp *qp, uint64_t now_ns);
 
 #endif

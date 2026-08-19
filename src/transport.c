@@ -5,18 +5,18 @@
 #include "uib/transport.h"
 #include "uib/context.h"
 #include "uib/qp.h"
-#include "uib/bth.h"
+#include "uib/protocol.h"
 #include "utils.h"
 
 void uib_transport_deliver(struct uib_context *ctx, const struct sockaddr_in *src,
 			   const void *buf, size_t len)
 {
-	if (len < sizeof(struct uib_bth) + UIB_ICRC_BYTES)
-		return;
-	const struct uib_bth *bth = buf;
 	uint32_t dqpn;
 
-	uib_bth_unpack(bth, NULL, &dqpn, NULL, NULL);
+	if (!ctx->pops || !ctx->pops->packet_qpn ||
+	    len < ctx->pops->min_packet ||
+	    ctx->pops->packet_qpn(buf, len, &dqpn) < 0)
+		return;
 	struct uib_qp *qp = uib_lookup_qp(ctx, dqpn);
 
 	if (!qp)

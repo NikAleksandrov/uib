@@ -12,7 +12,7 @@
 
 #include "uib/transport.h"
 #include "uib/context.h"
-#include "uib/bth.h"
+#include "uib/protocol.h"
 #include "uib/mr.h"
 #include "uib/devmem.h"
 
@@ -374,7 +374,7 @@ static int tcp_init(struct uib_context *ctx)
 
 	be->local.sin_family = AF_INET;
 	be->local.sin_port =
-		htons(ctx->bind_port ? ctx->bind_port : UIB_ROCE_V2_UDP_DPORT);
+		htons(ctx->bind_port ? ctx->bind_port : ctx->pops->default_port);
 	if (ctx->bind_ip[0]) {
 		if (inet_pton(AF_INET, ctx->bind_ip, &be->local.sin_addr) != 1) {
 			rc = -EINVAL;

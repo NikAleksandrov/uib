@@ -3,6 +3,7 @@
 
 #include "uib/types.h"
 #include "uib/transport_ops.h"
+#include "uib/protocol.h"
 #include "uib/bth.h"
 #include "uib/pd.h"
 #include "uib/mr.h"

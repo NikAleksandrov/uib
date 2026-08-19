@@ -261,7 +261,8 @@ static enum uib_qp_state map_qps_in(enum ibv_qp_state s)
 	}
 }
 
-static int gid_to_sockaddr(const union ibv_gid *gid, struct sockaddr_in *out)
+static int gid_to_sockaddr(const union ibv_gid *gid, struct sockaddr_in *out,
+			   uint16_t port)
 {
 	const uint8_t *r = gid->raw;
 
@@ -270,7 +271,7 @@ static int gid_to_sockaddr(const union ibv_gid *gid, struct sockaddr_in *out)
 	      r[8] == 0 && r[9] == 0 && r[10] == 0xff && r[11] == 0xff))
 		return -EAFNOSUPPORT;
 	out->sin_family = AF_INET;
-	out->sin_port   = htons(UIB_ROCE_V2_UDP_DPORT);
+	out->sin_port = htons(port);
 	memcpy(&out->sin_addr.s_addr, r + 12, 4);
 	return 0;
 }
@@ -433,12 +434,13 @@ static const char *bind_ip_from_env(void)
 static uint16_t bind_port_from_env(void)
 {
 	const char *p = getenv("UIB_BIND_PORT");
+	uint16_t default_port = uib_protocol_default_port(getenv("UIB_PROTOCOL"));
 
 	if (!p || !*p)
-		return UIB_ROCE_V2_UDP_DPORT;
+		return default_port;
 	int v = atoi(p);
 
-	return v > 0 ? (uint16_t)v : UIB_ROCE_V2_UDP_DPORT;
+	return v > 0 ? (uint16_t)v : default_port;
 }
 
 struct ibv_context *ibv_open_device(struct ibv_device *dev)
@@ -687,7 +689,8 @@ int ibv_modify_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr, int mask)
 	if (mask & IBV_QP_AV) {
 		struct sockaddr_in sa = {0};
 
-		if (gid_to_sockaddr(&attr->ah_attr.grh.dgid, &sa) == 0) {
+		if (gid_to_sockaddr(&attr->ah_attr.grh.dgid, &sa,
+				    qw->core->ctx->pops->default_port) == 0) {
 			ua.remote_addr = sa;
 			umask |= UIB_QP_AV;
 		}

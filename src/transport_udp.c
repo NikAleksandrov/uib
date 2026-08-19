@@ -5,7 +5,6 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <arpa/inet.h>
-#include <endian.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
 
@@ -13,7 +12,7 @@
 
 #include "uib/transport.h"
 #include "uib/context.h"
-#include "uib/bth.h"
+#include "uib/protocol.h"
 #include "uib/afxdp_frame.h"
 
 #define UIB_RING_DEPTH 64
@@ -41,7 +40,7 @@ static int raw_decode(struct uib_context *ctx, struct uib_udp_backend *be,
 	struct udphdr *udp;
 	size_t ip_len, udp_len, rdma_len;
 	uint8_t *rdma;
-	uint32_t want_le, want, got, internal;
+	struct uib_wire_meta meta;
 	uint32_t src_ip;
 	uint16_t src_port;
 
@@ -60,24 +59,23 @@ static int raw_decode(struct uib_context *ctx, struct uib_udp_backend *be,
 	    ip->daddr != ctx->local_addr.sin_addr.s_addr)
 		return -1;
 	udp_len = ntohs(udp->len);
-	if (udp_len < sizeof(*udp) + UIB_BTH_BYTES + UIB_ICRC_BYTES ||
+	if (udp_len < sizeof(*udp) + ctx->pops->min_packet ||
 	    ip_len + udp_len > frame_len)
 		return -1;
 	rdma = (uint8_t *)(udp + 1);
 	rdma_len = udp_len - sizeof(*udp);
-	memcpy(&want_le, rdma + rdma_len - UIB_ICRC_BYTES, sizeof(want_le));
-	want = le32toh(want_le);
-	got = uib_rocev2_icrc_ipv4(ip->saddr, ip->daddr, udp->source, udp->dest,
-				  ntohs(ip->id), rdma,
-				  rdma_len - UIB_ICRC_BYTES);
-	if (got != want)
+	meta.src_ip = ip->saddr;
+	meta.dst_ip = ip->daddr;
+	meta.src_port = udp->source;
+	meta.dst_port = udp->dest;
+	meta.ip_id = ntohs(ip->id);
+	if (ctx->pops->wire_decode &&
+	    ctx->pops->wire_decode(&meta, rdma, rdma_len) < 0)
 		return -1;
 
 	src_ip = ip->saddr;
 	src_port = udp->source;
 	memmove(frame, rdma, rdma_len);
-	internal = htonl(uib_icrc(frame, rdma_len - UIB_ICRC_BYTES));
-	memcpy(frame + rdma_len - UIB_ICRC_BYTES, &internal, sizeof(internal));
 	memset(src, 0, sizeof(*src));
 	src->sin_family = AF_INET;
 	src->sin_addr.s_addr = src_ip;
@@ -184,8 +182,8 @@ static int udp_init(struct uib_context *ctx)
 	ctx->backend = be;
 
 	ctx->local_addr.sin_family = AF_INET;
-	ctx->local_addr.sin_port   =
-		htons(ctx->bind_port ? ctx->bind_port : UIB_ROCE_V2_UDP_DPORT);
+	ctx->local_addr.sin_port = htons(ctx->bind_port ? ctx->bind_port :
+					 ctx->pops->default_port);
 	if (ctx->bind_ip[0]) {
 		if (inet_pton(AF_INET, ctx->bind_ip, &ctx->local_addr.sin_addr) != 1)
 			goto err;
@@ -276,9 +274,9 @@ static int udp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 		uint8_t *packet;
 		size_t packet_len;
 		uint32_t src_ip = ctx->local_addr.sin_addr.s_addr;
-		uint32_t crc, wire_crc;
+		struct uib_wire_meta meta;
 
-		if (len < UIB_BTH_BYTES + UIB_ICRC_BYTES ||
+		if (len < ctx->pops->min_packet ||
 		    len > UINT16_MAX - sizeof(*ip) - sizeof(*udp))
 			return -EMSGSIZE;
 		if (src_ip == htonl(INADDR_ANY)) {
@@ -318,15 +316,20 @@ static int udp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 		ip->check = htons(uib_inet_csum(ip, sizeof(*ip)));
 		memset(udp, 0, sizeof(*udp));
 		udp->source = ctx->local_addr.sin_port;
-		udp->dest = dst->sin_port ? dst->sin_port : htons(UIB_ROCE_V2_UDP_DPORT);
+		udp->dest = dst->sin_port ? dst->sin_port :
+			htons(ctx->pops->default_port);
 		udp->len = htons((uint16_t)(sizeof(*udp) + len));
 		memcpy(udp + 1, buf, len);
-		crc = uib_rocev2_icrc_ipv4(ip->saddr, ip->daddr, udp->source,
-					      udp->dest, 0, udp + 1,
-					      len - UIB_ICRC_BYTES);
-		wire_crc = htole32(crc);
-		memcpy(packet + packet_len - UIB_ICRC_BYTES, &wire_crc,
-		       sizeof(wire_crc));
+		meta.src_ip = ip->saddr;
+		meta.dst_ip = ip->daddr;
+		meta.src_port = udp->source;
+		meta.dst_port = udp->dest;
+		meta.ip_id = 0;
+		if (ctx->pops->wire_encode &&
+		    ctx->pops->wire_encode(&meta, udp + 1, len) < 0) {
+			free(packet);
+			return -EBADMSG;
+		}
 		ssize_t n = sendto(be->fd, packet, packet_len, 0,
 				   (const struct sockaddr *)dst, sizeof(*dst));
 		int saved = errno;

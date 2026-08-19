@@ -8,12 +8,14 @@
 #include <sys/socket.h>
 
 #include "uib/verbs.h"
-#include "uib/bth.h"
+#include "uib/protocol.h"
 #include "uib/transport.h"
 
 struct uibv_device **uibv_get_device_list(int *num)
 {
 	struct ifaddrs *ifa, *cur;
+	uint16_t protocol_port =
+		uib_protocol_default_port(getenv("UIB_PROTOCOL"));
 
 	if (getifaddrs(&ifa) != 0)
 		return NULL;
@@ -48,7 +50,7 @@ struct uibv_device **uibv_get_device_list(int *num)
 			break;
 		snprintf(d->name, sizeof(d->name), "uib_%s", cur->ifa_name);
 		d->bind_addr = *(struct sockaddr_in *)cur->ifa_addr;
-		d->bind_addr.sin_port = htons(UIB_ROCE_V2_UDP_DPORT);
+		d->bind_addr.sin_port = htons(protocol_port);
 		list[i++] = d;
 	}
 	if (i == 0) {
@@ -58,7 +60,7 @@ struct uibv_device **uibv_get_device_list(int *num)
 			snprintf(d->name, sizeof(d->name), "uib_lo");
 			d->bind_addr.sin_family = AF_INET;
 			d->bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-			d->bind_addr.sin_port = htons(UIB_ROCE_V2_UDP_DPORT);
+			d->bind_addr.sin_port = htons(protocol_port);
 			list[i++] = d;
 		}
 	}
