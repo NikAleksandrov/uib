@@ -12,6 +12,9 @@
 #define UIB_UET_PDC_MPR 128
 #define UIB_UET_RTX_NS (200ULL * 1000 * 1000)
 #define UIB_UET_MAX_RETRIES 7
+#define UIB_UET_MAX_PATHS 256
+#define UIB_UET_DEFAULT_ENTROPY_BASE 0xc000
+#define UIB_UET_DEFAULT_FAILURE_HOLD_NS (1000ULL * 1000 * 1000)
 
 enum uib_uet_pds_type {
 	UIB_UET_PDS_TYPE_RSVD0,
@@ -354,6 +357,29 @@ struct uib_uet_atomic_wr {
 	void *result;
 };
 
+enum uib_uet_multipath_mode {
+	UIB_UET_MULTIPATH_OFF,
+	UIB_UET_MULTIPATH_OBLIVIOUS,
+	UIB_UET_MULTIPATH_PATH_AWARE,
+};
+
+struct uib_uet_multipath_config {
+	enum uib_uet_multipath_mode mode;
+	uint16_t entropy_base;
+	uint16_t path_count;
+	uint64_t ecn_hold_ns;
+	uint64_t failure_hold_ns;
+};
+
+struct uib_uet_multipath_stats {
+	uint64_t packets;
+	uint64_t path_switches;
+	uint64_t ecn_avoids;
+	uint64_t timeout_failovers;
+	uint16_t active_entropy;
+	uint16_t paths_used;
+};
+
 struct uib_qp;
 
 int uib_uet_session_configure(struct uib_qp *qp,
@@ -368,6 +394,11 @@ int uib_uet_optimized_query(struct uib_qp *qp,
 size_t uib_uet_atomic_datatype_size(uint8_t datatype);
 int uib_uet_post_atomic(struct uib_qp *qp, struct uib_uet_atomic_wr *wr,
 			struct uib_uet_atomic_wr **bad);
+int uib_uet_multipath_configure(struct uib_qp *qp,
+				const struct uib_uet_multipath_config *config);
+int uib_uet_multipath_query(struct uib_qp *qp,
+			    struct uib_uet_multipath_config *config,
+			    struct uib_uet_multipath_stats *stats);
 uint64_t uib_uet_ses_fragment_info(uint32_t payload_len,
 				   uint32_t message_offset);
 uint32_t uib_uet_ses_payload_len(const struct uib_uet_ses_req *request,

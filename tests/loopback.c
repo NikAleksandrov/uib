@@ -384,6 +384,27 @@ int main(void)
 		check_bytes("atomic.cswap.new", atomicB, &(uint64_t){99}, 8);
 
 		test_uet_atomic_matrix(qpA, cqA, mrA, mrB, atomicA, atomicB);
+		if (getenv("UIB_UET_MULTIPATH")) {
+			struct uib_uet_multipath_stats stats;
+			struct uib_uet_multipath_config config;
+			int ok;
+
+			memset(&stats, 0, sizeof(stats));
+			memset(&config, 0, sizeof(config));
+			ok = !uib_uet_multipath_query(qpA, &config, &stats) &&
+				stats.packets && stats.paths_used > 1 &&
+				stats.active_entropy >= config.entropy_base &&
+				stats.active_entropy <
+				config.entropy_base + config.path_count;
+			if (getenv("UIB_TEST_DROP_TX"))
+				ok = ok && stats.timeout_failovers;
+			printf("uet.multipath         %s (paths=%u switches=%llu failovers=%llu)\n",
+			       ok ? "PASS" : "FAIL", stats.paths_used,
+			       (unsigned long long)stats.path_switches,
+			       (unsigned long long)stats.timeout_failovers);
+			if (!ok)
+				g_fail = 1;
+		}
 	}
 
 	uib_destroy_qp(qpA);

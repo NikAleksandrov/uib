@@ -219,8 +219,9 @@ static void *worker_loop(void *arg)
 	return NULL;
 }
 
-static int afxdp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
-		      const void *buf, size_t len)
+static int afxdp_send_entropy(struct uib_context *ctx,
+			      const struct sockaddr_in *dst,
+			      const void *buf, size_t len, uint16_t entropy)
 {
 	struct uib_afxdp_backend *be = ctx->backend;
 	struct uib_frame_hdr hi;
@@ -257,7 +258,7 @@ static int afxdp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 	memcpy(hi.dst_mac, dmac, 6);
 	hi.src_ip   = be->local_ip;
 	hi.dst_ip   = dst->sin_addr.s_addr;
-	hi.src_port = be->port;
+	hi.src_port = entropy ? htons(entropy) : be->port;
 	hi.dst_port = dst->sin_port ? dst->sin_port : be->port;
 
 	flen = uib_frame_build(frame, UIB_AFXDP_FRAME_SIZE, &hi, buf, len);
@@ -294,6 +295,12 @@ static int afxdp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 out:
 	pthread_mutex_unlock(&be->tx_lock);
 	return rc;
+}
+
+static int afxdp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
+		      const void *buf, size_t len)
+{
+	return afxdp_send_entropy(ctx, dst, buf, len, 0);
 }
 
 static void afxdp_fini(struct uib_context *ctx)
@@ -434,6 +441,7 @@ const struct uib_transport_ops uib_afxdp_ops = {
 	.init  = afxdp_init,
 	.fini  = afxdp_fini,
 	.send  = afxdp_send,
+	.send_entropy = afxdp_send_entropy,
 };
 
 #else

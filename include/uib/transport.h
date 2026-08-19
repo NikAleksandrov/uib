@@ -21,6 +21,9 @@ int uib_transport_init(struct uib_context *ctx);
 void uib_transport_fini(struct uib_context *ctx);
 int uib_transport_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 		       const void *buf, size_t len);
+int uib_transport_send_entropy(struct uib_context *ctx,
+			       const struct sockaddr_in *dst,
+			       const void *buf, size_t len, uint16_t entropy);
 
 void uib_transport_deliver(struct uib_context *ctx, const struct sockaddr_in *src,
 			   const void *buf, size_t len);

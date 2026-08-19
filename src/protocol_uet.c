@@ -57,6 +57,8 @@ struct uib_uet_outstanding {
 	uint32_t read_len;
 	uint16_t msg_id;
 	uint8_t request_header;
+	uint16_t path_index;
+	uint16_t entropy;
 	uint8_t retries;
 	uint8_t sent;
 };
@@ -80,6 +82,18 @@ struct uib_uet_qp {
 	struct uib_uet_session_config session;
 	enum uib_uet_optimized_mode optimized_mode;
 	struct uib_uet_optimized_stats optimized_stats;
+	struct uib_uet_multipath_config multipath;
+	struct uib_uet_multipath_stats multipath_stats;
+	uint16_t path_cursor;
+	uint16_t previous_path;
+	struct {
+		uint64_t blocked_until_ns;
+		uint64_t sent;
+		uint64_t acknowledged;
+		uint32_t ecn_marks;
+		uint32_t timeouts;
+		int used;
+	} paths[UIB_UET_MAX_PATHS];
 	struct uib_rq_slot recv_slot;
 	uint16_t recv_msg_id;
 	uint32_t recv_total;
@@ -308,6 +322,7 @@ static int uet_qp_init(struct uib_qp *qp)
 	struct uib_uet_nscc_config config;
 	const char *cc;
 	const char *optimized;
+	const char *multipath;
 
 	if (!uet)
 		return -ENOMEM;
@@ -322,6 +337,17 @@ static int uet_qp_init(struct uib_qp *qp)
 		uet->optimized_mode = UIB_UET_OPTIMIZED_SMALL;
 	else if (optimized && !strcmp(optimized, "medium"))
 		uet->optimized_mode = UIB_UET_OPTIMIZED_MEDIUM;
+	uet->multipath.entropy_base = UIB_UET_DEFAULT_ENTROPY_BASE;
+	uet->multipath.path_count = UIB_UET_MAX_PATHS;
+	uet->multipath.ecn_hold_ns = UIB_UET_RTX_NS;
+	uet->multipath.failure_hold_ns = UIB_UET_DEFAULT_FAILURE_HOLD_NS;
+	multipath = getenv("UIB_UET_MULTIPATH");
+	if (multipath && !strcmp(multipath, "oblivious"))
+		uet->multipath.mode = UIB_UET_MULTIPATH_OBLIVIOUS;
+	else if (multipath && !strcmp(multipath, "path-aware"))
+		uet->multipath.mode = UIB_UET_MULTIPATH_PATH_AWARE;
+	uet->path_cursor = (uint16_t)(qp->qp_num % UIB_UET_MAX_PATHS);
+	uet->previous_path = UINT16_MAX;
 	cc = getenv("UIB_UET_CC");
 	uet->nscc_enabled = !cc || strcmp(cc, "none");
 	uib_uet_nscc_config_default(&config, qp->path_mtu + 40);
@@ -400,6 +426,50 @@ int uib_uet_optimized_query(struct uib_qp *qp,
 		*mode = uet->optimized_mode;
 	if (stats)
 		*stats = uet->optimized_stats;
+	pthread_mutex_unlock(&qp->lock);
+	return 0;
+}
+
+int uib_uet_multipath_configure(struct uib_qp *qp,
+				const struct uib_uet_multipath_config *config)
+{
+	struct uib_uet_qp *uet;
+
+	if (!qp || !config || qp->ctx->pops != &uib_uet_protocol_ops ||
+	    config->mode > UIB_UET_MULTIPATH_PATH_AWARE ||
+	    !config->path_count || config->path_count > UIB_UET_MAX_PATHS ||
+	    (uint32_t)config->entropy_base + config->path_count > UINT16_MAX)
+		return -EINVAL;
+	pthread_mutex_lock(&qp->lock);
+	uet = qp->protocol_private;
+	if (uet->out_count) {
+		pthread_mutex_unlock(&qp->lock);
+		return -EBUSY;
+	}
+	uet->multipath = *config;
+	memset(&uet->multipath_stats, 0, sizeof(uet->multipath_stats));
+	memset(uet->paths, 0, sizeof(uet->paths));
+	uet->path_cursor %= config->path_count;
+	uet->previous_path = UINT16_MAX;
+	pthread_mutex_unlock(&qp->lock);
+	return 0;
+}
+
+int uib_uet_multipath_query(struct uib_qp *qp,
+			    struct uib_uet_multipath_config *config,
+			    struct uib_uet_multipath_stats *stats)
+{
+	struct uib_uet_qp *uet;
+
+	if (!qp || (!config && !stats) ||
+	    qp->ctx->pops != &uib_uet_protocol_ops)
+		return -EINVAL;
+	pthread_mutex_lock(&qp->lock);
+	uet = qp->protocol_private;
+	if (config)
+		*config = uet->multipath;
+	if (stats)
+		*stats = uet->multipath_stats;
 	pthread_mutex_unlock(&qp->lock);
 	return 0;
 }
@@ -623,6 +693,40 @@ uet_find_outstanding(struct uib_uet_qp *uet, uint32_t psn, uint16_t msg_id,
 	return NULL;
 }
 
+static void uet_select_path(struct uib_uet_qp *uet,
+			    struct uib_uet_outstanding *out, uint64_t now_ns)
+{
+	uint16_t count = uet->multipath.path_count;
+	uint16_t selected = uet->path_cursor;
+	uint16_t candidate;
+	uint16_t i;
+
+	if (uet->multipath.mode == UIB_UET_MULTIPATH_OFF)
+		return;
+	for (i = 0; i < count; i++) {
+		candidate = (uint16_t)((uet->path_cursor + i) % count);
+		if (uet->multipath.mode != UIB_UET_MULTIPATH_PATH_AWARE ||
+		    uet->paths[candidate].blocked_until_ns <= now_ns) {
+			selected = candidate;
+			if (i)
+				uet->multipath_stats.ecn_avoids++;
+			break;
+		}
+	}
+	uet->path_cursor = (uint16_t)((selected + 1) % count);
+	out->path_index = selected;
+	out->entropy = uet->multipath.entropy_base + selected;
+	if (uet->previous_path != UINT16_MAX &&
+	    uet->previous_path != selected)
+		uet->multipath_stats.path_switches++;
+	uet->previous_path = selected;
+	uet->multipath_stats.active_entropy = out->entropy;
+	if (!uet->paths[selected].used) {
+		uet->paths[selected].used = 1;
+		uet->multipath_stats.paths_used++;
+	}
+}
+
 static int uet_transmit_locked(struct uib_qp *qp,
 			       struct uib_uet_outstanding *out)
 {
@@ -633,12 +737,18 @@ static int uet_transmit_locked(struct uib_qp *qp,
 	    !uib_uet_nscc_can_send(&uet->nscc, out->nominal_len))
 		return -EAGAIN;
 	out->tx_time_ns = uib_now_ns();
-	rc = uib_transport_send(qp->ctx, &out->dst, out->packet,
-				out->packet_len);
+	if (!out->entropy)
+		uet_select_path(uet, out, out->tx_time_ns);
+	rc = uib_transport_send_entropy(qp->ctx, &out->dst, out->packet,
+					out->packet_len, out->entropy);
 	if (rc < 0)
 		return rc;
 	out->sent = 1;
 	out->deadline_ns = out->tx_time_ns + UIB_UET_RTX_NS;
+	if (out->entropy) {
+		uet->paths[out->path_index].sent++;
+		uet->multipath_stats.packets++;
+	}
 	if (uet->nscc_enabled)
 		uib_uet_nscc_on_send(&uet->nscc, out->nominal_len);
 	return 0;
@@ -762,9 +872,11 @@ static int uet_send_one_response(struct uib_qp *qp,
 		response->index_gen_job_id = ses_request->index_gen_job_id;
 		response->modified_len = htonl(modified_len);
 	}
+	dst.sin_port = qp->remote_addr.sin_port;
 	if (!dst.sin_port)
 		dst.sin_port = htons(UIB_UET_DEFAULT_PORT);
-	rc = uib_transport_send(qp->ctx, &dst, packet, packet_len);
+	rc = uib_transport_send_entropy(qp->ctx, &dst, packet, packet_len,
+					ntohs(destination->sin_port));
 	free(packet);
 	return rc;
 }
@@ -1547,6 +1659,16 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 	uet->dpdcid = ntohs(ack->spdcid);
 	uet->state = UIB_UET_PDC_ESTABLISHED;
 	exact = uet_find_outstanding(uet, ack_psn, msg_id, &exact_link);
+	if (exact && exact->entropy) {
+		uet->paths[exact->path_index].acknowledged++;
+		if (uet->multipath.mode == UIB_UET_MULTIPATH_PATH_AWARE &&
+		    (uib_uet_prologue_flags(&ack->prologue) &
+		     UIB_UET_ACK_FLAG_M)) {
+			uet->paths[exact->path_index].ecn_marks++;
+			uet->paths[exact->path_index].blocked_until_ns =
+				uib_now_ns() + uet->multipath.ecn_hold_ns;
+		}
+	}
 	if (uet->nscc_enabled && extension) {
 		const struct uib_uet_nscc_wire_state *cc_state =
 			(const struct uib_uet_nscc_wire_state *)
@@ -2171,6 +2293,15 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 		if (uet->nscc_enabled)
 			uib_uet_nscc_on_inferred_loss(&uet->nscc,
 						      out->nominal_len);
+		if (out->entropy) {
+			uet->paths[out->path_index].timeouts++;
+			if (uet->multipath.mode ==
+			    UIB_UET_MULTIPATH_PATH_AWARE)
+				uet->paths[out->path_index].blocked_until_ns =
+					now_ns + uet->multipath.failure_hold_ns;
+			uet->multipath_stats.timeout_failovers++;
+			out->entropy = 0;
+		}
 		out->sent = 0;
 		out->retries++;
 		out = out->next;

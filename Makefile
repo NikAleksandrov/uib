@@ -159,6 +159,11 @@ uet-congestion-test: all $(TEST_BIN) $(NSCC_TEST)
 	./$(NSCC_TEST)
 	UIB_PROTOCOL=uet UIB_UET_NSCC_MAX_WND=5000 ./$(TEST_BIN)
 
+uet-multipath-test: all $(TEST_BIN)
+	UIB_PROTOCOL=uet UIB_UET_MULTIPATH=oblivious ./$(TEST_BIN)
+	UIB_PROTOCOL=uet UIB_UET_MULTIPATH=path-aware UIB_TEST_DROP_TX=1 \
+		./$(TEST_BIN)
+
 examples-test: examples
 	./examples/direct_traffic rocev2
 	./examples/direct_traffic uet
@@ -202,6 +207,7 @@ guest-test: all rxe-test-build
 	$(MAKE) uet-tools-test
 	$(MAKE) uet-loss-test
 	$(MAKE) uet-congestion-test
+	$(MAKE) uet-multipath-test
 	$(MAKE) examples-test
 	$(MAKE) examples-stress-test
 
@@ -229,7 +235,8 @@ clean:
 
 .PHONY: shared-abi-test all examples clean install test rxe-test-build rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test \
-	uet-congestion-test examples-test examples-stress-test guest-test \
+	uet-congestion-test uet-multipath-test examples-test \
+	examples-stress-test guest-test \
 	virtme-test test-all
 
 -include $(DEPS)

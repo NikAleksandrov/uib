@@ -111,3 +111,12 @@ int uib_transport_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 {
 	return ctx->tops->send(ctx, dst, buf, len);
 }
+
+int uib_transport_send_entropy(struct uib_context *ctx,
+			       const struct sockaddr_in *dst,
+			       const void *buf, size_t len, uint16_t entropy)
+{
+	if (ctx->tops->send_entropy)
+		return ctx->tops->send_entropy(ctx, dst, buf, len, entropy);
+	return ctx->tops->send(ctx, dst, buf, len);
+}

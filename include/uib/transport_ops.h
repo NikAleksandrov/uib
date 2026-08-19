@@ -20,6 +20,9 @@ struct uib_transport_ops {
 	void (*fini)(struct uib_context *ctx);
 	int  (*send)(struct uib_context *ctx, const struct sockaddr_in *dst,
 		     const void *buf, size_t len);
+	int  (*send_entropy)(struct uib_context *ctx,
+			     const struct sockaddr_in *dst, const void *buf,
+			     size_t len, uint16_t entropy);
 	int  (*mr_register)(struct uib_context *ctx, struct uib_mr *mr);
 	void (*mr_deregister)(struct uib_context *ctx, struct uib_mr *mr);
 };

@@ -284,8 +284,9 @@ static void udp_fini(struct uib_context *ctx)
 	ctx->backend = NULL;
 }
 
-static int udp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
-		    const void *buf, size_t len)
+static int udp_send_entropy(struct uib_context *ctx,
+			    const struct sockaddr_in *dst,
+			    const void *buf, size_t len, uint16_t entropy)
 {
 	struct uib_udp_backend *be = ctx->backend;
 
@@ -339,7 +340,7 @@ static int udp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 		ip->daddr = dst->sin_addr.s_addr;
 		ip->check = htons(uib_inet_csum(ip, sizeof(*ip)));
 		memset(udp, 0, sizeof(*udp));
-		udp->source = ctx->local_addr.sin_port;
+		udp->source = entropy ? htons(entropy) : ctx->local_addr.sin_port;
 		udp->dest = dst->sin_port ? dst->sin_port :
 			htons(ctx->pops->default_port);
 		udp->len = htons((uint16_t)(sizeof(*udp) + len));
@@ -373,10 +374,17 @@ static int udp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 	return 0;
 }
 
+static int udp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
+		    const void *buf, size_t len)
+{
+	return udp_send_entropy(ctx, dst, buf, len, 0);
+}
+
 const struct uib_transport_ops uib_udp_ops = {
 	.name  = "udp-blocking",
 	.probe = udp_probe,
 	.init  = udp_init,
 	.fini  = udp_fini,
 	.send  = udp_send,
+	.send_entropy = udp_send_entropy,
 };
