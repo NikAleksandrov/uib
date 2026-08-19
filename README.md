@@ -4,7 +4,7 @@ packet-transport layers.
 Select the wire protocol with UIB_PROTOCOL:
 
     rocev2  InfiniBand RC over RoCEv2 (default, UDP port 4791)
-    uet     Ultra Ethernet PDS/RUD PDC with SES SEND/WRITE/READ (UDP port 5432)
+    uet     Ultra Ethernet PDS/RUD PDC, SES and NSCC (UDP port 5432)
     dummy   Minimal SEND-only protocol used to test the protocol boundary
 
 Select the packet transport with UIB_TRANSPORT_MODE:
@@ -24,9 +24,26 @@ recovery, with:
 
     make test-all
 
-The current UET implementation follows the PDS/PDC and SES layouts in the
-uet-linux-kernel prototype. It implements RUD connection establishment, a
-128-packet receive window, cumulative plus exact ACK processing, retransmission,
-and UIB's existing SEND, RDMA WRITE, and RDMA READ operations. The reference
-kernel driver is a PDS netdevice/character-device prototype rather than an RDMA
-verbs provider, so UET kernel-verbs interoperability is not claimed.
+Build and run the native UIB, libibverbs and windowed traffic examples with:
+
+    make examples
+    make examples-test
+    make examples-stress-test
+
+See examples/README.md for the individual commands and benchmark options.
+
+The UET implementation follows Ultra Ethernet Specification 1.0.3. It provides
+RUD connection establishment, the 128-packet PDC receive window, cumulative and
+exact acknowledgement processing, retransmission, standard SES identity and
+fragment fields, MTU-sized response-data packets, SEND with header data, RDMA
+WRITE/READ, fetching 64-bit sum and compare-swap atomics, and the specification
+NSCC algorithm. Retransmitted fetching atomics use cached responses so an ACK
+loss cannot apply an atomic operation twice.
+
+The current implementation is an interoperable subset rather than a claim to
+implement every UE 1.0.3 profile. It does not yet implement ROD/RUDI/UUD PDS
+delivery, optimized small/medium SES request headers, tagged/unexpected matching,
+rendezvous and deferrable-send transactions, the optional full datatype/atomic
+matrix, RCCC/TFC, TSS/security, or multipath. The reference kernel driver is a
+PDS netdevice/character-device prototype rather than an RDMA verbs provider, so
+UET kernel-verbs interoperability is not claimed.

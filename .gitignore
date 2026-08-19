@@ -15,3 +15,8 @@
 /tests/protocol_test
 /tests/uet_test
 /tests/nscc_test
+
+# example binaries
+/examples/direct_traffic
+/examples/verbs_traffic
+/examples/stress_bench
