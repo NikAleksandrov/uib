@@ -87,6 +87,11 @@ UIB_0.1 {
 		uib_uet_prologue_pack;
 		uib_uet_prologue_type;
 		uib_uet_protocol_ops;
+		uib_uet_ses_fragment_info;
+		uib_uet_ses_message_offset;
+		uib_uet_ses_payload_len;
+		uib_uet_session_configure;
+		uib_uet_session_query;
 		uib_unregister_qp;
 		uibv_alloc_pd;
 		uibv_close_device;

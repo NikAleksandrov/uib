@@ -43,6 +43,10 @@ static const char *op_name(enum uib_wc_opcode op)
 		return "RDMA_WRITE";
 	case UIB_WC_RDMA_READ:
 		return "RDMA_READ";
+	case UIB_WC_FETCH_ADD:
+		return "FETCH_ADD";
+	case UIB_WC_COMP_SWAP:
+		return "COMP_SWAP";
 	case UIB_WC_RECV:
 		return "RECV";
 	case UIB_WC_RECV_RDMA_WITH_IMM:
@@ -86,7 +90,7 @@ static int connect_qp(struct uib_qp *qp, uint32_t dest_qpn,
 	memset(&attr, 0, sizeof(attr));
 	attr.qp_state = UIB_QPS_INIT;
 	attr.qp_access_flags = UIB_ACCESS_LOCAL_WRITE | UIB_ACCESS_REMOTE_WRITE |
-			       UIB_ACCESS_REMOTE_READ;
+			       UIB_ACCESS_REMOTE_READ | UIB_ACCESS_REMOTE_ATOMIC;
 	rc = uib_modify_qp(qp, &attr, UIB_QP_STATE | UIB_QP_ACCESS_FLAGS);
 	if (rc < 0)
 		return rc;
@@ -144,6 +148,30 @@ static void post_send_buf(struct uib_qp *qp, uint64_t wr_id,
 	uib_post_send(qp, &wr, &bad);
 }
 
+static void post_atomic(struct uib_qp *qp, uint64_t wr_id,
+			enum uib_wr_opcode opcode, uint64_t *result,
+			uint32_t lkey, uint64_t remote_addr, uint32_t rkey,
+			uint64_t compare_add, uint64_t swap)
+{
+	struct uib_send_wr wr, *bad;
+	struct uib_sge sge;
+
+	memset(&wr, 0, sizeof(wr));
+	sge.addr = (uintptr_t)result;
+	sge.length = sizeof(*result);
+	sge.lkey = lkey;
+	wr.wr_id = wr_id;
+	wr.opcode = opcode;
+	wr.send_flags = UIB_SEND_SIGNALED;
+	wr.sg_list = &sge;
+	wr.num_sge = 1;
+	wr.atomic.remote_addr = remote_addr;
+	wr.atomic.rkey = rkey;
+	wr.atomic.compare_add = compare_add;
+	wr.atomic.swap = swap;
+	uib_post_send(qp, &wr, &bad);
+}
+
 int main(void)
 {
 	struct uib_context *ctxA, *ctxB;
@@ -154,6 +182,9 @@ int main(void)
 	struct uib_mr *mrA, *mrB;
 	static uint8_t bufA[65536], bufB[65536];
 	uint8_t *sendA, *recvB, *writeA, *targetB, *readA;
+	uint64_t *atomicA, *atomicB;
+	int is_uet = getenv("UIB_PROTOCOL") &&
+		!strcmp(getenv("UIB_PROTOCOL"), "uet");
 	unsigned int i;
 
 	ctxA = uib_open_device("127.0.0.1", PORT_A);
@@ -170,16 +201,18 @@ int main(void)
 
 	mrA = uib_reg_mr(pdA, bufA, sizeof(bufA),
 			 UIB_ACCESS_LOCAL_WRITE | UIB_ACCESS_REMOTE_WRITE |
-			 UIB_ACCESS_REMOTE_READ);
+			 UIB_ACCESS_REMOTE_READ | UIB_ACCESS_REMOTE_ATOMIC);
 	mrB = uib_reg_mr(pdB, bufB, sizeof(bufB),
 			 UIB_ACCESS_LOCAL_WRITE | UIB_ACCESS_REMOTE_WRITE |
-			 UIB_ACCESS_REMOTE_READ);
+			 UIB_ACCESS_REMOTE_READ | UIB_ACCESS_REMOTE_ATOMIC);
 
 	sendA   = bufA + 0;
 	writeA  = bufA + 16384;
 	readA   = bufA + 32768;
 	recvB   = bufB + 0;
 	targetB = bufB + 16384;
+	atomicA = (uint64_t *)(bufA + 49152);
+	atomicB = (uint64_t *)(bufB + 49152);
 
 	memset(&ia, 0, sizeof(ia));
 	ia.send_cq = cqA; ia.recv_cq = cqA; ia.qp_type = UIB_QPT_RC;
@@ -233,6 +266,23 @@ int main(void)
 		      (uintptr_t)targetB, mrB->rkey);
 	report_wc("read.send", cqA);
 	check_bytes("read.data", readA, targetB, BIG_LEN);
+
+	if (is_uet) {
+		*atomicA = 0;
+		*atomicB = 41;
+		post_atomic(qpA, 0xA005, UIB_WR_ATOMIC_FETCH_ADD, atomicA,
+			    mrA->lkey, (uintptr_t)atomicB, mrB->rkey, 1, 0);
+		report_wc("atomic.add", cqA);
+		check_bytes("atomic.add.old", atomicA, &(uint64_t){41}, 8);
+		check_bytes("atomic.add.new", atomicB, &(uint64_t){42}, 8);
+
+		*atomicA = 0;
+		post_atomic(qpA, 0xA006, UIB_WR_ATOMIC_CMP_SWAP, atomicA,
+			    mrA->lkey, (uintptr_t)atomicB, mrB->rkey, 42, 99);
+		report_wc("atomic.cswap", cqA);
+		check_bytes("atomic.cswap.old", atomicA, &(uint64_t){42}, 8);
+		check_bytes("atomic.cswap.new", atomicB, &(uint64_t){99}, 8);
+	}
 
 	uib_destroy_qp(qpA);
 	uib_destroy_qp(qpB);

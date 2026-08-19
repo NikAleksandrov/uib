@@ -34,6 +34,12 @@ struct uib_send_wr {
 		uint64_t remote_addr;
 		uint32_t rkey;
 	} rdma;
+	struct {
+		uint64_t remote_addr;
+		uint64_t compare_add;
+		uint64_t swap;
+		uint32_t rkey;
+	} atomic;
 	struct uib_ah_attr  ud;
 };
 

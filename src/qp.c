@@ -232,6 +232,12 @@ static void emit_send_wc(struct uib_qp *qp, uint64_t wr_id,
 	case UIB_WR_RDMA_READ:
 		wc.opcode = UIB_WC_RDMA_READ;
 		break;
+	case UIB_WR_ATOMIC_FETCH_ADD:
+		wc.opcode = UIB_WC_FETCH_ADD;
+		break;
+	case UIB_WR_ATOMIC_CMP_SWAP:
+		wc.opcode = UIB_WC_COMP_SWAP;
+		break;
 	}
 	uib_cq_push(qp->send_cq, &wc);
 }
@@ -470,6 +476,9 @@ static uint8_t pick_opcode(enum uib_qp_type qpt, enum uib_wr_opcode op,
 		return UIB_OP_RDMA_WRITE_MIDDLE;
 	case UIB_WR_RDMA_READ:
 		return UIB_OP_RDMA_READ_REQ;
+	case UIB_WR_ATOMIC_FETCH_ADD:
+	case UIB_WR_ATOMIC_CMP_SWAP:
+		return 0xff;
 	}
 	return 0xff;
 }
@@ -487,6 +496,9 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 
 	if (wr->opcode == UIB_WR_RDMA_READ)
 		return post_rdma_read(qp, wr, total);
+	if (wr->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
+	    wr->opcode == UIB_WR_ATOMIC_CMP_SWAP)
+		return -EOPNOTSUPP;
 
 	uint32_t mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
 

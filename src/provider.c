@@ -168,6 +168,10 @@ static enum uib_wr_opcode map_wr_op_in(enum ibv_wr_opcode op)
 		return UIB_WR_RDMA_WRITE;
 	case IBV_WR_RDMA_READ:
 		return UIB_WR_RDMA_READ;
+	case IBV_WR_ATOMIC_FETCH_AND_ADD:
+		return UIB_WR_ATOMIC_FETCH_ADD;
+	case IBV_WR_ATOMIC_CMP_AND_SWP:
+		return UIB_WR_ATOMIC_CMP_SWAP;
 	default:
 		return UIB_WR_SEND;
 	}
@@ -219,6 +223,10 @@ static enum ibv_wc_opcode map_wc_op_out(enum uib_wc_opcode op)
 		return IBV_WC_RDMA_WRITE;
 	case UIB_WC_RDMA_READ:
 		return IBV_WC_RDMA_READ;
+	case UIB_WC_FETCH_ADD:
+		return IBV_WC_FETCH_ADD;
+	case UIB_WC_COMP_SWAP:
+		return IBV_WC_COMP_SWAP;
 	case UIB_WC_RECV:
 		return IBV_WC_RECV;
 	case UIB_WC_RECV_RDMA_WITH_IMM:
@@ -305,6 +313,13 @@ static int provider_post_send(struct ibv_qp *qp_ibv, struct ibv_send_wr *wr_ibv,
 		uwrs[i].num_sge    = p->num_sge;
 		uwrs[i].rdma.remote_addr = p->wr.rdma.remote_addr;
 		uwrs[i].rdma.rkey        = p->wr.rdma.rkey;
+		if (p->opcode == IBV_WR_ATOMIC_FETCH_AND_ADD ||
+		    p->opcode == IBV_WR_ATOMIC_CMP_AND_SWP) {
+			uwrs[i].atomic.remote_addr = p->wr.atomic.remote_addr;
+			uwrs[i].atomic.rkey = p->wr.atomic.rkey;
+			uwrs[i].atomic.compare_add = p->wr.atomic.compare_add;
+			uwrs[i].atomic.swap = p->wr.atomic.swap;
+		}
 		uwrs[i].next       = (i + 1 < n) ? &uwrs[i + 1] : NULL;
 	}
 

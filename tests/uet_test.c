@@ -27,6 +27,7 @@ int main(void)
 	uint32_t service, received;
 	uint16_t out_of_order;
 	uint8_t restore, penalty;
+	struct uib_uet_ses_req request;
 	int len;
 
 	check("layout.prologue", sizeof(struct uib_uet_prologue) == 2);
@@ -34,6 +35,11 @@ int main(void)
 	check("layout.pds_ack", sizeof(struct uib_uet_pds_ack) == 12);
 	check("layout.ses_req", sizeof(struct uib_uet_ses_req) == 44);
 	check("layout.ses_rsp", sizeof(struct uib_uet_ses_rsp) == 12);
+	check("layout.ses_rsp_data",
+	      sizeof(struct uib_uet_ses_rsp_data) == 20);
+	check("layout.ses_rendezvous",
+	      sizeof(struct uib_uet_ses_rendezvous) == 24);
+	check("layout.ses_atomic", sizeof(struct uib_uet_ses_atomic) == 4);
 	check("layout.nscc", sizeof(cc_state) == 8);
 	check("select.uet", uib_protocol_find("uet") == &uib_uet_protocol_ops);
 	check("port.uet", uib_protocol_default_port("uet") == 5432);
@@ -61,6 +67,17 @@ int main(void)
 	check("nscc.penalty", penalty == 64);
 	check("nscc.received", received == 257);
 	check("nscc.out-of-order", out_of_order == 17);
+
+	memset(&request, 0, sizeof(request));
+	request.flags = UIB_UET_SES_FLAG_SOM;
+	check("ses.som-payload", uib_uet_ses_payload_len(&request, 123) == 123);
+	check("ses.som-offset", uib_uet_ses_message_offset(&request) == 0);
+	request.flags = 0;
+	request.header_data = uib_uet_ses_fragment_info(4093, 8192);
+	check("ses.fragment-payload",
+	      uib_uet_ses_payload_len(&request, 0) == 4093);
+	check("ses.fragment-offset",
+	      uib_uet_ses_message_offset(&request) == 8192);
 
 	printf("RESULT %s\n", failed ? "FAIL" : "PASS");
 	return failed ? 1 : 0;

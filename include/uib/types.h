@@ -24,6 +24,8 @@ enum uib_wr_opcode {
 	UIB_WR_SEND_WITH_IMM = 1,
 	UIB_WR_RDMA_WRITE    = 2,
 	UIB_WR_RDMA_READ     = 3,
+	UIB_WR_ATOMIC_FETCH_ADD = 4,
+	UIB_WR_ATOMIC_CMP_SWAP = 5,
 };
 
 enum uib_send_flags {
@@ -48,6 +50,8 @@ enum uib_wc_opcode {
 	UIB_WC_SEND        = 0,
 	UIB_WC_RDMA_WRITE  = 1,
 	UIB_WC_RDMA_READ   = 2,
+	UIB_WC_FETCH_ADD   = 3,
+	UIB_WC_COMP_SWAP   = 4,
 	UIB_WC_RECV        = 128,
 	UIB_WC_RECV_RDMA_WITH_IMM = 129,
 };
