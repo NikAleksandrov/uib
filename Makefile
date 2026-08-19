@@ -2,34 +2,38 @@ CC      ?= cc
 AR      ?= ar
 PREFIX  ?= /usr/local
 
+-include config.mk
+
 CFLAGS  ?= -O2 -g -Wall -Wextra -Wno-unused-parameter
 CFLAGS  += -Iinclude -fPIC -pthread -D_GNU_SOURCE -MMD -MP
 
-LIBURING_INC ?= /usr/include
-LIBURING_LIB ?= /usr/lib/x86_64-linux-gnu
+URING_CFLAGS ?= $(if $(wildcard ../liburing/src/include/liburing.h),-I../liburing/src/include)
+URING_LIBS ?= $(if $(wildcard /usr/lib/x86_64-linux-gnu/liburing.so),-luring,-l:liburing.so.2)
+HAVE_IBVERBS ?= $(shell printf '#include <infiniband/verbs.h>\n' | \
+	$(CC) -x c -fsyntax-only - >/dev/null 2>&1 && echo 1 || echo 0)
+ENABLE_PROVIDER ?= $(HAVE_IBVERBS)
+HAVE_VIRTME ?= $(shell command -v vng >/dev/null 2>&1 && echo 1 || echo 0)
+HAVE_IBV_TOOLS ?= $(shell command -v ibv_rc_pingpong >/dev/null 2>&1 && echo 1 || echo 0)
 
-ifneq ("$(wildcard $(LIBURING_INC)/liburing.h)","")
-  CFLAGS += -I$(LIBURING_INC)
-else ifneq ("$(wildcard /home/user/Work/Trees/liburing/src/include/liburing.h)","")
-  CFLAGS += -I/home/user/Work/Trees/liburing/src/include
-endif
-
-LDFLAGS += -L$(LIBURING_LIB) -pthread
-
-URING_LIB := $(if $(wildcard $(LIBURING_LIB)/liburing.so),-luring,-l:liburing.so.2)
-LDLIBS  += $(URING_LIB)
+CFLAGS += $(URING_CFLAGS) $(IBVERBS_CFLAGS)
+LDFLAGS += -pthread
+LDLIBS += $(URING_LIBS)
 
 # AF_XDP backend (udp-zc-afxdp) is compiled with real libxdp glue only when
 # libxdp/libbpf are available; otherwise transport_afxdp.c compiles to a stub
-HAVE_AFXDP := $(shell pkg-config --exists libxdp libbpf 2>/dev/null && echo 1)
+HAVE_AFXDP ?= $(shell pkg-config --exists libxdp libbpf 2>/dev/null && echo 1 || echo 0)
 ifeq ($(HAVE_AFXDP),1)
-  CFLAGS += -DUIB_HAVE_AFXDP $(shell pkg-config --cflags libxdp libbpf)
-  LDLIBS += $(shell pkg-config --libs libxdp libbpf)
+  AFXDP_CFLAGS ?= $(shell pkg-config --cflags libxdp libbpf)
+  AFXDP_LIBS ?= $(shell pkg-config --libs libxdp libbpf)
+  CFLAGS += -DUIB_HAVE_AFXDP $(AFXDP_CFLAGS)
+  LDLIBS += $(AFXDP_LIBS)
 endif
 
 # devmem TCP RX (tcp-devmem C2) needs the SO_DEVMEM uapi. When present the
 # tcp-devmem backend can compile its dma-buf-to-queue binding + devmem RX path.
-HAVE_DEVMEM := $(shell printf 'int x=SO_DEVMEM_DMABUF;\n' | $(CC) -D_GNU_SOURCE -include sys/socket.h -x c -fsyntax-only - >/dev/null 2>&1 && echo 1)
+HAVE_DEVMEM ?= $(shell printf 'int x=SO_DEVMEM_DMABUF;\n' | $(CC) \
+	-D_GNU_SOURCE -include sys/socket.h -x c -fsyntax-only - \
+	>/dev/null 2>&1 && echo 1 || echo 0)
 ifeq ($(HAVE_DEVMEM),1)
   CFLAGS += -DUIB_HAVE_DEVMEM
 endif
@@ -69,10 +73,16 @@ LIB_SHARED_REAL := libuib.so.0.1.0
 LIB_MAP      := src/libuib.map
 LIB_PROVIDER := libuibv.so
 
-all: $(LIB_STATIC) $(LIB_SHARED) $(LIB_PROVIDER)
+LIB_TARGETS := $(LIB_STATIC) $(LIB_SHARED)
+ifeq ($(ENABLE_PROVIDER),1)
+  LIB_TARGETS += $(LIB_PROVIDER)
+endif
+
+all: $(LIB_TARGETS)
 
 examples: all
-	$(MAKE) -C examples
+	$(MAKE) -C examples HAVE_IBVERBS=$(HAVE_IBVERBS) \
+		IBVERBS_CFLAGS='$(IBVERBS_CFLAGS)' IBVERBS_LIBS='$(IBVERBS_LIBS)'
 
 shared-abi-test: $(LIB_SHARED)
 	./tests/run_shared_abi_test.sh
@@ -125,7 +135,7 @@ $(BTH_TEST): tests/bth_test.c $(LIB_STATIC)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_STATIC) $(LDFLAGS) $(LDLIBS)
 
 $(RXE_TEST): tests/rxe_interop.c
-	$(CC) $(CFLAGS) -o $@ $< -libverbs
+	$(CC) $(CFLAGS) -o $@ $< $(IBVERBS_LIBS) -libverbs
 
 $(PROTOCOL_TEST): tests/protocol_test.c $(LIB_STATIC)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_STATIC) $(LDFLAGS) $(LDLIBS)
@@ -136,6 +146,7 @@ $(UET_TEST): tests/uet_test.c $(LIB_SHARED)
 $(NSCC_TEST): tests/nscc_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
+ifeq ($(HAVE_IBVERBS),1)
 rxe-test-build: $(RXE_TEST)
 
 rxe-test: all rxe-test-build
@@ -149,6 +160,10 @@ uib-tools-test: all
 
 uet-tools-test: all
 	UIB_TEST_PROTOCOL=uet UIB_TEST_PORT=5432 ./tests/run_uib_tools.sh
+else
+rxe-test-build rxe-test rxe-tools-test uib-tools-test uet-tools-test:
+	@echo "SKIP $@: libibverbs development files are unavailable"
+endif
 
 uet-loss-test: all
 	UIB_TEST_PROTOCOL=uet UIB_TEST_PORT=5432 UIB_TEST_DROP_TX=1 \
@@ -168,9 +183,11 @@ examples-test: examples
 	./examples/direct_traffic rocev2
 	./examples/direct_traffic uet
 	./examples/direct_traffic dummy
+ifeq ($(HAVE_IBVERBS),1)
 	./examples/verbs_traffic rocev2
 	./examples/verbs_traffic uet
 	./examples/verbs_traffic dummy
+endif
 
 examples-stress-test: examples
 	./examples/stress_bench --protocol rocev2 --iterations 256 --size 1024 --window 32
@@ -216,14 +233,22 @@ virtme-test:
 
 test-all: virtme-test
 
-install: $(LIB_STATIC) $(LIB_SHARED) $(LIB_PROVIDER)
+configure-test: configure
+	./configure
+	$(MAKE) all
+
+test-all: configure-test
+
+install: $(LIB_TARGETS)
 	install -d $(DESTDIR)$(PREFIX)/lib
 	install -d $(DESTDIR)$(PREFIX)/include/uib
 	install -m 644 $(LIB_STATIC) $(DESTDIR)$(PREFIX)/lib/
 	install -m 755 $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/
 	ln -sfn $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/$(LIB_SHARED_SONAME)
 	ln -sfn $(LIB_SHARED_SONAME) $(DESTDIR)$(PREFIX)/lib/$(LIB_SHARED)
+ifeq ($(ENABLE_PROVIDER),1)
 	install -m 755 $(LIB_PROVIDER) $(DESTDIR)$(PREFIX)/lib/
+endif
 	install -m 644 include/uib/*.h $(DESTDIR)$(PREFIX)/include/uib/
 
 clean:
@@ -237,6 +262,6 @@ clean:
 	uib-tools-test uet-test uet-tools-test uet-loss-test \
 	uet-congestion-test uet-multipath-test examples-test \
 	examples-stress-test guest-test \
-	virtme-test test-all
+	virtme-test configure-test test-all
 
 -include $(DEPS)

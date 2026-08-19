@@ -20,3 +20,9 @@
 /examples/direct_traffic
 /examples/verbs_traffic
 /examples/stress_bench
+
+# autoconf output and local feature selection
+/autom4te.cache/
+/config.log
+/config.status
+/config.mk
