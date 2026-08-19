@@ -57,8 +57,36 @@ static int post_atomic(struct direct_endpoint *endpoint, uint64_t wr_id,
 	return uib_post_send(endpoint->qp, &atomic, &bad);
 }
 
+static int post_uet_atomic(struct direct_endpoint *endpoint, uint64_t wr_id,
+			   uint32_t *result, uint32_t *target,
+			   uint32_t remote_key, uint32_t operand)
+{
+	struct uib_uet_atomic_wr atomic = {
+		.wr_id = wr_id,
+		.remote_addr = (uintptr_t)target,
+		.rkey = remote_key,
+		.result_lkey = endpoint->mr->lkey,
+		.send_flags = UIB_SEND_SIGNALED,
+		.opcode = UIB_UET_AMO_BXOR,
+		.datatype = UIB_UET_AMO_UINT32,
+		.fetching = 1,
+		.operand = &operand,
+		.result = result,
+	};
+	struct uib_uet_atomic_wr *bad;
+
+	return uib_uet_post_atomic(endpoint->qp, &atomic, &bad);
+}
+
 static int configure_uet(struct direct_endpoint *endpoint, uint32_t initiator)
 {
+	struct uib_uet_multipath_config multipath = {
+		.mode = UIB_UET_MULTIPATH_OBLIVIOUS,
+		.entropy_base = UIB_UET_DEFAULT_ENTROPY_BASE,
+		.path_count = 8,
+		.ecn_hold_ns = UIB_UET_RTX_NS,
+		.failure_hold_ns = UIB_UET_DEFAULT_FAILURE_HOLD_NS,
+	};
 	struct uib_uet_session_config session = {
 		.job_id = 0x123456,
 		.initiator_id = initiator,
@@ -70,6 +98,10 @@ static int configure_uet(struct direct_endpoint *endpoint, uint32_t initiator)
 	struct uib_uet_nscc_config congestion;
 
 	if (uib_uet_session_configure(endpoint->qp, &session) < 0)
+		return -1;
+	if (uib_uet_optimized_configure(endpoint->qp,
+					UIB_UET_OPTIMIZED_AUTO) < 0 ||
+	    uib_uet_multipath_configure(endpoint->qp, &multipath) < 0)
 		return -1;
 
 	/* Applications may override the normative NSCC defaults per QP. */
@@ -84,6 +116,9 @@ int main(int argc, char **argv)
 	uint8_t *send_buffer, *receive_buffer, *read_buffer, *remote_buffer;
 	uint64_t *atomic_result, *atomic_target;
 	struct uib_uet_nscc congestion;
+	struct uib_uet_multipath_stats multipath_stats;
+	struct uib_uet_optimized_stats optimized_stats;
+	enum uib_uet_optimized_mode optimized_mode;
 	int full_rdma = strcmp(protocol, "dummy");
 	int is_uet = !strcmp(protocol, "uet");
 	int rc = 1;
@@ -154,6 +189,9 @@ int main(int argc, char **argv)
 	}
 
 	if (is_uet) {
+		uint32_t *generic_result = (uint32_t *)(sender.buffer + 49152);
+		uint32_t *generic_target = (uint32_t *)(receiver.buffer + 49152);
+
 		/* Fetching atomics return the old value in the local result SGE. */
 		*atomic_target = 41;
 		*atomic_result = 0;
@@ -173,12 +211,33 @@ int main(int argc, char **argv)
 			fprintf(stderr, "compare-swap failed\n");
 			goto out;
 		}
+		*generic_target = 0xa5a5U;
+		*generic_result = 0;
+		if (post_uet_atomic(&sender, 0x1006, generic_result,
+				    generic_target, receiver.mr->rkey,
+				    0x00ffU) < 0 ||
+		    wait_for(&sender, 0x1006, UIB_WC_UET_ATOMIC) < 0 ||
+		    *generic_result != 0xa5a5U || *generic_target != 0xa55aU) {
+			fprintf(stderr, "generic UET atomic failed\n");
+			goto out;
+		}
 		if (uib_uet_nscc_query_qp(sender.qp, &congestion) < 0)
+			goto out;
+		if (uib_uet_optimized_query(sender.qp, &optimized_mode,
+					    &optimized_stats) < 0 ||
+		    uib_uet_multipath_query(sender.qp, NULL,
+					    &multipath_stats) < 0)
 			goto out;
 		printf("UET NSCC cwnd=%llu bytes byte-clock-residual=%lld base-rtt=%llu ns\n",
 		       (unsigned long long)congestion.cwnd,
 		       (long long)congestion.inflight,
 		       (unsigned long long)congestion.base_rtt_ns);
+		printf("UET optimized mode=%u medium=%llu standard=%llu; multipath paths=%u switches=%llu\n",
+		       optimized_mode,
+		       (unsigned long long)optimized_stats.medium_requests,
+		       (unsigned long long)optimized_stats.standard_requests,
+		       multipath_stats.paths_used,
+		       (unsigned long long)multipath_stats.path_switches);
 	}
 
 	printf("direct UIB %s example: PASS\n", protocol);
