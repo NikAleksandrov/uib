@@ -3,6 +3,7 @@
 *.a
 *.so
 *.so.*
+*.d
 
 # test binaries
 /tests/loopback
@@ -12,3 +13,4 @@
 /tests/bth_test
 /tests/rxe_interop
 /tests/protocol_test
+/tests/uet_test

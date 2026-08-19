@@ -47,6 +47,7 @@ struct uib_protocol_ops {
 
 extern const struct uib_protocol_ops uib_rocev2_protocol_ops;
 extern const struct uib_protocol_ops uib_dummy_protocol_ops;
+extern const struct uib_protocol_ops uib_uet_protocol_ops;
 
 const struct uib_protocol_ops *uib_protocol_find(const char *name);
 const struct uib_protocol_ops *uib_protocol_from_env(void);

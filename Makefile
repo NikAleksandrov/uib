@@ -3,7 +3,7 @@ AR      ?= ar
 PREFIX  ?= /usr/local
 
 CFLAGS  ?= -O2 -g -Wall -Wextra -Wno-unused-parameter
-CFLAGS  += -Iinclude -fPIC -pthread -D_GNU_SOURCE
+CFLAGS  += -Iinclude -fPIC -pthread -D_GNU_SOURCE -MMD -MP
 
 LIBURING_INC ?= /usr/include
 LIBURING_LIB ?= /usr/lib/x86_64-linux-gnu
@@ -44,6 +44,7 @@ SRCS := \
 	src/protocol.c \
 	src/protocol_rocev2.c \
 	src/protocol_dummy.c \
+	src/protocol_uet.c \
 	src/context.c \
 	src/transport.c \
 	src/transport_udp.c \
@@ -58,6 +59,7 @@ OBJS := $(SRCS:.c=.o)
 
 PROV_SRCS := src/provider.c
 PROV_OBJS := $(PROV_SRCS:.c=.o)
+DEPS := $(OBJS:.o=.d) $(PROV_OBJS:.o=.d)
 
 LIB_STATIC   := libuib.a
 LIB_SHARED   := libuib.so
@@ -96,6 +98,10 @@ NEIGH_TEST  := tests/neigh_test
 BTH_TEST    := tests/bth_test
 RXE_TEST    := tests/rxe_interop
 PROTOCOL_TEST := tests/protocol_test
+UET_TEST     := tests/uet_test
+
+DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d $(NEIGH_TEST).d \
+	$(BTH_TEST).d $(RXE_TEST).d $(PROTOCOL_TEST).d $(UET_TEST).d
 
 $(TEST_BIN): tests/loopback.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
@@ -118,6 +124,9 @@ $(RXE_TEST): tests/rxe_interop.c
 $(PROTOCOL_TEST): tests/protocol_test.c $(LIB_STATIC)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_STATIC) $(LDFLAGS) $(LDLIBS)
 
+$(UET_TEST): tests/uet_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
 rxe-test-build: $(RXE_TEST)
 
 rxe-test: all rxe-test-build
@@ -129,13 +138,27 @@ rxe-tools-test: all
 uib-tools-test: all
 	./tests/run_uib_tools.sh
 
+uet-tools-test: all
+	UIB_TEST_PROTOCOL=uet UIB_TEST_PORT=5432 ./tests/run_uib_tools.sh
+
+uet-loss-test: all
+	UIB_TEST_PROTOCOL=uet UIB_TEST_PORT=5432 UIB_TEST_DROP_TX=1 \
+		UIB_TEST_ITERS=8 \
+		./tests/run_uib_tools.sh
+
+uet-test: all $(TEST_BIN) $(UET_TEST)
+	./$(UET_TEST)
+	UIB_PROTOCOL=uet ./$(TEST_BIN)
+	UIB_PROTOCOL=uet UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
+
 test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST) \
-	$(PROTOCOL_TEST)
+	$(PROTOCOL_TEST) $(UET_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
 	./$(DMABUF_TEST)
 	./$(NEIGH_TEST)
 	./$(PROTOCOL_TEST)
+	./$(UET_TEST)
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	./$(TEST_BIN)
 
@@ -144,24 +167,32 @@ guest-test: all rxe-test-build
 	$(MAKE) rxe-test
 	$(MAKE) rxe-tools-test
 	$(MAKE) uib-tools-test
+	$(MAKE) uet-test
+	$(MAKE) uet-tools-test
+	$(MAKE) uet-loss-test
 
 virtme-test:
 	./tests/run_virtme_tests.sh
 
 test-all: virtme-test
 
-install: $(LIB_STATIC) $(LIB_STATIC) $(LIB_PROVIDER)
+install: $(LIB_STATIC) $(LIB_SHARED) $(LIB_PROVIDER)
 	install -d $(DESTDIR)$(PREFIX)/lib
 	install -d $(DESTDIR)$(PREFIX)/include/uib
 	install -m 644 $(LIB_STATIC) $(DESTDIR)$(PREFIX)/lib/
 	install -m 755 $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/
 	ln -sfn $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/$(LIB_SHARED_SONAME)
-	ln -sfn $(LIB_SHARED_SONAME) $(DESTDIR)$(PREFIX)/lib/$(LIB_STATIC)
+	ln -sfn $(LIB_SHARED_SONAME) $(DESTDIR)$(PREFIX)/lib/$(LIB_SHARED)
 	install -m 755 $(LIB_PROVIDER) $(DESTDIR)$(PREFIX)/lib/
 	install -m 644 include/uib/*.h $(DESTDIR)$(PREFIX)/include/uib/
 
 clean:
-	rm -f $(OBJS) $(PROV_OBJS) $(LIB_STATIC) $(LIB_STATIC) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) $(LIB_PROVIDER) $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST)
+	rm -f $(OBJS) $(PROV_OBJS) $(DEPS) $(LIB_STATIC) $(LIB_SHARED) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) \
+		$(LIB_PROVIDER) $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) \
+		$(NEIGH_TEST) $(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST) $(UET_TEST)
 
 .PHONY: shared-abi-test all clean install test rxe-test-build rxe-test rxe-tools-test \
-	uib-tools-test guest-test virtme-test test-all
+	uib-tools-test uet-test uet-tools-test uet-loss-test guest-test \
+	virtme-test test-all
+
+-include $(DEPS)

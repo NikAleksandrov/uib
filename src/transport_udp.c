@@ -29,7 +29,23 @@ struct uib_udp_backend {
 	pthread_t           worker;
 	int                 worker_run;
 	int                 raw_mode;
+	unsigned int        test_drop_tx;
 };
+
+static int test_drop_packet(struct uib_udp_backend *be)
+{
+	unsigned int remaining =
+		__atomic_load_n(&be->test_drop_tx, __ATOMIC_RELAXED);
+
+	while (remaining) {
+		if (__atomic_compare_exchange_n(&be->test_drop_tx, &remaining,
+						remaining - 1, 0,
+						__ATOMIC_RELAXED,
+						__ATOMIC_RELAXED))
+			return 1;
+	}
+	return 0;
+}
 
 static int raw_decode(struct uib_context *ctx, struct uib_udp_backend *be,
 		      size_t frame_len, struct sockaddr_in *src,
@@ -174,11 +190,16 @@ static int udp_probe(void)
 
 static int udp_init(struct uib_context *ctx)
 {
-	struct uib_udp_backend *be = calloc(1, sizeof(*be));
+	const char *drop_tx = getenv("UIB_TEST_DROP_TX");
+	struct uib_udp_backend *be;
+
+	be = calloc(1, sizeof(*be));
 
 	if (!be)
 		return -ENOMEM;
 	be->fd = -1;
+	if (drop_tx)
+		be->test_drop_tx = (unsigned int)strtoul(drop_tx, NULL, 10);
 	ctx->backend = be;
 
 	ctx->local_addr.sin_family = AF_INET;
@@ -267,6 +288,9 @@ static int udp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 		    const void *buf, size_t len)
 {
 	struct uib_udp_backend *be = ctx->backend;
+
+	if (test_drop_packet(be))
+		return 0;
 
 	if (be->raw_mode) {
 		struct iphdr *ip;

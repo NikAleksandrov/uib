@@ -69,6 +69,12 @@ UIB_0.1 {
 		uib_transport_retransmit_walk;
 		uib_transport_send;
 		uib_udp_ops;
+		uib_uet_build_ack;
+		uib_uet_prologue_flags;
+		uib_uet_prologue_next;
+		uib_uet_prologue_pack;
+		uib_uet_prologue_type;
+		uib_uet_protocol_ops;
 		uib_unregister_qp;
 		uibv_alloc_pd;
 		uibv_close_device;
