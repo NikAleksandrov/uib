@@ -238,6 +238,9 @@ static void emit_send_wc(struct uib_qp *qp, uint64_t wr_id,
 	case UIB_WR_ATOMIC_CMP_SWAP:
 		wc.opcode = UIB_WC_COMP_SWAP;
 		break;
+	case UIB_WR_UET_ATOMIC:
+		wc.opcode = UIB_WC_UET_ATOMIC;
+		break;
 	}
 	uib_cq_push(qp->send_cq, &wc);
 }
@@ -478,6 +481,7 @@ static uint8_t pick_opcode(enum uib_qp_type qpt, enum uib_wr_opcode op,
 		return UIB_OP_RDMA_READ_REQ;
 	case UIB_WR_ATOMIC_FETCH_ADD:
 	case UIB_WR_ATOMIC_CMP_SWAP:
+	case UIB_WR_UET_ATOMIC:
 		return 0xff;
 	}
 	return 0xff;

@@ -70,6 +70,7 @@ UIB_0.1 {
 		uib_transport_retransmit_walk;
 		uib_transport_send;
 		uib_udp_ops;
+		uib_uet_atomic_datatype_size;
 		uib_uet_build_ack;
 		uib_uet_nscc_ack_request;
 		uib_uet_nscc_can_send;
@@ -85,6 +86,7 @@ UIB_0.1 {
 		uib_uet_nscc_wire_unpack;
 		uib_uet_optimized_configure;
 		uib_uet_optimized_query;
+		uib_uet_post_atomic;
 		uib_uet_prologue_flags;
 		uib_uet_prologue_next;
 		uib_uet_prologue_pack;

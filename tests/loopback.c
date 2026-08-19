@@ -47,6 +47,8 @@ static const char *op_name(enum uib_wc_opcode op)
 		return "FETCH_ADD";
 	case UIB_WC_COMP_SWAP:
 		return "COMP_SWAP";
+	case UIB_WC_UET_ATOMIC:
+		return "UET_ATOMIC";
 	case UIB_WC_RECV:
 		return "RECV";
 	case UIB_WC_RECV_RDMA_WITH_IMM:
@@ -172,6 +174,104 @@ static void post_atomic(struct uib_qp *qp, uint64_t wr_id,
 	uib_post_send(qp, &wr, &bad);
 }
 
+static void run_uet_atomic(struct uib_qp *qp, struct uib_cq *cq,
+			   struct uib_mr *local_mr, struct uib_mr *remote_mr,
+			   void *result, void *target, uint8_t datatype,
+			   uint8_t opcode, uint64_t initial, uint64_t operand,
+			   uint64_t swap, uint64_t expected)
+{
+	struct uib_uet_atomic_wr wr = {0};
+	struct uib_uet_atomic_wr *bad;
+	struct uib_wc wc;
+	size_t width = uib_uet_atomic_datatype_size(datatype);
+	uint64_t returned = 0;
+	uint64_t actual = 0;
+	int ok;
+
+	memcpy(target, &initial, width);
+	memset(result, 0, width);
+	wr.wr_id = 0xC000 + opcode + ((uint64_t)datatype << 8);
+	wr.remote_addr = (uintptr_t)target;
+	wr.rkey = remote_mr->rkey;
+	wr.result_lkey = local_mr->lkey;
+	wr.send_flags = UIB_SEND_SIGNALED;
+	wr.opcode = opcode;
+	wr.datatype = datatype;
+	wr.fetching = 1;
+	wr.operand = &operand;
+	wr.compare = &operand;
+	wr.swap = &swap;
+	wr.result = result;
+	if (uib_uet_post_atomic(qp, &wr, &bad) < 0 ||
+	    !wait_wc(cq, &wc) || wc.status != UIB_WC_SUCCESS) {
+		printf("uet.atomic.%u.%u       COMPLETION FAIL\n", datatype,
+		       opcode);
+		g_fail = 1;
+		return;
+	}
+	memcpy(&returned, result, width);
+	memcpy(&actual, target, width);
+	ok = returned == (initial & (width == 8 ? UINT64_MAX :
+				       (1ULL << (width * 8)) - 1)) &&
+		actual == (expected & (width == 8 ? UINT64_MAX :
+				       (1ULL << (width * 8)) - 1));
+	printf("uet.atomic.%u.%u       %s\n", datatype, opcode,
+	       ok ? "PASS" : "FAIL");
+	if (!ok)
+		g_fail = 1;
+}
+
+static void test_uet_atomic_matrix(struct uib_qp *qp, struct uib_cq *cq,
+				   struct uib_mr *local_mr,
+				   struct uib_mr *remote_mr,
+				   void *result, void *target)
+{
+	static const struct {
+		uint8_t opcode;
+		uint64_t operand;
+		uint64_t swap;
+		uint64_t expected;
+	} operations[] = {
+		{ UIB_UET_AMO_MIN, 3, 0, 3 },
+		{ UIB_UET_AMO_MAX, 3, 0, 6 },
+		{ UIB_UET_AMO_SUM, 3, 0, 9 },
+		{ UIB_UET_AMO_DIFF, 3, 0, 3 },
+		{ UIB_UET_AMO_PROD, 3, 0, 18 },
+		{ UIB_UET_AMO_LOR, 3, 0, 1 },
+		{ UIB_UET_AMO_LAND, 3, 0, 1 },
+		{ UIB_UET_AMO_BOR, 3, 0, 7 },
+		{ UIB_UET_AMO_BAND, 3, 0, 2 },
+		{ UIB_UET_AMO_LXOR, 3, 0, 0 },
+		{ UIB_UET_AMO_BXOR, 3, 0, 5 },
+		{ UIB_UET_AMO_READ, 0, 0, 6 },
+		{ UIB_UET_AMO_WRITE, 3, 0, 3 },
+		{ UIB_UET_AMO_CSWAP, 6, 9, 9 },
+		{ UIB_UET_AMO_CSWAP_NE, 3, 9, 9 },
+		{ UIB_UET_AMO_CSWAP_LE, 3, 9, 6 },
+		{ UIB_UET_AMO_CSWAP_LT, 3, 9, 6 },
+		{ UIB_UET_AMO_CSWAP_GE, 3, 9, 9 },
+		{ UIB_UET_AMO_CSWAP_GT, 3, 9, 9 },
+		{ UIB_UET_AMO_MSWAP, 3, 9, 5 },
+	};
+	uint8_t datatype;
+	size_t i;
+
+	for (i = 0; i < sizeof(operations) / sizeof(operations[0]); i++)
+		run_uet_atomic(qp, cq, local_mr, remote_mr, result, target,
+			       UIB_UET_AMO_UINT64, operations[i].opcode, 6,
+			       operations[i].operand, operations[i].swap,
+			       operations[i].expected);
+	for (datatype = UIB_UET_AMO_INT8;
+	     datatype <= UIB_UET_AMO_UINT64; datatype++)
+		run_uet_atomic(qp, cq, local_mr, remote_mr, result, target,
+			       datatype, UIB_UET_AMO_SUM, 6, 3, 0, 9);
+	for (datatype = UIB_UET_AMO_INT8;
+	     datatype <= UIB_UET_AMO_INT64; datatype += 2)
+		run_uet_atomic(qp, cq, local_mr, remote_mr, result, target,
+			       datatype, UIB_UET_AMO_MIN, UINT64_MAX - 1,
+			       1, 0, UINT64_MAX - 1);
+}
+
 int main(void)
 {
 	struct uib_context *ctxA, *ctxB;
@@ -282,6 +382,8 @@ int main(void)
 		report_wc("atomic.cswap", cqA);
 		check_bytes("atomic.cswap.old", atomicA, &(uint64_t){42}, 8);
 		check_bytes("atomic.cswap.new", atomicB, &(uint64_t){99}, 8);
+
+		test_uet_atomic_matrix(qpA, cqA, mrA, mrB, atomicA, atomicB);
 	}
 
 	uib_destroy_qp(qpA);

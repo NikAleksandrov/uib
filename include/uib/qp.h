@@ -39,6 +39,13 @@ struct uib_send_wr {
 		uint64_t compare_add;
 		uint64_t swap;
 		uint32_t rkey;
+		uint8_t uet_opcode;
+		uint8_t uet_datatype;
+		uint8_t uet_semantic_control;
+		uint8_t uet_fetching;
+		uint8_t uet_operand[16];
+		uint8_t uet_compare[16];
+		uint8_t uet_swap[16];
 	} atomic;
 	struct uib_ah_attr  ud;
 };

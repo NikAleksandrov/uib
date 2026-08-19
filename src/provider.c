@@ -227,6 +227,8 @@ static enum ibv_wc_opcode map_wc_op_out(enum uib_wc_opcode op)
 		return IBV_WC_FETCH_ADD;
 	case UIB_WC_COMP_SWAP:
 		return IBV_WC_COMP_SWAP;
+	case UIB_WC_UET_ATOMIC:
+		return IBV_WC_FETCH_ADD;
 	case UIB_WC_RECV:
 		return IBV_WC_RECV;
 	case UIB_WC_RECV_RDMA_WITH_IMM:

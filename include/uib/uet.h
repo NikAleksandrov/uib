@@ -80,6 +80,9 @@ enum uib_uet_ses_opcode {
 #define UIB_UET_SES_FLAG_IE  (1U << 4)
 #define UIB_UET_SES_FLAG_DC  (1U << 5)
 #define UIB_UET_SES_VERSION_SHIFT 6
+#define UIB_UET_SES_FLAGS_MASK ((1U << UIB_UET_SES_VERSION_SHIFT) - 1)
+#define UIB_UET_SES_OPCODE_MASK 0x3fU
+#define UIB_UET_SES_LENGTH_MASK 0x3fffU
 #define UIB_UET_SES_JOB_ID_MASK 0x00ffffff
 #define UIB_UET_SES_PID_MASK 0x0fff
 
@@ -334,6 +337,23 @@ struct uib_uet_optimized_stats {
 	uint64_t small_responses;
 };
 
+struct uib_uet_atomic_wr {
+	struct uib_uet_atomic_wr *next;
+	uint64_t wr_id;
+	uint64_t remote_addr;
+	uint32_t rkey;
+	uint32_t result_lkey;
+	int send_flags;
+	uint8_t opcode;
+	uint8_t datatype;
+	uint8_t semantic_control;
+	uint8_t fetching;
+	const void *operand;
+	const void *compare;
+	const void *swap;
+	void *result;
+};
+
 struct uib_qp;
 
 int uib_uet_session_configure(struct uib_qp *qp,
@@ -345,6 +365,9 @@ int uib_uet_optimized_configure(struct uib_qp *qp,
 int uib_uet_optimized_query(struct uib_qp *qp,
 			    enum uib_uet_optimized_mode *mode,
 			    struct uib_uet_optimized_stats *stats);
+size_t uib_uet_atomic_datatype_size(uint8_t datatype);
+int uib_uet_post_atomic(struct uib_qp *qp, struct uib_uet_atomic_wr *wr,
+			struct uib_uet_atomic_wr **bad);
 uint64_t uib_uet_ses_fragment_info(uint32_t payload_len,
 				   uint32_t message_offset);
 uint32_t uib_uet_ses_payload_len(const struct uib_uet_ses_req *request,
