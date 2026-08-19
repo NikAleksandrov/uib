@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <errno.h>
 #include <time.h>
 
 #include "uib/uib.h"
@@ -158,7 +159,7 @@ int main(void)
 	ctxA = uib_open_device("127.0.0.1", PORT_A);
 	ctxB = uib_open_device("127.0.0.1", PORT_B);
 	if (!ctxA || !ctxB) {
-		printf("open_device failed\n");
+		printf("open_device failed: %s\n", strerror(errno));
 		return 2;
 	}
 

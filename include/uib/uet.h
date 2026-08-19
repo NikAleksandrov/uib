@@ -48,6 +48,11 @@ enum uib_uet_next_header {
 #define UIB_UET_REQ_FLAG_SYN  (1U << 2)
 #define UIB_UET_REQ_FLAG_AR   (1U << 3)
 #define UIB_UET_REQ_FLAG_RETX (1U << 4)
+#define UIB_UET_ACK_FLAG_RETX (1U << 4)
+#define UIB_UET_ACK_FLAG_M    (1U << 5)
+
+#define UIB_UET_NACK_TRIMMED          0x01
+#define UIB_UET_NACK_TRIMMED_LASTHOP  0x02
 
 enum uib_uet_ses_opcode {
 	UIB_UET_SES_WRITE = 0x01,
@@ -103,6 +108,17 @@ struct uib_uet_pds_ack_ext {
 	uint64_t ack_cc_state;
 } __packed;
 
+struct uib_uet_nscc_wire_state {
+	uint16_t service_time;
+	uint32_t receiver_state;
+	uint16_t out_of_order_count;
+} __packed;
+
+#define UIB_UET_NSCC_RESTORE_MASK 0x80000000U
+#define UIB_UET_NSCC_PENALTY_SHIFT 24
+#define UIB_UET_NSCC_PENALTY_MASK 0x7fU
+#define UIB_UET_NSCC_RCVD_MASK 0x00ffffffU
+
 struct uib_uet_pds_nack {
 	struct uib_uet_prologue prologue;
 	uint8_t nack_code;
@@ -141,5 +157,13 @@ uint8_t uib_uet_prologue_flags(const struct uib_uet_prologue *prologue);
 int uib_uet_build_ack(void *packet, size_t capacity, uint32_t cack_psn,
 		      uint32_t ack_psn, uint16_t spdcid, uint16_t dpdcid,
 		      uint8_t next_header);
+void uib_uet_nscc_wire_pack(struct uib_uet_nscc_wire_state *state,
+			    uint32_t service_time_ns, uint8_t restore,
+			    uint8_t penalty, uint32_t received_bytes,
+			    uint16_t out_of_order);
+void uib_uet_nscc_wire_unpack(const struct uib_uet_nscc_wire_state *state,
+			      uint32_t *service_time_ns, uint8_t *restore,
+			      uint8_t *penalty, uint32_t *received_units,
+			      uint16_t *out_of_order);
 
 #endif

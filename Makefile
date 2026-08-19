@@ -45,6 +45,7 @@ SRCS := \
 	src/protocol_rocev2.c \
 	src/protocol_dummy.c \
 	src/protocol_uet.c \
+	src/uet_nscc.c \
 	src/context.c \
 	src/transport.c \
 	src/transport_udp.c \
@@ -99,9 +100,11 @@ BTH_TEST    := tests/bth_test
 RXE_TEST    := tests/rxe_interop
 PROTOCOL_TEST := tests/protocol_test
 UET_TEST     := tests/uet_test
+NSCC_TEST    := tests/nscc_test
 
 DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d $(NEIGH_TEST).d \
-	$(BTH_TEST).d $(RXE_TEST).d $(PROTOCOL_TEST).d $(UET_TEST).d
+	$(BTH_TEST).d $(RXE_TEST).d $(PROTOCOL_TEST).d $(UET_TEST).d \
+	$(NSCC_TEST).d
 
 $(TEST_BIN): tests/loopback.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
@@ -127,6 +130,9 @@ $(PROTOCOL_TEST): tests/protocol_test.c $(LIB_STATIC)
 $(UET_TEST): tests/uet_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
+$(NSCC_TEST): tests/nscc_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
 rxe-test-build: $(RXE_TEST)
 
 rxe-test: all rxe-test-build
@@ -146,19 +152,25 @@ uet-loss-test: all
 		UIB_TEST_ITERS=8 \
 		./tests/run_uib_tools.sh
 
+uet-congestion-test: all $(TEST_BIN) $(NSCC_TEST)
+	./$(NSCC_TEST)
+	UIB_PROTOCOL=uet UIB_UET_NSCC_MAX_WND=5000 ./$(TEST_BIN)
+
 uet-test: all $(TEST_BIN) $(UET_TEST)
 	./$(UET_TEST)
+	./$(NSCC_TEST)
 	UIB_PROTOCOL=uet ./$(TEST_BIN)
 	UIB_PROTOCOL=uet UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 
 test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST) \
-	$(PROTOCOL_TEST) $(UET_TEST)
+	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
 	./$(DMABUF_TEST)
 	./$(NEIGH_TEST)
 	./$(PROTOCOL_TEST)
 	./$(UET_TEST)
+	./$(NSCC_TEST)
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	./$(TEST_BIN)
 
@@ -170,6 +182,7 @@ guest-test: all rxe-test-build
 	$(MAKE) uet-test
 	$(MAKE) uet-tools-test
 	$(MAKE) uet-loss-test
+	$(MAKE) uet-congestion-test
 
 virtme-test:
 	./tests/run_virtme_tests.sh
@@ -189,10 +202,12 @@ install: $(LIB_STATIC) $(LIB_SHARED) $(LIB_PROVIDER)
 clean:
 	rm -f $(OBJS) $(PROV_OBJS) $(DEPS) $(LIB_STATIC) $(LIB_SHARED) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) \
 		$(LIB_PROVIDER) $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) \
-		$(NEIGH_TEST) $(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST) $(UET_TEST)
+		$(NEIGH_TEST) $(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST) \
+		$(UET_TEST) $(NSCC_TEST)
 
 .PHONY: shared-abi-test all clean install test rxe-test-build rxe-test rxe-tools-test \
-	uib-tools-test uet-test uet-tools-test uet-loss-test guest-test \
+	uib-tools-test uet-test uet-tools-test uet-loss-test \
+	uet-congestion-test guest-test \
 	virtme-test test-all
 
 -include $(DEPS)

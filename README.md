@@ -13,6 +13,11 @@ Select the packet transport with UIB_TRANSPORT_MODE:
     udp-zc-afxdp  AF_XDP backend when libxdp and a capable interface are present
     tcp-devmem    framed TCP backend with optional device-memory receive support
 
+UET enables the specification-defined NSCC congestion controller by default.
+Set UIB_UET_CC=none only for comparison testing. UIB_UET_NSCC_MAX_WND can cap
+the initial congestion window in tests; applications can configure and query a
+QP with uib_uet_nscc_configure_qp() and uib_uet_nscc_query_qp().
+
 Run the complete test matrix, including virtme-ng, kernel RXE interoperability,
 standard ibverbs tools, UET wire-layout checks, and deterministic UET packet-loss
 recovery, with:

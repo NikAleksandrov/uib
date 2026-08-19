@@ -6,6 +6,7 @@
 #include "uib/protocol.h"
 #include "uib/bth.h"
 #include "uib/uet.h"
+#include "uib/uet_nscc.h"
 #include "uib/pd.h"
 #include "uib/mr.h"
 #include "uib/cq.h"

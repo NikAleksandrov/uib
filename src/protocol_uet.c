@@ -10,6 +10,7 @@
 #include <arpa/inet.h>
 
 #include "uib/uet.h"
+#include "uib/uet_nscc.h"
 #include "uib/protocol.h"
 #include "uib/qp.h"
 #include "uib/context.h"
@@ -40,11 +41,14 @@ struct uib_uet_outstanding {
 	uint8_t *packet;
 	size_t packet_len;
 	uint64_t deadline_ns;
+	uint64_t tx_time_ns;
 	uint32_t psn;
+	uint32_t nominal_len;
 	uint32_t read_offset;
 	uint32_t read_len;
 	uint16_t msg_id;
 	uint8_t retries;
+	uint8_t sent;
 };
 
 struct uib_uet_qp {
@@ -59,6 +63,10 @@ struct uib_uet_qp {
 	int rx_initialized;
 	int tx_initialized;
 	struct uib_uet_outstanding *out_head;
+	struct uib_uet_nscc nscc;
+	uint32_t receiver_bytes;
+	uint32_t previous_received_units;
+	int nscc_enabled;
 	struct uib_rq_slot recv_slot;
 	uint16_t recv_msg_id;
 	uint32_t recv_total;
@@ -115,6 +123,46 @@ uint8_t uib_uet_prologue_flags(const struct uib_uet_prologue *prologue)
 {
 	return (uint8_t)(ntohs(prologue->type_next_flags) &
 			 UIB_UET_PROLOGUE_FLAGS_MASK);
+}
+
+void uib_uet_nscc_wire_pack(struct uib_uet_nscc_wire_state *state,
+			    uint32_t service_time_ns, uint8_t restore,
+			    uint8_t penalty, uint32_t received_bytes,
+			    uint16_t out_of_order)
+{
+	uint32_t received_units = (received_bytes + 255U) >> 8;
+	uint32_t receiver_state;
+	uint32_t service_units = (service_time_ns + 127U) >> 7;
+
+	if (service_units > UINT16_MAX)
+		service_units = UINT16_MAX;
+	receiver_state = (restore ? UIB_UET_NSCC_RESTORE_MASK : 0) |
+		((uint32_t)(penalty & UIB_UET_NSCC_PENALTY_MASK) <<
+		 UIB_UET_NSCC_PENALTY_SHIFT) |
+		(received_units & UIB_UET_NSCC_RCVD_MASK);
+	state->service_time = htons((uint16_t)service_units);
+	state->receiver_state = htonl(receiver_state);
+	state->out_of_order_count = htons(out_of_order);
+}
+
+void uib_uet_nscc_wire_unpack(const struct uib_uet_nscc_wire_state *state,
+			      uint32_t *service_time_ns, uint8_t *restore,
+			      uint8_t *penalty, uint32_t *received_units,
+			      uint16_t *out_of_order)
+{
+	uint32_t receiver_state = ntohl(state->receiver_state);
+
+	if (service_time_ns)
+		*service_time_ns = (uint32_t)ntohs(state->service_time) << 7;
+	if (restore)
+		*restore = !!(receiver_state & UIB_UET_NSCC_RESTORE_MASK);
+	if (penalty)
+		*penalty = (receiver_state >> UIB_UET_NSCC_PENALTY_SHIFT) &
+			UIB_UET_NSCC_PENALTY_MASK;
+	if (received_units)
+		*received_units = receiver_state & UIB_UET_NSCC_RCVD_MASK;
+	if (out_of_order)
+		*out_of_order = ntohs(state->out_of_order_count);
 }
 
 int uib_uet_build_ack(void *packet, size_t capacity, uint32_t cack_psn,
@@ -196,12 +244,56 @@ static int uet_packet_qpn(const void *packet, size_t len, uint32_t *qpn)
 static int uet_qp_init(struct uib_qp *qp)
 {
 	struct uib_uet_qp *uet = calloc(1, sizeof(*uet));
+	struct uib_uet_nscc_config config;
+	const char *cc;
 
 	if (!uet)
 		return -ENOMEM;
 	uet->spdcid = (uint16_t)qp->qp_num;
 	uet->next_msg_id = 1;
+	cc = getenv("UIB_UET_CC");
+	uet->nscc_enabled = !cc || strcmp(cc, "none");
+	uib_uet_nscc_config_default(&config, qp->path_mtu + 40);
+	cc = getenv("UIB_UET_NSCC_MAX_WND");
+	if (cc && strtoull(cc, NULL, 0) >= config.mtu) {
+		config.max_wnd = (uint32_t)strtoull(cc, NULL, 0);
+		config.bdp = config.max_wnd;
+	}
+	uib_uet_nscc_init(&uet->nscc, &config, uib_now_ns());
 	qp->protocol_private = uet;
+	return 0;
+}
+
+int uib_uet_nscc_configure_qp(struct uib_qp *qp,
+			      const struct uib_uet_nscc_config *config)
+{
+	struct uib_uet_qp *uet;
+
+	if (!qp || !config || qp->ctx->pops != &uib_uet_protocol_ops ||
+	    !config->mtu || config->max_wnd < config->mtu)
+		return -EINVAL;
+	pthread_mutex_lock(&qp->lock);
+	uet = qp->protocol_private;
+	if (uet->out_count) {
+		pthread_mutex_unlock(&qp->lock);
+		return -EBUSY;
+	}
+	uib_uet_nscc_init(&uet->nscc, config, uib_now_ns());
+	uet->nscc_enabled = 1;
+	pthread_mutex_unlock(&qp->lock);
+	return 0;
+}
+
+int uib_uet_nscc_query_qp(struct uib_qp *qp, struct uib_uet_nscc *state)
+{
+	struct uib_uet_qp *uet;
+
+	if (!qp || !state || qp->ctx->pops != &uib_uet_protocol_ops)
+		return -EINVAL;
+	pthread_mutex_lock(&qp->lock);
+	uet = qp->protocol_private;
+	*state = uet->nscc;
+	pthread_mutex_unlock(&qp->lock);
 	return 0;
 }
 
@@ -305,15 +397,63 @@ uet_find_outstanding(struct uib_uet_qp *uet, uint32_t psn, uint16_t msg_id,
 	return NULL;
 }
 
+static int uet_transmit_locked(struct uib_qp *qp,
+			       struct uib_uet_outstanding *out)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	int rc;
+
+	if (uet->nscc_enabled &&
+	    !uib_uet_nscc_can_send(&uet->nscc, out->nominal_len))
+		return -EAGAIN;
+	out->tx_time_ns = uib_now_ns();
+	rc = uib_transport_send(qp->ctx, &out->dst, out->packet,
+				out->packet_len);
+	if (rc < 0)
+		return rc;
+	out->sent = 1;
+	out->deadline_ns = out->tx_time_ns + UIB_UET_RTX_NS;
+	if (uet->nscc_enabled)
+		uib_uet_nscc_on_send(&uet->nscc, out->nominal_len);
+	return 0;
+}
+
+static int uet_drain_locked(struct uib_qp *qp)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	int rc = 0;
+
+	for (;;) {
+		struct uib_uet_outstanding *candidate = NULL;
+		struct uib_uet_outstanding *out;
+
+		for (out = uet->out_head; out; out = out->next) {
+			if (!out->sent)
+				candidate = out;
+		}
+		if (!candidate)
+			break;
+		rc = uet_transmit_locked(qp, candidate);
+		if (rc == -EAGAIN)
+			return 0;
+		if (rc < 0)
+			return rc;
+	}
+	return rc;
+}
+
 static int uet_send_response(struct uib_qp *qp,
 			     const struct sockaddr_in *destination,
 			     const struct uib_uet_pds_req *request,
 			     const struct uib_uet_ses_req *ses_request,
 			     uint32_t cack_psn, uint8_t response_code,
-			     const void *data, size_t data_len)
+			     const void *data, size_t data_len,
+			     uint64_t receive_time_ns, int ecn_marked)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
 	struct sockaddr_in dst = *destination;
+	struct uib_uet_pds_ack_ext *extension;
+	struct uib_uet_nscc_wire_state *cc_state;
 	struct uib_uet_ses_rsp *ses;
 	uint8_t *packet;
 	size_t packet_len;
@@ -321,7 +461,8 @@ static int uet_send_response(struct uib_qp *qp,
 	int rc;
 
 	next = data_len ? UIB_UET_NEXT_RSP_DATA : UIB_UET_NEXT_RSP;
-	packet_len = sizeof(struct uib_uet_pds_ack) + sizeof(*ses) + data_len;
+	packet_len = sizeof(struct uib_uet_pds_ack) + sizeof(*extension) +
+		sizeof(*ses) + data_len;
 	packet = calloc(1, packet_len);
 	if (!packet)
 		return -ENOMEM;
@@ -332,7 +473,16 @@ static int uet_send_response(struct uib_qp *qp,
 		free(packet);
 		return rc;
 	}
-	ses = (struct uib_uet_ses_rsp *)(packet + rc);
+	((struct uib_uet_pds_ack *)packet)->prologue.type_next_flags =
+		uib_uet_prologue_pack(UIB_UET_PDS_TYPE_ACK_CC, next,
+				       ecn_marked ? UIB_UET_ACK_FLAG_M : 0);
+	extension = (struct uib_uet_pds_ack_ext *)(packet + rc);
+	extension->cc_type_flags_mpr = htons(0);
+	cc_state = (struct uib_uet_nscc_wire_state *)&extension->ack_cc_state;
+	uib_uet_nscc_wire_pack(cc_state,
+			       (uint32_t)(uib_now_ns() - receive_time_ns), 0, 0,
+			       uet->receiver_bytes, UINT16_MAX);
+	ses = (struct uib_uet_ses_rsp *)(extension + 1);
 	ses->list_opcode_version_rc =
 		uet_ses_rsp_pack(data_len ? UIB_UET_SES_RSP_WITH_DATA :
 					     UIB_UET_SES_RSP_RESPONSE,
@@ -481,6 +631,7 @@ static int uet_handle_request(struct uib_qp *qp,
 	uint8_t opcode;
 	int duplicate;
 	int rc;
+	uint64_t receive_time_ns = uib_now_ns();
 
 	if (len < sizeof(*req) + sizeof(*ses) ||
 	    uib_uet_prologue_next(&req->prologue) != UIB_UET_NEXT_REQ_STD)
@@ -499,6 +650,8 @@ static int uet_handle_request(struct uib_qp *qp,
 		uet->rx_initialized = 1;
 	}
 	rc = uet_rx_mark(uet, psn, &duplicate);
+	if (!rc && !duplicate && uet->nscc_enabled)
+		uet->receiver_bytes += (uint32_t)len + 40;
 	cack = uet->rx_base_psn - 1;
 	pthread_mutex_unlock(&qp->lock);
 	uet_debug(qp, "rx request psn=%u cack=%u msg=%u duplicate=%d rc=%d",
@@ -531,7 +684,7 @@ static int uet_handle_request(struct uib_qp *qp,
 	}
 
 	return uet_send_response(qp, src, req, ses, cack, response_code,
-				 response_data, response_len);
+				 response_data, response_len, receive_time_ns, 0);
 }
 
 static void uet_complete_out_locked(struct uib_qp *qp,
@@ -551,6 +704,7 @@ static void uet_complete_out_locked(struct uib_qp *qp,
 static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 {
 	const struct uib_uet_pds_ack *ack = packet;
+	const struct uib_uet_pds_ack_ext *extension = NULL;
 	const struct uib_uet_ses_rsp *ses;
 	const uint8_t *data;
 	struct uib_uet_qp *uet = qp->protocol_private;
@@ -562,9 +716,14 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 	size_t data_len;
 	uint8_t response_code;
 	int32_t offset;
+	uint32_t received_units = 0;
+	uint32_t service_time_ns = 0;
+	uint8_t restore = 0, penalty = 0;
 
-	if (uib_uet_prologue_type(&ack->prologue) == UIB_UET_PDS_TYPE_ACK_CC)
+	if (uib_uet_prologue_type(&ack->prologue) == UIB_UET_PDS_TYPE_ACK_CC) {
+		extension = (const struct uib_uet_pds_ack_ext *)(ack + 1);
 		header_len += sizeof(struct uib_uet_pds_ack_ext);
+	}
 	if (len < header_len + sizeof(*ses))
 		return -EBADMSG;
 	ses = (const struct uib_uet_ses_rsp *)((const uint8_t *)packet + header_len);
@@ -583,6 +742,36 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 	uet->dpdcid = ntohs(ack->spdcid);
 	uet->state = UIB_UET_PDC_ESTABLISHED;
 	exact = uet_find_outstanding(uet, ack_psn, msg_id, &exact_link);
+	if (uet->nscc_enabled && extension) {
+		const struct uib_uet_nscc_wire_state *cc_state =
+			(const struct uib_uet_nscc_wire_state *)
+			&extension->ack_cc_state;
+		struct uib_uet_nscc_ack nscc_ack = {0};
+		uint32_t delta;
+
+		uib_uet_nscc_wire_unpack(cc_state, &service_time_ns, &restore,
+					 &penalty, &received_units, NULL);
+		delta = (received_units - uet->previous_received_units) &
+			UIB_UET_NSCC_RCVD_MASK;
+		if (delta < 0x00800000U) {
+			nscc_ack.newly_received = delta << 8;
+			uet->previous_received_units = received_units;
+		}
+		nscc_ack.ack_time_ns = uib_now_ns();
+		nscc_ack.receiver_cwnd_penalty = penalty;
+		nscc_ack.restore_cwnd = restore;
+		nscc_ack.ecn_marked = !!(uib_uet_prologue_flags(&ack->prologue) &
+					 UIB_UET_ACK_FLAG_M);
+		nscc_ack.retransmit = !!(uib_uet_prologue_flags(&ack->prologue) &
+					 UIB_UET_ACK_FLAG_RETX);
+		if (exact) {
+			nscc_ack.tx_time_ns = exact->tx_time_ns;
+			nscc_ack.tx_retries = exact->retries;
+		} else {
+			nscc_ack.tx_retries = 2;
+		}
+		uib_uet_nscc_on_ack(&uet->nscc, &nscc_ack);
+	}
 	if (response_code != UIB_UET_SES_RC_OK && exact) {
 		struct uib_uet_wr_track *track = exact->track;
 		enum uib_wc_status status = response_code == UIB_UET_SES_RC_BAD_MKEY ?
@@ -611,6 +800,7 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 	}
 	exact = uet_find_outstanding(uet, ack_psn, msg_id, &exact_link);
 	if (!exact) {
+		uet_drain_locked(qp);
 		pthread_mutex_unlock(&qp->lock);
 		return 0;
 	}
@@ -640,6 +830,7 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 	} else {
 		uet_complete_out_locked(qp, exact_link, UIB_WC_SUCCESS);
 	}
+	uet_drain_locked(qp);
 	pthread_mutex_unlock(&qp->lock);
 	return 0;
 }
@@ -654,8 +845,15 @@ static int uet_handle_nack(struct uib_qp *qp, const void *packet, size_t len)
 		return -EBADMSG;
 	pthread_mutex_lock(&qp->lock);
 	out = uet_find_outstanding(uet, ntohl(nack->nack_psn), 0, NULL);
-	if (out)
+	if (out) {
+		if (uet->nscc_enabled)
+			uib_uet_nscc_on_nack(&uet->nscc, out->nominal_len,
+				nack->nack_code == UIB_UET_NACK_TRIMMED ||
+				nack->nack_code == UIB_UET_NACK_TRIMMED_LASTHOP,
+				nack->nack_code == UIB_UET_NACK_TRIMMED_LASTHOP,
+				0, uib_now_ns());
 		uet_remove_track_locked(qp, out->track, UIB_WC_REM_OP_ERR);
+	}
 	pthread_mutex_unlock(&qp->lock);
 	return out ? -EREMOTEIO : 0;
 }
@@ -863,13 +1061,14 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 		out->read_offset = offset;
 		out->read_len = chunk;
 		out->deadline_ns = uib_now_ns() + UIB_UET_RTX_NS;
+		out->nominal_len = (uint32_t)packet_len + 40;
 		pthread_mutex_lock(&qp->lock);
 		out->next = uet->out_head;
 		uet->out_head = out;
 		uet->out_count++;
 		uet_debug(qp, "tx request psn=%u msg=%u opcode=%u len=%zu",
 			  out->psn, out->msg_id, ses_opcode, data_len);
-		rc = uib_transport_send(qp->ctx, &dst, out->packet, packet_len);
+		rc = uet_drain_locked(qp);
 		pthread_mutex_unlock(&qp->lock);
 		if (rc < 0)
 			goto fail_track;
@@ -917,6 +1116,10 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 	pthread_mutex_lock(&qp->lock);
 	out = uet->out_head;
 	while (out) {
+		if (!out->sent) {
+			out = out->next;
+			continue;
+		}
 		if ((int64_t)(now_ns - out->deadline_ns) < 0) {
 			out = out->next;
 			continue;
@@ -931,12 +1134,14 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 		uet_mark_retransmit(out->packet);
 		uet_debug(qp, "retransmit psn=%u msg=%u attempt=%u", out->psn,
 			  out->msg_id, out->retries + 1);
-		uib_transport_send(qp->ctx, &out->dst, out->packet,
-				   out->packet_len);
+		if (uet->nscc_enabled)
+			uib_uet_nscc_on_inferred_loss(&uet->nscc,
+						      out->nominal_len);
+		out->sent = 0;
 		out->retries++;
-		out->deadline_ns = now_ns + UIB_UET_RTX_NS;
 		out = out->next;
 	}
+	uet_drain_locked(qp);
 	pthread_mutex_unlock(&qp->lock);
 }
 

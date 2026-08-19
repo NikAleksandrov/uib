@@ -70,6 +70,18 @@ UIB_0.1 {
 		uib_transport_send;
 		uib_udp_ops;
 		uib_uet_build_ack;
+		uib_uet_nscc_ack_request;
+		uib_uet_nscc_can_send;
+		uib_uet_nscc_config_default;
+		uib_uet_nscc_configure_qp;
+		uib_uet_nscc_init;
+		uib_uet_nscc_on_ack;
+		uib_uet_nscc_on_inferred_loss;
+		uib_uet_nscc_on_nack;
+		uib_uet_nscc_on_send;
+		uib_uet_nscc_query_qp;
+		uib_uet_nscc_wire_pack;
+		uib_uet_nscc_wire_unpack;
 		uib_uet_prologue_flags;
 		uib_uet_prologue_next;
 		uib_uet_prologue_pack;
