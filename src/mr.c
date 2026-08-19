@@ -117,6 +117,23 @@ struct uib_mr *uib_mr_check_remote(struct uib_pd *pd, uint32_t rkey,
 	return mr;
 }
 
+struct uib_mr *uib_mr_check_remote_address(struct uib_pd *pd, uint64_t va,
+					   size_t len, int access)
+{
+	struct uib_mr *mr;
+
+	if (!pd)
+		return NULL;
+	pthread_mutex_lock(&pd->lock);
+	for (mr = pd->mr_list; mr; mr = mr->next) {
+		if (region_contains(mr, va, len) &&
+		    (mr->access & access) == access)
+		break;
+	}
+	pthread_mutex_unlock(&pd->lock);
+	return mr;
+}
+
 int uib_mr_place(struct uib_mr *mr, uint64_t va, const void *src, size_t len)
 {
 	if (!mr)

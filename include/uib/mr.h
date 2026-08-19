@@ -39,6 +39,8 @@ int uib_mr_check_local(struct uib_pd *pd, uint32_t lkey,
 		       const void *addr, size_t len, int access);
 struct uib_mr *uib_mr_check_remote(struct uib_pd *pd, uint32_t rkey,
 				   uint64_t va, size_t len, int access);
+struct uib_mr *uib_mr_check_remote_address(struct uib_pd *pd, uint64_t va,
+					   size_t len, int access);
 
 int uib_mr_place(struct uib_mr *mr, uint64_t va, const void *src, size_t len);
 

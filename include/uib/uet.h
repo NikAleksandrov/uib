@@ -202,6 +202,28 @@ struct uib_uet_ses_req {
 	uint32_t request_len;
 } __packed;
 
+struct uib_uet_ses_req_small {
+	uint8_t opcode;
+	uint8_t flags;
+	uint16_t request_len;
+	uint32_t index_gen_job_id;
+	uint16_t pid_on_fep;
+	uint16_t index;
+	uint64_t buffer_offset;
+} __packed;
+
+struct uib_uet_ses_req_medium {
+	uint8_t opcode;
+	uint8_t flags;
+	uint16_t request_len;
+	uint32_t index_gen_job_id;
+	uint16_t pid_on_fep;
+	uint16_t index;
+	uint64_t buffer_offset;
+	uint32_t initiator;
+	uint64_t match_bits;
+} __packed;
+
 struct uib_uet_ses_rsp {
 	uint16_t list_opcode_version_rc;
 	uint16_t msg_id;
@@ -217,6 +239,13 @@ struct uib_uet_ses_rsp_data {
 	uint16_t payload_len;
 	uint32_t modified_len;
 	uint32_t message_offset;
+} __packed;
+
+struct uib_uet_ses_rsp_data_small {
+	uint16_t list_opcode_version_rc;
+	uint16_t payload_len;
+	uint32_t index_gen_job_id;
+	uint32_t request_psn;
 } __packed;
 
 struct uib_uet_ses_rendezvous {
@@ -291,12 +320,31 @@ struct uib_uet_session_config {
 	uint8_t relative_addressing;
 };
 
+enum uib_uet_optimized_mode {
+	UIB_UET_OPTIMIZED_OFF,
+	UIB_UET_OPTIMIZED_AUTO,
+	UIB_UET_OPTIMIZED_SMALL,
+	UIB_UET_OPTIMIZED_MEDIUM,
+};
+
+struct uib_uet_optimized_stats {
+	uint64_t standard_requests;
+	uint64_t small_requests;
+	uint64_t medium_requests;
+	uint64_t small_responses;
+};
+
 struct uib_qp;
 
 int uib_uet_session_configure(struct uib_qp *qp,
 			      const struct uib_uet_session_config *config);
 int uib_uet_session_query(struct uib_qp *qp,
 			  struct uib_uet_session_config *config);
+int uib_uet_optimized_configure(struct uib_qp *qp,
+				enum uib_uet_optimized_mode mode);
+int uib_uet_optimized_query(struct uib_qp *qp,
+			    enum uib_uet_optimized_mode *mode,
+			    struct uib_uet_optimized_stats *stats);
 uint64_t uib_uet_ses_fragment_info(uint32_t payload_len,
 				   uint32_t message_offset);
 uint32_t uib_uet_ses_payload_len(const struct uib_uet_ses_req *request,

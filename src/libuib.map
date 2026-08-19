@@ -31,6 +31,7 @@ UIB_0.1 {
 		uib_modify_qp;
 		uib_mr_check_local;
 		uib_mr_check_remote;
+		uib_mr_check_remote_address;
 		uib_mr_place;
 		uib_neigh_lookup;
 		uib_open_device;
@@ -82,6 +83,8 @@ UIB_0.1 {
 		uib_uet_nscc_query_qp;
 		uib_uet_nscc_wire_pack;
 		uib_uet_nscc_wire_unpack;
+		uib_uet_optimized_configure;
+		uib_uet_optimized_query;
 		uib_uet_prologue_flags;
 		uib_uet_prologue_next;
 		uib_uet_prologue_pack;

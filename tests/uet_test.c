@@ -34,9 +34,15 @@ int main(void)
 	check("layout.pds_req", sizeof(struct uib_uet_pds_req) == 12);
 	check("layout.pds_ack", sizeof(struct uib_uet_pds_ack) == 12);
 	check("layout.ses_req", sizeof(struct uib_uet_ses_req) == 44);
+	check("layout.ses_req_small",
+	      sizeof(struct uib_uet_ses_req_small) == 20);
+	check("layout.ses_req_medium",
+	      sizeof(struct uib_uet_ses_req_medium) == 32);
 	check("layout.ses_rsp", sizeof(struct uib_uet_ses_rsp) == 12);
 	check("layout.ses_rsp_data",
 	      sizeof(struct uib_uet_ses_rsp_data) == 20);
+	check("layout.ses_rsp_data_small",
+	      sizeof(struct uib_uet_ses_rsp_data_small) == 12);
 	check("layout.ses_rendezvous",
 	      sizeof(struct uib_uet_ses_rendezvous) == 24);
 	check("layout.ses_atomic", sizeof(struct uib_uet_ses_atomic) == 4);
