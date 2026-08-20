@@ -120,6 +120,10 @@ options. The complete reference run and comparison tables are in
 [transparent verbs guide](docs/transparent-verbs.md) for running an existing,
 unmodified verbs application through UIB.
 
+`make benchmark-doc` regenerates that reference. It first writes an old/new
+comparison containing actual values and refuses to replace the document when
+the UDP aggregate exceeds the configured regression limit.
+
 DMA-BUF and zero-copy
 ---------------------
 

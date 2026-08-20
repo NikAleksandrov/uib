@@ -82,6 +82,14 @@ plain text and GitHub Markdown from the resulting CSV files:
 
     make benchmark-report
 
+`make benchmark-doc` runs the matrix, compares every actual bandwidth,
+latency and CPU value with the checked-in reference, and updates
+`docs/benchmark-results.md` only after the comparison passes. It rejects the
+update when an aggregate UDP protocol/mode result regresses by more than 5%.
+Set UIB_BENCH_MAX_REGRESSION_PERCENT to select a different gate. The output
+directory retains `baseline-comparison.csv` and `baseline-comparison.md` even
+when the gate rejects an update.
+
 Every combination is run both normally and with the process pinned to the first
 CPU in the current cpuset. Set `UIB_BENCH_PIN_CPU` to choose another allowed
 CPU. The reports include actual values and percentage changes for each

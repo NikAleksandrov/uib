@@ -267,6 +267,9 @@ benchmark-report: examples
 		./examples/benchmark_report.sh "$$output"; \
 		exit $$status
 
+benchmark-doc: examples
+	./examples/update_benchmark_reference.sh
+
 benchmark-smoke: examples
 	UIB_BENCH_ITERATIONS=64 UIB_BENCH_SIZE=16384 UIB_BENCH_WINDOW=16 \
 		./examples/benchmark_matrix.sh /tmp/uib-benchmark-smoke
@@ -391,7 +394,8 @@ clean:
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \
 	uet-congestion-test uet-multipath-test examples-test \
 	examples-stress-test dmabuf-e2e-test zerocopy-e2e-test \
-	benchmark-all benchmark-local benchmark-report benchmark-smoke \
+	benchmark-all benchmark-local benchmark-report benchmark-doc \
+	benchmark-smoke \
 	provider-dmabuf-test provider-cq-event-test \
 	gpu-dmabuf-test external-dmabuf-test remote-benchmark-test \
 	namespace-benchmark-test guest-test \

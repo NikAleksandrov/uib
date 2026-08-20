@@ -99,7 +99,12 @@ fi
 			transport = "TCP";
 		else
 			transport = "AF_XDP";
-		mode = $6 == "off" ? "copy" : "`MSG_ZEROCOPY`";
+		if ($6 == "off")
+			mode = "copy";
+		else if ($4 == "udp-io-uring")
+			mode = "`SENDMSG_ZC`";
+		else
+			mode = "`MSG_ZEROCOPY`";
 		format = "| %s | %s | %s | %s | %s | %s | %.3f | %.1f | %.3f | " \
 			"%.1f | %.1f | %.1f | %.1f | %.1f | %s/%s |\n";
 		printf format,

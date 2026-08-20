@@ -113,10 +113,10 @@ run_one()
 }
 
 
-for affinity in unpinned pinned; do
-	for mtu in 1500 4096 8192; do
-		for protocol in rocev2 uet dummy; do
-			for memory in host dmabuf; do
+for affinity in ${UIB_BENCH_AFFINITIES:-unpinned pinned}; do
+	for mtu in ${UIB_BENCH_MTUS:-1500 4096 8192}; do
+		for protocol in ${UIB_BENCH_PROTOCOLS:-rocev2 uet dummy}; do
+			for memory in ${UIB_BENCH_MEMORY_MODES:-host dmabuf}; do
 				run_one udp-copy "$protocol" "$memory" udp-io-uring \
 					socket off udp-io-uring "$affinity" "$mtu"
 				run_one udp-zerocopy "$protocol" "$memory" \
