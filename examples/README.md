@@ -65,6 +65,10 @@ Select DMA-BUF memory with `--memory dmabuf`. Select copied or socket
 zero-copy transport with UIB_ZEROCOPY=off or required. The stats distinguish
 zero-copy requests from kernel-deferred copies.
 
+For io_uring tuning, UIB_URING_RX_BATCH and UIB_URING_TX_BATCH select the RX
+completion/one-shot depth and TX submission batch respectively. Both default
+to 64 and accept values from 1 through 256.
+
 Run the complete protocol/transport/memory matrix and generate CSV comparisons:
 
     make benchmark-local

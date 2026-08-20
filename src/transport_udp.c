@@ -19,10 +19,11 @@
 #include "uib/afxdp_frame.h"
 
 #define UIB_URING_DEPTH              256
-#define UIB_URING_CQE_BATCH          64
-#define UIB_URING_RX_SLOTS           32
+#define UIB_URING_BATCH_DEFAULT      64
+#define UIB_URING_BATCH_MAX          256
 #define UIB_URING_RX_BUFFERS         128
 #define UIB_URING_RX_BUFFER_GROUP    7
+#define UIB_URING_TX_BATCH_DEFAULT   64
 #define UIB_URING_TX_LIMIT           4096
 #define UIB_SOCKET_BUFFER_SIZE       (4 * 1024 * 1024)
 
@@ -79,6 +80,8 @@ struct uib_udp_backend {
 	void                    *rx_buffers;
 	size_t                   rx_buffer_len;
 	size_t                   tx_count;
+	unsigned int             rx_batch;
+	unsigned int             tx_batch;
 	unsigned int             test_drop_tx;
 	int                      zerocopy_enabled;
 	int                      multishot_required;
@@ -275,10 +278,10 @@ static int setup_batched_rx(struct uib_udp_backend *be)
 	struct uib_udp_rx_slot *slot;
 	unsigned int i;
 
-	be->rx_slots = calloc(UIB_URING_RX_SLOTS, sizeof(*be->rx_slots));
+	be->rx_slots = calloc(be->rx_batch, sizeof(*be->rx_slots));
 	if (!be->rx_slots)
 		return -ENOMEM;
-	for (i = 0; i < UIB_URING_RX_SLOTS; i++) {
+	for (i = 0; i < be->rx_batch; i++) {
 		slot = &be->rx_slots[i];
 		slot->buffer = malloc(UIB_RECV_BUF_LEN);
 		if (!slot->buffer) {
@@ -306,7 +309,7 @@ static void cleanup_batched_rx(struct uib_udp_backend *be)
 
 	if (!be->rx_slots)
 		return;
-	for (i = 0; i < UIB_URING_RX_SLOTS; i++)
+	for (i = 0; i < be->rx_batch; i++)
 		free(be->rx_slots[i].buffer);
 	free(be->rx_slots);
 	be->rx_slots = NULL;
@@ -334,7 +337,7 @@ static void arm_batched_rx(struct uib_udp_backend *be)
 	struct io_uring_sqe *sqe;
 	unsigned int i;
 
-	for (i = 0; i < UIB_URING_RX_SLOTS; i++) {
+	for (i = 0; i < be->rx_batch; i++) {
 		slot = &be->rx_slots[i];
 		if (slot->armed)
 			continue;
@@ -403,8 +406,9 @@ static void submit_tx(struct uib_udp_backend *be)
 {
 	struct io_uring_sqe *sqe;
 	struct uib_udp_tx *tx;
+	unsigned int submitted = 0;
 
-	for (;;) {
+	while (submitted < be->tx_batch) {
 		tx = dequeue_tx(be);
 		if (!tx)
 			return;
@@ -425,6 +429,7 @@ static void submit_tx(struct uib_udp_backend *be)
 		inflight_add(be, tx);
 		__atomic_fetch_add(&be->stats.tx_submitted, 1,
 				   __ATOMIC_RELAXED);
+		submitted++;
 	}
 }
 
@@ -667,7 +672,7 @@ static void free_all_tx(struct uib_udp_backend *be)
 
 static void *worker_loop(void *argument)
 {
-	struct io_uring_cqe *cqes[UIB_URING_CQE_BATCH];
+	struct io_uring_cqe *cqes[UIB_URING_BATCH_MAX];
 	struct uib_context *ctx = argument;
 	struct uib_udp_backend *be = ctx->backend;
 	unsigned int count;
@@ -705,7 +710,7 @@ static void *worker_loop(void *argument)
 		if (rc < 0 && rc != -EINTR)
 			break;
 		count = io_uring_peek_batch_cqe(&be->ring, cqes,
-						UIB_URING_CQE_BATCH);
+						be->rx_batch);
 		if (count)
 			process_completions(ctx, cqes, count);
 	}
@@ -721,6 +726,22 @@ static void *worker_loop(void *argument)
 static int udp_probe(void)
 {
 	return 1;
+}
+
+static int parse_batch_size(const char *name, unsigned int *value)
+{
+	const char *setting = getenv(name);
+	char *end;
+	unsigned long parsed;
+
+	if (!setting || !*setting)
+		return 0;
+	errno = 0;
+	parsed = strtoul(setting, &end, 10);
+	if (errno || *end || !parsed || parsed > UIB_URING_BATCH_MAX)
+		return -EINVAL;
+	*value = (unsigned int)parsed;
+	return 0;
 }
 
 static int setup_socket(struct uib_context *ctx, struct uib_udp_backend *be)
@@ -810,14 +831,22 @@ static int udp_init(struct uib_context *ctx)
 		return -ENOMEM;
 	be->fd = -1;
 	be->wake_fd = -1;
+	pthread_mutex_init(&be->tx_lock, NULL);
+	pthread_mutex_init(&be->init_lock, NULL);
+	pthread_cond_init(&be->init_cond, NULL);
+	be->rx_batch = UIB_URING_BATCH_DEFAULT;
+	be->tx_batch = UIB_URING_TX_BATCH_DEFAULT;
+	rc = parse_batch_size("UIB_URING_RX_BATCH", &be->rx_batch);
+	if (rc < 0)
+		goto error;
+	rc = parse_batch_size("UIB_URING_TX_BATCH", &be->tx_batch);
+	if (rc < 0)
+		goto error;
 	be->multishot_op.type = UIB_UDP_OP_RX_MULTISHOT;
 	be->timer_op.type = UIB_UDP_OP_TIMER;
 	be->wake_op.type = UIB_UDP_OP_WAKE;
 	if (drop_tx)
 		be->test_drop_tx = (unsigned int)strtoul(drop_tx, NULL, 10);
-	pthread_mutex_init(&be->tx_lock, NULL);
-	pthread_mutex_init(&be->init_lock, NULL);
-	pthread_cond_init(&be->init_cond, NULL);
 	ctx->backend = be;
 	rc = setup_socket(ctx, be);
 	if (rc < 0)
@@ -1055,6 +1084,8 @@ static int udp_get_stats(struct uib_context *ctx,
 	stats->rx_largest_batch = __atomic_load_n(&be->stats.rx_largest_batch,
 						  __ATOMIC_RELAXED);
 	stats->rx_mode = be->stats.rx_mode;
+	stats->rx_batch = be->rx_batch;
+	stats->tx_batch = be->tx_batch;
 	return 0;
 }
 

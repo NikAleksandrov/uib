@@ -27,6 +27,8 @@ struct uib_transport_stats {
 	uint64_t rx_packets;
 	uint64_t rx_completion_batches;
 	uint32_t rx_largest_batch;
+	uint32_t rx_batch;
+	uint32_t tx_batch;
 	enum uib_uring_rx_mode rx_mode;
 };
 

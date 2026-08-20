@@ -69,6 +69,12 @@ the portable fallback with 32 receive SQEs outstanding, or set it to
 multishot to require multishot support. The default auto mode falls back
 automatically.
 
+UIB_URING_RX_BATCH controls the maximum CQEs reaped per worker pass and the
+number of receive SQEs used by batch RX. UIB_URING_TX_BATCH limits send SQEs
+submitted per worker pass. Both accept values from 1 through 256; the defaults
+are 64. Applications can read the effective values from rx_batch and tx_batch
+in struct uib_transport_stats.
+
 Completion queues can be attached to an event channel with
 uib_create_comp_channel() and uib_create_cq_channel(). Arm one-shot delivery
 with uib_req_notify_cq(), wait on the channel fd with poll/epoll, consume the

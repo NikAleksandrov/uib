@@ -53,6 +53,8 @@ static void run_mode(const char *mode, uint16_t sender_port,
 	int rc = 0;
 
 	setenv("UIB_URING_RX_MODE", mode, 1);
+	setenv("UIB_URING_RX_BATCH", "17", 1);
+	setenv("UIB_URING_TX_BATCH", "7", 1);
 	setenv("UIB_ZEROCOPY", "off", 1);
 	sender = uib_open_device_protocol("127.0.0.1", sender_port, "dummy");
 	receiver = uib_open_device_protocol("127.0.0.1", receiver_port,
@@ -83,12 +85,32 @@ static void run_mode(const char *mode, uint16_t sender_port,
 	check("uring.rx_batches", rx_stats.rx_completion_batches > 0 &&
 	      rx_stats.rx_largest_batch > 0);
 	check("uring.rx_mode", rx_stats.rx_mode == expected);
+	check("uring.runtime_batches", rx_stats.rx_batch == 17 &&
+	      tx_stats.tx_batch == 7);
 
 out:
 	if (sender)
 		uib_close_device(sender);
 	if (receiver)
 		uib_close_device(receiver);
+}
+
+static void run_invalid_batch(void)
+{
+	struct uib_context *context;
+
+	setenv("UIB_URING_RX_BATCH", "0", 1);
+	context = uib_open_device_protocol("127.0.0.1", 19606, "dummy");
+	check("uring.invalid_rx_batch", !context);
+	if (context)
+		uib_close_device(context);
+	setenv("UIB_URING_RX_BATCH", "64", 1);
+	setenv("UIB_URING_TX_BATCH", "257", 1);
+	context = uib_open_device_protocol("127.0.0.1", 19607, "dummy");
+	check("uring.invalid_tx_batch", !context);
+	if (context)
+		uib_close_device(context);
+	setenv("UIB_URING_TX_BATCH", "64", 1);
 }
 
 static void run_shutdown_drain(void)
@@ -143,6 +165,7 @@ int main(void)
 	run_mode("multishot", 19600, 19601, UIB_URING_RX_MULTISHOT);
 	run_mode("batch", 19602, 19603, UIB_URING_RX_BATCHED);
 	run_shutdown_drain();
+	run_invalid_batch();
 	printf("RESULT %s\n", failed ? "FAIL" : "PASS");
 	return failed ? 1 : 0;
 }
