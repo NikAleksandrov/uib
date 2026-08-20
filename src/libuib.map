@@ -35,6 +35,7 @@ UIB_0.1 {
 		uib_icrc;
 		uib_inet_csum;
 		uib_lookup_qp;
+		uib_lookup_qp_locked;
 		uib_modify_qp;
 		uib_mr_check_local;
 		uib_mr_check_remote;

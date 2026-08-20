@@ -84,7 +84,6 @@ int uib_destroy_qp(struct uib_qp *qp)
 	if (!qp)
 		return -EINVAL;
 	ctx = qp->ctx;
-	pthread_rwlock_wrlock(&ctx->qp_io_lock);
 	uib_unregister_qp(ctx, qp);
 	if (qp->ctx->pops->qp_fini)
 		qp->ctx->pops->qp_fini(qp);
@@ -112,7 +111,6 @@ int uib_destroy_qp(struct uib_qp *qp)
 		qp->pd->refcnt--;
 	free(qp->rq);
 	free(qp);
-	pthread_rwlock_unlock(&ctx->qp_io_lock);
 	return 0;
 }
 

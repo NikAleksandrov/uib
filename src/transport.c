@@ -23,7 +23,7 @@ void uib_transport_deliver(struct uib_context *ctx,
 		pthread_rwlock_unlock(&ctx->qp_io_lock);
 		return;
 	}
-	qp = uib_lookup_qp(ctx, dqpn);
+	qp = uib_lookup_qp_locked(ctx, dqpn);
 
 	if (!qp) {
 		pthread_rwlock_unlock(&ctx->qp_io_lock);

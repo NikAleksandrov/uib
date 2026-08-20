@@ -96,6 +96,7 @@ uint32_t uib_register_qp(struct uib_context *ctx, struct uib_qp *qp)
 	uint32_t new_size;
 	uint32_t i;
 
+	pthread_rwlock_wrlock(&ctx->qp_io_lock);
 	pthread_mutex_lock(&ctx->qp_lock);
 	if (ctx->qp_free_count) {
 		i = ctx->qp_free_ids[--ctx->qp_free_count];
@@ -133,10 +134,12 @@ uint32_t uib_register_qp(struct uib_context *ctx, struct uib_qp *qp)
 found:
 	ctx->qp_table[i] = qp;
 	pthread_mutex_unlock(&ctx->qp_lock);
+	pthread_rwlock_unlock(&ctx->qp_io_lock);
 	return i;
 
 no_space:
 	pthread_mutex_unlock(&ctx->qp_lock);
+	pthread_rwlock_unlock(&ctx->qp_io_lock);
 	return 0;
 }
 
@@ -269,6 +272,7 @@ void uib_unregister_qp(struct uib_context *ctx, struct uib_qp *qp)
 {
 	if (!qp || !qp->qp_num || qp->qp_num >= ctx->qp_table_size)
 		return;
+	pthread_rwlock_wrlock(&ctx->qp_io_lock);
 	pthread_mutex_lock(&ctx->qp_lock);
 	if (ctx->qp_table[qp->qp_num] == qp) {
 		retry_heap_remove_locked(ctx, qp);
@@ -276,15 +280,22 @@ void uib_unregister_qp(struct uib_context *ctx, struct uib_qp *qp)
 		ctx->qp_free_ids[ctx->qp_free_count++] = qp->qp_num;
 	}
 	pthread_mutex_unlock(&ctx->qp_lock);
+	pthread_rwlock_unlock(&ctx->qp_io_lock);
 }
 
 struct uib_qp *uib_lookup_qp(struct uib_context *ctx, uint32_t qpn)
 {
+	struct uib_qp *qp;
+
+	pthread_rwlock_rdlock(&ctx->qp_io_lock);
+	qp = uib_lookup_qp_locked(ctx, qpn);
+	pthread_rwlock_unlock(&ctx->qp_io_lock);
+	return qp;
+}
+
+struct uib_qp *uib_lookup_qp_locked(struct uib_context *ctx, uint32_t qpn)
+{
 	if (qpn == 0 || qpn >= ctx->qp_table_size)
 		return NULL;
-	pthread_mutex_lock(&ctx->qp_lock);
-	struct uib_qp *qp = ctx->qp_table[qpn];
-
-	pthread_mutex_unlock(&ctx->qp_lock);
-	return qp;
+	return ctx->qp_table[qpn];
 }
