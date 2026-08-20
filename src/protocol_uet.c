@@ -18,6 +18,9 @@
 #include "uib/mr.h"
 #include "utils.h"
 
+#define UIB_UET_OUT_INDEX_MIN 64U
+#define UIB_UET_PSN_HASH_MULTIPLIER 0x9e370001U
+
 enum uib_uet_pdc_state {
 	UIB_UET_PDC_CLOSED,
 	UIB_UET_PDC_SYN_SENT,
@@ -45,6 +48,9 @@ struct uib_uet_wr_track {
 
 struct uib_uet_outstanding {
 	struct uib_uet_outstanding *next;
+	struct uib_uet_outstanding *prev;
+	struct uib_uet_outstanding *hash_next;
+	struct uib_uet_outstanding **hash_pprev;
 	struct uib_uet_wr_track *track;
 	struct sockaddr_in dst;
 	uint8_t *packet;
@@ -76,6 +82,11 @@ struct uib_uet_qp {
 	int rx_initialized;
 	int tx_initialized;
 	struct uib_uet_outstanding *out_head;
+	struct uib_uet_outstanding *out_tail;
+	struct uib_uet_outstanding *tx_cursor;
+	struct uib_uet_outstanding **out_index;
+	uint32_t out_index_size;
+	uint32_t out_index_count;
 	struct uib_uet_nscc nscc;
 	uint32_t receiver_bytes;
 	uint32_t previous_received_units;
@@ -112,7 +123,6 @@ struct uib_uet_qp {
 		uint8_t data[16];
 		int valid;
 	} response_cache[UIB_UET_PDC_MPR];
-	uint32_t response_cache_next;
 };
 
 static void uet_debug(struct uib_qp *qp, const char *format, ...)
@@ -340,6 +350,13 @@ static int uet_qp_init(struct uib_qp *qp)
 
 	if (!uet)
 		return -ENOMEM;
+	uet->out_index = calloc(UIB_UET_OUT_INDEX_MIN,
+				sizeof(*uet->out_index));
+	if (!uet->out_index) {
+		free(uet);
+		return -ENOMEM;
+	}
+	uet->out_index_size = UIB_UET_OUT_INDEX_MIN;
 	uet->spdcid = (uint16_t)qp->qp_num;
 	uet->next_msg_id = 1;
 	uet->session.pid_on_fep = (uint16_t)qp->qp_num;
@@ -622,6 +639,116 @@ static void uet_free_outstanding(struct uib_uet_outstanding *out)
 	free(out);
 }
 
+static uint32_t uet_outstanding_hash(const struct uib_uet_qp *uet,
+				     uint32_t psn)
+{
+	return (psn * UIB_UET_PSN_HASH_MULTIPLIER) &
+		(uet->out_index_size - 1);
+}
+
+static void uet_outstanding_index_add(struct uib_uet_qp *uet,
+				      struct uib_uet_outstanding *out)
+{
+	struct uib_uet_outstanding **bucket;
+
+	bucket = &uet->out_index[uet_outstanding_hash(uet, out->psn)];
+	out->hash_next = *bucket;
+	out->hash_pprev = bucket;
+	if (out->hash_next)
+		out->hash_next->hash_pprev = &out->hash_next;
+	*bucket = out;
+	uet->out_index_count++;
+}
+
+static void uet_outstanding_index_resize(struct uib_uet_qp *uet)
+{
+	struct uib_uet_outstanding **new_index;
+	struct uib_uet_outstanding *out;
+	uint32_t new_size;
+
+	if (!uet->out_index ||
+	    uet->out_index_count < uet->out_index_size * 2)
+		return;
+	new_size = uet->out_index_size * 2;
+	if (new_size <= uet->out_index_size)
+		return;
+	new_index = calloc(new_size, sizeof(*new_index));
+	if (!new_index)
+		return;
+	free(uet->out_index);
+	uet->out_index = new_index;
+	uet->out_index_size = new_size;
+	uet->out_index_count = 0;
+	for (out = uet->out_head; out; out = out->next) {
+		out->hash_next = NULL;
+		out->hash_pprev = NULL;
+		uet_outstanding_index_add(uet, out);
+	}
+}
+
+static struct uib_uet_outstanding *
+uet_first_unsent(struct uib_uet_qp *uet)
+{
+	struct uib_uet_outstanding *out;
+
+	for (out = uet->out_head; out; out = out->next) {
+		if (!out->sent)
+			return out;
+	}
+	return NULL;
+}
+
+static void uet_link_outstanding(struct uib_uet_qp *uet,
+				 struct uib_uet_outstanding *out)
+{
+	uet_outstanding_index_resize(uet);
+	out->next = NULL;
+	out->prev = uet->out_tail;
+	if (uet->out_tail)
+		uet->out_tail->next = out;
+	else
+		uet->out_head = out;
+	uet->out_tail = out;
+	if (!uet->tx_cursor)
+		uet->tx_cursor = out;
+	uet_outstanding_index_add(uet, out);
+	uet->out_count++;
+}
+
+static void uet_unlink_outstanding(struct uib_uet_qp *uet,
+				   struct uib_uet_outstanding *out)
+{
+	struct uib_uet_outstanding *cursor;
+
+	if (out->prev)
+		out->prev->next = out->next;
+	else
+		uet->out_head = out->next;
+	if (out->next)
+		out->next->prev = out->prev;
+	else
+		uet->out_tail = out->prev;
+	if (uet->tx_cursor == out) {
+		cursor = out->next;
+		while (cursor && cursor->sent)
+			cursor = cursor->next;
+		uet->tx_cursor = cursor;
+	}
+	if (out->hash_pprev) {
+		*out->hash_pprev = out->hash_next;
+		if (out->hash_next)
+			out->hash_next->hash_pprev = out->hash_pprev;
+		uet->out_index_count--;
+	}
+	if (out->sent)
+		uet->sent_count--;
+	uet->out_count--;
+	out->next = NULL;
+	out->prev = NULL;
+	out->hash_next = NULL;
+	out->hash_pprev = NULL;
+}
+
 static void uet_qp_fini(struct uib_qp *qp)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
@@ -630,22 +757,21 @@ static void uet_qp_fini(struct uib_qp *qp)
 		return;
 	while (uet->out_head) {
 		struct uib_uet_wr_track *track = uet->out_head->track;
-		struct uib_uet_outstanding **link = &uet->out_head;
+		struct uib_uet_outstanding *next;
+		struct uib_uet_outstanding *out;
 
-		while (*link) {
-			struct uib_uet_outstanding *out = *link;
-
-			if (out->track != track) {
-				link = &out->next;
+		for (out = uet->out_head; out; out = next) {
+			next = out->next;
+			if (out->track != track)
 				continue;
-			}
-			*link = out->next;
+			uet_unlink_outstanding(uet, out);
 			uet_free_outstanding(out);
 		}
 		uet_free_track(track);
 	}
 	if (uet->recv_active)
 		free(uet->recv_slot.sg_list);
+	free(uet->out_index);
 	free(uet);
 	qp->protocol_private = NULL;
 }
@@ -675,19 +801,14 @@ static void uet_remove_track_locked(struct uib_qp *qp,
 				    enum uib_wc_status status)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
-	struct uib_uet_outstanding **link = &uet->out_head;
+	struct uib_uet_outstanding *next;
+	struct uib_uet_outstanding *out;
 
-	while (*link) {
-		struct uib_uet_outstanding *out = *link;
-
-		if (out->track != track) {
-			link = &out->next;
+	for (out = uet->out_head; out; out = next) {
+		next = out->next;
+		if (out->track != track)
 			continue;
-		}
-		*link = out->next;
-		uet->out_count--;
-		if (out->sent)
-			uet->sent_count--;
+		uet_unlink_outstanding(uet, out);
 		uet_free_outstanding(out);
 	}
 	track->pending = 1;
@@ -697,18 +818,15 @@ static void uet_remove_track_locked(struct uib_qp *qp,
 }
 
 static struct uib_uet_outstanding *
-uet_find_outstanding(struct uib_uet_qp *uet, uint32_t psn, uint16_t msg_id,
-		     struct uib_uet_outstanding ***link_out)
+uet_find_outstanding(struct uib_uet_qp *uet, uint32_t psn, uint16_t msg_id)
 {
-	struct uib_uet_outstanding **link = &uet->out_head;
+	struct uib_uet_outstanding *out;
 
-	while (*link) {
-		if ((*link)->psn == psn && (!msg_id || (*link)->msg_id == msg_id)) {
-			if (link_out)
-				*link_out = link;
-			return *link;
-		}
-		link = &(*link)->next;
+	out = uet->out_index[uet_outstanding_hash(uet, psn)];
+	while (out) {
+		if (out->psn == psn && (!msg_id || out->msg_id == msg_id))
+			return out;
+		out = out->hash_next;
 	}
 	return NULL;
 }
@@ -783,23 +901,18 @@ static int uet_transmit_locked(struct uib_qp *qp,
 static int uet_drain_locked(struct uib_qp *qp)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_outstanding *candidate;
 	int rc = 0;
 
-	for (;;) {
-		struct uib_uet_outstanding *candidate = NULL;
-		struct uib_uet_outstanding *out;
-
-		for (out = uet->out_head; out; out = out->next) {
-			if (!out->sent)
-				candidate = out;
-		}
-		if (!candidate)
-			break;
+	while ((candidate = uet->tx_cursor) != NULL) {
 		rc = uet_transmit_locked(qp, candidate);
 		if (rc == -EAGAIN)
 			return 0;
 		if (rc < 0)
 			return rc;
+		uet->tx_cursor = candidate->next;
+		while (uet->tx_cursor && uet->tx_cursor->sent)
+			uet->tx_cursor = uet->tx_cursor->next;
 	}
 	return rc;
 }
@@ -1344,20 +1457,18 @@ static int uet_response_cache_lookup(struct uib_uet_qp *uet, uint32_t psn,
 				     uint32_t *modified_len, uint8_t *data,
 				     size_t *data_len)
 {
-	uint32_t i;
+	uint32_t slot;
 
-	for (i = 0; i < UIB_UET_PDC_MPR; i++) {
-		if (!uet->response_cache[i].valid ||
-		    uet->response_cache[i].psn != psn ||
-		    uet->response_cache[i].msg_id != msg_id)
-			continue;
-		*response_code = uet->response_cache[i].response_code;
-		*modified_len = uet->response_cache[i].modified_len;
-		*data_len = uet->response_cache[i].data_len;
-		memcpy(data, uet->response_cache[i].data, *data_len);
-		return 0;
-	}
-	return -ENOENT;
+	slot = psn % UIB_UET_PDC_MPR;
+	if (!uet->response_cache[slot].valid ||
+	    uet->response_cache[slot].psn != psn ||
+	    uet->response_cache[slot].msg_id != msg_id)
+		return -ENOENT;
+	*response_code = uet->response_cache[slot].response_code;
+	*modified_len = uet->response_cache[slot].modified_len;
+	*data_len = uet->response_cache[slot].data_len;
+	memcpy(data, uet->response_cache[slot].data, *data_len);
+	return 0;
 }
 
 static void uet_response_cache_store(struct uib_uet_qp *uet, uint32_t psn,
@@ -1369,7 +1480,7 @@ static void uet_response_cache_store(struct uib_uet_qp *uet, uint32_t psn,
 
 	if (data_len > sizeof(uet->response_cache[0].data))
 		return;
-	slot = uet->response_cache_next++ % UIB_UET_PDC_MPR;
+	slot = psn % UIB_UET_PDC_MPR;
 	uet->response_cache[slot].psn = psn;
 	uet->response_cache[slot].msg_id = msg_id;
 	uet->response_cache[slot].response_code = response_code;
@@ -1582,17 +1693,13 @@ static int uet_handle_request(struct uib_qp *qp,
 }
 
 static void uet_complete_out_locked(struct uib_qp *qp,
-				    struct uib_uet_outstanding **link,
+				    struct uib_uet_outstanding *out,
 				    enum uib_wc_status status)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
-	struct uib_uet_outstanding *out = *link;
 	struct uib_uet_wr_track *track = out->track;
 
-	*link = out->next;
-	uet->out_count--;
-	if (out->sent)
-		uet->sent_count--;
+	uet_unlink_outstanding(uet, out);
 	uet_free_outstanding(out);
 	uet_track_done(qp, track, status);
 	if (!uet->sent_count)
@@ -1641,7 +1748,8 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 	const struct uib_uet_ses_rsp_data_small *small_response = NULL;
 	const uint8_t *data;
 	struct uib_uet_qp *uet = qp->protocol_private;
-	struct uib_uet_outstanding **exact_link = NULL;
+	struct uib_uet_outstanding *next_out;
+	struct uib_uet_outstanding *out;
 	struct uib_uet_outstanding *exact;
 	uint32_t cack, ack_psn;
 	uint16_t msg_id, packed;
@@ -1715,7 +1823,7 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 	pthread_mutex_lock(&qp->lock);
 	uet->dpdcid = ntohs(ack->spdcid);
 	uet->state = UIB_UET_PDC_ESTABLISHED;
-	exact = uet_find_outstanding(uet, ack_psn, msg_id, &exact_link);
+	exact = uet_find_outstanding(uet, ack_psn, msg_id);
 	if (exact && exact->entropy) {
 		uet->paths[exact->path_index].acknowledged++;
 		if (uet->multipath.mode == UIB_UET_MULTIPATH_PATH_AWARE &&
@@ -1770,23 +1878,19 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 		return 0;
 	}
 
-	struct uib_uet_outstanding **link = &uet->out_head;
-
-	while (*link) {
-		struct uib_uet_outstanding *out = *link;
-
+	for (out = uet->out_head; out; out = next_out) {
+		next_out = out->next;
+		if (uet_psn_before(cack, out->psn))
+			break;
 		if (out->track->opcode == UIB_WR_RDMA_READ ||
 		    out->track->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
 		    out->track->opcode == UIB_WR_ATOMIC_CMP_SWAP ||
 		    (out->track->opcode == UIB_WR_UET_ATOMIC &&
-		     out->track->read_num_sge) ||
-		    uet_psn_before(cack, out->psn)) {
-			link = &out->next;
+		     out->track->read_num_sge))
 			continue;
-		}
-		uet_complete_out_locked(qp, link, UIB_WC_SUCCESS);
+		uet_complete_out_locked(qp, out, UIB_WC_SUCCESS);
 	}
-	exact = uet_find_outstanding(uet, ack_psn, msg_id, &exact_link);
+	exact = uet_find_outstanding(uet, ack_psn, msg_id);
 	if (!exact) {
 		uet_drain_locked(qp);
 		pthread_mutex_unlock(&qp->lock);
@@ -1806,7 +1910,7 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 
 		if (!exact->track->total_len && !response_data &&
 		    !small_response && !modified_len) {
-			uet_complete_out_locked(qp, exact_link, UIB_WC_SUCCESS);
+			uet_complete_out_locked(qp, exact, UIB_WC_SUCCESS);
 			uet_drain_locked(qp);
 			pthread_mutex_unlock(&qp->lock);
 			return 0;
@@ -1877,9 +1981,9 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 			return rc < 0 ? rc : -EMSGSIZE;
 		}
 		if (exact->track->read_received == exact->track->total_len)
-			uet_complete_out_locked(qp, exact_link, UIB_WC_SUCCESS);
+			uet_complete_out_locked(qp, exact, UIB_WC_SUCCESS);
 	} else {
-		uet_complete_out_locked(qp, exact_link, UIB_WC_SUCCESS);
+		uet_complete_out_locked(qp, exact, UIB_WC_SUCCESS);
 	}
 	uet_drain_locked(qp);
 	pthread_mutex_unlock(&qp->lock);
@@ -1891,11 +1995,13 @@ static int uet_handle_nack(struct uib_qp *qp, const void *packet, size_t len)
 	const struct uib_uet_pds_nack *nack = packet;
 	struct uib_uet_qp *uet = qp->protocol_private;
 	struct uib_uet_outstanding *out;
+	int found;
 
 	if (len < sizeof(*nack))
 		return -EBADMSG;
 	pthread_mutex_lock(&qp->lock);
-	out = uet_find_outstanding(uet, ntohl(nack->nack_psn), 0, NULL);
+	out = uet_find_outstanding(uet, ntohl(nack->nack_psn), 0);
+	found = !!out;
 	if (out) {
 		if (uet->nscc_enabled)
 			uib_uet_nscc_on_nack(&uet->nscc, out->nominal_len,
@@ -1906,7 +2012,7 @@ static int uet_handle_nack(struct uib_qp *qp, const void *packet, size_t len)
 		uet_remove_track_locked(qp, out->track, UIB_WC_REM_OP_ERR);
 	}
 	pthread_mutex_unlock(&qp->lock);
-	return out ? -EREMOTEIO : 0;
+	return found ? -EREMOTEIO : 0;
 }
 
 static int uet_handle_packet(struct uib_qp *qp,
@@ -2273,9 +2379,7 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 			uet->optimized_stats.medium_requests++;
 		else
 			uet->optimized_stats.standard_requests++;
-		out->next = uet->out_head;
-		uet->out_head = out;
-		uet->out_count++;
+		uet_link_outstanding(uet, out);
 		uet_debug(qp, "tx request psn=%u msg=%u opcode=%u len=%zu",
 			  out->psn, out->msg_id, ses_opcode, data_len);
 		rc = uet_drain_locked(qp);
@@ -2364,6 +2468,7 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 		out->retries++;
 		out = out->next;
 	}
+	uet->tx_cursor = uet_first_unsent(uet);
 	uet_drain_locked(qp);
 	for (out = uet->out_head; out; out = out->next) {
 		if (out->sent && out->deadline_ns < next_deadline)
