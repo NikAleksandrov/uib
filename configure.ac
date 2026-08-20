@@ -7,6 +7,28 @@ AC_CHECK_TOOL([AR], [ar])
 AC_PATH_PROG([INSTALL], [install], [install])
 AC_PATH_TOOL([PKG_CONFIG], [pkg-config], [no])
 
+AS_IF([test "$PKG_CONFIG" = no], [
+	AC_MSG_ERROR([pkg-config is required to locate libmnl])
+])
+AS_IF([$PKG_CONFIG --exists libmnl], [
+	MNL_CFLAGS=`$PKG_CONFIG --cflags libmnl`
+	MNL_LIBS=`$PKG_CONFIG --libs libmnl`
+], [
+	AC_MSG_ERROR([libmnl development files are required])
+])
+saved_CPPFLAGS=$CPPFLAGS
+saved_LIBS=$LIBS
+CPPFLAGS="$CPPFLAGS $MNL_CFLAGS"
+LIBS="$MNL_LIBS $LIBS"
+AC_LINK_IFELSE([AC_LANG_PROGRAM(
+	[[#include <libmnl/libmnl.h>]],
+	[[struct mnl_socket *nl = mnl_socket_open2(NETLINK_ROUTE, SOCK_CLOEXEC);
+	  if (nl)
+		mnl_socket_close(nl);]])], [],
+	[AC_MSG_ERROR([a usable libmnl library is required])])
+CPPFLAGS=$saved_CPPFLAGS
+LIBS=$saved_LIBS
+
 AC_ARG_ENABLE([provider],
 	AS_HELP_STRING([--disable-provider],
 		[do not build the transparent libibverbs provider]), [],
@@ -151,6 +173,8 @@ AS_IF([test "$IBV_RC_PINGPONG" != no], [HAVE_IBV_TOOLS=1])
 
 AC_SUBST([URING_CFLAGS])
 AC_SUBST([URING_LIBS])
+AC_SUBST([MNL_CFLAGS])
+AC_SUBST([MNL_LIBS])
 AC_SUBST([HAVE_IBVERBS])
 AC_SUBST([ENABLE_PROVIDER])
 AC_SUBST([IBVERBS_CFLAGS])
@@ -165,6 +189,7 @@ AC_SUBST([HAVE_VIRTME])
 AC_SUBST([HAVE_IBV_TOOLS])
 
 AC_MSG_NOTICE([configuration summary:])
+AC_MSG_NOTICE([  libmnl networking:   required])
 AC_MSG_NOTICE([  libibverbs provider: $ENABLE_PROVIDER])
 AC_MSG_NOTICE([  AF_XDP transport:    $HAVE_AFXDP])
 AC_MSG_NOTICE([  TCP devmem UAPI:     $HAVE_DEVMEM])

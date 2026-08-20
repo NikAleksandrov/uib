@@ -10,7 +10,9 @@ UIB keeps these independent and optional:
     the kernel networking stack. Use --disable-zerocopy or --enable-zerocopy
     at build time and UIB_ZEROCOPY=off, auto, on or required at runtime.
   * AF_XDP zero-copy controls the kernel/NIC queue path. It still constructs a
-    protocol frame in UMEM, so it is not application-payload zero-copy.
+    protocol frame in UMEM, so it is not application-payload zero-copy. The
+    backend requires an explicit next-hop MAC in UIB_AFXDP_PEER_MAC and does
+    not perform route or neighbor discovery.
   * Netdev device-memory TCP is a separate hardware facility. The current
     queue-binding setup is present, but UIB does not advertise device RX/TX
     until framed protocol headers can be handled outside opaque GPU memory.

@@ -9,7 +9,6 @@
 /tests/loopback
 /tests/afxdp_frame_test
 /tests/dmabuf_mr_test
-/tests/neigh_test
 /tests/bth_test
 /tests/rxe_interop
 /tests/protocol_test

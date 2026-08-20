@@ -3,15 +3,21 @@
 
 #include <stdint.h>
 
+struct mnl_socket;
+
 /*
  * Resolve a generic-netlink family id by name (CTRL_CMD_GETFAMILY). Returns the
  * family id (>0) or a negative errno. Used to reach the "netdev" family.
  */
 int uib_genl_family_id(const char *name);
 
+/*
+ * A live dma-buf-to-RX-queue binding. The binding is owned by the libmnl
+ * socket in `nl`; closing it with uib_devmem_unbind releases the binding.
+ */
 struct uib_devmem_binding {
-	int      sock_fd;
-	uint32_t dmabuf_id;
+	struct mnl_socket *nl;
+	uint32_t           dmabuf_id;
 };
 
 /*

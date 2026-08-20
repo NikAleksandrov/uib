@@ -655,6 +655,8 @@ IBVERBS_LIBS
 IBVERBS_CFLAGS
 ENABLE_PROVIDER
 HAVE_IBVERBS
+MNL_LIBS
+MNL_CFLAGS
 URING_LIBS
 URING_CFLAGS
 IBV_RC_PINGPONG
@@ -1485,41 +1487,6 @@ fi
 
 } # ac_fn_c_try_compile
 
-# ac_fn_c_check_header_compile LINENO HEADER VAR INCLUDES
-# -------------------------------------------------------
-# Tests whether HEADER exists and can be compiled using the include files in
-# INCLUDES, setting the cache variable VAR accordingly.
-ac_fn_c_check_header_compile ()
-{
-  as_lineno=${as_lineno-"$1"} as_lineno_stack=as_lineno_stack=$as_lineno_stack
-  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for $2" >&5
-printf %s "checking for $2... " >&6; }
-if eval test \${$3+y}
-then :
-  printf %s "(cached) " >&6
-else case e in #(
-  e) cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-$4
-#include <$2>
-_ACEOF
-if ac_fn_c_try_compile "$LINENO"
-then :
-  eval "$3=yes"
-else case e in #(
-  e) eval "$3=no" ;;
-esac
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext ;;
-esac
-fi
-eval ac_res=\$$3
-	       { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
-printf "%s\n" "$ac_res" >&6; }
-  eval $as_lineno_stack; ${as_lineno_stack:+:} unset as_lineno
-
-} # ac_fn_c_check_header_compile
-
 # ac_fn_c_try_link LINENO
 # -----------------------
 # Try to link conftest.$ac_ext, and return whether this succeeded.
@@ -1567,6 +1534,41 @@ fi
   as_fn_set_status $ac_retval
 
 } # ac_fn_c_try_link
+
+# ac_fn_c_check_header_compile LINENO HEADER VAR INCLUDES
+# -------------------------------------------------------
+# Tests whether HEADER exists and can be compiled using the include files in
+# INCLUDES, setting the cache variable VAR accordingly.
+ac_fn_c_check_header_compile ()
+{
+  as_lineno=${as_lineno-"$1"} as_lineno_stack=as_lineno_stack=$as_lineno_stack
+  { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for $2" >&5
+printf %s "checking for $2... " >&6; }
+if eval test \${$3+y}
+then :
+  printf %s "(cached) " >&6
+else case e in #(
+  e) cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+$4
+#include <$2>
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"
+then :
+  eval "$3=yes"
+else case e in #(
+  e) eval "$3=no" ;;
+esac
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext ;;
+esac
+fi
+eval ac_res=\$$3
+	       { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+printf "%s\n" "$ac_res" >&6; }
+  eval $as_lineno_stack; ${as_lineno_stack:+:} unset as_lineno
+
+} # ac_fn_c_check_header_compile
 ac_configure_args_raw=
 for ac_arg
 do
@@ -3555,6 +3557,54 @@ else
 fi
 
 
+if test "$PKG_CONFIG" = no
+then :
+
+	as_fn_error $? "pkg-config is required to locate libmnl" "$LINENO" 5
+
+fi
+if $PKG_CONFIG --exists libmnl
+then :
+
+	MNL_CFLAGS=`$PKG_CONFIG --cflags libmnl`
+	MNL_LIBS=`$PKG_CONFIG --libs libmnl`
+
+else case e in #(
+  e)
+	as_fn_error $? "libmnl development files are required" "$LINENO" 5
+ ;;
+esac
+fi
+saved_CPPFLAGS=$CPPFLAGS
+saved_LIBS=$LIBS
+CPPFLAGS="$CPPFLAGS $MNL_CFLAGS"
+LIBS="$MNL_LIBS $LIBS"
+
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#include <libmnl/libmnl.h>
+int
+main (void)
+{
+struct mnl_socket *nl = mnl_socket_open2(NETLINK_ROUTE, SOCK_CLOEXEC);
+	  if (nl)
+		mnl_socket_close(nl);
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"
+then :
+
+else case e in #(
+  e) as_fn_error $? "a usable libmnl library is required" "$LINENO" 5 ;;
+esac
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam \
+    conftest$ac_exeext conftest.$ac_ext
+CPPFLAGS=$saved_CPPFLAGS
+LIBS=$saved_LIBS
+
 # Check whether --enable-provider was given.
 if test ${enable_provider+y}
 then :
@@ -3633,7 +3683,6 @@ then :
 fi
 saved_CPPFLAGS=$CPPFLAGS
 CPPFLAGS="$CPPFLAGS $URING_CFLAGS"
-
 ac_header= ac_cache=
 for ac_item in $ac_header_c_list
 do
@@ -4116,8 +4165,12 @@ fi
 
 
 
+
+
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: configuration summary:" >&5
 printf "%s\n" "$as_me: configuration summary:" >&6;}
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}:   libmnl networking:   required" >&5
+printf "%s\n" "$as_me:   libmnl networking:   required" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   libibverbs provider: $ENABLE_PROVIDER" >&5
 printf "%s\n" "$as_me:   libibverbs provider: $ENABLE_PROVIDER" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   AF_XDP transport:    $HAVE_AFXDP" >&5

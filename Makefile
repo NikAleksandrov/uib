@@ -9,6 +9,11 @@ CFLAGS  += -Iinclude -fPIC -pthread -D_GNU_SOURCE -MMD -MP
 
 URING_CFLAGS ?= $(if $(wildcard ../liburing/src/include/liburing.h),-I../liburing/src/include)
 URING_LIBS ?= $(if $(wildcard /usr/lib/x86_64-linux-gnu/liburing.so),-luring,-l:liburing.so.2)
+MNL_CFLAGS ?= $(shell pkg-config --cflags libmnl 2>/dev/null)
+MNL_LIBS ?= $(shell pkg-config --libs libmnl 2>/dev/null)
+ifeq ($(strip $(MNL_LIBS)),)
+  $(error libmnl development files are required)
+endif
 HAVE_IBVERBS ?= $(shell printf '#include <infiniband/verbs.h>\n' | \
 	$(CC) -x c -fsyntax-only - >/dev/null 2>&1 && echo 1 || echo 0)
 ENABLE_PROVIDER ?= $(HAVE_IBVERBS)
@@ -19,9 +24,9 @@ HAVE_DMABUF ?= $(shell printf '#include <linux/dma-buf.h>\nint x=DMA_BUF_IOCTL_S
 HAVE_ZEROCOPY ?= $(shell printf '#include <sys/socket.h>\n#include <linux/errqueue.h>\nint x=MSG_ZEROCOPY+SO_ZEROCOPY+SO_EE_ORIGIN_ZEROCOPY;\n' | \
 	$(CC) -D_GNU_SOURCE -x c -fsyntax-only - >/dev/null 2>&1 && echo 1 || echo 0)
 
-CFLAGS += $(URING_CFLAGS) $(IBVERBS_CFLAGS)
+CFLAGS += $(URING_CFLAGS) $(MNL_CFLAGS) $(IBVERBS_CFLAGS)
 LDFLAGS += -pthread
-LDLIBS += $(URING_LIBS)
+LDLIBS += $(URING_LIBS) $(MNL_LIBS)
 
 # AF_XDP backend (udp-zc-afxdp) is compiled with real libxdp glue only when
 # libxdp/libbpf are available; otherwise transport_afxdp.c compiles to a stub
@@ -70,7 +75,6 @@ SRCS := \
 	src/transport_afxdp.c \
 	src/transport_tcp_devmem.c \
 	src/afxdp_frame.c \
-	src/neigh.c \
 	src/devmem.c \
 	src/verbs.c
 
@@ -122,7 +126,6 @@ src/%.o: src/%.c
 TEST_BIN    := tests/loopback
 FRAME_TEST  := tests/afxdp_frame_test
 DMABUF_TEST := tests/dmabuf_mr_test
-NEIGH_TEST  := tests/neigh_test
 BTH_TEST    := tests/bth_test
 RXE_TEST    := tests/rxe_interop
 PROTOCOL_TEST := tests/protocol_test
@@ -137,7 +140,7 @@ PROVIDER_CQ_EVENT_TEST := tests/provider_cq_event_test
 REORDER_TEST := tests/reorder_test
 TRANSPORT_TEST := tests/transport_test
 
-DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d $(NEIGH_TEST).d \
+DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d \
 	$(BTH_TEST).d $(RXE_TEST).d $(PROTOCOL_TEST).d $(UET_TEST).d \
 	$(NSCC_TEST).d
 
@@ -156,9 +159,6 @@ $(FRAME_TEST): tests/afxdp_frame_test.c $(LIB_STATIC)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_STATIC) $(LDFLAGS) $(LDLIBS)
 
 $(DMABUF_TEST): tests/dmabuf_mr_test.c $(LIB_SHARED)
-	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
-
-$(NEIGH_TEST): tests/neigh_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
 $(BTH_TEST): tests/bth_test.c $(LIB_STATIC)
@@ -330,14 +330,13 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 	UIB_PROTOCOL=uet UIB_UET_OPTIMIZED=medium ./$(TEST_BIN)
 	UIB_PROTOCOL=uet UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 
-test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST) \
+test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
 	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(REORDER_TEST) \
 	$(TRANSPORT_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
 	./$(DMABUF_TEST)
-	./$(NEIGH_TEST)
 	./$(PROTOCOL_TEST)
 	./$(UET_TEST)
 	./$(NSCC_TEST)
@@ -402,7 +401,7 @@ clean:
 	$(MAKE) -C examples clean
 	rm -f $(OBJS) $(PROV_OBJS) $(DEPS) $(LIB_STATIC) $(LIB_STATIC) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) \
 		$(LIB_PROVIDER) $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) \
-		$(NEIGH_TEST) $(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST) \
+		$(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST) \
 		$(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 		$(PROVIDER_DMABUF_TEST) $(EXTERNAL_DMABUF_TEST) \
 		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST) \

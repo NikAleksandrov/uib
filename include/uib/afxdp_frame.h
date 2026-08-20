@@ -16,6 +16,8 @@ struct uib_frame_hdr {
 	uint16_t dst_port;
 };
 
+int uib_afxdp_parse_mac(const char *text, uint8_t mac[6]);
+
 uint16_t uib_inet_csum(const void *data, size_t len);
 
 int uib_frame_build(uint8_t *out, size_t cap, const struct uib_frame_hdr *hi,

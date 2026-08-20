@@ -73,6 +73,11 @@ The asynchronous backend remains the default. Select the optional synchronous
 TX path with `UIB_TRANSPORT_MODE=udp-sync`; it uses the same RX implementation
 so benchmark differences isolate asynchronous versus blocking transmission.
 
+The AF_XDP backend requires both `UIB_AFXDP_IFACE` and
+`UIB_AFXDP_PEER_MAC`. The MAC is the explicit Ethernet next hop: use the peer
+MAC on a directly connected network or the gateway MAC on a routed network.
+AF_XDP performs no automatic route, ARP or neighbor-table discovery.
+
 Run the complete protocol/transport/memory matrix and generate CSV comparisons:
 
     make benchmark-local

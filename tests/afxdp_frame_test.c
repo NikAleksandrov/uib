@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <arpa/inet.h>
@@ -20,6 +21,7 @@ int main(void)
 	struct uib_frame_hdr hi;
 	uint8_t frame[2048];
 	uint8_t pay[1000];
+	uint8_t mac[6];
 	struct sockaddr_in src;
 	const uint8_t *rpay;
 	size_t rlen;
@@ -28,6 +30,16 @@ int main(void)
 
 	for (i = 0; i < sizeof(pay); i++)
 		pay[i] = (uint8_t)(i * 3 + 1);
+
+	check("mac.valid",
+	      !uib_afxdp_parse_mac("02:10:20:30:40:ff", mac) &&
+	      !memcmp(mac, "\x02\x10\x20\x30\x40\xff", sizeof(mac)));
+	check("mac.missing", uib_afxdp_parse_mac(NULL, mac) == -EINVAL);
+	check("mac.short", uib_afxdp_parse_mac("02:10:20:30:40", mac) == -EINVAL);
+	check("mac.trailing",
+	      uib_afxdp_parse_mac("02:10:20:30:40:50x", mac) == -EINVAL);
+	check("mac.range",
+	      uib_afxdp_parse_mac("02:10:20:30:40:100", mac) == -EINVAL);
 
 	memset(&hi, 0, sizeof(hi));
 	memcpy(hi.src_mac, "\x02\x00\x00\x00\x00\x01", 6);

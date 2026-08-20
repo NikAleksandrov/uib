@@ -13,7 +13,9 @@ The core library requires:
   * Linux and a C11-capable C compiler, GNU make, pthreads and standard Linux
     networking headers;
   * liburing headers and runtime library with multishot recvmsg and provided
-    buffer-ring APIs (Debian/Ubuntu: liburing-dev; Fedora: liburing-devel); and
+    buffer-ring APIs (Debian/Ubuntu: liburing-dev; Fedora: liburing-devel);
+  * libmnl headers and runtime library for generic-netlink netdev control
+    (Debian/Ubuntu: libmnl-dev; Fedora: libmnl-devel); and
   * autoconf 2.69 or newer only when regenerating configure.
 
 Optional functionality is enabled when configure finds its dependencies:
@@ -93,6 +95,12 @@ UIB_ZEROCOPY=off, auto, on or required controls MSG_ZEROCOPY and AF_XDP copy
 selection. Auto uses socket zero-copy for packets at least 10 KiB. On and
 required use a 1 KiB floor so small protocol ACKs cannot stall waiting for a
 TCP zero-copy completion. Override either threshold with UIB_ZEROCOPY_THRESHOLD.
+
+AF_XDP transmits complete Ethernet frames and deliberately performs no route,
+ARP or neighbor-table discovery. Set `UIB_AFXDP_IFACE` to the bound interface
+and `UIB_AFXDP_PEER_MAC` to the next-hop MAC address. The peer MAC is mandatory
+and fixed for the lifetime of a UIB context; applications using a routed path
+must configure the gateway MAC rather than the remote host's MAC.
 
 UET enables the specification-defined NSCC congestion controller by default.
 Set UIB_UET_CC=none only for comparison testing. UIB_UET_NSCC_MAX_WND can cap

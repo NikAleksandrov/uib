@@ -1,3 +1,5 @@
+#include <errno.h>
+#include <stdio.h>
 #include <string.h>
 #include <arpa/inet.h>
 #include <linux/if_ether.h>
@@ -5,6 +7,25 @@
 #include <netinet/udp.h>
 
 #include "uib/afxdp_frame.h"
+
+int uib_afxdp_parse_mac(const char *text, uint8_t mac[6])
+{
+	unsigned int byte[6];
+	char trailing;
+	int i;
+
+	if (!text || !mac ||
+	    sscanf(text, "%x:%x:%x:%x:%x:%x%c",
+		   &byte[0], &byte[1], &byte[2], &byte[3], &byte[4],
+		   &byte[5], &trailing) != 6)
+		return -EINVAL;
+	for (i = 0; i < 6; i++) {
+		if (byte[i] > UINT8_MAX)
+			return -EINVAL;
+		mac[i] = (uint8_t)byte[i];
+	}
+	return 0;
+}
 
 uint16_t uib_inet_csum(const void *data, size_t len)
 {

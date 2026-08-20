@@ -8,7 +8,6 @@
 #include "uib/context.h"
 #include "uib/protocol.h"
 #include "uib/afxdp_frame.h"
-#include "uib/neigh.h"
 
 #ifdef UIB_HAVE_AFXDP
 
@@ -46,7 +45,6 @@ struct uib_afxdp_backend {
 	uint32_t             queue_id;
 	uint8_t              src_mac[6];
 	uint8_t              peer_mac[6];
-	int                  have_peer_mac;
 	uint32_t             local_ip;
 	uint16_t             port;
 
@@ -56,19 +54,6 @@ struct uib_afxdp_backend {
 	int                  worker_run;
 	int                  zerocopy;
 };
-
-static int parse_mac(const char *s, uint8_t mac[6])
-{
-	unsigned int v[6];
-	int i;
-
-	if (!s || sscanf(s, "%x:%x:%x:%x:%x:%x",
-			 &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6)
-		return -1;
-	for (i = 0; i < 6; i++)
-		mac[i] = (uint8_t)v[i];
-	return 0;
-}
 
 static int get_if_mac(const char *ifname, uint8_t mac[6])
 {
@@ -105,16 +90,6 @@ static int get_if_ip(const char *ifname, uint32_t *ip_net)
 	*ip_net = ((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr.s_addr;
 	close(s);
 	return 0;
-}
-
-static const uint8_t *resolve_dst_mac(struct uib_afxdp_backend *be,
-				      uint32_t dst_ip, uint8_t out[6])
-{
-	if (uib_neigh_lookup(dst_ip, out) == 0)
-		return out;
-	if (be->have_peer_mac)
-		return be->peer_mac;
-	return NULL;
 }
 
 static void reap_completions(struct uib_afxdp_backend *be)
@@ -228,8 +203,6 @@ static int afxdp_send_entropy(struct uib_context *ctx,
 	struct uib_afxdp_backend *be = ctx->backend;
 	struct uib_frame_hdr hi;
 	struct uib_wire_meta meta;
-	const uint8_t *dmac;
-	uint8_t dmac_buf[6];
 	uint32_t idx = 0;
 	uint64_t addr;
 	uint8_t *frame;
@@ -237,10 +210,6 @@ static int afxdp_send_entropy(struct uib_context *ctx,
 
 	if (UIB_L2_HDRS_LEN + len > UIB_AFXDP_FRAME_SIZE)
 		return -EMSGSIZE;
-
-	dmac = resolve_dst_mac(be, dst->sin_addr.s_addr, dmac_buf);
-	if (!dmac)
-		return -EHOSTUNREACH;
 
 	pthread_mutex_lock(&be->tx_lock);
 	reap_completions(be);
@@ -257,7 +226,7 @@ static int afxdp_send_entropy(struct uib_context *ctx,
 
 	memset(&hi, 0, sizeof(hi));
 	memcpy(hi.src_mac, be->src_mac, 6);
-	memcpy(hi.dst_mac, dmac, 6);
+	memcpy(hi.dst_mac, be->peer_mac, 6);
 	hi.src_ip   = be->local_ip;
 	hi.dst_ip   = dst->sin_addr.s_addr;
 	hi.src_port = entropy ? htons(entropy) : be->port;
@@ -371,7 +340,9 @@ static int afxdp_init(struct uib_context *ctx)
 	ctx->backend = be;
 	pthread_mutex_init(&be->tx_lock, NULL);
 
-	be->have_peer_mac = (parse_mac(pm, be->peer_mac) == 0);
+	rc = uib_afxdp_parse_mac(pm, be->peer_mac);
+	if (rc)
+		goto err;
 	if (get_if_mac(ifn, be->src_mac) < 0) {
 		rc = -errno;
 		goto err;

@@ -4,6 +4,7 @@ UIB_0.1 {
 		uib_aeth_pack;
 		uib_aeth_unpack;
 		uib_afxdp_ops;
+		uib_afxdp_parse_mac;
 		uib_alloc_pd;
 		uib_bth_pack;
 		uib_bth_pad;
@@ -42,7 +43,6 @@ UIB_0.1 {
 		uib_mr_cpu_end;
 		uib_mr_place;
 		uib_mr_read;
-		uib_neigh_lookup;
 		uib_open_device;
 		uib_open_device_protocol;
 		uib_pd_attach_mr;
