@@ -79,8 +79,13 @@ uint32_t uib_rocev2_icrc_ipv4(uint32_t src_ip, uint32_t dst_ip,
 	udp.check  = 0xffff;
 
 	memcpy(&bth, rdma, sizeof(bth));
+	/* The BTH reserved byte is masked for invariant CRC calculation. */
 	bth.dqpn |= htonl(0xff000000u);
 
+	/*
+	 * 0x2144df1c is the complemented form of RXE's 0xdebb20e3 seed,
+	 * suitable for the finalized/cumulative uib_crc32() interface.
+	 */
 	crc = uib_crc32(0x2144df1cu, &ip, sizeof(ip));
 	crc = uib_crc32(crc, &udp, sizeof(udp));
 	crc = uib_crc32(crc, &bth, sizeof(bth));
@@ -142,7 +147,8 @@ void uib_reth_pack(struct uib_reth *r, uint64_t va, uint32_t rkey, uint32_t len)
 	r->length = htonl(len);
 }
 
-void uib_reth_unpack(const struct uib_reth *r, uint64_t *va, uint32_t *rkey, uint32_t *len)
+void uib_reth_unpack(const struct uib_reth *r, uint64_t *va,
+		     uint32_t *rkey, uint32_t *len)
 {
 	uint32_t bhi, blo;
 

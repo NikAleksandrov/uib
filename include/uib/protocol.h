@@ -30,6 +30,7 @@ struct uib_protocol_ops {
 	void (*fini)(struct uib_context *ctx);
 	int (*qp_init)(struct uib_qp *qp);
 	void (*qp_fini)(struct uib_qp *qp);
+	void (*qp_modified)(struct uib_qp *qp, int attr_mask);
 
 	int (*packet_qpn)(const void *packet, size_t len, uint32_t *qpn);
 	int (*post_send)(struct uib_qp *qp, struct uib_send_wr *wr,

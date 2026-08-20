@@ -26,6 +26,10 @@ int main(void)
 	inet_pton(AF_INET, "192.0.2.2", &dst);
 	crc = uib_rocev2_icrc_ipv4(src, dst, htons(49169), htons(4791),
 				      1, rdma, sizeof(rdma));
+	/*
+	 * Captured from Linux RXE for this exact IPv4/UDP/BTH/payload vector.
+	 * RXE places the numeric value little-endian on the wire as a5 bb e5 33.
+	 */
 	check("rocev2.icrc.known-vector", crc == 0x33e5bba5u);
 
 	uib_bth_set_pad(bth, 3);

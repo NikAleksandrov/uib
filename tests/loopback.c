@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,6 +24,10 @@ static void nap_ms(int ms)
 	nanosleep(&ts, NULL);
 }
 
+/*
+ * Poll one WC from a CQ for about two seconds.
+ * Return one on success and zero on timeout.
+ */
 static int wait_wc(struct uib_cq *cq, struct uib_wc *wc)
 {
 	int i;
@@ -316,15 +321,23 @@ int main(void)
 	atomicB = (uint64_t *)(bufB + 49152);
 
 	memset(&ia, 0, sizeof(ia));
-	ia.send_cq = cqA; ia.recv_cq = cqA; ia.qp_type = UIB_QPT_RC;
-	ia.max_send_wr = 64; ia.max_recv_wr = 64;
-	ia.max_send_sge = 1; ia.max_recv_sge = 1;
+	ia.send_cq = cqA;
+	ia.recv_cq = cqA;
+	ia.qp_type = UIB_QPT_RC;
+	ia.max_send_wr = 64;
+	ia.max_recv_wr = 64;
+	ia.max_send_sge = 1;
+	ia.max_recv_sge = 1;
 	qpA = uib_create_qp(pdA, &ia);
 
 	memset(&ia, 0, sizeof(ia));
-	ia.send_cq = cqB; ia.recv_cq = cqB; ia.qp_type = UIB_QPT_RC;
-	ia.max_send_wr = 64; ia.max_recv_wr = 64;
-	ia.max_send_sge = 1; ia.max_recv_sge = 1;
+	ia.send_cq = cqB;
+	ia.recv_cq = cqB;
+	ia.qp_type = UIB_QPT_RC;
+	ia.max_send_wr = 64;
+	ia.max_recv_wr = 64;
+	ia.max_send_sge = 1;
+	ia.max_recv_sge = 1;
 	qpB = uib_create_qp(pdB, &ia);
 
 	if (connect_qp(qpA, qpB->qp_num, ctxB->local_addr) < 0 ||

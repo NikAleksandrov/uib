@@ -72,6 +72,7 @@ struct uib_uet_qp {
 	uint32_t rx_base_psn;
 	uint64_t rx_bitmap[2];
 	uint32_t out_count;
+	uint32_t sent_count;
 	int rx_initialized;
 	int tx_initialized;
 	struct uib_uet_outstanding *out_head;
@@ -316,10 +317,23 @@ static int uet_packet_qpn(const void *packet, size_t len, uint32_t *qpn)
 	}
 }
 
+static void uet_nscc_init(struct uib_qp *qp, struct uib_uet_qp *uet)
+{
+	struct uib_uet_nscc_config config;
+	const char *cc;
+
+	uib_uet_nscc_config_default(&config, qp->path_mtu + 40);
+	cc = getenv("UIB_UET_NSCC_MAX_WND");
+	if (cc && strtoull(cc, NULL, 0) >= config.mtu) {
+		config.max_wnd = (uint32_t)strtoull(cc, NULL, 0);
+		config.bdp = config.max_wnd;
+	}
+	uib_uet_nscc_init(&uet->nscc, &config, uib_now_ns());
+}
+
 static int uet_qp_init(struct uib_qp *qp)
 {
 	struct uib_uet_qp *uet = calloc(1, sizeof(*uet));
-	struct uib_uet_nscc_config config;
 	const char *cc;
 	const char *optimized;
 	const char *multipath;
@@ -350,15 +364,17 @@ static int uet_qp_init(struct uib_qp *qp)
 	uet->previous_path = UINT16_MAX;
 	cc = getenv("UIB_UET_CC");
 	uet->nscc_enabled = !cc || strcmp(cc, "none");
-	uib_uet_nscc_config_default(&config, qp->path_mtu + 40);
-	cc = getenv("UIB_UET_NSCC_MAX_WND");
-	if (cc && strtoull(cc, NULL, 0) >= config.mtu) {
-		config.max_wnd = (uint32_t)strtoull(cc, NULL, 0);
-		config.bdp = config.max_wnd;
-	}
-	uib_uet_nscc_init(&uet->nscc, &config, uib_now_ns());
+	uet_nscc_init(qp, uet);
 	qp->protocol_private = uet;
 	return 0;
+}
+
+static void uet_qp_modified(struct uib_qp *qp, int attr_mask)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+
+	if ((attr_mask & UIB_QP_PATH_MTU) && uet)
+		uet_nscc_init(qp, uet);
 }
 
 int uib_uet_session_configure(struct uib_qp *qp,
@@ -670,6 +686,8 @@ static void uet_remove_track_locked(struct uib_qp *qp,
 		}
 		*link = out->next;
 		uet->out_count--;
+		if (out->sent)
+			uet->sent_count--;
 		uet_free_outstanding(out);
 	}
 	track->pending = 1;
@@ -733,6 +751,8 @@ static int uet_transmit_locked(struct uib_qp *qp,
 	struct uib_uet_qp *uet = qp->protocol_private;
 	int rc;
 
+	if (uet->sent_count >= UIB_UET_PDC_MPR)
+		return -EAGAIN;
 	if (uet->nscc_enabled &&
 	    !uib_uet_nscc_can_send(&uet->nscc, out->nominal_len))
 		return -EAGAIN;
@@ -744,6 +764,7 @@ static int uet_transmit_locked(struct uib_qp *qp,
 	if (rc < 0)
 		return rc;
 	out->sent = 1;
+	uet->sent_count++;
 	out->deadline_ns = out->tx_time_ns + UIB_UET_RTX_NS;
 	if (out->entropy) {
 		uet->paths[out->path_index].sent++;
@@ -1082,7 +1103,8 @@ static uint8_t uet_validate_session(struct uib_qp *qp,
 
 static int uet_handle_read(struct uib_qp *qp,
 			   const struct uib_uet_ses_req *ses,
-			   const void **data, size_t *data_len,
+			   const void **data, void **owned_data,
+			   size_t *data_len,
 			   int address_only)
 {
 	uint64_t address = be64toh(ses->buffer_offset);
@@ -1097,7 +1119,15 @@ static int uet_handle_read(struct uib_qp *qp,
 				    UIB_ACCESS_REMOTE_READ);
 	if (!mr)
 		return -EACCES;
-	*data = (const void *)(uintptr_t)address;
+	*owned_data = malloc(length ? length : 1);
+	if (!*owned_data)
+		return -ENOMEM;
+	if (uib_mr_read(mr, address, *owned_data, length) < 0) {
+		free(*owned_data);
+		*owned_data = NULL;
+		return -EOPNOTSUPP;
+	}
+	*data = *owned_data;
 	*data_len = length;
 	return 0;
 }
@@ -1282,11 +1312,15 @@ static int uet_handle_atomic(struct uib_qp *qp,
 	if (rc < 0)
 		return rc;
 	pthread_mutex_lock(&qp->lock);
-	memcpy(&old, (const void *)(uintptr_t)address, width);
+	rc = uib_mr_read(mr, address, &old, width);
+	if (rc < 0) {
+		pthread_mutex_unlock(&qp->lock);
+		return rc;
+	}
 	rc = uet_atomic_apply(atomic->opcode, is_signed, width, old,
 			      operand, swap, &updated);
 	if (!rc && atomic->opcode != UIB_UET_AMO_READ)
-		memcpy((void *)(uintptr_t)address, &updated, width);
+		rc = uib_mr_place(mr, address, &updated, width);
 	pthread_mutex_unlock(&qp->lock);
 	if (rc < 0)
 		return rc;
@@ -1417,6 +1451,7 @@ static int uet_handle_request(struct uib_qp *qp,
 	const struct uib_uet_ses_req *ses = &canonical;
 	const uint8_t *data;
 	const void *response_data = NULL;
+	void *owned_response = NULL;
 	size_t data_len, response_len = 0;
 	struct uib_uet_qp *uet = qp->protocol_private;
 	uint32_t psn, cack;
@@ -1439,6 +1474,7 @@ static int uet_handle_request(struct uib_qp *qp,
 		return rc;
 	psn = ntohl(req->psn);
 	msg_id = ntohs(ses->msg_id);
+	opcode = ses->opcode & UIB_UET_SES_OPCODE_MASK;
 
 	pthread_mutex_lock(&qp->lock);
 	uet->dpdcid = ntohs(req->spdcid);
@@ -1447,6 +1483,13 @@ static int uet_handle_request(struct uib_qp *qp,
 	if (!uet->rx_initialized) {
 		uet->rx_base_psn = qp->rq_psn;
 		uet->rx_initialized = 1;
+	}
+	if (opcode == UIB_UET_SES_SEND && uet->recv_active &&
+	    uet->recv_msg_id != msg_id) {
+		uet_debug(qp, "defer request psn=%u msg=%u active_msg=%u",
+			  psn, msg_id, uet->recv_msg_id);
+		pthread_mutex_unlock(&qp->lock);
+		return 0;
 	}
 	rc = uet_rx_mark(uet, psn, &duplicate);
 	if (!rc && !duplicate && uet->nscc_enabled)
@@ -1458,7 +1501,6 @@ static int uet_handle_request(struct uib_qp *qp,
 	if (rc < 0)
 		return rc;
 
-	opcode = ses->opcode & UIB_UET_SES_OPCODE_MASK;
 	response_code = uet_validate_session(qp, ses);
 	if (duplicate && opcode != UIB_UET_SES_READ) {
 		pthread_mutex_lock(&qp->lock);
@@ -1488,6 +1530,7 @@ static int uet_handle_request(struct uib_qp *qp,
 			break;
 		case UIB_UET_SES_READ:
 			rc = uet_handle_read(qp, ses, &response_data,
+					     &owned_response,
 					     &response_len, request_header ==
 					     UIB_UET_NEXT_REQ_SMALL);
 			modified_len = response_len;
@@ -1526,9 +1569,11 @@ static int uet_handle_request(struct uib_qp *qp,
 		pthread_mutex_unlock(&qp->lock);
 	}
 
-	return uet_send_response(qp, src, req, ses, cack, response_code,
-				 response_data, response_len, modified_len,
-				 receive_time_ns, 0, request_header);
+	rc = uet_send_response(qp, src, req, ses, cack, response_code,
+			       response_data, response_len, modified_len,
+			       receive_time_ns, 0, request_header);
+	free(owned_response);
+	return rc;
 }
 
 static void uet_complete_out_locked(struct uib_qp *qp,
@@ -1541,6 +1586,8 @@ static void uet_complete_out_locked(struct uib_qp *qp,
 
 	*link = out->next;
 	uet->out_count--;
+	if (out->sent)
+		uet->sent_count--;
 	uet_free_outstanding(out);
 	uet_track_done(qp, track, status);
 }
@@ -2076,12 +2123,6 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 		wire_data = (uint8_t *)(req + 1) + request_header_len;
 
 		pthread_mutex_lock(&qp->lock);
-		if (uet->out_count >= UIB_UET_PDC_MPR) {
-			pthread_mutex_unlock(&qp->lock);
-			uet_free_outstanding(out);
-			rc = -EAGAIN;
-			goto fail_track;
-		}
 		if (!uet->tx_initialized) {
 			uet->next_psn = qp->sq_psn;
 			uet->tx_initialized = 1;
@@ -2310,6 +2351,7 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 			uet->multipath_stats.timeout_failovers++;
 			out->entropy = 0;
 		}
+		uet->sent_count--;
 		out->sent = 0;
 		out->retries++;
 		out = out->next;
@@ -2324,6 +2366,7 @@ const struct uib_protocol_ops uib_uet_protocol_ops = {
 	.min_packet = sizeof(struct uib_uet_prologue),
 	.qp_init = uet_qp_init,
 	.qp_fini = uet_qp_fini,
+	.qp_modified = uet_qp_modified,
 	.packet_qpn = uet_packet_qpn,
 	.post_send = uet_post_send,
 	.handle_packet = uet_handle_packet,

@@ -260,6 +260,11 @@ void uib_uet_nscc_on_ack(struct uib_uet_nscc *nscc,
 	uint64_t delay;
 	int receiver_limited;
 
+	/*
+	 * Rcvd_Bytes is rounded up to 256-byte units. The specification makes
+	 * inflight signed because this subtraction may leave a small negative
+	 * residual until later traffic advances the byte clock.
+	 */
 	nscc->inflight -= ack->newly_received;
 	nscc->bytes_ignored += ack->newly_received;
 	nscc->received_bytes += ack->newly_received;

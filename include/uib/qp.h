@@ -171,12 +171,16 @@ struct uib_qp {
 
 void uib_qp_retransmit_tick(struct uib_qp *qp, uint64_t now_ns);
 
-struct uib_qp *uib_create_qp(struct uib_pd *pd, const struct uib_qp_init_attr *attr);
-int uib_modify_qp(struct uib_qp *qp, const struct uib_qp_attr *attr, int attr_mask);
+struct uib_qp *uib_create_qp(struct uib_pd *pd,
+			     const struct uib_qp_init_attr *attr);
+int uib_modify_qp(struct uib_qp *qp, const struct uib_qp_attr *attr,
+		  int attr_mask);
 int uib_destroy_qp(struct uib_qp *qp);
 
-int uib_post_send(struct uib_qp *qp, struct uib_send_wr *wr, struct uib_send_wr **bad);
-int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr, struct uib_recv_wr **bad);
+int uib_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
+		  struct uib_send_wr **bad);
+int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
+		  struct uib_recv_wr **bad);
 
 int uib_qp_handle_packet(struct uib_qp *qp, const struct sockaddr_in *src,
 			 const void *pkt, size_t len);

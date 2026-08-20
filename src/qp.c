@@ -14,7 +14,8 @@
 
 #define UIB_PKT_MAX (UIB_PMTU + 64)
 
-struct uib_qp *uib_create_qp(struct uib_pd *pd, const struct uib_qp_init_attr *attr)
+struct uib_qp *uib_create_qp(struct uib_pd *pd,
+			     const struct uib_qp_init_attr *attr)
 {
 	if (!pd || !attr) {
 		errno = EINVAL;
@@ -76,12 +77,15 @@ static void free_outstanding(struct uib_outstanding *o)
 
 int uib_destroy_qp(struct uib_qp *qp)
 {
+	struct uib_context *ctx;
 	struct uib_outstanding *o;
 	uint32_t i;
 
 	if (!qp)
 		return -EINVAL;
-	uib_unregister_qp(qp->ctx, qp);
+	ctx = qp->ctx;
+	pthread_rwlock_wrlock(&ctx->qp_io_lock);
+	uib_unregister_qp(ctx, qp);
 	if (qp->ctx->pops->qp_fini)
 		qp->ctx->pops->qp_fini(qp);
 
@@ -108,10 +112,12 @@ int uib_destroy_qp(struct uib_qp *qp)
 		qp->pd->refcnt--;
 	free(qp->rq);
 	free(qp);
+	pthread_rwlock_unlock(&ctx->qp_io_lock);
 	return 0;
 }
 
-int uib_modify_qp(struct uib_qp *qp, const struct uib_qp_attr *attr, int attr_mask)
+int uib_modify_qp(struct uib_qp *qp, const struct uib_qp_attr *attr,
+		  int attr_mask)
 {
 	if (!qp || !attr)
 		return -EINVAL;
@@ -138,6 +144,8 @@ int uib_modify_qp(struct uib_qp *qp, const struct uib_qp_attr *attr, int attr_ma
 		qp->remote_addr = attr->remote_addr;
 	if (attr_mask & UIB_QP_ACCESS_FLAGS)
 		qp->access_flags = attr->qp_access_flags;
+	if (qp->ctx->pops->qp_modified)
+		qp->ctx->pops->qp_modified(qp, attr_mask);
 	pthread_mutex_unlock(&qp->lock);
 	return 0;
 }
@@ -150,15 +158,20 @@ static int gather_total(struct uib_pd *pd, const struct uib_sge *sgl, int n,
 
 	for (i = 0; i < n; i++) {
 		const struct uib_sge *s = &sgl[i];
+		struct uib_mr *mr;
+		int rc;
 
 		if (off + s->length > cap)
 			return -EMSGSIZE;
-		int rc = uib_mr_check_local(pd, s->lkey,
-					    (const void *)(uintptr_t)s->addr,
-					    s->length, 0);
+		rc = uib_mr_check_local(pd, s->lkey,
+					(const void *)(uintptr_t)s->addr,
+					s->length, 0);
 		if (rc < 0)
 			return rc;
-		memcpy(out + off, (const void *)(uintptr_t)s->addr, s->length);
+		mr = uib_pd_lookup_key(pd, s->lkey);
+		rc = uib_mr_read(mr, s->addr, out + off, s->length);
+		if (rc < 0)
+			return rc;
 		off += s->length;
 	}
 	return (int)off;
@@ -192,13 +205,17 @@ static int scatter_at(struct uib_pd *pd, struct uib_sge *sgl, int n,
 	for (; i < n && consumed < in_len; i++) {
 		size_t avail = sgl[i].length - off_in_sge;
 		size_t take = (avail < in_len - consumed) ? avail : (in_len - consumed);
-		int rc = uib_mr_check_local(pd, sgl[i].lkey,
-					    (void *)(uintptr_t)(sgl[i].addr + off_in_sge),
-					    take, UIB_ACCESS_LOCAL_WRITE);
+		int rc;
+
+		rc = uib_mr_check_local(pd, sgl[i].lkey,
+					(void *)(uintptr_t)(sgl[i].addr + off_in_sge),
+					take, UIB_ACCESS_LOCAL_WRITE);
 		if (rc < 0)
 			return rc;
-		uib_mr_place(uib_pd_lookup_key(pd, sgl[i].lkey),
-			     sgl[i].addr + off_in_sge, in + consumed, take);
+		rc = uib_mr_place(uib_pd_lookup_key(pd, sgl[i].lkey),
+				  sgl[i].addr + off_in_sge, in + consumed, take);
+		if (rc < 0)
+			return rc;
 		consumed += take;
 		off_in_sge = 0;
 	}
@@ -394,7 +411,8 @@ static int send_one_packet(struct uib_qp *qp, struct uib_send_wr *wr,
 	return 0;
 }
 
-static int post_rdma_read(struct uib_qp *qp, struct uib_send_wr *wr, size_t total)
+static int post_rdma_read(struct uib_qp *qp, struct uib_send_wr *wr,
+			  size_t total)
 {
 	uint32_t mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
 	uint32_t n_resp = (total + mtu - 1) / mtu;
@@ -406,6 +424,10 @@ static int post_rdma_read(struct uib_qp *qp, struct uib_send_wr *wr, size_t tota
 	void *pkt = NULL;
 	size_t pkt_len = 0;
 	struct sockaddr_in dst;
+	/*
+	 * Serialize transmission with insertion into the outstanding list so a
+	 * fast peer cannot ACK before the request becomes visible locally.
+	 */
 	pthread_mutex_lock(&qp->lock);
 	int rc = send_one_packet(qp, wr, UIB_OP_RDMA_READ_REQ, 1, 1,
 				 NULL, 0,
@@ -458,7 +480,8 @@ static uint8_t pick_opcode(enum uib_qp_type qpt, enum uib_wr_opcode op,
 	int is_ud = (qpt == UIB_QPT_UD);
 
 	if (is_ud)
-		return with_imm ? 0x65 : 0x64;
+		return with_imm ? UIB_OP_UD_SEND_ONLY_WITH_IMM :
+			UIB_OP_UD_SEND_ONLY;
 	int is_only  = (n == 1);
 	int is_first = (i == 0);
 	int is_last  = (i == n - 1);
@@ -846,7 +869,11 @@ static void send_read_response(struct uib_qp *qp, const struct sockaddr_in *dst,
 				      start_psn + i);
 			p += UIB_AETH_BYTES;
 		}
-		memcpy(p, (const void *)(uintptr_t)(va + off), chunk);
+		if (uib_mr_read(mr, va + off, p, chunk) < 0) {
+			free(pkt);
+			send_ack(qp, dst, start_psn, UIB_AETH_NAK_REM_ACC);
+			return;
+		}
 		p += chunk;
 		if (pad) {
 			memset(p, 0, pad);
@@ -886,7 +913,8 @@ static struct uib_outstanding *find_read_by_psn(struct uib_qp *qp, uint32_t psn)
 	return o;
 }
 
-static void detach_outstanding(struct uib_qp *qp, struct uib_outstanding *target)
+static void detach_outstanding(struct uib_qp *qp,
+			       struct uib_outstanding *target)
 {
 	pthread_mutex_lock(&qp->lock);
 	struct uib_outstanding **pp = &qp->out_head;
@@ -933,10 +961,18 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		       || op == UIB_OP_RDMA_READ_RESP_LAST
 		       || op == UIB_OP_RDMA_READ_RESP_ONLY);
 
-	if (is_rc && !is_resp && qp->last_rx_valid &&
-	    psn_cmp(psn, qp->last_rx_psn) <= 0) {
-		send_ack(qp, src, qp->last_rx_psn, UIB_AETH_ACK);
-		return 0;
+	if (is_rc && !is_resp) {
+		uint32_t expected = qp->rq_psn & UIB_BTH_PSN_MASK;
+		int order = psn_cmp(psn, expected);
+
+		if (order < 0) {
+			send_ack(qp, src, qp->last_rx_psn, UIB_AETH_ACK);
+			return 0;
+		}
+		if (order > 0) {
+			send_ack(qp, src, expected, UIB_AETH_NAK_PSN_SEQ);
+			return 0;
+		}
 	}
 
 	switch (op) {
@@ -956,7 +992,8 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 			     rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
 			     UIB_WC_RECV, (uint32_t)consumed, qp->dest_qp_num, 0);
 		free(slot.sg_list);
-		qp->last_rx_psn = psn; qp->last_rx_valid = 1;
+		qp->last_rx_psn = psn;
+		qp->last_rx_valid = 1;
 		qp->rq_psn = psn + 1;
 		if (is_rc)
 			send_ack(qp, src, psn,
@@ -977,7 +1014,8 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		qp->frag_recv = slot;
 		qp->frag_recv_active = 1;
 		qp->frag_recv_offset = (uint32_t)consumed;
-		qp->last_rx_psn = psn; qp->last_rx_valid = 1;
+		qp->last_rx_psn = psn;
+		qp->last_rx_valid = 1;
 		qp->rq_psn = psn + 1;
 		if (is_rc)
 			send_ack(qp, src, psn,
@@ -995,7 +1033,8 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 				    qp->frag_recv.num_sge,
 				    qp->frag_recv_offset, body, body_len, &consumed);
 		qp->frag_recv_offset += (uint32_t)consumed;
-		qp->last_rx_psn = psn; qp->rq_psn = psn + 1;
+		qp->last_rx_psn = psn;
+		qp->rq_psn = psn + 1;
 		if (is_rc)
 			send_ack(qp, src, psn,
 				 rc < 0 ? UIB_AETH_NAK_INV_REQ : UIB_AETH_ACK);
@@ -1021,13 +1060,14 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		qp->frag_recv.sg_list = NULL;
 		qp->frag_recv_active = 0;
 		qp->frag_recv_offset = 0;
-		qp->last_rx_psn = psn; qp->rq_psn = psn + 1;
+		qp->last_rx_psn = psn;
+		qp->rq_psn = psn + 1;
 		if (is_rc)
 			send_ack(qp, src, psn,
 				 rc < 0 ? UIB_AETH_NAK_INV_REQ : UIB_AETH_ACK);
 		return rc;
 	}
-	case 0x64: {
+	case UIB_OP_UD_SEND_ONLY: {
 		if (body_len < UIB_DETH_BYTES)
 			return -EBADMSG;
 		const struct uib_deth *deth = (const struct uib_deth *)body;
@@ -1073,8 +1113,13 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 				send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
 			return -EACCES;
 		}
-		uib_mr_place(mr, va, body, rlen);
-		qp->last_rx_psn = psn; qp->last_rx_valid = 1;
+		if (uib_mr_place(mr, va, body, rlen) < 0) {
+			if (is_rc)
+				send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
+			return -EIO;
+		}
+		qp->last_rx_psn = psn;
+		qp->last_rx_valid = 1;
 		qp->rq_psn = psn + 1;
 		if (is_rc)
 			send_ack(qp, src, psn, UIB_AETH_ACK);
@@ -1101,13 +1146,18 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		}
 		size_t take = body_len > rlen ? rlen : body_len;
 
-		uib_mr_place(mr, va, body, take);
+		if (uib_mr_place(mr, va, body, take) < 0) {
+			if (is_rc)
+				send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
+			return -EIO;
+		}
 		qp->frag_write_va     = va;
 		qp->frag_write_total  = rlen;
 		qp->frag_write_offset = (uint32_t)take;
 		qp->frag_write_active = 1;
 		qp->frag_write_mr     = mr;
-		qp->last_rx_psn = psn; qp->last_rx_valid = 1;
+		qp->last_rx_psn = psn;
+		qp->last_rx_valid = 1;
 		qp->rq_psn = psn + 1;
 		if (is_rc)
 			send_ack(qp, src, psn, UIB_AETH_ACK);
@@ -1122,10 +1172,13 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		uint32_t remain = qp->frag_write_total - qp->frag_write_offset;
 		size_t take = body_len > remain ? remain : body_len;
 
-		uib_mr_place(qp->frag_write_mr,
-			     qp->frag_write_va + qp->frag_write_offset, body, take);
+		if (uib_mr_place(qp->frag_write_mr,
+				 qp->frag_write_va + qp->frag_write_offset,
+				 body, take) < 0)
+			return -EIO;
 		qp->frag_write_offset += (uint32_t)take;
-		qp->last_rx_psn = psn; qp->rq_psn = psn + 1;
+		qp->last_rx_psn = psn;
+		qp->rq_psn = psn + 1;
 		if (is_rc)
 			send_ack(qp, src, psn, UIB_AETH_ACK);
 		return 0;
@@ -1140,11 +1193,14 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		uint32_t remain = qp->frag_write_total - qp->frag_write_offset;
 		size_t take = body_len > remain ? remain : body_len;
 
-		uib_mr_place(qp->frag_write_mr,
-			     qp->frag_write_va + qp->frag_write_offset, body, take);
+		if (uib_mr_place(qp->frag_write_mr,
+				 qp->frag_write_va + qp->frag_write_offset,
+				 body, take) < 0)
+			return -EIO;
 		qp->frag_write_offset += (uint32_t)take;
 		qp->frag_write_active = 0;
-		qp->last_rx_psn = psn; qp->rq_psn = psn + 1;
+		qp->last_rx_psn = psn;
+		qp->rq_psn = psn + 1;
 		if (is_rc)
 			send_ack(qp, src, psn, UIB_AETH_ACK);
 		return 0;
@@ -1244,7 +1300,7 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		if ((syndrome & UIB_AETH_CODE_MASK) == UIB_AETH_ACK_CODE) {
 			ack_outstanding(qp, psn);
 		} else if ((syndrome & UIB_AETH_CODE_MASK) == UIB_AETH_RNR_CODE) {
-		} else {
+		} else if (syndrome != UIB_AETH_NAK_PSN_SEQ) {
 			pthread_mutex_lock(&qp->lock);
 			qp->state = UIB_QPS_ERR;
 			pthread_mutex_unlock(&qp->lock);

@@ -31,6 +31,8 @@
 #define UIB_OP_RDMA_READ_RESP_LAST       0x0f
 #define UIB_OP_RDMA_READ_RESP_ONLY       0x10
 #define UIB_OP_ACKNOWLEDGE               0x11
+#define UIB_OP_UD_SEND_ONLY              0x64
+#define UIB_OP_UD_SEND_ONLY_WITH_IMM     0x65
 
 #define UIB_PMTU 4096
 
@@ -67,6 +69,7 @@ struct uib_deth {
 #define UIB_DETH_BYTES 8
 #define UIB_ICRC_BYTES 4
 
+/* An ACK advertises unlimited receive credits. */
 #define UIB_AETH_ACK         0x1f
 #define UIB_AETH_RNR         0x20
 #define UIB_AETH_CODE_MASK   0xe0
@@ -84,18 +87,28 @@ void uib_bth_unpack(const struct uib_bth *bth, uint8_t *opcode,
 void uib_bth_set_pad(struct uib_bth *bth, uint8_t pad);
 uint8_t uib_bth_pad(const struct uib_bth *bth);
 
-void uib_reth_pack(struct uib_reth *r, uint64_t va, uint32_t rkey, uint32_t len);
-void uib_reth_unpack(const struct uib_reth *r, uint64_t *va, uint32_t *rkey, uint32_t *len);
+void uib_reth_pack(struct uib_reth *r, uint64_t va, uint32_t rkey,
+		   uint32_t len);
+void uib_reth_unpack(const struct uib_reth *r, uint64_t *va,
+		     uint32_t *rkey, uint32_t *len);
 
 void uib_deth_pack(struct uib_deth *d, uint32_t qkey, uint32_t sqp);
 void uib_deth_unpack(const struct uib_deth *d, uint32_t *qkey, uint32_t *sqp);
 
 void uib_aeth_pack(struct uib_aeth *a, uint8_t syndrome, uint32_t msn);
-void uib_aeth_unpack(const struct uib_aeth *a, uint8_t *syndrome, uint32_t *msn);
+void uib_aeth_unpack(const struct uib_aeth *a, uint8_t *syndrome,
+		     uint32_t *msn);
 
 uint32_t uib_crc32(uint32_t crc, const void *buf, size_t len);
 uint32_t uib_icrc(const void *packet, size_t len);
 
+/*
+ * Compute the RoCEv2 invariant CRC for an IPv4/UDP packet. Address and port
+ * arguments are in network byte order. rdma_len excludes the four-byte ICRC
+ * but includes any BTH-indicated payload padding. ip_id is in host order.
+ * The return value is the host-order CRC state; RoCE places it little-endian
+ * on the wire.
+ */
 uint32_t uib_rocev2_icrc_ipv4(uint32_t src_ip, uint32_t dst_ip,
 			      uint16_t src_port, uint16_t dst_port,
 			      uint16_t ip_id, const void *rdma,
