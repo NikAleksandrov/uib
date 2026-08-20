@@ -148,6 +148,8 @@ struct uib_qp {
 
 	struct uib_outstanding *out_head;
 	struct uib_outstanding *out_tail;
+	struct uib_outstanding *read_head;
+	struct uib_outstanding *read_tail;
 	struct uib_psn_index     out_index;
 	uint32_t                out_count;
 	uint32_t                last_acked_psn;
