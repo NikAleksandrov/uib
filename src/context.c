@@ -34,11 +34,13 @@ struct uib_context *uib_open_device_protocol(const char *bind_ip,
 		return NULL;
 	}
 	ctx->mode = uib_transport_mode_from_env();
+	uib_zerocopy_init(ctx);
 	ctx->bind_port = bind_port ? bind_port : ctx->pops->default_port;
 	if (bind_ip && *bind_ip)
 		snprintf(ctx->bind_ip, sizeof(ctx->bind_ip), "%s", bind_ip);
 
 	pthread_mutex_init(&ctx->qp_lock, NULL);
+	pthread_rwlock_init(&ctx->qp_io_lock, NULL);
 	ctx->qp_table_size = UIB_DEFAULT_QP_TABLE;
 	ctx->qp_table = calloc(ctx->qp_table_size, sizeof(*ctx->qp_table));
 	if (!ctx->qp_table)
@@ -58,7 +60,9 @@ err_protocol:
 err_table:
 	free(ctx->qp_table);
 err_lock:
+	pthread_rwlock_destroy(&ctx->qp_io_lock);
 	pthread_mutex_destroy(&ctx->qp_lock);
+	pthread_mutex_destroy(&ctx->zerocopy_lock);
 	free(ctx);
 	return NULL;
 }
@@ -70,7 +74,9 @@ int uib_close_device(struct uib_context *ctx)
 	uib_transport_fini(ctx);
 	if (ctx->pops && ctx->pops->fini)
 		ctx->pops->fini(ctx);
+	pthread_rwlock_destroy(&ctx->qp_io_lock);
 	pthread_mutex_destroy(&ctx->qp_lock);
+	pthread_mutex_destroy(&ctx->zerocopy_lock);
 	free(ctx->qp_table);
 	free(ctx);
 	return 0;

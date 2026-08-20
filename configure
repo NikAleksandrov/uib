@@ -645,6 +645,8 @@ ac_subst_vars='LTLIBOBJS
 LIBOBJS
 HAVE_IBV_TOOLS
 HAVE_VIRTME
+HAVE_ZEROCOPY
+HAVE_DMABUF
 HAVE_DEVMEM
 AFXDP_LIBS
 AFXDP_CFLAGS
@@ -712,6 +714,8 @@ enable_option_checking
 enable_provider
 enable_af_xdp
 enable_devmem
+enable_dmabuf
+enable_zerocopy
 with_liburing
 '
       ac_precious_vars='build_alias
@@ -1343,6 +1347,8 @@ Optional Features:
   --disable-provider      do not build the transparent libibverbs provider
   --disable-af-xdp        do not build AF_XDP support
   --disable-devmem        do not build TCP devmem support
+  --disable-dmabuf        do not build DMA-BUF memory registration support
+  --disable-zerocopy      do not build MSG_ZEROCOPY socket support
 
 Optional Packages:
   --with-PACKAGE[=ARG]    use PACKAGE [ARG=yes]
@@ -3576,6 +3582,24 @@ else case e in #(
 esac
 fi
 
+# Check whether --enable-dmabuf was given.
+if test ${enable_dmabuf+y}
+then :
+  enableval=$enable_dmabuf;
+else case e in #(
+  e) enable_dmabuf=auto ;;
+esac
+fi
+
+# Check whether --enable-zerocopy was given.
+if test ${enable_zerocopy+y}
+then :
+  enableval=$enable_zerocopy;
+else case e in #(
+  e) enable_zerocopy=auto ;;
+esac
+fi
+
 
 # Check whether --with-liburing was given.
 if test ${with_liburing+y}
@@ -3881,6 +3905,66 @@ then :
   as_fn_error $? "--enable-devmem requires a kernel UAPI with SO_DEVMEM_DMABUF" "$LINENO" 5
 fi
 
+HAVE_DMABUF=0
+if test "x$enable_dmabuf" != xno
+then :
+
+	cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#include <linux/dma-buf.h>
+#include <sys/ioctl.h>
+int
+main (void)
+{
+struct dma_buf_sync sync = { 0 };
+		  return ioctl(-1, DMA_BUF_IOCTL_SYNC, &sync);
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"
+then :
+  HAVE_DMABUF=1
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
+
+fi
+if test "x$enable_dmabuf" = xyes && test "$HAVE_DMABUF" != 1
+then :
+  as_fn_error $? "--enable-dmabuf requires the Linux dma-buf UAPI" "$LINENO" 5
+fi
+
+HAVE_ZEROCOPY=0
+if test "x$enable_zerocopy" != xno
+then :
+
+	cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#define _GNU_SOURCE
+#include <sys/socket.h>
+#include <linux/errqueue.h>
+int
+main (void)
+{
+int flags = MSG_ZEROCOPY;
+		  int option = SO_ZEROCOPY;
+		  return flags + option + SO_EE_ORIGIN_ZEROCOPY;
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"
+then :
+  HAVE_ZEROCOPY=1
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
+
+fi
+if test "x$enable_zerocopy" = xyes && test "$HAVE_ZEROCOPY" != 1
+then :
+  as_fn_error $? "--enable-zerocopy requires Linux MSG_ZEROCOPY support" "$LINENO" 5
+fi
+
 # Extract the first word of "vng", so it can be a program name with args.
 set dummy vng; ac_word=$2
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for $ac_word" >&5
@@ -3999,6 +4083,8 @@ fi
 
 
 
+
+
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: configuration summary:" >&5
 printf "%s\n" "$as_me: configuration summary:" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   libibverbs provider: $ENABLE_PROVIDER" >&5
@@ -4007,6 +4093,10 @@ printf "%s\n" "$as_me:   libibverbs provider: $ENABLE_PROVIDER" >&6;}
 printf "%s\n" "$as_me:   AF_XDP transport:    $HAVE_AFXDP" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   TCP devmem UAPI:     $HAVE_DEVMEM" >&5
 printf "%s\n" "$as_me:   TCP devmem UAPI:     $HAVE_DEVMEM" >&6;}
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}:   DMA-BUF MRs:         $HAVE_DMABUF" >&5
+printf "%s\n" "$as_me:   DMA-BUF MRs:         $HAVE_DMABUF" >&6;}
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}:   socket zero-copy:    $HAVE_ZEROCOPY" >&5
+printf "%s\n" "$as_me:   socket zero-copy:    $HAVE_ZEROCOPY" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   virtme-ng tests:     $HAVE_VIRTME" >&5
 printf "%s\n" "$as_me:   virtme-ng tests:     $HAVE_VIRTME" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   ibverbs tools:       $HAVE_IBV_TOOLS" >&5

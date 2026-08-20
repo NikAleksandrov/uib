@@ -8,20 +8,28 @@
 #include "uib/protocol.h"
 #include "utils.h"
 
-void uib_transport_deliver(struct uib_context *ctx, const struct sockaddr_in *src,
-			   const void *buf, size_t len)
+void uib_transport_deliver(struct uib_context *ctx,
+			   const struct sockaddr_in *src, const void *buf,
+			   size_t len)
 {
+	struct uib_qp *qp;
 	uint32_t dqpn;
 
+	pthread_rwlock_rdlock(&ctx->qp_io_lock);
 	if (!ctx->pops || !ctx->pops->packet_qpn ||
 	    len < ctx->pops->min_packet ||
-	    ctx->pops->packet_qpn(buf, len, &dqpn) < 0)
+	    ctx->pops->packet_qpn(buf, len, &dqpn) < 0) {
+		pthread_rwlock_unlock(&ctx->qp_io_lock);
 		return;
-	struct uib_qp *qp = uib_lookup_qp(ctx, dqpn);
+	}
+	qp = uib_lookup_qp(ctx, dqpn);
 
-	if (!qp)
+	if (!qp) {
+		pthread_rwlock_unlock(&ctx->qp_io_lock);
 		return;
+	}
 	uib_qp_handle_packet(qp, src, buf, len);
+	pthread_rwlock_unlock(&ctx->qp_io_lock);
 }
 
 void uib_transport_retransmit_walk(struct uib_context *ctx)
@@ -31,6 +39,7 @@ void uib_transport_retransmit_walk(struct uib_context *ctx)
 	uint32_t n;
 	uint32_t i;
 
+	pthread_rwlock_rdlock(&ctx->qp_io_lock);
 	pthread_mutex_lock(&ctx->qp_lock);
 	n = ctx->qp_table_size;
 	snap = malloc(n * sizeof(*snap));
@@ -38,8 +47,10 @@ void uib_transport_retransmit_walk(struct uib_context *ctx)
 	if (snap)
 		memcpy(snap, ctx->qp_table, n * sizeof(*snap));
 	pthread_mutex_unlock(&ctx->qp_lock);
-	if (!snap)
+	if (!snap) {
+		pthread_rwlock_unlock(&ctx->qp_io_lock);
 		return;
+	}
 	for (i = 1; i < n; i++) {
 		struct uib_qp *qp = snap[i];
 
@@ -47,6 +58,7 @@ void uib_transport_retransmit_walk(struct uib_context *ctx)
 			uib_qp_retransmit_tick(qp, now);
 	}
 	free(snap);
+	pthread_rwlock_unlock(&ctx->qp_io_lock);
 }
 
 static const char *mode_name(enum uib_transport_mode m)

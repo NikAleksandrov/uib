@@ -17,6 +17,14 @@ AC_ARG_ENABLE([af-xdp],
 AC_ARG_ENABLE([devmem],
 	AS_HELP_STRING([--disable-devmem], [do not build TCP devmem support]), [],
 	[enable_devmem=auto])
+AC_ARG_ENABLE([dmabuf],
+	AS_HELP_STRING([--disable-dmabuf],
+		[do not build DMA-BUF memory registration support]), [],
+	[enable_dmabuf=auto])
+AC_ARG_ENABLE([zerocopy],
+	AS_HELP_STRING([--disable-zerocopy],
+		[do not build MSG_ZEROCOPY socket support]), [],
+	[enable_zerocopy=auto])
 AC_ARG_WITH([liburing],
 	AS_HELP_STRING([--with-liburing=PREFIX],
 		[find liburing below PREFIX instead of probing]), [],
@@ -95,6 +103,30 @@ AS_IF([test "x$enable_devmem" != xno], [
 AS_IF([test "x$enable_devmem" = xyes && test "$HAVE_DEVMEM" != 1],
 	[AC_MSG_ERROR([--enable-devmem requires a kernel UAPI with SO_DEVMEM_DMABUF])])
 
+HAVE_DMABUF=0
+AS_IF([test "x$enable_dmabuf" != xno], [
+	AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <linux/dma-buf.h>
+#include <sys/ioctl.h>]],
+		[[struct dma_buf_sync sync = { 0 };
+		  return ioctl(-1, DMA_BUF_IOCTL_SYNC, &sync);]])],
+		[HAVE_DMABUF=1])
+])
+AS_IF([test "x$enable_dmabuf" = xyes && test "$HAVE_DMABUF" != 1],
+	[AC_MSG_ERROR([--enable-dmabuf requires the Linux dma-buf UAPI])])
+
+HAVE_ZEROCOPY=0
+AS_IF([test "x$enable_zerocopy" != xno], [
+	AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#define _GNU_SOURCE
+#include <sys/socket.h>
+#include <linux/errqueue.h>]],
+		[[int flags = MSG_ZEROCOPY;
+		  int option = SO_ZEROCOPY;
+		  return flags + option + SO_EE_ORIGIN_ZEROCOPY;]])],
+		[HAVE_ZEROCOPY=1])
+])
+AS_IF([test "x$enable_zerocopy" = xyes && test "$HAVE_ZEROCOPY" != 1],
+	[AC_MSG_ERROR([--enable-zerocopy requires Linux MSG_ZEROCOPY support])])
+
 AC_PATH_PROG([VNG], [vng], [no])
 AC_PATH_PROG([IBV_RC_PINGPONG], [ibv_rc_pingpong], [no])
 HAVE_VIRTME=0
@@ -112,6 +144,8 @@ AC_SUBST([HAVE_AFXDP])
 AC_SUBST([AFXDP_CFLAGS])
 AC_SUBST([AFXDP_LIBS])
 AC_SUBST([HAVE_DEVMEM])
+AC_SUBST([HAVE_DMABUF])
+AC_SUBST([HAVE_ZEROCOPY])
 AC_SUBST([HAVE_VIRTME])
 AC_SUBST([HAVE_IBV_TOOLS])
 
@@ -119,6 +153,8 @@ AC_MSG_NOTICE([configuration summary:])
 AC_MSG_NOTICE([  libibverbs provider: $ENABLE_PROVIDER])
 AC_MSG_NOTICE([  AF_XDP transport:    $HAVE_AFXDP])
 AC_MSG_NOTICE([  TCP devmem UAPI:     $HAVE_DEVMEM])
+AC_MSG_NOTICE([  DMA-BUF MRs:         $HAVE_DMABUF])
+AC_MSG_NOTICE([  socket zero-copy:    $HAVE_ZEROCOPY])
 AC_MSG_NOTICE([  virtme-ng tests:     $HAVE_VIRTME])
 AC_MSG_NOTICE([  ibverbs tools:       $HAVE_IBV_TOOLS])
 AC_OUTPUT

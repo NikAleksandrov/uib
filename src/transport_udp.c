@@ -16,6 +16,7 @@
 #include "uib/afxdp_frame.h"
 
 #define UIB_RING_DEPTH 64
+#define UIB_SOCKET_BUFFER_SIZE (4 * 1024 * 1024)
 
 struct uib_udp_backend {
 	int                 fd;
@@ -29,6 +30,8 @@ struct uib_udp_backend {
 	pthread_t           worker;
 	int                 worker_run;
 	int                 raw_mode;
+	int                 zerocopy_enabled;
+	uint32_t            zerocopy_sequence;
 	unsigned int        test_drop_tx;
 };
 
@@ -191,7 +194,10 @@ static int udp_probe(void)
 static int udp_init(struct uib_context *ctx)
 {
 	const char *drop_tx = getenv("UIB_TEST_DROP_TX");
+	const char *udp_mode = getenv("UIB_UDP_MODE");
 	struct uib_udp_backend *be;
+	int socket_buffer = UIB_SOCKET_BUFFER_SIZE;
+	int allow_raw;
 
 	be = calloc(1, sizeof(*be));
 
@@ -212,7 +218,11 @@ static int udp_init(struct uib_context *ctx)
 		ctx->local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	}
 
-	be->fd = socket(AF_INET, SOCK_RAW, IPPROTO_UDP);
+	allow_raw = udp_mode && !strcmp(udp_mode, "raw");
+	if (ctx->zerocopy.mode == UIB_ZEROCOPY_ON ||
+	    ctx->zerocopy.mode == UIB_ZEROCOPY_REQUIRED)
+		allow_raw = 0;
+	be->fd = allow_raw ? socket(AF_INET, SOCK_RAW, IPPROTO_UDP) : -1;
 	if (be->fd >= 0) {
 		int one = 1;
 
@@ -220,12 +230,20 @@ static int udp_init(struct uib_context *ctx)
 			goto err;
 		be->raw_mode = 1;
 	} else {
+		int zc;
+
+		if (udp_mode && !strcmp(udp_mode, "raw"))
+			goto err;
 		be->fd = socket(AF_INET, SOCK_DGRAM, 0);
 		if (be->fd < 0)
 			goto err;
 		int one = 1;
 
 		setsockopt(be->fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+		setsockopt(be->fd, SOL_SOCKET, SO_RCVBUF, &socket_buffer,
+			   sizeof(socket_buffer));
+		setsockopt(be->fd, SOL_SOCKET, SO_SNDBUF, &socket_buffer,
+			   sizeof(socket_buffer));
 
 		if (bind(be->fd, (struct sockaddr *)&ctx->local_addr,
 			 sizeof(ctx->local_addr)) < 0)
@@ -234,6 +252,10 @@ static int udp_init(struct uib_context *ctx)
 		socklen_t sl = sizeof(ctx->local_addr);
 
 		getsockname(be->fd, (struct sockaddr *)&ctx->local_addr, &sl);
+		zc = uib_zerocopy_enable_socket(ctx, be->fd);
+		if (zc < 0)
+			goto err;
+		be->zerocopy_enabled = zc;
 	}
 
 	if (io_uring_queue_init(UIB_RING_DEPTH, &be->ring, 0) < 0)
@@ -362,13 +384,26 @@ static int udp_send_entropy(struct uib_context *ctx,
 		free(packet);
 		if (n < 0)
 			return -saved;
+		uib_zerocopy_account_copy(ctx, packet_len);
 		return (size_t)n == packet_len ? 0 : -EIO;
 	}
 
-	ssize_t n = sendto(be->fd, buf, len, 0,
-			   (const struct sockaddr *)dst, sizeof(*dst));
+	struct iovec iov = {
+		.iov_base = (void *)buf,
+		.iov_len = len,
+	};
+	struct msghdr message = {
+		.msg_name = (void *)dst,
+		.msg_namelen = sizeof(*dst),
+		.msg_iov = &iov,
+		.msg_iovlen = 1,
+	};
+	ssize_t n = uib_zerocopy_sendmsg(ctx, be->fd, &message, 0,
+					 be->zerocopy_enabled,
+					 &be->zerocopy_sequence);
+
 	if (n < 0)
-		return -errno;
+		return (int)n;
 	if ((size_t)n != len)
 		return -EIO;
 	return 0;

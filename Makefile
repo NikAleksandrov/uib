@@ -14,6 +14,10 @@ HAVE_IBVERBS ?= $(shell printf '#include <infiniband/verbs.h>\n' | \
 ENABLE_PROVIDER ?= $(HAVE_IBVERBS)
 HAVE_VIRTME ?= $(shell command -v vng >/dev/null 2>&1 && echo 1 || echo 0)
 HAVE_IBV_TOOLS ?= $(shell command -v ibv_rc_pingpong >/dev/null 2>&1 && echo 1 || echo 0)
+HAVE_DMABUF ?= $(shell printf '#include <linux/dma-buf.h>\nint x=DMA_BUF_IOCTL_SYNC;\n' | \
+	$(CC) -x c -fsyntax-only - >/dev/null 2>&1 && echo 1 || echo 0)
+HAVE_ZEROCOPY ?= $(shell printf '#include <sys/socket.h>\n#include <linux/errqueue.h>\nint x=MSG_ZEROCOPY+SO_ZEROCOPY+SO_EE_ORIGIN_ZEROCOPY;\n' | \
+	$(CC) -D_GNU_SOURCE -x c -fsyntax-only - >/dev/null 2>&1 && echo 1 || echo 0)
 
 CFLAGS += $(URING_CFLAGS) $(IBVERBS_CFLAGS)
 LDFLAGS += -pthread
@@ -38,6 +42,14 @@ ifeq ($(HAVE_DEVMEM),1)
   CFLAGS += -DUIB_HAVE_DEVMEM
 endif
 
+ifeq ($(HAVE_DMABUF),1)
+  CFLAGS += -DUIB_HAVE_DMABUF
+endif
+
+ifeq ($(HAVE_ZEROCOPY),1)
+  CFLAGS += -DUIB_HAVE_ZEROCOPY
+endif
+
 SRCS := \
 	src/bth.c \
 	src/pd.c \
@@ -52,6 +64,7 @@ SRCS := \
 	src/uet_nscc.c \
 	src/context.c \
 	src/transport.c \
+	src/zerocopy.c \
 	src/transport_udp.c \
 	src/transport_afxdp.c \
 	src/transport_tcp_devmem.c \
@@ -114,10 +127,16 @@ RXE_TEST    := tests/rxe_interop
 PROTOCOL_TEST := tests/protocol_test
 UET_TEST     := tests/uet_test
 NSCC_TEST    := tests/nscc_test
+ZEROCOPY_TEST := tests/zerocopy_test
+PROVIDER_DMABUF_TEST := tests/provider_dmabuf_test
+EXTERNAL_DMABUF_TEST := tests/external_dmabuf_test
 
 DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d $(NEIGH_TEST).d \
 	$(BTH_TEST).d $(RXE_TEST).d $(PROTOCOL_TEST).d $(UET_TEST).d \
 	$(NSCC_TEST).d
+
+DEPS += $(ZEROCOPY_TEST).d $(PROVIDER_DMABUF_TEST).d \
+	$(EXTERNAL_DMABUF_TEST).d
 
 $(TEST_BIN): tests/loopback.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
@@ -146,6 +165,15 @@ $(UET_TEST): tests/uet_test.c $(LIB_SHARED)
 $(NSCC_TEST): tests/nscc_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
+$(ZEROCOPY_TEST): tests/zerocopy_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+$(PROVIDER_DMABUF_TEST): tests/provider_dmabuf_test.c $(LIB_PROVIDER)
+	$(CC) $(CFLAGS) -o $@ $< $(IBVERBS_LIBS) -libverbs
+
+$(EXTERNAL_DMABUF_TEST): tests/external_dmabuf_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
 ifeq ($(HAVE_IBVERBS),1)
 rxe-test-build: $(RXE_TEST)
 
@@ -160,8 +188,14 @@ uib-tools-test: all
 
 uet-tools-test: all
 	UIB_TEST_PROTOCOL=uet UIB_TEST_PORT=5432 ./tests/run_uib_tools.sh
+
+provider-dmabuf-test: all $(PROVIDER_DMABUF_TEST)
+	LD_PRELOAD=$(CURDIR)/$(LIB_PROVIDER) UIB_BIND_PORT=19101 \
+		UIB_UDP_MODE=socket \
+		./$(PROVIDER_DMABUF_TEST)
 else
-rxe-test-build rxe-test rxe-tools-test uib-tools-test uet-tools-test:
+rxe-test-build rxe-test rxe-tools-test uib-tools-test uet-tools-test \
+provider-dmabuf-test:
 	@echo "SKIP $@: libibverbs development files are unavailable"
 endif
 
@@ -169,6 +203,9 @@ uet-loss-test: all
 	UIB_TEST_PROTOCOL=uet UIB_TEST_PORT=5432 UIB_TEST_DROP_TX=1 \
 		UIB_TEST_ITERS=8 \
 		./tests/run_uib_tools.sh
+
+rocev2-loss-test: all $(TEST_BIN)
+	UIB_TEST_DROP_TX=1 ./$(TEST_BIN)
 
 uet-congestion-test: all $(TEST_BIN) $(NSCC_TEST)
 	./$(NSCC_TEST)
@@ -179,14 +216,62 @@ uet-multipath-test: all $(TEST_BIN)
 	UIB_PROTOCOL=uet UIB_UET_MULTIPATH=path-aware UIB_TEST_DROP_TX=1 \
 		./$(TEST_BIN)
 
+dmabuf-e2e-test: examples
+	./examples/direct_traffic rocev2 dmabuf
+	./examples/direct_traffic uet dmabuf
+	./examples/direct_traffic dummy dmabuf
+	./examples/stress_bench --protocol rocev2 --memory dmabuf --iterations 64 --size 16384 --window 16
+	./examples/stress_bench --protocol uet --memory dmabuf --iterations 64 --size 16384 --window 16
+	./examples/stress_bench --protocol dummy --memory dmabuf --iterations 64 --size 16384 --window 16
+
+zerocopy-e2e-test: examples
+	UIB_UDP_MODE=socket UIB_ZEROCOPY=off ./examples/stress_bench --protocol rocev2 --iterations 64 --size 16384 --window 16
+	UIB_UDP_MODE=socket UIB_ZEROCOPY=required ./examples/stress_bench --protocol rocev2 --iterations 64 --size 16384 --window 16
+	UIB_TRANSPORT_MODE=tcp-devmem UIB_ZEROCOPY=off ./examples/stress_bench --protocol uet --iterations 64 --size 16384 --window 16
+	UIB_TRANSPORT_MODE=tcp-devmem UIB_ZEROCOPY=required ./examples/stress_bench --protocol uet --iterations 64 --size 16384 --window 16
+
+benchmark-all: examples
+	./examples/benchmark_matrix.sh
+
+benchmark-local: benchmark-all
+
+benchmark-report: examples
+	@output=$${UIB_BENCH_OUTPUT:-/tmp/uib-benchmark-report-$$(date +%Y%m%d-%H%M%S)}; \
+		status=0; \
+		./examples/benchmark_matrix.sh "$$output" || status=$$?; \
+		./examples/benchmark_report.sh "$$output"; \
+		exit $$status
+
+benchmark-smoke: examples
+	UIB_BENCH_ITERATIONS=64 UIB_BENCH_SIZE=16384 UIB_BENCH_WINDOW=16 \
+		./examples/benchmark_matrix.sh /tmp/uib-benchmark-smoke
+
+gpu-dmabuf-test: all $(EXTERNAL_DMABUF_TEST)
+	./$(EXTERNAL_DMABUF_TEST)
+
+external-dmabuf-test: all $(EXTERNAL_DMABUF_TEST)
+	./tests/run_external_dmabuf.sh
+
+optional-features-test:
+	./tests/run_optional_features.sh
+
+remote-benchmark-test: examples
+	./tests/run_remote_benchmark.sh
+
+namespace-benchmark-test: examples
+	./tests/run_namespace_benchmark.sh
+
 examples-test: examples
 	./examples/direct_traffic rocev2
 	./examples/direct_traffic uet
 	./examples/direct_traffic dummy
 ifeq ($(HAVE_IBVERBS),1)
-	./examples/verbs_traffic rocev2
-	./examples/verbs_traffic uet
-	./examples/verbs_traffic dummy
+	UIB_BIND_PORT=19100 LD_PRELOAD=$(CURDIR)/$(LIB_PROVIDER) \
+		./examples/verbs_traffic rocev2
+	UIB_BIND_PORT=19100 LD_PRELOAD=$(CURDIR)/$(LIB_PROVIDER) \
+		./examples/verbs_traffic uet
+	UIB_BIND_PORT=19100 LD_PRELOAD=$(CURDIR)/$(LIB_PROVIDER) \
+		./examples/verbs_traffic dummy
 endif
 
 examples-stress-test: examples
@@ -204,7 +289,7 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 	UIB_PROTOCOL=uet UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 
 test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST) \
-	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST)
+	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
 	./$(DMABUF_TEST)
@@ -212,6 +297,7 @@ test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(B
 	./$(PROTOCOL_TEST)
 	./$(UET_TEST)
 	./$(NSCC_TEST)
+	./$(ZEROCOPY_TEST)
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	./$(TEST_BIN)
 
@@ -223,10 +309,20 @@ guest-test: all rxe-test-build
 	$(MAKE) uet-test
 	$(MAKE) uet-tools-test
 	$(MAKE) uet-loss-test
+	$(MAKE) rocev2-loss-test
 	$(MAKE) uet-congestion-test
 	$(MAKE) uet-multipath-test
 	$(MAKE) examples-test
 	$(MAKE) examples-stress-test
+	$(MAKE) dmabuf-e2e-test
+	$(MAKE) zerocopy-e2e-test
+	$(MAKE) benchmark-smoke
+	$(MAKE) provider-dmabuf-test
+	$(MAKE) optional-features-test
+	$(MAKE) remote-benchmark-test
+	UIB_NAMESPACE_REQUIRED=1 $(MAKE) namespace-benchmark-test
+	$(MAKE) gpu-dmabuf-test
+	$(MAKE) external-dmabuf-test
 
 virtme-test:
 	./tests/run_virtme_tests.sh
@@ -256,12 +352,17 @@ clean:
 	rm -f $(OBJS) $(PROV_OBJS) $(DEPS) $(LIB_STATIC) $(LIB_SHARED) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) \
 		$(LIB_PROVIDER) $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) \
 		$(NEIGH_TEST) $(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST) \
-		$(UET_TEST) $(NSCC_TEST)
+		$(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
+		$(PROVIDER_DMABUF_TEST) $(EXTERNAL_DMABUF_TEST)
 
 .PHONY: shared-abi-test all examples clean install test rxe-test-build rxe-test rxe-tools-test \
-	uib-tools-test uet-test uet-tools-test uet-loss-test \
+	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \
 	uet-congestion-test uet-multipath-test examples-test \
-	examples-stress-test guest-test \
-	virtme-test configure-test test-all
+	examples-stress-test dmabuf-e2e-test zerocopy-e2e-test \
+	benchmark-all benchmark-local benchmark-report benchmark-smoke \
+	provider-dmabuf-test \
+	gpu-dmabuf-test external-dmabuf-test remote-benchmark-test \
+	namespace-benchmark-test guest-test \
+	optional-features-test virtme-test configure-test test-all
 
 -include $(DEPS)

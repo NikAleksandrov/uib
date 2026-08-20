@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -53,6 +54,7 @@ struct uib_afxdp_backend {
 	int                  timer_fd;
 	pthread_t            worker;
 	int                  worker_run;
+	int                  zerocopy;
 };
 
 static int parse_mac(const char *s, uint8_t mac[6])
@@ -292,6 +294,10 @@ static int afxdp_send_entropy(struct uib_context *ctx,
 
 	if (xsk_ring_prod__needs_wakeup(&be->tx))
 		sendto(xsk_socket__fd(be->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
+	if (be->zerocopy)
+		uib_zerocopy_account_direct(ctx, len, UIB_ZEROCOPY_CAP_AF_XDP);
+	else
+		uib_zerocopy_account_copy(ctx, len);
 out:
 	pthread_mutex_unlock(&be->tx_lock);
 	return rc;
@@ -360,6 +366,8 @@ static int afxdp_init(struct uib_context *ctx)
 	be->port = htons(ctx->bind_port ? ctx->bind_port :
 			 ctx->pops->default_port);
 	be->queue_id = qs ? (uint32_t)atoi(qs) : 0;
+	be->zerocopy = ctx->zerocopy.mode != UIB_ZEROCOPY_OFF;
+	scfg.bind_flags |= be->zerocopy ? XDP_ZEROCOPY : XDP_COPY;
 	ctx->backend = be;
 	pthread_mutex_init(&be->tx_lock, NULL);
 
@@ -390,6 +398,13 @@ static int afxdp_init(struct uib_context *ctx)
 	}
 	rc = xsk_socket__create(&be->xsk, ifn, be->queue_id, be->umem,
 				&be->rx, &be->tx, &scfg);
+	if (rc && ctx->zerocopy.mode == UIB_ZEROCOPY_AUTO) {
+		be->zerocopy = 0;
+		scfg.bind_flags &= ~XDP_ZEROCOPY;
+		scfg.bind_flags |= XDP_COPY;
+		rc = xsk_socket__create(&be->xsk, ifn, be->queue_id, be->umem,
+					&be->rx, &be->tx, &scfg);
+	}
 	if (rc) {
 		rc = rc < 0 ? rc : -rc;
 		goto err;

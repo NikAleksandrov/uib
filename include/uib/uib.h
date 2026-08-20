@@ -13,6 +13,7 @@
 #include "uib/qp.h"
 #include "uib/context.h"
 #include "uib/transport.h"
+#include "uib/zerocopy.h"
 #include "uib/verbs.h"
 
 #endif

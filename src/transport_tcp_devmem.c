@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -27,7 +28,10 @@
 struct tcp_peer {
 	int                 used;
 	int                 fd;
+	int                 zerocopy_enabled;
+	uint32_t            zerocopy_sequence;
 	int                 hs_expect;
+	/* The peer listening address is both the key and delivery source. */
 	struct sockaddr_in  laddr;
 	uint8_t            *rx;
 	size_t              rx_len;
@@ -95,6 +99,7 @@ static struct tcp_peer *peer_alloc(struct uib_tcp_backend *be)
 	return NULL;
 }
 
+/* Provide a total order on IPv4 endpoints for connect-race tie-breaking. */
 static int addr_cmp(const struct sockaddr_in *a, const struct sockaddr_in *b)
 {
 	uint32_t ia = ntohl(a->sin_addr.s_addr), ib = ntohl(b->sin_addr.s_addr);
@@ -142,12 +147,19 @@ static struct tcp_peer *tcp_connect(struct uib_context *ctx,
 	struct uib_tcp_hs hs;
 	struct iovec iov;
 	struct tcp_peer *p;
-	int fd, one = 1;
+	int zc;
+	int fd;
+	int one = 1;
 
 	fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd < 0)
 		return NULL;
 	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+	zc = uib_zerocopy_enable_socket(ctx, fd);
+	if (zc < 0) {
+		close(fd);
+		return NULL;
+	}
 	if (connect(fd, (const struct sockaddr *)dst, sizeof(*dst)) < 0) {
 		close(fd);
 		return NULL;
@@ -169,6 +181,7 @@ static struct tcp_peer *tcp_connect(struct uib_context *ctx,
 		return NULL;
 	}
 	p->fd = fd;
+	p->zerocopy_enabled = zc;
 	p->laddr = *dst;
 	p->hs_expect = 0;
 
@@ -182,9 +195,12 @@ static int tcp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 		    const void *buf, size_t len)
 {
 	struct uib_tcp_backend *be = ctx->backend;
+	struct msghdr message = {0};
+	struct iovec iov;
 	struct tcp_peer *p;
-	uint32_t nlen = htonl((uint32_t)len);
-	struct iovec iov[2];
+	uint8_t *frame;
+	uint32_t nlen;
+	ssize_t sent;
 	int rc;
 
 	if (len == 0 || len > UIB_TCP_MAX_FRAME)
@@ -198,17 +214,40 @@ static int tcp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 		pthread_mutex_unlock(&be->lock);
 		return -EIO;
 	}
-	iov[0].iov_base = &nlen;
-	iov[0].iov_len  = sizeof(nlen);
-	iov[1].iov_base = (void *)buf;
-	iov[1].iov_len  = len;
-	rc = write_all(p->fd, iov, 2);
+	frame = malloc(sizeof(uint32_t) + len);
+	if (!frame) {
+		pthread_mutex_unlock(&be->lock);
+		return -ENOMEM;
+	}
+	nlen = htonl((uint32_t)len);
+	memcpy(frame, &nlen, sizeof(nlen));
+	memcpy(frame + sizeof(uint32_t), buf, len);
+	iov.iov_base = frame;
+	iov.iov_len = sizeof(uint32_t) + len;
+	message.msg_iov = &iov;
+	message.msg_iovlen = 1;
+	sent = uib_zerocopy_sendmsg(ctx, p->fd, &message, MSG_NOSIGNAL,
+				    p->zerocopy_enabled,
+				    &p->zerocopy_sequence);
+	if (sent < 0) {
+		rc = (int)sent;
+	} else if ((size_t)sent == iov.iov_len) {
+		rc = 0;
+	} else {
+		iov.iov_base = frame + sent;
+		iov.iov_len -= (size_t)sent;
+		rc = write_all(p->fd, &iov, 1);
+		if (!rc)
+			uib_zerocopy_account_copy(ctx, iov.iov_len);
+	}
 	if (rc < 0)
 		peer_drop(be, p);
+	free(frame);
 	pthread_mutex_unlock(&be->lock);
 	return rc;
 }
 
+/* Only the worker thread accesses the receive buffer. */
 static int peer_parse(struct uib_context *ctx, struct tcp_peer *p)
 {
 	struct uib_tcp_backend *be = ctx->backend;
@@ -228,6 +267,12 @@ static int peer_parse(struct uib_context *ctx, struct tcp_peer *p)
 		p->hs_expect = 0;
 		off = sizeof(hs);
 
+		/*
+		 * Connect-race resolution: if we already have a connection to this
+		 * peer (one we initiated), keep exactly one. The endpoint with the
+		 * lower address keeps the connection it initiated and drops this
+		 * inbound one; the higher keeps this inbound and drops its outbound.
+		 */
 		pthread_mutex_lock(&be->lock);
 		for (i = 0; i < UIB_TCP_MAX_PEERS; i++) {
 			struct tcp_peer *q = &be->peers[i];
@@ -297,12 +342,19 @@ static void tcp_accept(struct uib_context *ctx)
 	struct uib_tcp_backend *be = ctx->backend;
 	struct epoll_event ev;
 	struct tcp_peer *p;
-	int fd, one = 1;
+	int zc;
+	int fd;
+	int one = 1;
 
 	fd = accept(be->listen_fd, NULL, NULL);
 	if (fd < 0)
 		return;
 	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+	zc = uib_zerocopy_enable_socket(ctx, fd);
+	if (zc < 0) {
+		close(fd);
+		return;
+	}
 
 	pthread_mutex_lock(&be->lock);
 	p = peer_alloc(be);
@@ -312,6 +364,7 @@ static void tcp_accept(struct uib_context *ctx)
 		return;
 	}
 	p->fd = fd;
+	p->zerocopy_enabled = zc;
 	p->hs_expect = 1;
 	ev.events = EPOLLIN;
 	ev.data.ptr = p;

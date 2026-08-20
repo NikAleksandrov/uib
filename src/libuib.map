@@ -32,7 +32,10 @@ UIB_0.1 {
 		uib_mr_check_local;
 		uib_mr_check_remote;
 		uib_mr_check_remote_address;
+		uib_mr_cpu_begin;
+		uib_mr_cpu_end;
 		uib_mr_place;
+		uib_mr_read;
 		uib_neigh_lookup;
 		uib_open_device;
 		uib_open_device_protocol;
@@ -54,6 +57,8 @@ UIB_0.1 {
 		uib_qp_scatter;
 		uib_reg_mr;
 		uib_reg_mr_dmabuf;
+		uib_reg_mr_dmabuf_ex;
+		uib_reg_mr_dmabuf_iova;
 		uib_register_qp;
 		uib_reth_pack;
 		uib_reth_unpack;
@@ -101,6 +106,12 @@ UIB_0.1 {
 		uib_uet_session_configure;
 		uib_uet_session_query;
 		uib_unregister_qp;
+		uib_zerocopy_account_copy;
+		uib_zerocopy_account_direct;
+		uib_zerocopy_enable_socket;
+		uib_zerocopy_get_stats;
+		uib_zerocopy_init;
+		uib_zerocopy_sendmsg;
 		uibv_alloc_pd;
 		uibv_close_device;
 		uibv_create_cq;
@@ -117,6 +128,7 @@ UIB_0.1 {
 		uibv_poll_cq;
 		uibv_post_recv;
 		uibv_post_send;
+		uibv_reg_dmabuf_mr;
 		uibv_reg_mr;
 	local:
 		*;

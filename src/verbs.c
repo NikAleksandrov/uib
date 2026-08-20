@@ -116,9 +116,19 @@ int uibv_dealloc_pd(struct uib_pd *pd)
 	return uib_dealloc_pd(pd);
 }
 
-struct uib_mr *uibv_reg_mr(struct uib_pd *pd, void *addr, size_t len, int access)
+struct uib_mr *uibv_reg_mr(struct uib_pd *pd, void *addr, size_t len,
+			   int access)
 {
 	return uib_reg_mr(pd, addr, len, access);
+}
+
+struct uib_mr *uibv_reg_dmabuf_mr(struct uib_pd *pd, uint64_t offset,
+				  size_t len, uint64_t iova, int fd,
+				  int access)
+{
+	return uib_reg_mr_dmabuf_iova(pd, fd, (size_t)offset, len, iova,
+				       access, UIB_DMABUF_ALLOW_MMAP |
+				       UIB_DMABUF_ALLOW_DEVICE);
 }
 int uibv_dereg_mr(struct uib_mr *mr)
 {
@@ -150,11 +160,15 @@ int uibv_destroy_qp(struct uib_qp *qp)
 {
 	return uib_destroy_qp(qp);
 }
-int uibv_post_send(struct uib_qp *qp, struct uib_send_wr *wr, struct uib_send_wr **bad)
+
+int uibv_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
+		   struct uib_send_wr **bad)
 {
 	return uib_post_send(qp, wr, bad);
 }
-int uibv_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr, struct uib_recv_wr **bad)
+
+int uibv_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
+		   struct uib_recv_wr **bad)
 {
 	return uib_post_recv(qp, wr, bad);
 }

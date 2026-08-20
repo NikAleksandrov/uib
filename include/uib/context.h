@@ -7,6 +7,7 @@
 
 #include "uib/transport_ops.h"
 #include "uib/protocol.h"
+#include "uib/zerocopy.h"
 
 struct uib_qp;
 
@@ -22,9 +23,12 @@ struct uib_context {
 	struct sockaddr_in  local_addr;
 
 	pthread_mutex_t     qp_lock;
+	pthread_mutex_t     zerocopy_lock;
+	pthread_rwlock_t    qp_io_lock;
 	struct uib_qp     **qp_table;
 	uint32_t            qp_table_size;
 	uint32_t            qp_next_hint;
+	struct uib_zerocopy_stats zerocopy;
 };
 
 #define UIB_DEFAULT_QP_TABLE 256

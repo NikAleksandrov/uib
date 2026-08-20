@@ -9,6 +9,7 @@
 #include <infiniband/verbs.h>
 
 #undef ibv_reg_mr
+#undef ibv_reg_dmabuf_mr
 #undef ibv_query_port
 
 #include "uib/uib.h"
@@ -71,22 +72,28 @@ static int                 (*real_close_device)(struct ibv_context *);
 static struct ibv_pd      *(*real_alloc_pd)(struct ibv_context *);
 static int                 (*real_dealloc_pd)(struct ibv_pd *);
 static struct ibv_mr      *(*real_reg_mr)(struct ibv_pd *, void *, size_t, int);
+static struct ibv_mr      *(*real_reg_dmabuf_mr)(struct ibv_pd *, uint64_t,
+						 size_t, uint64_t, int, int);
 static int                 (*real_dereg_mr)(struct ibv_mr *);
 static struct ibv_cq      *(*real_create_cq)(struct ibv_context *, int, void *,
 					      struct ibv_comp_channel *, int);
 static int                 (*real_destroy_cq)(struct ibv_cq *);
-static struct ibv_qp      *(*real_create_qp)(struct ibv_pd *, struct ibv_qp_init_attr *);
-static int                 (*real_modify_qp)(struct ibv_qp *, struct ibv_qp_attr *, int);
+static struct ibv_qp      *(*real_create_qp)(struct ibv_pd *,
+					     struct ibv_qp_init_attr *);
+static int                 (*real_modify_qp)(struct ibv_qp *,
+					     struct ibv_qp_attr *, int);
 static int                 (*real_destroy_qp)(struct ibv_qp *);
-static int                 (*real_query_qp)(struct ibv_qp *, struct ibv_qp_attr *,
-					     int, struct ibv_qp_init_attr *);
-static int                 (*real_query_device)(struct ibv_context *, struct ibv_device_attr *);
+static int                 (*real_query_qp)(struct ibv_qp *,
+					    struct ibv_qp_attr *, int,
+					    struct ibv_qp_init_attr *);
+static int                 (*real_query_device)(struct ibv_context *,
+						struct ibv_device_attr *);
 static int                 (*real_query_port)(struct ibv_context *, uint8_t,
 					       struct _compat_ibv_port_attr *);
 static int                 (*real_query_gid)(struct ibv_context *, uint8_t, int,
 					      union ibv_gid *);
-static int                 (*real_query_pkey)(struct ibv_context *, uint8_t, int,
-					       __be16 *);
+static int                 (*real_query_pkey)(struct ibv_context *, uint8_t,
+					      int, __be16 *);
 
 static int ctx_is_ours(struct ibv_context *ctx)
 {
@@ -111,6 +118,7 @@ static void uibv_init(void)
 	real_alloc_pd          = dlsym(RTLD_NEXT, "ibv_alloc_pd");
 	real_dealloc_pd        = dlsym(RTLD_NEXT, "ibv_dealloc_pd");
 	real_reg_mr            = dlsym(RTLD_NEXT, "ibv_reg_mr");
+	real_reg_dmabuf_mr     = dlsym(RTLD_NEXT, "ibv_reg_dmabuf_mr");
 	real_dereg_mr          = dlsym(RTLD_NEXT, "ibv_dereg_mr");
 	real_create_cq         = dlsym(RTLD_NEXT, "ibv_create_cq");
 	real_destroy_cq        = dlsym(RTLD_NEXT, "ibv_destroy_cq");
@@ -411,11 +419,12 @@ static int provider_req_notify_cq(struct ibv_cq *cq, int solicited_only)
 
 struct ibv_device **ibv_get_device_list(int *num)
 {
-	struct ibv_device **real = real_get_device_list ? real_get_device_list(NULL) : NULL;
+	struct ibv_device **real;
 	struct ibv_device **list;
 	int real_n = 0;
 	int i;
 
+	real = real_get_device_list ? real_get_device_list(NULL) : NULL;
 	if (real) {
 		while (real[real_n])
 			real_n++;
@@ -557,7 +566,8 @@ int ibv_dealloc_pd(struct ibv_pd *pd)
 	return rc < 0 ? -rc : 0;
 }
 
-struct ibv_mr *ibv_reg_mr(struct ibv_pd *pd, void *addr, size_t length, int access)
+struct ibv_mr *ibv_reg_mr(struct ibv_pd *pd, void *addr, size_t length,
+			  int access)
 {
 	if (!ctx_is_ours(pd->context))
 		return real_reg_mr ? real_reg_mr(pd, addr, length, access) : NULL;
@@ -583,6 +593,39 @@ struct ibv_mr *ibv_reg_mr(struct ibv_pd *pd, void *addr, size_t length, int acce
 	return &w->ibv;
 }
 
+struct ibv_mr *ibv_reg_dmabuf_mr(struct ibv_pd *pd, uint64_t offset,
+				 size_t length, uint64_t iova, int fd,
+				 int access)
+{
+	struct uibv_pd_wrap *pdw;
+	struct uibv_mr_wrap *wrapper;
+	struct uib_mr *core;
+
+	if (!ctx_is_ours(pd->context))
+		return real_reg_dmabuf_mr ?
+			real_reg_dmabuf_mr(pd, offset, length, iova, fd, access) :
+			NULL;
+	pdw = WRAP_OF(pd, struct uibv_pd_wrap, ibv);
+	core = uib_reg_mr_dmabuf_iova(pdw->core, fd, (size_t)offset, length,
+				      iova, access, UIB_DMABUF_ALLOW_MMAP |
+				       UIB_DMABUF_ALLOW_DEVICE);
+	if (!core)
+		return NULL;
+	wrapper = calloc(1, sizeof(*wrapper));
+	if (!wrapper) {
+		uib_dereg_mr(core);
+		return NULL;
+	}
+	wrapper->core = core;
+	wrapper->ibv.context = pd->context;
+	wrapper->ibv.pd = pd;
+	wrapper->ibv.addr = (void *)(uintptr_t)iova;
+	wrapper->ibv.length = length;
+	wrapper->ibv.lkey = core->lkey;
+	wrapper->ibv.rkey = core->rkey;
+	return &wrapper->ibv;
+}
+
 int ibv_dereg_mr(struct ibv_mr *mr)
 {
 	if (!ctx_is_ours(mr->context))
@@ -598,7 +641,8 @@ struct ibv_cq *ibv_create_cq(struct ibv_context *ctx, int cqe, void *cq_context,
 			      struct ibv_comp_channel *channel, int comp_vector)
 {
 	if (!ctx_is_ours(ctx))
-		return real_create_cq ? real_create_cq(ctx, cqe, cq_context, channel, comp_vector) : NULL;
+		return real_create_cq ? real_create_cq(ctx, cqe, cq_context,
+						       channel, comp_vector) : NULL;
 	(void)cq_context; (void)channel; (void)comp_vector;
 	struct uibv_ctx_wrap *cw = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
 	struct uib_cq *core = uib_create_cq(cw->core, cqe);
@@ -716,7 +760,7 @@ int ibv_modify_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr, int mask)
 		struct sockaddr_in sa = {0};
 
 		if (gid_to_sockaddr(&attr->ah_attr.grh.dgid, &sa,
-				    qw->core->ctx->pops->default_port) == 0) {
+				    qw->core->ctx->bind_port) == 0) {
 			ua.remote_addr = sa;
 			umask |= UIB_QP_AV;
 		}

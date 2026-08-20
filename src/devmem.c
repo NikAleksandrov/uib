@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -194,6 +195,7 @@ int uib_devmem_bind_rx(const char *ifname, uint32_t queue_id, int dmabuf_fd,
 	if (rc > 0)
 		genl_find_attr(buf, rc, NETDEV_A_DMABUF_ID, &id, sizeof(id));
 
+	/* The binding lives for as long as this socket remains open. */
 	b->sock_fd   = fd;
 	b->dmabuf_id = id;
 	return 0;

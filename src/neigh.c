@@ -24,7 +24,8 @@ struct neigh_req {
 	struct ndmsg    ndm;
 };
 
-static int match_neigh(const struct nlmsghdr *nlh, uint32_t dst_ip, uint8_t mac[6])
+static int match_neigh(const struct nlmsghdr *nlh, uint32_t dst_ip,
+		       uint8_t mac[6])
 {
 	const struct ndmsg *ndm = NLMSG_DATA(nlh);
 	const struct rtattr *rta;

@@ -22,7 +22,11 @@ int                 uibv_close_device(struct uib_context *ctx);
 struct uib_pd *uibv_alloc_pd(struct uib_context *ctx);
 int            uibv_dealloc_pd(struct uib_pd *pd);
 
-struct uib_mr *uibv_reg_mr(struct uib_pd *pd, void *addr, size_t len, int access);
+struct uib_mr *uibv_reg_mr(struct uib_pd *pd, void *addr, size_t len,
+			   int access);
+struct uib_mr *uibv_reg_dmabuf_mr(struct uib_pd *pd, uint64_t offset,
+				  size_t len, uint64_t iova, int fd,
+				  int access);
 int            uibv_dereg_mr(struct uib_mr *mr);
 
 struct uib_cq *uibv_create_cq(struct uib_context *ctx, int cqe);
@@ -30,10 +34,13 @@ int            uibv_destroy_cq(struct uib_cq *cq);
 int            uibv_poll_cq(struct uib_cq *cq, int n, struct uib_wc *wc);
 
 struct uib_qp *uibv_create_qp(struct uib_pd *pd, struct uib_qp_init_attr *attr);
-int            uibv_modify_qp(struct uib_qp *qp, struct uib_qp_attr *attr, int mask);
+int            uibv_modify_qp(struct uib_qp *qp,
+			      struct uib_qp_attr *attr, int mask);
 int            uibv_destroy_qp(struct uib_qp *qp);
-int            uibv_post_send(struct uib_qp *qp, struct uib_send_wr *wr, struct uib_send_wr **bad);
-int            uibv_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr, struct uib_recv_wr **bad);
+int            uibv_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
+			      struct uib_send_wr **bad);
+int            uibv_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
+			      struct uib_recv_wr **bad);
 
 #ifdef UIB_VERBS_COMPAT
 #define ibv_device         uibv_device
@@ -55,6 +62,7 @@ int            uibv_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr, struct 
 #define ibv_alloc_pd         uibv_alloc_pd
 #define ibv_dealloc_pd       uibv_dealloc_pd
 #define ibv_reg_mr           uibv_reg_mr
+#define ibv_reg_dmabuf_mr    uibv_reg_dmabuf_mr
 #define ibv_dereg_mr         uibv_dereg_mr
 #define ibv_create_cq(c, n, ...) uibv_create_cq(c, n)
 #define ibv_destroy_cq       uibv_destroy_cq
