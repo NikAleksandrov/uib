@@ -12,8 +12,8 @@ The core library requires:
 
   * Linux and a C11-capable C compiler, GNU make, pthreads and standard Linux
     networking headers;
-  * liburing headers and runtime library (Debian/Ubuntu: liburing-dev;
-    Fedora: liburing-devel); and
+  * liburing headers and runtime library with multishot recvmsg and provided
+    buffer-ring APIs (Debian/Ubuntu: liburing-dev; Fedora: liburing-devel); and
   * autoconf 2.69 or newer only when regenerating configure.
 
 Optional functionality is enabled when configure finds its dependencies:
@@ -60,6 +60,20 @@ Select the packet transport with UIB_TRANSPORT_MODE:
     udp-io-uring  asynchronous UDP io_uring backend (default)
     udp-zc-afxdp  AF_XDP backend when libxdp and a capable interface are present
     tcp-devmem    Framed TCP backend with optional netdev DMA-BUF queue binding
+
+The default backend owns its io_uring from a dedicated worker thread. Senders
+enqueue into a bounded nonblocking queue; the worker submits sendmsg SQEs in
+batches and reaps TX and RX completions together. RX uses provided-buffer
+multishot recvmsg on Linux 6.0 and newer. Set UIB_URING_RX_MODE=batch to force
+the portable fallback with 32 receive SQEs outstanding, or set it to
+multishot to require multishot support. The default auto mode falls back
+automatically.
+
+Completion queues can be attached to an event channel with
+uib_create_comp_channel() and uib_create_cq_channel(). Arm one-shot delivery
+with uib_req_notify_cq(), wait on the channel fd with poll/epoll, consume the
+event with uib_get_cq_event(), and finish with uib_ack_cq_events(). The
+transparent provider exposes the corresponding standard ibverbs calls.
 
 Set UIB_UDP_MODE=raw only for RXE wire interoperability. Raw sockets require
 CAP_NET_RAW; the default socket mode works in an ordinary rootless container.

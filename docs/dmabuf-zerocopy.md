@@ -64,10 +64,12 @@ the standard DMA-BUF fd produced by those stacks.
 Socket zero-copy semantics
 --------------------------
 
-The UDP socket and framed TCP transports enable SO_ZEROCOPY when requested and
-send eligible packets with MSG_ZEROCOPY. UIB consumes the error-queue completion
-before releasing the packet buffer. Statistics are available through
-uib_zerocopy_get_stats(). Linux may accept MSG_ZEROCOPY but report
+The UDP io_uring and framed TCP transports enable socket zero-copy when
+requested. UDP submits eligible packets with IORING_OP_SENDMSG_ZC and keeps
+each packet alive until its notification CQE; TCP uses MSG_ZEROCOPY and
+consumes the error-queue completion before releasing the packet buffer.
+Statistics are available through uib_zerocopy_get_stats(). Linux may accept
+MSG_ZEROCOPY but report
 SO_EE_CODE_ZEROCOPY_COPIED; this is counted as a deferred copy. Loopback does
 this by design, so zero-copy is commonly slower in local smoke tests.
 

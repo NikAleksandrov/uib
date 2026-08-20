@@ -131,6 +131,9 @@ NSCC_TEST    := tests/nscc_test
 ZEROCOPY_TEST := tests/zerocopy_test
 PROVIDER_DMABUF_TEST := tests/provider_dmabuf_test
 EXTERNAL_DMABUF_TEST := tests/external_dmabuf_test
+CQ_EVENT_TEST := tests/cq_event_test
+URING_ASYNC_TEST := tests/uring_async_test
+PROVIDER_CQ_EVENT_TEST := tests/provider_cq_event_test
 
 DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d $(NEIGH_TEST).d \
 	$(BTH_TEST).d $(RXE_TEST).d $(PROTOCOL_TEST).d $(UET_TEST).d \
@@ -138,6 +141,9 @@ DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d $(NEIGH_TEST).d \
 
 DEPS += $(ZEROCOPY_TEST).d $(PROVIDER_DMABUF_TEST).d \
 	$(EXTERNAL_DMABUF_TEST).d
+
+DEPS += $(CQ_EVENT_TEST).d $(URING_ASYNC_TEST).d
+DEPS += $(PROVIDER_CQ_EVENT_TEST).d
 
 $(TEST_BIN): tests/loopback.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
@@ -172,7 +178,16 @@ $(ZEROCOPY_TEST): tests/zerocopy_test.c $(LIB_SHARED)
 $(PROVIDER_DMABUF_TEST): tests/provider_dmabuf_test.c $(LIB_PROVIDER)
 	$(CC) $(CFLAGS) -o $@ $< $(IBVERBS_LIBS) -libverbs
 
+$(PROVIDER_CQ_EVENT_TEST): tests/provider_cq_event_test.c $(LIB_PROVIDER)
+	$(CC) $(CFLAGS) -o $@ $< $(IBVERBS_LIBS) -libverbs
+
 $(EXTERNAL_DMABUF_TEST): tests/external_dmabuf_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+$(CQ_EVENT_TEST): tests/cq_event_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+$(URING_ASYNC_TEST): tests/uring_async_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
 ifeq ($(HAVE_IBVERBS),1)
@@ -194,9 +209,13 @@ provider-dmabuf-test: all $(PROVIDER_DMABUF_TEST)
 	LD_PRELOAD=$(CURDIR)/$(LIB_PROVIDER) UIB_BIND_PORT=19101 \
 		UIB_UDP_MODE=socket \
 		./$(PROVIDER_DMABUF_TEST)
+
+provider-cq-event-test: all $(PROVIDER_CQ_EVENT_TEST)
+	UIB_BIND_PORT=19610 LD_PRELOAD=$(CURDIR)/$(LIB_PROVIDER) \
+		./$(PROVIDER_CQ_EVENT_TEST)
 else
 rxe-test-build rxe-test rxe-tools-test uib-tools-test uet-tools-test \
-provider-dmabuf-test:
+provider-dmabuf-test provider-cq-event-test:
 	@echo "SKIP $@: libibverbs development files are unavailable"
 endif
 
@@ -290,7 +309,8 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 	UIB_PROTOCOL=uet UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 
 test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST) \
-	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST)
+	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
+	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
 	./$(DMABUF_TEST)
@@ -299,6 +319,8 @@ test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(B
 	./$(UET_TEST)
 	./$(NSCC_TEST)
 	./$(ZEROCOPY_TEST)
+	./$(CQ_EVENT_TEST)
+	./$(URING_ASYNC_TEST)
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	./$(TEST_BIN)
 
@@ -319,6 +341,7 @@ guest-test: all rxe-test-build
 	$(MAKE) zerocopy-e2e-test
 	$(MAKE) benchmark-smoke
 	$(MAKE) provider-dmabuf-test
+	$(MAKE) provider-cq-event-test
 	$(MAKE) optional-features-test
 	$(MAKE) remote-benchmark-test
 	UIB_NAMESPACE_REQUIRED=1 $(MAKE) namespace-benchmark-test
@@ -354,14 +377,15 @@ clean:
 		$(LIB_PROVIDER) $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) \
 		$(NEIGH_TEST) $(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST) \
 		$(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
-		$(PROVIDER_DMABUF_TEST) $(EXTERNAL_DMABUF_TEST)
+		$(PROVIDER_DMABUF_TEST) $(EXTERNAL_DMABUF_TEST) \
+		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST)
 
 .PHONY: shared-abi-test all examples clean install test rxe-test-build rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \
 	uet-congestion-test uet-multipath-test examples-test \
 	examples-stress-test dmabuf-e2e-test zerocopy-e2e-test \
 	benchmark-all benchmark-local benchmark-report benchmark-smoke \
-	provider-dmabuf-test \
+	provider-dmabuf-test provider-cq-event-test \
 	gpu-dmabuf-test external-dmabuf-test remote-benchmark-test \
 	namespace-benchmark-test guest-test \
 	optional-features-test virtme-test configure-test test-all
