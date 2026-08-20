@@ -128,6 +128,18 @@ Build and run the native UIB, libibverbs and windowed traffic examples with:
     make examples-test
     make examples-stress-test
 
+Run the short scaling regression test, including 4-thread QPN demultiplexing
+and maximum-window RoCEv2/UET transfers, with:
+
+    make scaling-test
+
+`make scaling-benchmark` runs the corresponding full measurement. It prints
+actual lookup throughput, nanoseconds per lookup and CPU seconds for the old
+serialized lookup model and the direct lookup path, followed by actual
+bandwidth, operation rate, CPU time and latency percentiles for both protocols
+at windows 64 and 128. `UIB_SCALE_THREADS`, `UIB_SCALE_LOOKUPS` and
+`UIB_SCALE_TRAFFIC_ITERS` control its workload.
+
 See the [examples guide](examples/) for individual commands and benchmark
 options. The complete reference run and comparison tables are in
 [the benchmark report](docs/benchmark-results.md). See the

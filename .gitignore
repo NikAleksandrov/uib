@@ -15,8 +15,11 @@
 /tests/reorder_test
 /tests/transport_test
 /tests/qp_scale_test
+/tests/qp_lookup_bench
 /tests/uet_test
 /tests/nscc_test
+/tests/zerocopy_test
+/tests/cq_event_test
 /tests/uring_async_test
 
 # example binaries
