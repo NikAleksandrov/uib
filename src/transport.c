@@ -67,6 +67,8 @@ static const char *mode_name(enum uib_transport_mode m)
 	switch (m) {
 	case UIB_MODE_UDP_IO_URING:
 		return "udp-io-uring";
+	case UIB_MODE_UDP_SYNC:
+		return "udp-sync";
 	case UIB_MODE_UDP_ZC_AFXDP:
 		return "udp-zc-afxdp";
 	case UIB_MODE_TCP_DEVMEM:
@@ -81,8 +83,10 @@ enum uib_transport_mode uib_transport_mode_from_env(void)
 
 	if (!s || !*s)
 		return UIB_MODE_UDP_IO_URING;
-	if (!strcmp(s, "udp-io-uring") || !strcmp(s, "udp-blocking"))
+	if (!strcmp(s, "udp-io-uring"))
 		return UIB_MODE_UDP_IO_URING;
+	if (!strcmp(s, "udp-sync") || !strcmp(s, "udp-blocking"))
+		return UIB_MODE_UDP_SYNC;
 	if (!strcmp(s, "udp-zc-afxdp"))
 		return UIB_MODE_UDP_ZC_AFXDP;
 	if (!strcmp(s, "tcp-devmem"))
@@ -95,6 +99,8 @@ static const struct uib_transport_ops *ops_for_mode(enum uib_transport_mode m)
 	switch (m) {
 	case UIB_MODE_UDP_IO_URING:
 		return &uib_udp_ops;
+	case UIB_MODE_UDP_SYNC:
+		return &uib_udp_sync_ops;
 	case UIB_MODE_UDP_ZC_AFXDP:
 		return &uib_afxdp_ops;
 	case UIB_MODE_TCP_DEVMEM:

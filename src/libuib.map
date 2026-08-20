@@ -84,6 +84,7 @@ UIB_0.1 {
 		uib_transport_send;
 		uib_transport_send_entropy;
 		uib_udp_ops;
+		uib_udp_sync_ops;
 		uib_uet_atomic_datatype_size;
 		uib_uet_build_ack;
 		uib_uet_multipath_configure;

@@ -83,6 +83,7 @@ struct uib_udp_backend {
 	unsigned int             rx_batch;
 	unsigned int             tx_batch;
 	unsigned int             test_drop_tx;
+	uint32_t                 zerocopy_sequence;
 	int                      zerocopy_enabled;
 	int                      multishot_required;
 	int                      multishot_armed;
@@ -819,7 +820,7 @@ static void cleanup_backend(struct uib_udp_backend *be)
 	free(be);
 }
 
-static int udp_init(struct uib_context *ctx)
+static int udp_init_common(struct uib_context *ctx, int asynchronous)
 {
 	const char *drop_tx = getenv("UIB_TEST_DROP_TX");
 	struct uib_udp_backend *be;
@@ -835,13 +836,16 @@ static int udp_init(struct uib_context *ctx)
 	pthread_mutex_init(&be->init_lock, NULL);
 	pthread_cond_init(&be->init_cond, NULL);
 	be->rx_batch = UIB_URING_BATCH_DEFAULT;
-	be->tx_batch = UIB_URING_TX_BATCH_DEFAULT;
+	if (asynchronous)
+		be->tx_batch = UIB_URING_TX_BATCH_DEFAULT;
 	rc = parse_batch_size("UIB_URING_RX_BATCH", &be->rx_batch);
 	if (rc < 0)
 		goto error;
-	rc = parse_batch_size("UIB_URING_TX_BATCH", &be->tx_batch);
-	if (rc < 0)
-		goto error;
+	if (asynchronous) {
+		rc = parse_batch_size("UIB_URING_TX_BATCH", &be->tx_batch);
+		if (rc < 0)
+			goto error;
+	}
 	be->multishot_op.type = UIB_UDP_OP_RX_MULTISHOT;
 	be->timer_op.type = UIB_UDP_OP_TIMER;
 	be->wake_op.type = UIB_UDP_OP_WAKE;
@@ -879,6 +883,16 @@ error:
 	cleanup_backend(be);
 	ctx->backend = NULL;
 	return rc;
+}
+
+static int udp_init(struct uib_context *ctx)
+{
+	return udp_init_common(ctx, 1);
+}
+
+static int udp_sync_init(struct uib_context *ctx)
+{
+	return udp_init_common(ctx, 0);
 }
 
 static void udp_fini(struct uib_context *ctx)
@@ -1062,6 +1076,73 @@ static int udp_send(struct uib_context *ctx,
 	return udp_send_entropy(ctx, destination, buffer, length, 0);
 }
 
+static int udp_sync_send_entropy(struct uib_context *ctx,
+				 const struct sockaddr_in *destination,
+				 const void *buffer, size_t length,
+				 uint16_t entropy)
+{
+	struct uib_udp_backend *be = ctx->backend;
+	struct uib_udp_tx *tx = NULL;
+	struct msghdr message;
+	struct iovec iov;
+	ssize_t sent;
+	int rc;
+
+	if (test_drop_packet(be))
+		return 0;
+	if (be->raw_mode) {
+		tx = calloc(1, sizeof(*tx));
+		if (!tx)
+			return -ENOMEM;
+		rc = build_raw_packet(ctx, destination, buffer, length, entropy,
+				      tx);
+		if (rc < 0)
+			goto out;
+		sent = sendto(be->fd, tx->data, tx->length, MSG_NOSIGNAL,
+			      (const struct sockaddr *)destination,
+			      sizeof(*destination));
+		if (sent >= 0)
+			uib_zerocopy_account_copy(ctx, (size_t)sent);
+		else
+			sent = -errno;
+		length = tx->length;
+	} else {
+		memset(&message, 0, sizeof(message));
+		iov.iov_base = (void *)buffer;
+		iov.iov_len = length;
+		message.msg_name = (void *)destination;
+		message.msg_namelen = sizeof(*destination);
+		message.msg_iov = &iov;
+		message.msg_iovlen = 1;
+		sent = uib_zerocopy_sendmsg(ctx, be->fd, &message,
+					    MSG_NOSIGNAL,
+					    be->zerocopy_enabled,
+					    &be->zerocopy_sequence);
+	}
+	__atomic_fetch_add(&be->stats.tx_submitted, 1, __ATOMIC_RELAXED);
+	if (sent < 0) {
+		__atomic_fetch_add(&be->stats.tx_errors, 1, __ATOMIC_RELAXED);
+		rc = (int)sent;
+	} else if ((size_t)sent != length) {
+		__atomic_fetch_add(&be->stats.tx_errors, 1, __ATOMIC_RELAXED);
+		rc = -EIO;
+	} else {
+		__atomic_fetch_add(&be->stats.tx_completed, 1, __ATOMIC_RELAXED);
+		rc = 0;
+	}
+out:
+	if (tx)
+		free_tx(tx);
+	return rc;
+}
+
+static int udp_sync_send(struct uib_context *ctx,
+			 const struct sockaddr_in *destination,
+			 const void *buffer, size_t length)
+{
+	return udp_sync_send_entropy(ctx, destination, buffer, length, 0);
+}
+
 static int udp_get_stats(struct uib_context *ctx,
 			 struct uib_transport_stats *stats)
 {
@@ -1096,5 +1177,15 @@ const struct uib_transport_ops uib_udp_ops = {
 	.fini = udp_fini,
 	.send = udp_send,
 	.send_entropy = udp_send_entropy,
+	.get_stats = udp_get_stats,
+};
+
+const struct uib_transport_ops uib_udp_sync_ops = {
+	.name = "udp-sync",
+	.probe = udp_probe,
+	.init = udp_sync_init,
+	.fini = udp_fini,
+	.send = udp_sync_send,
+	.send_entropy = udp_sync_send_entropy,
 	.get_stats = udp_get_stats,
 };

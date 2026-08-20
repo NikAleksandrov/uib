@@ -15,6 +15,7 @@ struct uib_transport_stats;
  */
 enum uib_transport_mode {
 	UIB_MODE_UDP_IO_URING = 0,
+	UIB_MODE_UDP_SYNC,
 	UIB_MODE_UDP_ZC_AFXDP,
 	UIB_MODE_TCP_DEVMEM,
 };
@@ -38,5 +39,6 @@ struct uib_transport_ops {
 };
 
 extern const struct uib_transport_ops uib_udp_ops;
+extern const struct uib_transport_ops uib_udp_sync_ops;
 
 #endif
