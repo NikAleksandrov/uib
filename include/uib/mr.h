@@ -54,8 +54,11 @@ struct uib_mr {
 	int             dmabuf_sync;
 	void           *backend_mr;
 
-	struct uib_mr  *next;
-	struct uib_mr  *prev;
+	struct uib_mr  *addr_parent;
+	struct uib_mr  *addr_right;
+	struct uib_mr  *addr_left;
+	uint64_t        addr_max;
+	uint32_t        addr_priority;
 };
 
 struct uib_mr *uib_reg_mr(struct uib_pd *pd, void *addr, size_t length,
@@ -73,6 +76,8 @@ int uib_dereg_mr(struct uib_mr *mr);
 
 int uib_mr_check_local(struct uib_pd *pd, uint32_t lkey,
 		       const void *addr, size_t len, int access);
+struct uib_mr *uib_mr_lookup_local(struct uib_pd *pd, uint32_t lkey,
+				   const void *addr, size_t len, int access);
 struct uib_mr *uib_mr_check_remote(struct uib_pd *pd, uint32_t rkey,
 				   uint64_t va, size_t len, int access);
 struct uib_mr *uib_mr_check_remote_address(struct uib_pd *pd, uint64_t va,

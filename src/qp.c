@@ -171,12 +171,11 @@ static int gather_total(struct uib_pd *pd, const struct uib_sge *sgl, int n,
 
 		if (off + s->length > cap)
 			return -EMSGSIZE;
-		rc = uib_mr_check_local(pd, s->lkey,
-					(const void *)(uintptr_t)s->addr,
-					s->length, 0);
-		if (rc < 0)
-			return rc;
-		mr = uib_pd_lookup_key(pd, s->lkey);
+		mr = uib_mr_lookup_local(pd, s->lkey,
+					 (const void *)(uintptr_t)s->addr,
+					 s->length, 0);
+		if (!mr)
+			return -EACCES;
 		rc = uib_mr_read(mr, s->addr, out + off, s->length);
 		if (rc < 0)
 			return rc;
@@ -211,17 +210,19 @@ static int scatter_at(struct uib_pd *pd, struct uib_sge *sgl, int n,
 	size_t consumed = 0;
 
 	for (; i < n && consumed < in_len; i++) {
+		struct uib_mr *mr;
 		size_t avail = sgl[i].length - off_in_sge;
 		size_t take = (avail < in_len - consumed) ? avail : (in_len - consumed);
 		int rc;
 
-		rc = uib_mr_check_local(pd, sgl[i].lkey,
-					(void *)(uintptr_t)(sgl[i].addr + off_in_sge),
-					take, UIB_ACCESS_LOCAL_WRITE);
-		if (rc < 0)
-			return rc;
-		rc = uib_mr_place(uib_pd_lookup_key(pd, sgl[i].lkey),
-				  sgl[i].addr + off_in_sge, in + consumed, take);
+		mr = uib_mr_lookup_local(pd, sgl[i].lkey,
+					 (void *)(uintptr_t)(sgl[i].addr +
+							     off_in_sge),
+					 take, UIB_ACCESS_LOCAL_WRITE);
+		if (!mr)
+			return -EACCES;
+		rc = uib_mr_place(mr, sgl[i].addr + off_in_sge,
+				  in + consumed, take);
 		if (rc < 0)
 			return rc;
 		consumed += take;

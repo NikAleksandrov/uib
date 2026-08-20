@@ -42,13 +42,17 @@ UIB_0.1 {
 		uib_mr_check_remote_address;
 		uib_mr_cpu_begin;
 		uib_mr_cpu_end;
+		uib_mr_lookup_local;
 		uib_mr_place;
 		uib_mr_read;
 		uib_open_device;
 		uib_open_device_protocol;
 		uib_pd_attach_mr;
 		uib_pd_detach_mr;
+		uib_pd_lookup_address;
 		uib_pd_lookup_key;
+		uib_pd_lookup_lkey;
+		uib_pd_lookup_rkey;
 		uib_poll_cq;
 		uib_post_recv;
 		uib_post_send;

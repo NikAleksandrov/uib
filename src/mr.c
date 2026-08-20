@@ -88,7 +88,8 @@ struct uib_mr *uib_reg_mr(struct uib_pd *pd, void *addr, size_t length,
 {
 	struct uib_mr *mr;
 
-	if (!pd || !addr || !length) {
+	if (!pd || !addr || !length ||
+	    (uint64_t)(uintptr_t)addr > UINT64_MAX - length) {
 		errno = EINVAL;
 		return NULL;
 	}
@@ -105,7 +106,13 @@ struct uib_mr *uib_reg_mr(struct uib_pd *pd, void *addr, size_t length,
 	mr->lkey   = __atomic_fetch_add(&key_next, 1, __ATOMIC_RELAXED);
 	mr->rkey   = mr->lkey;
 	mr->pinned = (mlock(addr, length) == 0) ? 1 : 0;
-	uib_pd_attach_mr(pd, mr);
+	if (uib_pd_attach_mr(pd, mr) < 0) {
+		if (mr->pinned)
+			munlock(addr, length);
+		free(mr);
+		errno = ENOMEM;
+		return NULL;
+	}
 	return mr;
 }
 
@@ -202,7 +209,9 @@ static struct uib_mr *reg_mr_dmabuf(struct uib_pd *pd, int dmabuf_fd,
 		rc = -EOPNOTSUPP;
 		goto err_backend;
 	}
-	uib_pd_attach_mr(pd, mr);
+	rc = uib_pd_attach_mr(pd, mr);
+	if (rc < 0)
+		goto err_backend;
 	return mr;
 
 err_backend:
@@ -260,7 +269,7 @@ int uib_dereg_mr(struct uib_mr *mr)
 int uib_mr_check_local(struct uib_pd *pd, uint32_t lkey,
 		       const void *addr, size_t len, int access)
 {
-	struct uib_mr *mr = uib_pd_lookup_key(pd, lkey);
+	struct uib_mr *mr = uib_pd_lookup_lkey(pd, lkey);
 
 	if (!mr || mr->lkey != lkey)
 		return -EACCES;
@@ -271,10 +280,24 @@ int uib_mr_check_local(struct uib_pd *pd, uint32_t lkey,
 	return 0;
 }
 
+struct uib_mr *uib_mr_lookup_local(struct uib_pd *pd, uint32_t lkey,
+				   const void *addr, size_t len, int access)
+{
+	struct uib_mr *mr = uib_pd_lookup_lkey(pd, lkey);
+
+	if (!mr || mr->lkey != lkey)
+		return NULL;
+	if (!uib_mr_contains(mr, (uint64_t)(uintptr_t)addr, len))
+		return NULL;
+	if (access && (mr->access & access) != access)
+		return NULL;
+	return mr;
+}
+
 struct uib_mr *uib_mr_check_remote(struct uib_pd *pd, uint32_t rkey,
 				   uint64_t va, size_t len, int access)
 {
-	struct uib_mr *mr = uib_pd_lookup_key(pd, rkey);
+	struct uib_mr *mr = uib_pd_lookup_rkey(pd, rkey);
 
 	if (!mr || mr->rkey != rkey)
 		return NULL;
@@ -288,18 +311,7 @@ struct uib_mr *uib_mr_check_remote(struct uib_pd *pd, uint32_t rkey,
 struct uib_mr *uib_mr_check_remote_address(struct uib_pd *pd, uint64_t va,
 					   size_t len, int access)
 {
-	struct uib_mr *mr;
-
-	if (!pd)
-		return NULL;
-	pthread_mutex_lock(&pd->lock);
-	for (mr = pd->mr_list; mr; mr = mr->next) {
-		if (uib_mr_contains(mr, va, len) &&
-		    (mr->access & access) == access)
-			break;
-	}
-	pthread_mutex_unlock(&pd->lock);
-	return mr;
+	return uib_pd_lookup_address(pd, va, len, access);
 }
 
 int uib_mr_place(struct uib_mr *mr, uint64_t va, const void *src, size_t len)
