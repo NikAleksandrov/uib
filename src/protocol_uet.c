@@ -48,6 +48,8 @@ struct uib_uet_wr_track {
 struct uib_uet_outstanding {
 	struct uib_uet_outstanding *next;
 	struct uib_uet_outstanding *prev;
+	struct uib_uet_outstanding *ack_next;
+	struct uib_uet_outstanding *ack_prev;
 	struct uib_uet_wr_track *track;
 	struct sockaddr_in dst;
 	uint8_t *packet;
@@ -81,6 +83,8 @@ struct uib_uet_qp {
 	int tx_initialized;
 	struct uib_uet_outstanding *out_head;
 	struct uib_uet_outstanding *out_tail;
+	struct uib_uet_outstanding *ack_head;
+	struct uib_uet_outstanding *ack_tail;
 	struct uib_uet_outstanding *tx_cursor;
 	struct uib_psn_index out_index;
 	struct uib_uet_nscc nscc;
@@ -661,6 +665,15 @@ uet_first_unsent(struct uib_uet_qp *uet)
 	return NULL;
 }
 
+static int uet_out_requires_response(const struct uib_uet_outstanding *out)
+{
+	return out->track->opcode == UIB_WR_RDMA_READ ||
+		out->track->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
+		out->track->opcode == UIB_WR_ATOMIC_CMP_SWAP ||
+		(out->track->opcode == UIB_WR_UET_ATOMIC &&
+		 out->track->read_num_sge);
+}
+
 static void uet_link_outstanding(struct uib_uet_qp *uet,
 				 struct uib_uet_outstanding *out)
 {
@@ -671,6 +684,15 @@ static void uet_link_outstanding(struct uib_uet_qp *uet,
 	else
 		uet->out_head = out;
 	uet->out_tail = out;
+	if (!uet_out_requires_response(out)) {
+		out->ack_next = NULL;
+		out->ack_prev = uet->ack_tail;
+		if (uet->ack_tail)
+			uet->ack_tail->ack_next = out;
+		else
+			uet->ack_head = out;
+		uet->ack_tail = out;
+	}
 	if (!uet->tx_cursor)
 		uet->tx_cursor = out;
 	uet_outstanding_index_add(uet, out);
@@ -696,12 +718,22 @@ static void uet_unlink_outstanding(struct uib_uet_qp *uet,
 			cursor = cursor->next;
 		uet->tx_cursor = cursor;
 	}
+	if (out->ack_prev)
+		out->ack_prev->ack_next = out->ack_next;
+	else if (uet->ack_head == out)
+		uet->ack_head = out->ack_next;
+	if (out->ack_next)
+		out->ack_next->ack_prev = out->ack_prev;
+	else if (uet->ack_tail == out)
+		uet->ack_tail = out->ack_prev;
 	uet_outstanding_index_remove(uet, out);
 	if (out->sent)
 		uet->sent_count--;
 	uet->out_count--;
 	out->next = NULL;
 	out->prev = NULL;
+	out->ack_next = NULL;
+	out->ack_prev = NULL;
 }
 
 static void uet_qp_fini(struct uib_qp *qp)
@@ -1834,16 +1866,10 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 		return 0;
 	}
 
-	for (out = uet->out_head; out; out = next_out) {
-		next_out = out->next;
+	for (out = uet->ack_head; out; out = next_out) {
+		next_out = out->ack_next;
 		if (uet_psn_before(cack, out->psn))
 			break;
-		if (out->track->opcode == UIB_WR_RDMA_READ ||
-		    out->track->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
-		    out->track->opcode == UIB_WR_ATOMIC_CMP_SWAP ||
-		    (out->track->opcode == UIB_WR_UET_ATOMIC &&
-		     out->track->read_num_sge))
-			continue;
 		uet_complete_out_locked(qp, out, UIB_WC_SUCCESS);
 	}
 	exact = uet_find_outstanding(uet, ack_psn, msg_id);
@@ -1853,11 +1879,7 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 		return 0;
 	}
 
-	if (exact->track->opcode == UIB_WR_RDMA_READ ||
-	    exact->track->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
-	    exact->track->opcode == UIB_WR_ATOMIC_CMP_SWAP ||
-	    (exact->track->opcode == UIB_WR_UET_ATOMIC &&
-	     exact->track->read_num_sge)) {
+	if (uet_out_requires_response(exact)) {
 		size_t consumed = 0;
 		uint64_t atomic_value;
 		uint8_t atomic_bytes[16];
