@@ -38,6 +38,7 @@ ip netns exec uibns env \
 	LD_PRELOAD="$project_dir/libuibv.so" \
 	UIB_BIND_IP=192.0.2.2 \
 	UIB_BIND_PORT=4791 \
+	UIB_UDP_MODE=raw \
 	timeout -k 1 30 "$project_dir/tests/rxe_interop" \
 	client uib0 0 192.0.2.1 \
 	>"$uib_log" 2>&1

@@ -2,12 +2,15 @@
 set -eu
 
 project_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+iterations=${UIB_TEST_ITERS:-64}
 rxe_log=/tmp/uib-rxe-pingpong-server.log
 uib_log=/tmp/uib-rxe-pingpong-client.log
 server_pid=
 
 cleanup()
 {
+	status=$?
+
 	if [ -n "$server_pid" ]; then
 		kill "$server_pid" 2>/dev/null || true
 		wait "$server_pid" 2>/dev/null || true
@@ -15,6 +18,12 @@ cleanup()
 	rdma link delete rxe-tools0 2>/dev/null || true
 	ip netns delete uib-rxe-tools 2>/dev/null || true
 	ip link delete rxe-tools-eth 2>/dev/null || true
+	if [ "$status" -ne 0 ]; then
+		printf 'UIB ibv_rc_pingpong client:\n' >&2
+		cat "$uib_log" >&2 2>/dev/null || true
+		printf 'RXE ibv_rc_pingpong server:\n' >&2
+		cat "$rxe_log" >&2 2>/dev/null || true
+	fi
 }
 trap cleanup EXIT INT TERM
 
@@ -31,7 +40,7 @@ ip netns exec uib-rxe-tools ip link set uib-tools-eth up
 rdma link add rxe-tools0 type rxe netdev rxe-tools-eth
 
 timeout -k 1 30 ibv_rc_pingpong \
-	-d rxe-tools0 -g 1 -m 1024 -s 2051 -n 64 -c \
+	-d rxe-tools0 -g 1 -m 1024 -s 2051 -n "$iterations" -c \
 	>"$rxe_log" 2>&1 &
 server_pid=$!
 sleep 1
@@ -40,8 +49,9 @@ ip netns exec uib-rxe-tools env \
 	LD_PRELOAD="$project_dir/libuibv.so" \
 	UIB_BIND_IP=192.0.2.2 \
 	UIB_BIND_PORT=4791 \
+	UIB_UDP_MODE=raw \
 	timeout -k 1 30 ibv_rc_pingpong \
-	-d uib0 -g 0 -m 1024 -s 2051 -n 64 -c 192.0.2.1 \
+	-d uib0 -g 0 -m 1024 -s 2051 -n "$iterations" -c 192.0.2.1 \
 	>"$uib_log" 2>&1
 wait "$server_pid"
 server_pid=

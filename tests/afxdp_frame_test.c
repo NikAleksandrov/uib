@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include <stdio.h>
 #include <string.h>
 #include <arpa/inet.h>
@@ -45,7 +46,8 @@ int main(void)
 		check("build.ip_csum_valid", uib_inet_csum(ip, sizeof(*ip)) == 0);
 	}
 
-	check("build.overflow", uib_frame_build(frame, 40, &hi, pay, sizeof(pay)) == -1);
+	check("build.overflow",
+	      uib_frame_build(frame, 40, &hi, pay, sizeof(pay)) == -1);
 
 	memset(&src, 0, sizeof(src));
 	check("parse.ok", uib_frame_parse(frame, flen, htons(4791), &src,

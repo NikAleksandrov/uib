@@ -290,7 +290,9 @@ int main(int argc, char **argv)
 	struct ibv_qp_init_attr init = {0};
 
 	if (argc < 4 || (strcmp(argv[1], "server") && strcmp(argv[1], "client"))) {
-		fprintf(stderr, "usage: %s server|client DEVICE GID_INDEX [SERVER_IP]\n", argv[0]);
+		fprintf(stderr,
+			"usage: %s server|client DEVICE GID_INDEX [SERVER_IP]\n",
+			argv[0]);
 		return 2;
 	}
 	server = !strcmp(argv[1], "server");
