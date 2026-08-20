@@ -135,6 +135,7 @@ CQ_EVENT_TEST := tests/cq_event_test
 URING_ASYNC_TEST := tests/uring_async_test
 PROVIDER_CQ_EVENT_TEST := tests/provider_cq_event_test
 REORDER_TEST := tests/reorder_test
+TRANSPORT_TEST := tests/transport_test
 
 DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d $(NEIGH_TEST).d \
 	$(BTH_TEST).d $(RXE_TEST).d $(PROTOCOL_TEST).d $(UET_TEST).d \
@@ -146,6 +147,7 @@ DEPS += $(ZEROCOPY_TEST).d $(PROVIDER_DMABUF_TEST).d \
 DEPS += $(CQ_EVENT_TEST).d $(URING_ASYNC_TEST).d
 DEPS += $(PROVIDER_CQ_EVENT_TEST).d
 DEPS += $(REORDER_TEST).d
+DEPS += $(TRANSPORT_TEST).d
 
 $(TEST_BIN): tests/loopback.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
@@ -190,6 +192,9 @@ $(CQ_EVENT_TEST): tests/cq_event_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
 $(URING_ASYNC_TEST): tests/uring_async_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+$(TRANSPORT_TEST): tests/transport_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
 $(REORDER_TEST): tests/reorder_test.c $(LIB_STATIC)
@@ -307,6 +312,15 @@ examples-stress-test: examples
 	./examples/stress_bench --protocol uet --iterations 256 --size 1024 --window 32
 	./examples/stress_bench --protocol dummy --iterations 256 --size 1024 --window 32
 
+sync-transport-test: examples $(TEST_BIN)
+	UIB_TRANSPORT_MODE=udp-sync ./$(TEST_BIN)
+	UIB_TRANSPORT_MODE=udp-sync ./examples/stress_bench \
+		--protocol rocev2 --iterations 256 --size 1024 --window 32
+	UIB_TRANSPORT_MODE=udp-sync ./examples/stress_bench \
+		--protocol uet --iterations 256 --size 1024 --window 32
+	UIB_TRANSPORT_MODE=udp-sync ./examples/stress_bench \
+		--protocol dummy --iterations 256 --size 1024 --window 32
+
 uet-test: all $(TEST_BIN) $(UET_TEST)
 	./$(UET_TEST)
 	./$(NSCC_TEST)
@@ -318,7 +332,8 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 
 test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST) \
 	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
-	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(REORDER_TEST)
+	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(REORDER_TEST) \
+	$(TRANSPORT_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
 	./$(DMABUF_TEST)
@@ -330,8 +345,10 @@ test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(B
 	./$(CQ_EVENT_TEST)
 	./$(URING_ASYNC_TEST)
 	./$(REORDER_TEST)
+	./$(TRANSPORT_TEST)
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
-	./$(TEST_BIN)
+	UIB_TRANSPORT_MODE=udp-sync ./$(TEST_BIN)
+	UIB_TRANSPORT_MODE=udp-io-uring ./$(TEST_BIN)
 
 guest-test: all rxe-test-build
 	$(MAKE) test
@@ -346,6 +363,7 @@ guest-test: all rxe-test-build
 	$(MAKE) uet-multipath-test
 	$(MAKE) examples-test
 	$(MAKE) examples-stress-test
+	$(MAKE) sync-transport-test
 	$(MAKE) dmabuf-e2e-test
 	$(MAKE) zerocopy-e2e-test
 	$(MAKE) benchmark-smoke
@@ -388,12 +406,13 @@ clean:
 		$(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 		$(PROVIDER_DMABUF_TEST) $(EXTERNAL_DMABUF_TEST) \
 		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST) \
-		$(REORDER_TEST)
+		$(REORDER_TEST) $(TRANSPORT_TEST)
 
 .PHONY: shared-abi-test all examples clean install test rxe-test-build rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \
 	uet-congestion-test uet-multipath-test examples-test \
-	examples-stress-test dmabuf-e2e-test zerocopy-e2e-test \
+	examples-stress-test sync-transport-test dmabuf-e2e-test \
+	zerocopy-e2e-test \
 	benchmark-all benchmark-local benchmark-report benchmark-doc \
 	benchmark-smoke \
 	provider-dmabuf-test provider-cq-event-test \

@@ -181,6 +181,10 @@ for affinity in ${UIB_NAMESPACE_AFFINITIES:-unpinned pinned}; do
 					"$affinity"
 				run_pair "$protocol" udp-io-uring required "$memory" \
 					"$affinity"
+				run_pair "$protocol" udp-sync off "$memory" \
+					"$affinity"
+				run_pair "$protocol" udp-sync required "$memory" \
+					"$affinity"
 				run_pair "$protocol" tcp-devmem off "$memory" \
 					"$affinity"
 				run_pair "$protocol" tcp-devmem required "$memory" \

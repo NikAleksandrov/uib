@@ -79,6 +79,8 @@ run_pair()
 for protocol in rocev2 uet dummy; do
 	run_pair "$protocol" udp-io-uring off host
 	run_pair "$protocol" udp-io-uring required dmabuf
+	run_pair "$protocol" udp-sync off host
+	run_pair "$protocol" udp-sync required dmabuf
 	run_pair "$protocol" tcp-devmem off host
 	run_pair "$protocol" tcp-devmem required dmabuf
 done

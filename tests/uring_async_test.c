@@ -162,6 +162,7 @@ out:
 
 int main(void)
 {
+	setenv("UIB_TRANSPORT_MODE", "udp-io-uring", 1);
 	run_mode("multishot", 19600, 19601, UIB_URING_RX_MULTISHOT);
 	run_mode("batch", 19602, 19603, UIB_URING_RX_BATCHED);
 	run_shutdown_drain();
