@@ -24,7 +24,11 @@ Optional functionality is enabled when configure finds its dependencies:
   * libxdp and libbpf development files build the AF_XDP transport
     (Debian/Ubuntu: libxdp-dev and libbpf-dev; Fedora: libxdp-devel and
     libbpf-devel);
-  * Linux headers defining SO_DEVMEM_DMABUF enable TCP device-memory RX;
+  * Linux headers defining SO_DEVMEM_DMABUF enable TCP netdev DMA-BUF queue
+    binding scaffolding;
+  * Linux dma-buf headers enable mmap-backed system/GPU DMA-BUF registration;
+  * Linux headers defining SO_ZEROCOPY and MSG_ZEROCOPY enable optional socket
+    transmit zero-copy;
   * virtme-ng, a kernel image, iproute2 and rdma-core tools run the VM/RXE
     integration tests; and
   * perftest or rdma-core's ibv_rc_pingpong provides standard tools coverage.
@@ -34,12 +38,13 @@ Run the checked-in configure script, then build:
     ./configure
     make -j$(nproc)
 
-Use --disable-provider, --disable-af-xdp or --disable-devmem to force a feature
-off. Use --enable-provider, --enable-af-xdp or --enable-devmem to require it
-and fail configuration when its dependency is absent. A nonstandard liburing
-installation can be selected with --with-liburing=PREFIX. The detected values
-are written to config.mk. Building directly with make remains supported and
-performs equivalent best-effort probes.
+Use --disable-provider, --disable-af-xdp, --disable-devmem,
+--disable-dmabuf or --disable-zerocopy to force a feature off. The matching
+--enable-* option requires it and fails configuration when its dependency is
+absent. A nonstandard liburing installation can be selected with
+--with-liburing=PREFIX. The detected values are written to config.mk. Building
+directly with make remains supported and performs equivalent best-effort
+probes.
 
 Protocols and transports
 ------------------------
@@ -52,9 +57,16 @@ Select the wire protocol with UIB_PROTOCOL:
 
 Select the packet transport with UIB_TRANSPORT_MODE:
 
-    udp-blocking  UDP/raw IPv4 backend (default)
+    udp-blocking  unprivileged UDP socket backend (default)
     udp-zc-afxdp  AF_XDP backend when libxdp and a capable interface are present
-    tcp-devmem    Framed TCP backend with optional device-memory receive support
+    tcp-devmem    Framed TCP backend with optional netdev DMA-BUF queue binding
+
+Set UIB_UDP_MODE=raw only for RXE wire interoperability. Raw sockets require
+CAP_NET_RAW; the default socket mode works in an ordinary rootless container.
+UIB_ZEROCOPY=off, auto, on or required controls MSG_ZEROCOPY and AF_XDP copy
+selection. Auto uses socket zero-copy for packets at least 10 KiB. On and
+required use a 1 KiB floor so small protocol ACKs cannot stall waiting for a
+TCP zero-copy completion. Override either threshold with UIB_ZEROCOPY_THRESHOLD.
 
 UET enables the specification-defined NSCC congestion controller by default.
 Set UIB_UET_CC=none only for comparison testing. UIB_UET_NSCC_MAX_WND can cap
@@ -82,9 +94,28 @@ Build and run the native UIB, libibverbs and windowed traffic examples with:
     make examples-test
     make examples-stress-test
 
-See examples/README.md for individual commands and benchmark options. See
-docs/transparent-verbs.md for running an existing, unmodified verbs application
-through UIB.
+See the [examples guide](examples/) for individual commands and benchmark
+options. The complete reference run and comparison tables are in
+[the benchmark report](docs/benchmark-results.md). See the
+[transparent verbs guide](docs/transparent-verbs.md) for running an existing,
+unmodified verbs application through UIB.
+
+DMA-BUF and zero-copy
+---------------------
+
+System DMA-BUFs and CPU-mappable GPU DMA-BUFs can be registered with
+uib_reg_mr_dmabuf(), uib_reg_mr_dmabuf_iova() or standard
+ibv_reg_dmabuf_mr(). UIB owns a duplicate of the fd, maps the requested range,
+uses synthetic or caller-selected IOVA addressing, and brackets library CPU
+access with DMA_BUF_IOCTL_SYNC. Applications directly accessing mr->addr use
+uib_mr_cpu_begin() and uib_mr_cpu_end().
+
+Non-mappable GPU DMA-BUFs are rejected unless a selected transport advertises
+a complete device RX/TX datapath. The current TCP netdev binding is setup
+scaffolding and deliberately does not advertise that capability: its framed
+UIB headers cannot yet be parsed from opaque GPU memory. This avoids silently
+claiming a transfer whose bytes were never placed. See
+docs/dmabuf-zerocopy.md for the exact capability boundary.
 
 Ultra Ethernet scope
 --------------------

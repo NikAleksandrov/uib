@@ -35,6 +35,9 @@ opens `uib0`:
   UIB_BIND_IP           local IPv4 address
   UIB_BIND_PORT         local UDP/TCP service port
   UIB_TRANSPORT_MODE    udp-blocking, udp-zc-afxdp or tcp-devmem
+  UIB_UDP_MODE          socket (default) or raw (requires CAP_NET_RAW)
+  UIB_ZEROCOPY          off, auto, on or required
+  UIB_ZEROCOPY_THRESHOLD minimum packet size for auto mode
   UIB_UET_CC            nscc (default) or none
   UIB_UET_OPTIMIZED     off, auto, small or medium
   UIB_UET_MULTIPATH     off, oblivious or path-aware
@@ -49,7 +52,8 @@ Compatibility boundary
 
 The compatibility layer implements the common RC data path: device/port/GID
 queries, PDs, registered memory, CQs, QPs, SEND/RECV, RDMA WRITE/READ, immediate
-data, and standard 64-bit fetch-add/compare-swap. Native UIB APIs expose the
+data, standard `ibv_reg_dmabuf_mr()`, and standard 64-bit
+fetch-add/compare-swap. Native UIB APIs expose the
 larger UET atomic matrix and UET-specific tuning/statistics. Applications that
 require completion channels, async events, shared receive queues, memory
 windows, XRC/DC, userspace provider discovery internals or other extended verbs
