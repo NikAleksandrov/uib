@@ -1,5 +1,6 @@
 UIB_0.1 {
 	global:
+		uib_ack_cq_events;
 		uib_aeth_pack;
 		uib_aeth_unpack;
 		uib_afxdp_ops;
@@ -9,12 +10,16 @@ UIB_0.1 {
 		uib_bth_set_pad;
 		uib_bth_unpack;
 		uib_close_device;
+		uib_comp_channel_fd;
 		uib_cq_push;
 		uib_crc32;
+		uib_create_comp_channel;
 		uib_create_cq;
+		uib_create_cq_channel;
 		uib_create_qp;
 		uib_dealloc_pd;
 		uib_dereg_mr;
+		uib_destroy_comp_channel;
 		uib_destroy_cq;
 		uib_destroy_qp;
 		uib_deth_pack;
@@ -25,6 +30,7 @@ UIB_0.1 {
 		uib_frame_build;
 		uib_frame_parse;
 		uib_genl_family_id;
+		uib_get_cq_event;
 		uib_icrc;
 		uib_inet_csum;
 		uib_lookup_qp;
@@ -60,6 +66,7 @@ UIB_0.1 {
 		uib_reg_mr_dmabuf_ex;
 		uib_reg_mr_dmabuf_iova;
 		uib_register_qp;
+		uib_req_notify_cq;
 		uib_reth_pack;
 		uib_reth_unpack;
 		uib_rocev2_handle_packet;
@@ -113,15 +120,19 @@ UIB_0.1 {
 		uib_zerocopy_get_stats;
 		uib_zerocopy_init;
 		uib_zerocopy_sendmsg;
+		uibv_ack_cq_events;
 		uibv_alloc_pd;
 		uibv_close_device;
+		uibv_create_comp_channel;
 		uibv_create_cq;
 		uibv_create_qp;
 		uibv_dealloc_pd;
 		uibv_dereg_mr;
+		uibv_destroy_comp_channel;
 		uibv_destroy_cq;
 		uibv_destroy_qp;
 		uibv_free_device_list;
+		uibv_get_cq_event;
 		uibv_get_device_list;
 		uibv_get_device_name;
 		uibv_modify_qp;
@@ -131,6 +142,7 @@ UIB_0.1 {
 		uibv_post_send;
 		uibv_reg_dmabuf_mr;
 		uibv_reg_mr;
+		uibv_req_notify_cq;
 	local:
 		*;
 };

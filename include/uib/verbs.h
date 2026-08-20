@@ -30,6 +30,12 @@ struct uib_mr *uibv_reg_dmabuf_mr(struct uib_pd *pd, uint64_t offset,
 int            uibv_dereg_mr(struct uib_mr *mr);
 
 struct uib_cq *uibv_create_cq(struct uib_context *ctx, int cqe);
+struct uib_comp_channel *uibv_create_comp_channel(struct uib_context *ctx);
+int uibv_destroy_comp_channel(struct uib_comp_channel *channel);
+int uibv_get_cq_event(struct uib_comp_channel *channel, struct uib_cq **cq,
+			      void **event_context);
+void uibv_ack_cq_events(struct uib_cq *cq, unsigned int events);
+int uibv_req_notify_cq(struct uib_cq *cq, int solicited_only);
 int            uibv_destroy_cq(struct uib_cq *cq);
 int            uibv_poll_cq(struct uib_cq *cq, int n, struct uib_wc *wc);
 
@@ -65,6 +71,11 @@ int            uibv_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
 #define ibv_reg_dmabuf_mr    uibv_reg_dmabuf_mr
 #define ibv_dereg_mr         uibv_dereg_mr
 #define ibv_create_cq(c, n, ...) uibv_create_cq(c, n)
+#define ibv_create_comp_channel uibv_create_comp_channel
+#define ibv_destroy_comp_channel uibv_destroy_comp_channel
+#define ibv_get_cq_event      uibv_get_cq_event
+#define ibv_ack_cq_events     uibv_ack_cq_events
+#define ibv_req_notify_cq     uibv_req_notify_cq
 #define ibv_destroy_cq       uibv_destroy_cq
 #define ibv_poll_cq          uibv_poll_cq
 #define ibv_create_qp        uibv_create_qp

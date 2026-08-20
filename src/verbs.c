@@ -139,6 +139,27 @@ struct uib_cq *uibv_create_cq(struct uib_context *ctx, int cqe)
 {
 	return uib_create_cq(ctx, cqe);
 }
+struct uib_comp_channel *uibv_create_comp_channel(struct uib_context *ctx)
+{
+	return uib_create_comp_channel(ctx);
+}
+int uibv_destroy_comp_channel(struct uib_comp_channel *channel)
+{
+	return uib_destroy_comp_channel(channel);
+}
+int uibv_get_cq_event(struct uib_comp_channel *channel, struct uib_cq **cq,
+			      void **event_context)
+{
+	return uib_get_cq_event(channel, cq, event_context);
+}
+void uibv_ack_cq_events(struct uib_cq *cq, unsigned int events)
+{
+	uib_ack_cq_events(cq, events);
+}
+int uibv_req_notify_cq(struct uib_cq *cq, int solicited_only)
+{
+	return uib_req_notify_cq(cq, solicited_only);
+}
 int uibv_destroy_cq(struct uib_cq *cq)
 {
 	return uib_destroy_cq(cq);

@@ -47,6 +47,11 @@ struct uibv_mr_wrap {
 	struct uib_mr  *core;
 };
 
+struct uibv_channel_wrap {
+	struct ibv_comp_channel  ibv;
+	struct uib_comp_channel *core;
+};
+
 struct uibv_cq_wrap {
 	struct ibv_cq   ibv;
 	struct uib_cq  *core;
@@ -75,6 +80,14 @@ static struct ibv_mr      *(*real_reg_mr)(struct ibv_pd *, void *, size_t, int);
 static struct ibv_mr      *(*real_reg_dmabuf_mr)(struct ibv_pd *, uint64_t,
 						 size_t, uint64_t, int, int);
 static int                 (*real_dereg_mr)(struct ibv_mr *);
+static struct ibv_comp_channel *(*real_create_comp_channel)(
+						struct ibv_context *);
+static int                 (*real_destroy_comp_channel)(
+						struct ibv_comp_channel *);
+static int                 (*real_get_cq_event)(struct ibv_comp_channel *,
+					       struct ibv_cq **, void **);
+static void                (*real_ack_cq_events)(struct ibv_cq *,
+						 unsigned int);
 static struct ibv_cq      *(*real_create_cq)(struct ibv_context *, int, void *,
 					      struct ibv_comp_channel *, int);
 static int                 (*real_destroy_cq)(struct ibv_cq *);
@@ -120,6 +133,11 @@ static void uibv_init(void)
 	real_reg_mr            = dlsym(RTLD_NEXT, "ibv_reg_mr");
 	real_reg_dmabuf_mr     = dlsym(RTLD_NEXT, "ibv_reg_dmabuf_mr");
 	real_dereg_mr          = dlsym(RTLD_NEXT, "ibv_dereg_mr");
+	real_create_comp_channel = dlsym(RTLD_NEXT, "ibv_create_comp_channel");
+	real_destroy_comp_channel = dlsym(RTLD_NEXT,
+					  "ibv_destroy_comp_channel");
+	real_get_cq_event      = dlsym(RTLD_NEXT, "ibv_get_cq_event");
+	real_ack_cq_events     = dlsym(RTLD_NEXT, "ibv_ack_cq_events");
 	real_create_cq         = dlsym(RTLD_NEXT, "ibv_create_cq");
 	real_destroy_cq        = dlsym(RTLD_NEXT, "ibv_destroy_cq");
 	real_create_qp         = dlsym(RTLD_NEXT, "ibv_create_qp");
@@ -413,8 +431,12 @@ static int provider_poll_cq(struct ibv_cq *cq_ibv, int n, struct ibv_wc *wc)
 
 static int provider_req_notify_cq(struct ibv_cq *cq, int solicited_only)
 {
-	(void)cq; (void)solicited_only;
-	return 0;
+	struct uibv_cq_wrap *wrapper;
+	int rc;
+
+	wrapper = WRAP_OF(cq, struct uibv_cq_wrap, ibv);
+	rc = uib_req_notify_cq(wrapper->core, solicited_only);
+	return rc < 0 ? -rc : 0;
 }
 
 struct ibv_device **ibv_get_device_list(int *num)
@@ -534,6 +556,86 @@ int ibv_close_device(struct ibv_context *ctx)
 	return 0;
 }
 
+struct ibv_comp_channel *ibv_create_comp_channel(struct ibv_context *ctx)
+{
+	struct uibv_channel_wrap *wrapper;
+	struct uib_comp_channel *core;
+
+	if (!ctx_is_ours(ctx))
+		return real_create_comp_channel ? real_create_comp_channel(ctx) : NULL;
+	core = uib_create_comp_channel(
+		WRAP_OF(ctx, struct uibv_ctx_wrap, ibv)->core);
+	if (!core)
+		return NULL;
+	wrapper = calloc(1, sizeof(*wrapper));
+	if (!wrapper) {
+		uib_destroy_comp_channel(core);
+		return NULL;
+	}
+	wrapper->core = core;
+	wrapper->ibv.context = ctx;
+	wrapper->ibv.fd = uib_comp_channel_fd(core);
+	return &wrapper->ibv;
+}
+
+int ibv_destroy_comp_channel(struct ibv_comp_channel *channel)
+{
+	struct uibv_channel_wrap *wrapper;
+	int rc;
+
+	if (!channel || !ctx_is_ours(channel->context))
+		return real_destroy_comp_channel ?
+			real_destroy_comp_channel(channel) : -1;
+	wrapper = WRAP_OF(channel, struct uibv_channel_wrap, ibv);
+	if (channel->refcnt)
+		return EBUSY;
+	rc = uib_destroy_comp_channel(wrapper->core);
+	if (rc < 0)
+		return -rc;
+	free(wrapper);
+	return 0;
+}
+
+int ibv_get_cq_event(struct ibv_comp_channel *channel, struct ibv_cq **cq,
+		     void **cq_context)
+{
+	struct uibv_channel_wrap *channel_wrapper;
+	struct uibv_cq_wrap *cq_wrapper;
+	struct uib_cq *core_cq;
+	void *event_context;
+	int rc;
+
+	if (!channel || !ctx_is_ours(channel->context))
+		return real_get_cq_event ?
+			real_get_cq_event(channel, cq, cq_context) : -1;
+	channel_wrapper = WRAP_OF(channel, struct uibv_channel_wrap, ibv);
+	rc = uib_get_cq_event(channel_wrapper->core, &core_cq,
+			      &event_context);
+	if (rc < 0)
+		return -rc;
+	cq_wrapper = event_context;
+	*cq = &cq_wrapper->ibv;
+	if (cq_context)
+		*cq_context = cq_wrapper->ibv.cq_context;
+	pthread_mutex_lock(&cq_wrapper->ibv.mutex);
+	cq_wrapper->ibv.comp_events_completed++;
+	pthread_mutex_unlock(&cq_wrapper->ibv.mutex);
+	return 0;
+}
+
+void ibv_ack_cq_events(struct ibv_cq *cq, unsigned int events)
+{
+	struct uibv_cq_wrap *wrapper;
+
+	if (!cq || !ctx_is_ours(cq->context)) {
+		if (real_ack_cq_events)
+			real_ack_cq_events(cq, events);
+		return;
+	}
+	wrapper = WRAP_OF(cq, struct uibv_cq_wrap, ibv);
+	uib_ack_cq_events(wrapper->core, events);
+}
+
 struct ibv_pd *ibv_alloc_pd(struct ibv_context *ctx)
 {
 	if (!ctx_is_ours(ctx))
@@ -640,28 +742,43 @@ int ibv_dereg_mr(struct ibv_mr *mr)
 struct ibv_cq *ibv_create_cq(struct ibv_context *ctx, int cqe, void *cq_context,
 			      struct ibv_comp_channel *channel, int comp_vector)
 {
+	struct uibv_channel_wrap *channel_wrapper = NULL;
+	struct uibv_ctx_wrap *context_wrapper;
+	struct uibv_cq_wrap *wrapper;
+	struct uib_cq *core;
+
 	if (!ctx_is_ours(ctx))
 		return real_create_cq ? real_create_cq(ctx, cqe, cq_context,
 						       channel, comp_vector) : NULL;
-	(void)cq_context; (void)channel; (void)comp_vector;
-	struct uibv_ctx_wrap *cw = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
-	struct uib_cq *core = uib_create_cq(cw->core, cqe);
-
-	if (!core)
+	(void)comp_vector;
+	if (channel) {
+		if (channel->context != ctx) {
+			errno = EINVAL;
+			return NULL;
+		}
+		channel_wrapper = WRAP_OF(channel, struct uibv_channel_wrap, ibv);
+	}
+	context_wrapper = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
+	wrapper = calloc(1, sizeof(*wrapper));
+	if (!wrapper)
 		return NULL;
-	struct uibv_cq_wrap *w = calloc(1, sizeof(*w));
-
-	if (!w) {
-		uib_destroy_cq(core);
+	core = uib_create_cq_channel(context_wrapper->core, cqe,
+				     channel_wrapper ? channel_wrapper->core : NULL,
+				     wrapper);
+	if (!core) {
+		free(wrapper);
 		return NULL;
 	}
-	w->core = core;
-	w->ibv.context = ctx;
-	w->ibv.cqe     = cqe;
-	w->ibv.cq_context = cq_context;
-	pthread_mutex_init(&w->ibv.mutex, NULL);
-	pthread_cond_init(&w->ibv.cond, NULL);
-	return &w->ibv;
+	wrapper->core = core;
+	wrapper->ibv.context = ctx;
+	wrapper->ibv.channel = channel;
+	wrapper->ibv.cqe = cqe;
+	wrapper->ibv.cq_context = cq_context;
+	if (channel)
+		channel->refcnt++;
+	pthread_mutex_init(&wrapper->ibv.mutex, NULL);
+	pthread_cond_init(&wrapper->ibv.cond, NULL);
+	return &wrapper->ibv;
 }
 
 int ibv_destroy_cq(struct ibv_cq *cq)
@@ -671,6 +788,8 @@ int ibv_destroy_cq(struct ibv_cq *cq)
 	struct uibv_cq_wrap *w = WRAP_OF(cq, struct uibv_cq_wrap, ibv);
 	int rc = uib_destroy_cq(w->core);
 
+	if (cq->channel)
+		cq->channel->refcnt--;
 	pthread_cond_destroy(&w->ibv.cond);
 	pthread_mutex_destroy(&w->ibv.mutex);
 	free(w);
