@@ -50,7 +50,9 @@ struct uib_udp_rx_slot {
 
 struct uib_udp_tx {
 	struct uib_udp_op  op;
-	struct uib_udp_tx *next;
+	struct uib_udp_tx *inflight_next;
+	struct uib_udp_tx *inflight_prev;
+	struct uib_udp_tx *queue_next;
 	struct sockaddr_in destination;
 	struct iovec       iov;
 	struct msghdr      message;
@@ -354,19 +356,23 @@ static void arm_batched_rx(struct uib_udp_backend *be)
 
 static void inflight_add(struct uib_udp_backend *be, struct uib_udp_tx *tx)
 {
-	tx->next = be->tx_inflight;
+	tx->inflight_prev = NULL;
+	tx->inflight_next = be->tx_inflight;
+	if (be->tx_inflight)
+		be->tx_inflight->inflight_prev = tx;
 	be->tx_inflight = tx;
 }
 
 static void inflight_remove(struct uib_udp_backend *be, struct uib_udp_tx *tx)
 {
-	struct uib_udp_tx **cursor;
-
-	cursor = &be->tx_inflight;
-	while (*cursor && *cursor != tx)
-		cursor = &(*cursor)->next;
-	if (*cursor == tx)
-		*cursor = tx->next;
+	if (tx->inflight_prev)
+		tx->inflight_prev->inflight_next = tx->inflight_next;
+	else
+		be->tx_inflight = tx->inflight_next;
+	if (tx->inflight_next)
+		tx->inflight_next->inflight_prev = tx->inflight_prev;
+	tx->inflight_next = NULL;
+	tx->inflight_prev = NULL;
 }
 
 static void free_tx(struct uib_udp_tx *tx)
@@ -382,11 +388,11 @@ static struct uib_udp_tx *dequeue_tx(struct uib_udp_backend *be)
 	pthread_mutex_lock(&be->tx_lock);
 	tx = be->tx_head;
 	if (tx) {
-		be->tx_head = tx->next;
+		be->tx_head = tx->queue_next;
 		if (!be->tx_head)
 			be->tx_tail = NULL;
 		be->tx_count--;
-		tx->next = NULL;
+		tx->queue_next = NULL;
 	}
 	pthread_mutex_unlock(&be->tx_lock);
 	return tx;
@@ -395,7 +401,7 @@ static struct uib_udp_tx *dequeue_tx(struct uib_udp_backend *be)
 static void requeue_tx(struct uib_udp_backend *be, struct uib_udp_tx *tx)
 {
 	pthread_mutex_lock(&be->tx_lock);
-	tx->next = be->tx_head;
+	tx->queue_next = be->tx_head;
 	be->tx_head = tx;
 	if (!be->tx_tail)
 		be->tx_tail = tx;
@@ -656,14 +662,14 @@ static void free_all_tx(struct uib_udp_backend *be)
 
 	tx = be->tx_inflight;
 	while (tx) {
-		next = tx->next;
+		next = tx->inflight_next;
 		free_tx(tx);
 		tx = next;
 	}
 	be->tx_inflight = NULL;
 	tx = be->tx_head;
 	while (tx) {
-		next = tx->next;
+		next = tx->queue_next;
 		free_tx(tx);
 		tx = next;
 	}
@@ -1006,9 +1012,9 @@ static int enqueue_tx(struct uib_udp_backend *be, struct uib_udp_tx *tx)
 		pthread_mutex_unlock(&be->tx_lock);
 		return -EAGAIN;
 	}
-	tx->next = NULL;
+	tx->queue_next = NULL;
 	if (be->tx_tail)
-		be->tx_tail->next = tx;
+		be->tx_tail->queue_next = tx;
 	else
 		be->tx_head = tx;
 	be->tx_tail = tx;

@@ -41,8 +41,10 @@ static int wait_for_traffic(struct uib_context *sender,
 }
 
 static void run_mode(const char *mode, uint16_t sender_port,
-		     uint16_t receiver_port, enum uib_uring_rx_mode expected)
+		     uint16_t receiver_port, enum uib_uring_rx_mode expected,
+		     int zerocopy)
 {
+	struct uib_zerocopy_stats zerocopy_stats;
 	struct uib_transport_stats rx_stats;
 	struct uib_transport_stats tx_stats;
 	struct uib_context *receiver;
@@ -55,7 +57,8 @@ static void run_mode(const char *mode, uint16_t sender_port,
 	setenv("UIB_URING_RX_MODE", mode, 1);
 	setenv("UIB_URING_RX_BATCH", "17", 1);
 	setenv("UIB_URING_TX_BATCH", "7", 1);
-	setenv("UIB_ZEROCOPY", "off", 1);
+	setenv("UIB_ZEROCOPY", zerocopy ? "on" : "off", 1);
+	setenv("UIB_ZEROCOPY_THRESHOLD", "1", 1);
 	sender = uib_open_device_protocol("127.0.0.1", sender_port, "dummy");
 	receiver = uib_open_device_protocol("127.0.0.1", receiver_port,
 					    "dummy");
@@ -87,6 +90,11 @@ static void run_mode(const char *mode, uint16_t sender_port,
 	check("uring.rx_mode", rx_stats.rx_mode == expected);
 	check("uring.runtime_batches", rx_stats.rx_batch == 17 &&
 	      tx_stats.tx_batch == 7);
+	memset(&zerocopy_stats, 0, sizeof(zerocopy_stats));
+	rc = uib_zerocopy_get_stats(sender, &zerocopy_stats);
+	check("uring.zerocopy_accounting", !rc &&
+	      zerocopy_stats.copied_calls + zerocopy_stats.zerocopy_calls ==
+	      TEST_PACKETS);
 
 out:
 	if (sender)
@@ -163,8 +171,9 @@ out:
 int main(void)
 {
 	setenv("UIB_TRANSPORT_MODE", "udp-io-uring", 1);
-	run_mode("multishot", 19600, 19601, UIB_URING_RX_MULTISHOT);
-	run_mode("batch", 19602, 19603, UIB_URING_RX_BATCHED);
+	run_mode("multishot", 19600, 19601, UIB_URING_RX_MULTISHOT, 0);
+	run_mode("batch", 19602, 19603, UIB_URING_RX_BATCHED, 0);
+	run_mode("batch", 19608, 19609, UIB_URING_RX_BATCHED, 1);
 	run_shutdown_drain();
 	run_invalid_batch();
 	printf("RESULT %s\n", failed ? "FAIL" : "PASS");
