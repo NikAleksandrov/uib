@@ -86,6 +86,8 @@ struct uib_udp_backend {
 	int                      timer_armed;
 	int                      wake_armed;
 	int                      worker_run;
+	int                      stop_requested;
+	int                      accepting;
 	int                      init_done;
 	int                      init_rc;
 	int                      raw_mode;
@@ -426,6 +428,16 @@ static void submit_tx(struct uib_udp_backend *be)
 	}
 }
 
+static int tx_drained(struct uib_udp_backend *be)
+{
+	int drained;
+
+	pthread_mutex_lock(&be->tx_lock);
+	drained = !be->tx_head && !be->tx_inflight;
+	pthread_mutex_unlock(&be->tx_lock);
+	return drained;
+}
+
 static void complete_tx(struct uib_context *ctx, struct uib_udp_tx *tx,
 			const struct io_uring_cqe *cqe)
 {
@@ -675,6 +687,9 @@ static void *worker_loop(void *argument)
 	signal_worker_init(be, 0);
 
 	while (__atomic_load_n(&be->worker_run, __ATOMIC_ACQUIRE)) {
+		if (__atomic_load_n(&be->stop_requested, __ATOMIC_ACQUIRE) &&
+		    tx_drained(be))
+			break;
 		if (be->stats.rx_mode == UIB_URING_RX_MULTISHOT) {
 			if (!be->multishot_armed)
 				arm_multishot(be);
@@ -699,6 +714,7 @@ static void *worker_loop(void *argument)
 	cleanup_batched_rx(be);
 	io_uring_queue_exit(&be->ring);
 	free_all_tx(be);
+	__atomic_store_n(&be->worker_run, 0, __ATOMIC_RELEASE);
 	return NULL;
 }
 
@@ -812,6 +828,7 @@ static int udp_init(struct uib_context *ctx)
 		goto error;
 	}
 	__atomic_store_n(&be->worker_run, 1, __ATOMIC_RELEASE);
+	__atomic_store_n(&be->accepting, 1, __ATOMIC_RELEASE);
 	thread_rc = pthread_create(&be->worker, NULL, worker_loop, ctx);
 	if (thread_rc) {
 		rc = -thread_rc;
@@ -842,11 +859,13 @@ static void udp_fini(struct uib_context *ctx)
 
 	if (!be)
 		return;
-	if (__atomic_exchange_n(&be->worker_run, 0, __ATOMIC_ACQ_REL)) {
+	__atomic_store_n(&be->accepting, 0, __ATOMIC_RELEASE);
+	__atomic_store_n(&be->stop_requested, 1, __ATOMIC_RELEASE);
+	if (__atomic_load_n(&be->worker_run, __ATOMIC_ACQUIRE)) {
 		if (write(be->wake_fd, &wake, sizeof(wake)) < 0 && errno != EAGAIN)
 			shutdown(be->fd, SHUT_RDWR);
-		pthread_join(be->worker, NULL);
 	}
+	pthread_join(be->worker, NULL);
 	cleanup_backend(be);
 	ctx->backend = NULL;
 }
@@ -935,7 +954,8 @@ static int enqueue_tx(struct uib_udp_backend *be, struct uib_udp_tx *tx)
 	uint64_t wake = 1;
 
 	pthread_mutex_lock(&be->tx_lock);
-	if (!__atomic_load_n(&be->worker_run, __ATOMIC_ACQUIRE)) {
+	if (!__atomic_load_n(&be->worker_run, __ATOMIC_ACQUIRE) ||
+	    !__atomic_load_n(&be->accepting, __ATOMIC_ACQUIRE)) {
 		pthread_mutex_unlock(&be->tx_lock);
 		return -ESHUTDOWN;
 	}
