@@ -142,6 +142,10 @@ TRANSPORT_TEST := tests/transport_test
 QP_SCALE_TEST := tests/qp_scale_test
 QP_LOOKUP_BENCH := tests/qp_lookup_bench
 MR_SCALE_TEST := tests/mr_scale_test
+PROVIDER_DISPATCH_BENCH := tests/provider_dispatch_bench
+ifeq ($(HAVE_IBVERBS),1)
+SCALING_PROVIDER_BENCH := $(PROVIDER_DISPATCH_BENCH)
+endif
 
 DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d \
 	$(BTH_TEST).d $(RXE_TEST).d $(PROTOCOL_TEST).d $(UET_TEST).d \
@@ -157,6 +161,7 @@ DEPS += $(TRANSPORT_TEST).d
 DEPS += $(QP_SCALE_TEST).d
 DEPS += $(QP_LOOKUP_BENCH).d
 DEPS += $(MR_SCALE_TEST).d
+DEPS += $(PROVIDER_DISPATCH_BENCH).d
 
 $(TEST_BIN): tests/loopback.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
@@ -211,6 +216,10 @@ $(QP_LOOKUP_BENCH): tests/qp_lookup_bench.c $(LIB_SHARED)
 
 $(MR_SCALE_TEST): tests/mr_scale_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+$(PROVIDER_DISPATCH_BENCH): tests/provider_dispatch_bench.c $(LIB_PROVIDER)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luibv \
+		$(IBVERBS_LIBS) -libverbs
 
 $(REORDER_TEST): tests/reorder_test.c $(LIB_STATIC)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_STATIC) $(LDFLAGS) $(LDLIBS)
@@ -294,9 +303,11 @@ benchmark-smoke: examples
 	UIB_BENCH_ITERATIONS=64 UIB_BENCH_SIZE=16384 UIB_BENCH_WINDOW=16 \
 		./examples/benchmark_matrix.sh /tmp/uib-benchmark-smoke
 
-scaling-benchmark: examples $(QP_LOOKUP_BENCH) $(MR_SCALE_TEST)
+scaling-benchmark: examples $(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) \
+		$(SCALING_PROVIDER_BENCH)
 	./$(QP_LOOKUP_BENCH)
 	./$(MR_SCALE_TEST)
+	$(if $(SCALING_PROVIDER_BENCH),./$(PROVIDER_DISPATCH_BENCH))
 	UIB_TRANSPORT_MODE=udp-sync ./examples/stress_bench --protocol rocev2 \
 		--iterations $${UIB_SCALE_TRAFFIC_ITERS:-30000} --size 1024 --window 64
 	UIB_TRANSPORT_MODE=udp-sync ./examples/stress_bench --protocol rocev2 \
@@ -306,10 +317,13 @@ scaling-benchmark: examples $(QP_LOOKUP_BENCH) $(MR_SCALE_TEST)
 	UIB_TRANSPORT_MODE=udp-sync ./examples/stress_bench --protocol uet \
 		--iterations $${UIB_SCALE_TRAFFIC_ITERS:-30000} --size 1024 --window 128
 
-scaling-test: examples $(QP_SCALE_TEST) $(QP_LOOKUP_BENCH) $(MR_SCALE_TEST)
+scaling-test: examples $(QP_SCALE_TEST) $(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) \
+		$(SCALING_PROVIDER_BENCH)
 	./$(QP_SCALE_TEST)
 	UIB_SCALE_THREADS=4 UIB_SCALE_LOOKUPS=10000 ./$(QP_LOOKUP_BENCH)
 	UIB_MR_SCALE_LOOKUPS=10000 ./$(MR_SCALE_TEST)
+	$(if $(SCALING_PROVIDER_BENCH),UIB_PROVIDER_CONTEXTS=8 \
+		UIB_PROVIDER_LOOKUPS=10000 ./$(PROVIDER_DISPATCH_BENCH))
 	UIB_TRANSPORT_MODE=udp-sync ./examples/stress_bench --protocol rocev2 \
 		--iterations 256 --size 1024 --window 128
 	UIB_TRANSPORT_MODE=udp-sync ./examples/stress_bench --protocol uet \
@@ -444,7 +458,7 @@ clean:
 		$(PROVIDER_DMABUF_TEST) $(EXTERNAL_DMABUF_TEST) \
 		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST) \
 		$(REORDER_TEST) $(TRANSPORT_TEST) $(QP_SCALE_TEST) \
-		$(QP_LOOKUP_BENCH) $(MR_SCALE_TEST)
+		$(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) $(PROVIDER_DISPATCH_BENCH)
 
 .PHONY: shared-abi-test all examples clean install test rxe-test-build rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \

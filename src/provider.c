@@ -34,7 +34,6 @@ static struct uibv_dev_pub g_uibv_dev = {
 struct uibv_ctx_wrap {
 	struct ibv_context  ibv;
 	struct uib_context *core;
-	struct uibv_ctx_wrap *next;
 };
 
 struct uibv_pd_wrap {
@@ -62,9 +61,6 @@ struct uibv_qp_wrap {
 	struct uib_qp  *core;
 	struct ibv_qp_cap cap;
 };
-
-static pthread_mutex_t g_reg_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct uibv_ctx_wrap *g_ctx_list;
 
 #define WRAP_OF(ptr, T, member) \
 	((T *)((char *)(ptr) - offsetof(T, member)))
@@ -110,14 +106,7 @@ static int                 (*real_query_pkey)(struct ibv_context *, uint8_t,
 
 static int ctx_is_ours(struct ibv_context *ctx)
 {
-	struct uibv_ctx_wrap *w;
-
-	pthread_mutex_lock(&g_reg_lock);
-	w = g_ctx_list;
-	while (w && &w->ibv != ctx)
-		w = w->next;
-	pthread_mutex_unlock(&g_reg_lock);
-	return w != NULL;
+	return ctx && ctx->device == &g_uibv_dev.ibv;
 }
 
 __attribute__((constructor))
@@ -527,10 +516,6 @@ struct ibv_context *ibv_open_device(struct ibv_device *dev)
 	w->ibv.ops.poll_cq         = provider_poll_cq;
 	w->ibv.ops.req_notify_cq   = provider_req_notify_cq;
 
-	pthread_mutex_lock(&g_reg_lock);
-	w->next = g_ctx_list;
-	g_ctx_list = w;
-	pthread_mutex_unlock(&g_reg_lock);
 	return &w->ibv;
 }
 
@@ -540,15 +525,6 @@ int ibv_close_device(struct ibv_context *ctx)
 		return real_close_device ? real_close_device(ctx) : -1;
 
 	struct uibv_ctx_wrap *w = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
-
-	pthread_mutex_lock(&g_reg_lock);
-	struct uibv_ctx_wrap **pp = &g_ctx_list;
-
-	while (*pp && *pp != w)
-		pp = &(*pp)->next;
-	if (*pp == w)
-		*pp = w->next;
-	pthread_mutex_unlock(&g_reg_lock);
 
 	uib_close_device(w->core);
 	pthread_mutex_destroy(&w->ibv.mutex);
