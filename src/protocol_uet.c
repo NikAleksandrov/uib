@@ -19,7 +19,6 @@
 #include "utils.h"
 
 #define UIB_UET_OUT_INDEX_MIN 64U
-#define UIB_UET_PSN_HASH_MULTIPLIER 0x9e370001U
 
 enum uib_uet_pdc_state {
 	UIB_UET_PDC_CLOSED,
@@ -49,8 +48,6 @@ struct uib_uet_wr_track {
 struct uib_uet_outstanding {
 	struct uib_uet_outstanding *next;
 	struct uib_uet_outstanding *prev;
-	struct uib_uet_outstanding *hash_next;
-	struct uib_uet_outstanding **hash_pprev;
 	struct uib_uet_wr_track *track;
 	struct sockaddr_in dst;
 	uint8_t *packet;
@@ -67,6 +64,7 @@ struct uib_uet_outstanding {
 	uint16_t entropy;
 	uint8_t retries;
 	uint8_t sent;
+	uint8_t indexed;
 };
 
 struct uib_uet_qp {
@@ -84,9 +82,7 @@ struct uib_uet_qp {
 	struct uib_uet_outstanding *out_head;
 	struct uib_uet_outstanding *out_tail;
 	struct uib_uet_outstanding *tx_cursor;
-	struct uib_uet_outstanding **out_index;
-	uint32_t out_index_size;
-	uint32_t out_index_count;
+	struct uib_psn_index out_index;
 	struct uib_uet_nscc nscc;
 	uint32_t receiver_bytes;
 	uint32_t previous_received_units;
@@ -350,13 +346,10 @@ static int uet_qp_init(struct uib_qp *qp)
 
 	if (!uet)
 		return -ENOMEM;
-	uet->out_index = calloc(UIB_UET_OUT_INDEX_MIN,
-				sizeof(*uet->out_index));
-	if (!uet->out_index) {
+	if (uib_psn_index_init(&uet->out_index, UIB_UET_OUT_INDEX_MIN)) {
 		free(uet);
 		return -ENOMEM;
 	}
-	uet->out_index_size = UIB_UET_OUT_INDEX_MIN;
 	uet->spdcid = (uint16_t)qp->qp_num;
 	uet->next_msg_id = 1;
 	uet->session.pid_on_fep = (uint16_t)qp->qp_num;
@@ -639,51 +632,21 @@ static void uet_free_outstanding(struct uib_uet_outstanding *out)
 	free(out);
 }
 
-static uint32_t uet_outstanding_hash(const struct uib_uet_qp *uet,
-				     uint32_t psn)
-{
-	return (psn * UIB_UET_PSN_HASH_MULTIPLIER) &
-		(uet->out_index_size - 1);
-}
-
 static void uet_outstanding_index_add(struct uib_uet_qp *uet,
 				      struct uib_uet_outstanding *out)
 {
-	struct uib_uet_outstanding **bucket;
-
-	bucket = &uet->out_index[uet_outstanding_hash(uet, out->psn)];
-	out->hash_next = *bucket;
-	out->hash_pprev = bucket;
-	if (out->hash_next)
-		out->hash_next->hash_pprev = &out->hash_next;
-	*bucket = out;
-	uet->out_index_count++;
+	if (uib_psn_index_insert(&uet->out_index, out->psn, out))
+		return;
+	out->indexed = 1;
 }
 
-static void uet_outstanding_index_resize(struct uib_uet_qp *uet)
+static void uet_outstanding_index_remove(struct uib_uet_qp *uet,
+					 struct uib_uet_outstanding *out)
 {
-	struct uib_uet_outstanding **new_index;
-	struct uib_uet_outstanding *out;
-	uint32_t new_size;
-
-	if (!uet->out_index ||
-	    uet->out_index_count < uet->out_index_size * 2)
+	if (!out->indexed)
 		return;
-	new_size = uet->out_index_size * 2;
-	if (new_size <= uet->out_index_size)
-		return;
-	new_index = calloc(new_size, sizeof(*new_index));
-	if (!new_index)
-		return;
-	free(uet->out_index);
-	uet->out_index = new_index;
-	uet->out_index_size = new_size;
-	uet->out_index_count = 0;
-	for (out = uet->out_head; out; out = out->next) {
-		out->hash_next = NULL;
-		out->hash_pprev = NULL;
-		uet_outstanding_index_add(uet, out);
-	}
+	uib_psn_index_remove(&uet->out_index, out->psn, out);
+	out->indexed = 0;
 }
 
 static struct uib_uet_outstanding *
@@ -701,7 +664,6 @@ uet_first_unsent(struct uib_uet_qp *uet)
 static void uet_link_outstanding(struct uib_uet_qp *uet,
 				 struct uib_uet_outstanding *out)
 {
-	uet_outstanding_index_resize(uet);
 	out->next = NULL;
 	out->prev = uet->out_tail;
 	if (uet->out_tail)
@@ -734,19 +696,12 @@ static void uet_unlink_outstanding(struct uib_uet_qp *uet,
 			cursor = cursor->next;
 		uet->tx_cursor = cursor;
 	}
-	if (out->hash_pprev) {
-		*out->hash_pprev = out->hash_next;
-		if (out->hash_next)
-			out->hash_next->hash_pprev = out->hash_pprev;
-		uet->out_index_count--;
-	}
+	uet_outstanding_index_remove(uet, out);
 	if (out->sent)
 		uet->sent_count--;
 	uet->out_count--;
 	out->next = NULL;
 	out->prev = NULL;
-	out->hash_next = NULL;
-	out->hash_pprev = NULL;
 }
 
 static void uet_qp_fini(struct uib_qp *qp)
@@ -771,7 +726,7 @@ static void uet_qp_fini(struct uib_qp *qp)
 	}
 	if (uet->recv_active)
 		free(uet->recv_slot.sg_list);
-	free(uet->out_index);
+	uib_psn_index_destroy(&uet->out_index);
 	free(uet);
 	qp->protocol_private = NULL;
 }
@@ -822,11 +777,12 @@ uet_find_outstanding(struct uib_uet_qp *uet, uint32_t psn, uint16_t msg_id)
 {
 	struct uib_uet_outstanding *out;
 
-	out = uet->out_index[uet_outstanding_hash(uet, psn)];
-	while (out) {
+	out = uib_psn_index_lookup(&uet->out_index, psn);
+	if (out && (!msg_id || out->msg_id == msg_id))
+		return out;
+	for (out = uet->out_head; out; out = out->next) {
 		if (out->psn == psn && (!msg_id || out->msg_id == msg_id))
 			return out;
-		out = out->hash_next;
 	}
 	return NULL;
 }

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <netinet/in.h>
+#include "uib/psn_index.h"
 #include "uib/types.h"
 
 struct uib_context;
@@ -101,14 +102,13 @@ struct uib_rq_slot {
 struct uib_outstanding {
 	struct uib_outstanding *next;
 	struct uib_outstanding *prev;
-	struct uib_outstanding *hash_next;
-	struct uib_outstanding **hash_pprev;
 	uint32_t                psn;
 	uint8_t                 wire_opcode;
 	uint8_t                 retries;
 	uint8_t                 signaled;
 	uint8_t                 is_read;
 	uint8_t                 is_final;
+	uint8_t                 indexed;
 	uint64_t                wr_id;
 	enum uib_wr_opcode      wr_opcode;
 	uint64_t                deadline_ns;
@@ -148,9 +148,7 @@ struct uib_qp {
 
 	struct uib_outstanding *out_head;
 	struct uib_outstanding *out_tail;
-	struct uib_outstanding **out_index;
-	uint32_t                out_index_size;
-	uint32_t                out_index_count;
+	struct uib_psn_index     out_index;
 	uint32_t                out_count;
 	uint32_t                last_acked_psn;
 	uint32_t                last_rx_psn;

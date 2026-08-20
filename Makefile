@@ -62,6 +62,7 @@ SRCS := \
 	src/mr.c \
 	src/cq.c \
 	src/utils.c \
+	src/psn_index.c \
 	src/qp.c \
 	src/protocol.c \
 	src/protocol_rocev2.c \
@@ -143,6 +144,7 @@ QP_SCALE_TEST := tests/qp_scale_test
 QP_LOOKUP_BENCH := tests/qp_lookup_bench
 MR_SCALE_TEST := tests/mr_scale_test
 PROVIDER_DISPATCH_BENCH := tests/provider_dispatch_bench
+PSN_INDEX_TEST := tests/psn_index_test
 ifeq ($(HAVE_IBVERBS),1)
 SCALING_PROVIDER_BENCH := $(PROVIDER_DISPATCH_BENCH)
 endif
@@ -162,6 +164,7 @@ DEPS += $(QP_SCALE_TEST).d
 DEPS += $(QP_LOOKUP_BENCH).d
 DEPS += $(MR_SCALE_TEST).d
 DEPS += $(PROVIDER_DISPATCH_BENCH).d
+DEPS += $(PSN_INDEX_TEST).d
 
 $(TEST_BIN): tests/loopback.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
@@ -220,6 +223,9 @@ $(MR_SCALE_TEST): tests/mr_scale_test.c $(LIB_SHARED)
 $(PROVIDER_DISPATCH_BENCH): tests/provider_dispatch_bench.c $(LIB_PROVIDER)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luibv \
 		$(IBVERBS_LIBS) -libverbs
+
+$(PSN_INDEX_TEST): tests/psn_index_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
 $(REORDER_TEST): tests/reorder_test.c $(LIB_STATIC)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_STATIC) $(LDFLAGS) $(LDLIBS)
@@ -383,7 +389,7 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
 	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(REORDER_TEST) \
-	$(TRANSPORT_TEST) $(QP_SCALE_TEST)
+	$(TRANSPORT_TEST) $(QP_SCALE_TEST) $(PSN_INDEX_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
 	./$(DMABUF_TEST)
@@ -396,6 +402,7 @@ test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
 	./$(REORDER_TEST)
 	./$(TRANSPORT_TEST)
 	./$(QP_SCALE_TEST)
+	./$(PSN_INDEX_TEST)
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	UIB_TRANSPORT_MODE=udp-sync ./$(TEST_BIN)
 	UIB_TRANSPORT_MODE=udp-io-uring ./$(TEST_BIN)
@@ -458,7 +465,8 @@ clean:
 		$(PROVIDER_DMABUF_TEST) $(EXTERNAL_DMABUF_TEST) \
 		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST) \
 		$(REORDER_TEST) $(TRANSPORT_TEST) $(QP_SCALE_TEST) \
-		$(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) $(PROVIDER_DISPATCH_BENCH)
+		$(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) $(PROVIDER_DISPATCH_BENCH) \
+		$(PSN_INDEX_TEST)
 
 .PHONY: shared-abi-test all examples clean install test rxe-test-build rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \

@@ -13,8 +13,6 @@
 #include "utils.h"
 
 #define UIB_PKT_MAX (UIB_PMTU + 64)
-#define UIB_OUT_INDEX_MIN 64U
-#define UIB_PSN_HASH_MULTIPLIER 0x9e370001U
 
 struct uib_qp *uib_create_qp(struct uib_pd *pd,
 			     const struct uib_qp_init_attr *attr)
@@ -79,10 +77,7 @@ static void free_outstanding(struct uib_outstanding *o)
 
 void uib_rocev2_qp_fini(struct uib_qp *qp)
 {
-	free(qp->out_index);
-	qp->out_index = NULL;
-	qp->out_index_size = 0;
-	qp->out_index_count = 0;
+	uib_psn_index_destroy(&qp->out_index);
 }
 
 int uib_destroy_qp(struct uib_qp *qp)
@@ -310,62 +305,24 @@ void uib_qp_emit_recv(struct uib_qp *qp, uint64_t wr_id,
 	emit_recv_wc(qp, wr_id, status, opcode, byte_len, src_qp, imm_data);
 }
 
-static uint32_t outstanding_hash(const struct uib_qp *qp, uint32_t psn)
-{
-	return ((psn & UIB_BTH_PSN_MASK) * UIB_PSN_HASH_MULTIPLIER) &
-		(qp->out_index_size - 1);
-}
-
 static void outstanding_index_add(struct uib_qp *qp,
 				  struct uib_outstanding *out)
 {
-	struct uib_outstanding **new_index;
-	struct uib_outstanding **bucket;
-
-	if (!out->is_read)
+	if (!out->is_read ||
+	    uib_psn_index_insert(&qp->out_index,
+				 out->psn & UIB_BTH_PSN_MASK, out))
 		return;
-	if (!qp->out_index) {
-		new_index = calloc(UIB_OUT_INDEX_MIN, sizeof(*new_index));
-		if (!new_index)
-			return;
-		qp->out_index = new_index;
-		qp->out_index_size = UIB_OUT_INDEX_MIN;
-	}
-	bucket = &qp->out_index[outstanding_hash(qp, out->psn)];
-	out->hash_next = *bucket;
-	out->hash_pprev = bucket;
-	if (out->hash_next)
-		out->hash_next->hash_pprev = &out->hash_next;
-	*bucket = out;
-	qp->out_index_count++;
+	out->indexed = 1;
 }
 
-static void outstanding_index_resize(struct uib_qp *qp)
+static void outstanding_index_remove(struct uib_qp *qp,
+				     struct uib_outstanding *out)
 {
-	struct uib_outstanding **new_index;
-	struct uib_outstanding *out;
-	uint32_t new_size;
-
-	if (!qp->out_index ||
-	    qp->out_index_count < qp->out_index_size * 2)
+	if (!out->indexed)
 		return;
-	new_size = qp->out_index_size * 2;
-	if (new_size <= qp->out_index_size)
-		return;
-	new_index = calloc(new_size, sizeof(*new_index));
-	if (!new_index)
-		return;
-	free(qp->out_index);
-	qp->out_index = new_index;
-	qp->out_index_size = new_size;
-	for (out = qp->out_head; out; out = out->next) {
-		out->hash_next = NULL;
-		out->hash_pprev = NULL;
-		if (out->is_read) {
-			qp->out_index_count--;
-			outstanding_index_add(qp, out);
-		}
-	}
+	uib_psn_index_remove(&qp->out_index,
+			     out->psn & UIB_BTH_PSN_MASK, out);
+	out->indexed = 0;
 }
 
 static void outstanding_unlink(struct uib_qp *qp,
@@ -379,23 +336,14 @@ static void outstanding_unlink(struct uib_qp *qp,
 		out->next->prev = out->prev;
 	else
 		qp->out_tail = out->prev;
-	if (out->hash_pprev) {
-		*out->hash_pprev = out->hash_next;
-		if (out->hash_next)
-			out->hash_next->hash_pprev = out->hash_pprev;
-		qp->out_index_count--;
-	}
+	outstanding_index_remove(qp, out);
 	out->next = NULL;
 	out->prev = NULL;
-	out->hash_next = NULL;
-	out->hash_pprev = NULL;
 	qp->out_count--;
 }
 
 static void enqueue_outstanding(struct uib_qp *qp, struct uib_outstanding *out)
 {
-	if (out->is_read)
-		outstanding_index_resize(qp);
 	out->next = NULL;
 	out->prev = qp->out_tail;
 	out->deadline_ns = uib_now_ns() + UIB_RTO_NS;
@@ -981,15 +929,8 @@ static struct uib_outstanding *find_read_by_psn(struct uib_qp *qp, uint32_t psn)
 	struct uib_outstanding *out;
 
 	pthread_mutex_lock(&qp->lock);
-	out = NULL;
-	if (qp->out_index) {
-		out = qp->out_index[outstanding_hash(qp, psn)];
-		while (out) {
-			if (!((out->psn ^ psn) & UIB_BTH_PSN_MASK))
-				break;
-			out = out->hash_next;
-		}
-	}
+	out = uib_psn_index_lookup(&qp->out_index,
+				   psn & UIB_BTH_PSN_MASK);
 	if (!out) {
 		for (out = qp->out_head; out; out = out->next) {
 			if (out->is_read &&

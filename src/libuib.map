@@ -59,6 +59,11 @@ UIB_0.1 {
 		uib_protocol_default_port;
 		uib_protocol_find;
 		uib_protocol_from_env;
+		uib_psn_index_destroy;
+		uib_psn_index_init;
+		uib_psn_index_insert;
+		uib_psn_index_lookup;
+		uib_psn_index_remove;
 		uib_qp_emit_recv;
 		uib_qp_emit_send;
 		uib_qp_gather;
