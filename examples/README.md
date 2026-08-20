@@ -69,13 +69,20 @@ For io_uring tuning, UIB_URING_RX_BATCH and UIB_URING_TX_BATCH select the RX
 completion/one-shot depth and TX submission batch respectively. Both default
 to 64 and accept values from 1 through 256.
 
+The asynchronous backend remains the default. Select the optional synchronous
+TX path with `UIB_TRANSPORT_MODE=udp-sync`; it uses the same RX implementation
+so benchmark differences isolate asynchronous versus blocking transmission.
+
 Run the complete protocol/transport/memory matrix and generate CSV comparisons:
 
     make benchmark-local
 
 The output directory contains raw results, copied-vs-zero-copy percentage
 changes, DMA-BUF-vs-host percentage changes, and explicit skips for unavailable
-AF_XDP hardware. `make benchmark-smoke` runs the same matrix with short inputs.
+AF_XDP hardware. It also contains `sync-async-comparison.csv`, with actual
+synchronous and asynchronous bandwidth, average latency and CPU time plus the
+percentage change. `make benchmark-smoke` runs the same matrix with short
+inputs.
 
 Use the reporting target to run the same complete matrix and also render aligned
 plain text and GitHub Markdown from the resulting CSV files:
@@ -99,9 +106,10 @@ comparison key. RoCEv2's standard 4096-byte maximum makes its 8192-byte rows
 explicit skips; UET and dummy exercise all three values.
 
 The target writes `benchmark.txt`, `benchmark.md`, `results.csv`,
-`zerocopy-comparison.csv`, `dmabuf-comparison.csv`, and `skips.txt` in a
-timestamped directory under `/tmp`; unexpected failures are recorded in
-`failures.txt` and make the target fail. Set
+`zerocopy-comparison.csv`, `dmabuf-comparison.csv`,
+`sync-async-comparison.csv`, and `skips.txt` in a timestamped directory under
+`/tmp`; unexpected failures are recorded in `failures.txt` and make the target
+fail. Set
 `UIB_BENCH_OUTPUT=/path/to/results` to choose a stable output directory.
 
 Remote client/server benchmark
@@ -175,3 +183,4 @@ Calling `tests/run_namespace_benchmark.sh --keep-on-failure` is equivalent.
 
 Use `make examples-test` for short correctness runs over all protocols and
 `make examples-stress-test` for short windowed traffic runs over all protocols.
+Use `make sync-transport-test` for corresponding synchronous transport traffic.

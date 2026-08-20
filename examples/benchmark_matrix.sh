@@ -117,10 +117,16 @@ for affinity in ${UIB_BENCH_AFFINITIES:-unpinned pinned}; do
 	for mtu in ${UIB_BENCH_MTUS:-1500 4096 8192}; do
 		for protocol in ${UIB_BENCH_PROTOCOLS:-rocev2 uet dummy}; do
 			for memory in ${UIB_BENCH_MEMORY_MODES:-host dmabuf}; do
-				run_one udp-copy "$protocol" "$memory" udp-io-uring \
+				run_one udp-async-copy "$protocol" "$memory" \
+					udp-io-uring \
 					socket off udp-io-uring "$affinity" "$mtu"
-				run_one udp-zerocopy "$protocol" "$memory" \
+				run_one udp-async-zerocopy "$protocol" "$memory" \
 					udp-io-uring socket required udp-io-uring \
+					"$affinity" "$mtu"
+				run_one udp-sync-copy "$protocol" "$memory" udp-sync \
+					socket off udp-sync "$affinity" "$mtu"
+				run_one udp-sync-zerocopy "$protocol" "$memory" \
+					udp-sync socket required udp-sync \
 					"$affinity" "$mtu"
 				run_one tcp-copy "$protocol" "$memory" tcp-devmem \
 					socket off tcp-devmem "$affinity" "$mtu"
@@ -199,9 +205,47 @@ $5 == "dmabuf" {
 	}
 }' "$results" >"$output/dmabuf-comparison.csv"
 
+awk -F, 'BEGIN {
+	OFS=",";
+	print "protocol,memory,send_mode,mtu,cpu_affinity," \
+		"sync_gbit_per_second,async_gbit_per_second," \
+		"async_bandwidth_change_percent,sync_latency_avg_ns," \
+		"async_latency_avg_ns,async_latency_reduction_percent," \
+		"sync_cpu_seconds,async_cpu_seconds," \
+		"async_cpu_time_reduction_percent"
+}
+NR == FNR {
+	if (FNR == 1)
+		next;
+	if ($4 != "udp-sync")
+		next;
+	mode=$6 == "off" ? "copy" : "zerocopy";
+	key=$3 SUBSEP $5 SUBSEP mode SUBSEP $26 SUBSEP $27;
+	bw[key]=$14;
+	lat[key]=$18;
+	cpu[key]=$11;
+	next;
+}
+FNR == 1 { next }
+$4 == "udp-io-uring" {
+	mode=$6 == "off" ? "copy" : "zerocopy";
+	key=$3 SUBSEP $5 SUBSEP mode SUBSEP $26 SUBSEP $27;
+	if (key in bw) {
+		bw_delta=bw[key] ? 100 * ($14 - bw[key]) / bw[key] : 0;
+		lat_delta=lat[key] ? 100 * (lat[key] - $18) / lat[key] : 0;
+		cpu_delta=cpu[key] ? 100 * (cpu[key] - $11) / cpu[key] : 0;
+		printf "%s,%s,%s,%s,%s,%.6f,%.6f,%+.3f,%s,%s,%+.3f," \
+			"%.9f,%.9f,%+.3f\n", $3, $5, mode, $26, $27,
+			bw[key], $14, bw_delta, lat[key], $18, lat_delta,
+			cpu[key], $11, cpu_delta;
+	}
+}' "$results" "$results" >"$output/sync-async-comparison.csv"
+
 printf '\nResults: %s\n' "$results"
 printf 'Zero-copy comparison: %s\n' "$output/zerocopy-comparison.csv"
 printf 'DMA-BUF comparison: %s\n' "$output/dmabuf-comparison.csv"
+printf 'Sync/async comparison: %s\n' \
+	"$output/sync-async-comparison.csv"
 if [ -s "$skips" ]; then
 	printf 'Unavailable combinations: %s\n' "$skips"
 fi

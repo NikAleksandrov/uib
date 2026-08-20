@@ -6,13 +6,14 @@ output=${1:?usage: benchmark_report.sh OUTPUT_DIRECTORY}
 results=$output/results.csv
 zerocopy=$output/zerocopy-comparison.csv
 dmabuf=$output/dmabuf-comparison.csv
+sync_async=$output/sync-async-comparison.csv
 skips=$output/skips.txt
 failures=$output/failures.txt
 text_report=$output/benchmark.txt
 markdown_report=$output/benchmark.md
 
 if [ ! -r "$results" ] || [ ! -r "$zerocopy" ] ||
-   [ ! -r "$dmabuf" ]; then
+   [ ! -r "$dmabuf" ] || [ ! -r "$sync_async" ]; then
 	printf 'benchmark_report: incomplete CSV input in %s\n' "$output" >&2
 	exit 1
 fi
@@ -30,7 +31,9 @@ fi
 		'---------' '------------'
 	awk -F, 'NR > 1 {
 		if ($4 == "udp-io-uring")
-			transport = "UDP";
+			transport = "UDP-A";
+		else if ($4 == "udp-sync")
+			transport = "UDP-S";
 		else if ($4 == "tcp-devmem")
 			transport = "TCP";
 		else
@@ -76,6 +79,25 @@ fi
 			$10, $11, $12, $13;
 	}' "$dmabuf"
 
+	printf '\nAsynchronous UDP compared with synchronous UDP\n'
+	printf '%-7s %-7s %-8s %5s %-8s %24s %27s %25s\n' \
+		'Proto' 'Memory' 'Mode' 'MTU' 'Affinity' \
+		'Gbit/s sync->async (%)' 'Latency us sync->async (%)' \
+		'CPU s sync->async (%)'
+	printf '%-7s %-7s %-8s %5s %-8s %24s %27s %25s\n' \
+		'-------' '-------' '--------' '-----' '--------' \
+		'------------------------' '---------------------------' \
+		'-------------------------'
+	awk -F, 'NR > 1 {
+		format = "%-7s %-7s %-8s %5s %-8s " \
+			"%6.3f->%-6.3f (%+5.1f%%) " \
+			"%7.1f->%-7.1f (%+5.1f%%) " \
+			"%6.3f->%-6.3f (%+5.1f%%)\n";
+		printf format,
+			$1, $2, $3, $4, $5, $6, $7, $8,
+			$9 / 1000, $10 / 1000, $11, $12, $13, $14;
+	}' "$sync_async"
+
 	if [ -s "$skips" ]; then
 		printf '\nSkipped combinations\n'
 		sed 's/^/  - /' "$skips"
@@ -94,7 +116,9 @@ fi
 	printf '|---|---|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n'
 	awk -F, 'NR > 1 {
 		if ($4 == "udp-io-uring")
-			transport = "UDP";
+			transport = "UDP async";
+		else if ($4 == "udp-sync")
+			transport = "UDP sync";
 		else if ($4 == "tcp-devmem")
 			transport = "TCP";
 		else
@@ -141,6 +165,22 @@ fi
 			$10, $11, $12, $13;
 	}' "$dmabuf"
 
+	printf '\n## Asynchronous UDP compared with synchronous UDP\n\n'
+	printf 'Positive values mean the asynchronous path improved.\n\n'
+	printf '%s' '| Protocol | Memory | Mode | MTU | Affinity | Sync Gbit/s | '
+	printf '%s' 'Async Gbit/s | Change | Sync latency us | Async latency us | '
+	printf '%s' 'Reduction | Sync CPU s | Async CPU s | Reduction |'
+	printf '\n%s\n' \
+		'|---|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|'
+	awk -F, 'NR > 1 {
+		format = "| %s | %s | %s | %s | %s | %.3f | %.3f | " \
+			"%+.1f%% | %.1f | %.1f | %+.1f%% | %.3f | %.3f | " \
+			"%+.1f%% |\n";
+		printf format,
+			$1, $2, $3, $4, $5, $6, $7, $8, $9 / 1000,
+			$10 / 1000, $11, $12, $13, $14;
+	}' "$sync_async"
+
 	if [ -s "$skips" ]; then
 		printf '\n## Skipped combinations\n\n'
 		sed 's/^/- /' "$skips"
@@ -156,5 +196,6 @@ printf 'GitHub Markdown report: %s\n' "$markdown_report"
 printf 'Raw CSV: %s\n' "$results"
 printf 'Zero-copy comparison CSV: %s\n' "$zerocopy"
 printf 'DMA-BUF comparison CSV: %s\n' "$dmabuf"
+printf 'Sync/async comparison CSV: %s\n' "$sync_async"
 printf 'Skipped combinations: %s\n' "$skips"
 printf 'Failed combinations: %s\n' "$failures"

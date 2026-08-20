@@ -58,6 +58,7 @@ Select the wire protocol with UIB_PROTOCOL:
 Select the packet transport with UIB_TRANSPORT_MODE:
 
     udp-io-uring  asynchronous UDP io_uring backend (default)
+    udp-sync      synchronous UDP transmit backend for comparison/debugging
     udp-zc-afxdp  AF_XDP backend when libxdp and a capable interface are present
     tcp-devmem    Framed TCP backend with optional netdev DMA-BUF queue binding
 
@@ -68,6 +69,11 @@ multishot recvmsg on Linux 6.0 and newer. Set UIB_URING_RX_MODE=batch to force
 the portable fallback with 32 receive SQEs outstanding, or set it to
 multishot to require multishot support. The default auto mode falls back
 automatically.
+
+Set `UIB_TRANSPORT_MODE=udp-sync` to use blocking `sendmsg` transmission while
+retaining the same io_uring receive worker. This compatibility/measurement
+path is optional; an unset `UIB_TRANSPORT_MODE` always selects
+`udp-io-uring`.
 
 UIB_URING_RX_BATCH controls the maximum CQEs reaped per worker pass and the
 number of receive SQEs used by batch RX. UIB_URING_TX_BATCH limits send SQEs
@@ -123,6 +129,13 @@ unmodified verbs application through UIB.
 `make benchmark-doc` regenerates that reference. It first writes an old/new
 comparison containing actual values and refuses to replace the document when
 the UDP aggregate exceeds the configured regression limit.
+Every benchmark run includes matching synchronous and asynchronous UDP rows
+and writes their actual bandwidth, latency and CPU comparison to
+`sync-async-comparison.csv`, the ASCII report and the Markdown report.
+The latest checked-in same-run comparison is in
+[the sync/async benchmark](docs/sync-async-benchmark.md). The comparison
+document is refreshed even when the separate historical-reference regression
+gate rejects replacing `benchmark-results.md`.
 
 DMA-BUF and zero-copy
 ---------------------

@@ -13,8 +13,11 @@
 /tests/bth_test
 /tests/rxe_interop
 /tests/protocol_test
+/tests/reorder_test
+/tests/transport_test
 /tests/uet_test
 /tests/nscc_test
+/tests/uring_async_test
 
 # example binaries
 /examples/direct_traffic
@@ -26,3 +29,6 @@
 /config.log
 /config.status
 /config.mk
+
+# generated benchmark output
+/.benchmark-*/

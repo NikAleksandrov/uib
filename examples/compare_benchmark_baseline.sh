@@ -38,6 +38,8 @@ in_table && /^\|/ {
 	if (protocol != "rocev2" && protocol != "uet" && protocol != "dummy")
 		next;
 	transport=trim($3);
+	if (transport == "UDP")
+		transport="UDP sync";
 	memory=trim($4);
 	mtu=trim($5);
 	affinity=trim($6);
@@ -56,7 +58,9 @@ awk -F, 'BEGIN {
 NR == 1 { next }
 {
 	if ($4 == "udp-io-uring")
-		transport="UDP";
+		transport="UDP async";
+	else if ($4 == "udp-sync")
+		transport="UDP sync";
 	else if ($4 == "tcp-devmem")
 		transport="TCP";
 	else
@@ -167,7 +171,8 @@ END {
 printf 'Baseline comparison CSV: %s\n' "$comparison"
 printf 'Baseline comparison Markdown: %s\n' "$markdown"
 
-if awk -F, -v limit="$limit" 'NR > 1 && $1 == "all" && $2 == "UDP" &&
+if awk -F, -v limit="$limit" 'NR > 1 && $1 == "all" &&
+    $2 == "UDP sync" &&
     ($7 < -limit || $10 < -limit || $13 < -limit) { failed=1 }
     END { exit failed ? 0 : 1 }' "$summary"; then
 	printf 'benchmark comparison: UDP regression exceeds %s%%\n' "$limit" >&2
