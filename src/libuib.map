@@ -70,6 +70,7 @@ UIB_0.1 {
 		uib_tcp_devmem_ops;
 		uib_transport_deliver;
 		uib_transport_fini;
+		uib_transport_get_stats;
 		uib_transport_init;
 		uib_transport_mode_from_env;
 		uib_transport_retransmit_walk;

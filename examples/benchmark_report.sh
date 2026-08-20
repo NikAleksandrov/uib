@@ -29,7 +29,7 @@ fi
 		'--------' '-------' '---------' '---------' '---------' \
 		'---------' '------------'
 	awk -F, 'NR > 1 {
-		if ($4 == "udp-blocking")
+		if ($4 == "udp-io-uring")
 			transport = "UDP";
 		else if ($4 == "tcp-devmem")
 			transport = "TCP";
@@ -93,7 +93,7 @@ fi
 	printf '%s\n' 'p99 us | Deferred/requests |'
 	printf '|---|---|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n'
 	awk -F, 'NR > 1 {
-		if ($4 == "udp-blocking")
+		if ($4 == "udp-io-uring")
 			transport = "UDP";
 		else if ($4 == "tcp-devmem")
 			transport = "TCP";

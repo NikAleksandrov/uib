@@ -57,7 +57,7 @@ Select the wire protocol with UIB_PROTOCOL:
 
 Select the packet transport with UIB_TRANSPORT_MODE:
 
-    udp-blocking  unprivileged UDP socket backend (default)
+    udp-io-uring  asynchronous UDP io_uring backend (default)
     udp-zc-afxdp  AF_XDP backend when libxdp and a capable interface are present
     tcp-devmem    Framed TCP backend with optional netdev DMA-BUF queue binding
 

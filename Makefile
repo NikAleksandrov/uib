@@ -25,6 +25,7 @@ LDLIBS += $(URING_LIBS)
 
 # AF_XDP backend (udp-zc-afxdp) is compiled with real libxdp glue only when
 # libxdp/libbpf are available; otherwise transport_afxdp.c compiles to a stub
+# whose probe() returns 0 and the dispatcher falls back to udp-io-uring.
 HAVE_AFXDP ?= $(shell pkg-config --exists libxdp libbpf 2>/dev/null && echo 1 || echo 0)
 ifeq ($(HAVE_AFXDP),1)
   AFXDP_CFLAGS ?= $(shell pkg-config --cflags libxdp libbpf)

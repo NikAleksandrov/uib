@@ -177,9 +177,9 @@ for affinity in ${UIB_NAMESPACE_AFFINITIES:-unpinned pinned}; do
 	for mtu in ${UIB_NAMESPACE_MTUS:-1500 4096 8192}; do
 		for protocol in ${UIB_NAMESPACE_PROTOCOLS:-rocev2 uet dummy}; do
 			for memory in ${UIB_NAMESPACE_MEMORY:-host dmabuf}; do
-				run_pair "$protocol" udp-blocking off "$memory" \
+				run_pair "$protocol" udp-io-uring off "$memory" \
 					"$affinity"
-				run_pair "$protocol" udp-blocking required "$memory" \
+				run_pair "$protocol" udp-io-uring required "$memory" \
 					"$affinity"
 				run_pair "$protocol" tcp-devmem off "$memory" \
 					"$affinity"

@@ -61,6 +61,21 @@ AS_IF([test -z "$URING_LIBS"], [
 	])
 	LIBS=$saved_LIBS
 ])
+saved_LIBS=$LIBS
+saved_CPPFLAGS=$CPPFLAGS
+LIBS="$URING_LIBS $LIBS"
+CPPFLAGS="$CPPFLAGS $URING_CFLAGS"
+AC_LINK_IFELSE([AC_LANG_PROGRAM(
+	[[#include <liburing.h>]],
+	[[struct io_uring ring;
+	  struct msghdr message = { 0 };
+	  struct io_uring_sqe sqe;
+	  int error;
+	  io_uring_prep_recvmsg_multishot(&sqe, -1, &message, 0);
+	  io_uring_setup_buf_ring(&ring, 8, 1, 0, &error);]])], [],
+	[AC_MSG_ERROR([liburing with multishot recvmsg and provided buffer rings is required])])
+LIBS=$saved_LIBS
+CPPFLAGS=$saved_CPPFLAGS
 
 HAVE_IBVERBS=0
 IBVERBS_CFLAGS=

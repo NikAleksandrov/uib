@@ -117,10 +117,10 @@ for affinity in unpinned pinned; do
 	for mtu in 1500 4096 8192; do
 		for protocol in rocev2 uet dummy; do
 			for memory in host dmabuf; do
-				run_one udp-copy "$protocol" "$memory" udp-blocking \
-					socket off udp-blocking "$affinity" "$mtu"
+				run_one udp-copy "$protocol" "$memory" udp-io-uring \
+					socket off udp-io-uring "$affinity" "$mtu"
 				run_one udp-zerocopy "$protocol" "$memory" \
-					udp-blocking socket required udp-blocking \
+					udp-io-uring socket required udp-io-uring \
 					"$affinity" "$mtu"
 				run_one tcp-copy "$protocol" "$memory" tcp-devmem \
 					socket off tcp-devmem "$affinity" "$mtu"

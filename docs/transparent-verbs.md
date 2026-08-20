@@ -34,7 +34,7 @@ opens `uib0`:
   UIB_PROTOCOL          rocev2, uet or dummy
   UIB_BIND_IP           local IPv4 address
   UIB_BIND_PORT         local UDP/TCP service port
-  UIB_TRANSPORT_MODE    udp-blocking, udp-zc-afxdp or tcp-devmem
+  UIB_TRANSPORT_MODE    udp-io-uring, udp-zc-afxdp or tcp-devmem
   UIB_UDP_MODE          socket (default) or raw (requires CAP_NET_RAW)
   UIB_ZEROCOPY          off, auto, on or required
   UIB_ZEROCOPY_THRESHOLD minimum packet size for auto mode

@@ -3774,6 +3774,37 @@ fi
 	LIBS=$saved_LIBS
 
 fi
+saved_LIBS=$LIBS
+saved_CPPFLAGS=$CPPFLAGS
+LIBS="$URING_LIBS $LIBS"
+CPPFLAGS="$CPPFLAGS $URING_CFLAGS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#include <liburing.h>
+int
+main (void)
+{
+struct io_uring ring;
+	  struct msghdr message = { 0 };
+	  struct io_uring_sqe sqe;
+	  int error;
+	  io_uring_prep_recvmsg_multishot(&sqe, -1, &message, 0);
+	  io_uring_setup_buf_ring(&ring, 8, 1, 0, &error);
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"
+then :
+
+else case e in #(
+  e) as_fn_error $? "liburing with multishot recvmsg and provided buffer rings is required" "$LINENO" 5 ;;
+esac
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam \
+    conftest$ac_exeext conftest.$ac_ext
+LIBS=$saved_LIBS
+CPPFLAGS=$saved_CPPFLAGS
 
 HAVE_IBVERBS=0
 IBVERBS_CFLAGS=

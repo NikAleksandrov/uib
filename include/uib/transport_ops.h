@@ -7,9 +7,14 @@
 
 struct uib_context;
 struct uib_mr;
+struct uib_transport_stats;
 
+/*
+ * Selectable datapath backends. UDP_IO_URING is the default and is always
+ * available; the others probe at init and fall back to it when unusable.
+ */
 enum uib_transport_mode {
-	UIB_MODE_UDP_BLOCKING = 0,
+	UIB_MODE_UDP_IO_URING = 0,
 	UIB_MODE_UDP_ZC_AFXDP,
 	UIB_MODE_TCP_DEVMEM,
 };
@@ -28,6 +33,8 @@ struct uib_transport_ops {
 			     size_t len, uint16_t entropy);
 	int  (*mr_register)(struct uib_context *ctx, struct uib_mr *mr);
 	void (*mr_deregister)(struct uib_context *ctx, struct uib_mr *mr);
+	int  (*get_stats)(struct uib_context *ctx,
+			  struct uib_transport_stats *stats);
 };
 
 extern const struct uib_transport_ops uib_udp_ops;

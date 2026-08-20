@@ -110,7 +110,7 @@ On the receiving host (replace the addresses with routable interface addresses):
     UIB_BENCH_SIZE=32768 \
     UIB_BENCH_WINDOW=64 \
     UIB_BENCH_MTU=4096 \
-    UIB_TRANSPORT_MODE=udp-blocking \
+    UIB_TRANSPORT_MODE=udp-io-uring \
     UIB_ZEROCOPY=required \
     ./examples/stress_bench
 
@@ -125,7 +125,7 @@ On the sending host:
     UIB_BENCH_SIZE=32768 \
     UIB_BENCH_WINDOW=64 \
     UIB_BENCH_MTU=4096 \
-    UIB_TRANSPORT_MODE=udp-blocking \
+    UIB_TRANSPORT_MODE=udp-io-uring \
     UIB_ZEROCOPY=required \
     ./examples/stress_bench
 
