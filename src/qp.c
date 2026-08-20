@@ -13,6 +13,8 @@
 #include "utils.h"
 
 #define UIB_PKT_MAX (UIB_PMTU + 64)
+#define UIB_OUT_INDEX_MIN 64U
+#define UIB_PSN_HASH_MULTIPLIER 0x9e370001U
 
 struct uib_qp *uib_create_qp(struct uib_pd *pd,
 			     const struct uib_qp_init_attr *attr)
@@ -73,6 +75,14 @@ static void free_outstanding(struct uib_outstanding *o)
 	free(o->pkt);
 	free(o->read_sgl);
 	free(o);
+}
+
+void uib_rocev2_qp_fini(struct uib_qp *qp)
+{
+	free(qp->out_index);
+	qp->out_index = NULL;
+	qp->out_index_size = 0;
+	qp->out_index_count = 0;
 }
 
 int uib_destroy_qp(struct uib_qp *qp)
@@ -299,18 +309,104 @@ void uib_qp_emit_recv(struct uib_qp *qp, uint64_t wr_id,
 	emit_recv_wc(qp, wr_id, status, opcode, byte_len, src_qp, imm_data);
 }
 
-static void enqueue_outstanding(struct uib_qp *qp, struct uib_outstanding *o)
+static uint32_t outstanding_hash(const struct uib_qp *qp, uint32_t psn)
 {
-	o->next = NULL;
-	o->deadline_ns = uib_now_ns() + UIB_RTO_NS;
-	if (qp->out_tail)
-		qp->out_tail->next = o;
+	return ((psn & UIB_BTH_PSN_MASK) * UIB_PSN_HASH_MULTIPLIER) &
+		(qp->out_index_size - 1);
+}
+
+static void outstanding_index_add(struct uib_qp *qp,
+				  struct uib_outstanding *out)
+{
+	struct uib_outstanding **new_index;
+	struct uib_outstanding **bucket;
+
+	if (!out->is_read)
+		return;
+	if (!qp->out_index) {
+		new_index = calloc(UIB_OUT_INDEX_MIN, sizeof(*new_index));
+		if (!new_index)
+			return;
+		qp->out_index = new_index;
+		qp->out_index_size = UIB_OUT_INDEX_MIN;
+	}
+	bucket = &qp->out_index[outstanding_hash(qp, out->psn)];
+	out->hash_next = *bucket;
+	out->hash_pprev = bucket;
+	if (out->hash_next)
+		out->hash_next->hash_pprev = &out->hash_next;
+	*bucket = out;
+	qp->out_index_count++;
+}
+
+static void outstanding_index_resize(struct uib_qp *qp)
+{
+	struct uib_outstanding **new_index;
+	struct uib_outstanding *out;
+	uint32_t new_size;
+
+	if (!qp->out_index ||
+	    qp->out_index_count < qp->out_index_size * 2)
+		return;
+	new_size = qp->out_index_size * 2;
+	if (new_size <= qp->out_index_size)
+		return;
+	new_index = calloc(new_size, sizeof(*new_index));
+	if (!new_index)
+		return;
+	free(qp->out_index);
+	qp->out_index = new_index;
+	qp->out_index_size = new_size;
+	for (out = qp->out_head; out; out = out->next) {
+		out->hash_next = NULL;
+		out->hash_pprev = NULL;
+		if (out->is_read) {
+			qp->out_index_count--;
+			outstanding_index_add(qp, out);
+		}
+	}
+}
+
+static void outstanding_unlink(struct uib_qp *qp,
+			       struct uib_outstanding *out)
+{
+	if (out->prev)
+		out->prev->next = out->next;
 	else
-		qp->out_head = o;
-	qp->out_tail = o;
+		qp->out_head = out->next;
+	if (out->next)
+		out->next->prev = out->prev;
+	else
+		qp->out_tail = out->prev;
+	if (out->hash_pprev) {
+		*out->hash_pprev = out->hash_next;
+		if (out->hash_next)
+			out->hash_next->hash_pprev = out->hash_pprev;
+		qp->out_index_count--;
+	}
+	out->next = NULL;
+	out->prev = NULL;
+	out->hash_next = NULL;
+	out->hash_pprev = NULL;
+	qp->out_count--;
+}
+
+static void enqueue_outstanding(struct uib_qp *qp, struct uib_outstanding *out)
+{
+	if (out->is_read)
+		outstanding_index_resize(qp);
+	out->next = NULL;
+	out->prev = qp->out_tail;
+	out->deadline_ns = uib_now_ns() + UIB_RTO_NS;
+	if (qp->out_tail)
+		qp->out_tail->next = out;
+	else
+		qp->out_head = out;
+	qp->out_tail = out;
+	outstanding_index_add(qp, out);
 	qp->out_count++;
 	if (qp->out_count == 1)
-		uib_qp_retry_schedule(qp, o->deadline_ns);
+		uib_qp_retry_schedule(qp, out->deadline_ns);
 }
 
 static void send_ack(struct uib_qp *qp, const struct sockaddr_in *dst,
@@ -755,36 +851,24 @@ static int psn_cmp(uint32_t a, uint32_t b)
 	return d < 0 ? -1 : 1;
 }
 
-static void retire_tail(struct uib_qp *qp)
-{
-	struct uib_outstanding *o;
-
-	qp->out_tail = NULL;
-	for (o = qp->out_head; o; o = o->next)
-		qp->out_tail = o;
-}
-
 static void ack_outstanding(struct uib_qp *qp, uint32_t ack_psn)
 {
+	struct uib_outstanding *next;
+	struct uib_outstanding *out;
+
 	pthread_mutex_lock(&qp->lock);
-	struct uib_outstanding **pp = &qp->out_head;
+	for (out = qp->out_head; out; out = next) {
+		next = out->next;
 
-	while (*pp) {
-		struct uib_outstanding *o = *pp;
-
-		if (o->is_read || psn_cmp(o->psn, ack_psn) > 0) {
-			pp = &o->next;
+		if (out->is_read || psn_cmp(out->psn, ack_psn) > 0)
 			continue;
-		}
-		if (o->is_final && !o->is_read) {
-			emit_send_wc(qp, o->wr_id, o->wr_opcode, o->signaled,
+		if (out->is_final) {
+			emit_send_wc(qp, out->wr_id, out->wr_opcode, out->signaled,
 				     UIB_WC_SUCCESS, 0);
 		}
-		*pp = o->next;
-		free_outstanding(o);
-		qp->out_count--;
+		outstanding_unlink(qp, out);
+		free_outstanding(out);
 	}
-	retire_tail(qp);
 	qp->last_acked_psn = ack_psn;
 	if (qp->out_head)
 		uib_qp_retry_schedule(qp, qp->out_head->deadline_ns);
@@ -795,19 +879,16 @@ static void ack_outstanding(struct uib_qp *qp, uint32_t ack_psn)
 
 static void fail_outstanding(struct uib_qp *qp, enum uib_wc_status st)
 {
+	struct uib_outstanding *out;
+
 	pthread_mutex_lock(&qp->lock);
-	struct uib_outstanding *o = qp->out_head;
+	while ((out = qp->out_head) != NULL) {
 
-	while (o) {
-		struct uib_outstanding *n = o->next;
-
-		if (o->is_final || o->is_read)
-			emit_send_wc(qp, o->wr_id, o->wr_opcode, 1, st, 0);
-		free_outstanding(o);
-		o = n;
+		if (out->is_final || out->is_read)
+			emit_send_wc(qp, out->wr_id, out->wr_opcode, 1, st, 0);
+		outstanding_unlink(qp, out);
+		free_outstanding(out);
 	}
-	qp->out_head = qp->out_tail = NULL;
-	qp->out_count = 0;
 	qp->frag_read_out = NULL;
 	qp->frag_read_offset = 0;
 	uib_qp_retry_cancel(qp);
@@ -896,40 +977,35 @@ static void send_read_response(struct uib_qp *qp, const struct sockaddr_in *dst,
 
 static struct uib_outstanding *find_read_by_psn(struct uib_qp *qp, uint32_t psn)
 {
+	struct uib_outstanding *out;
+
 	pthread_mutex_lock(&qp->lock);
-	struct uib_outstanding *o = qp->out_head;
-
-	while (o) {
-		if (o->is_read && o->read_total_len > 0) {
-			uint32_t mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
-			uint32_t span = (o->read_total_len + mtu - 1) / mtu;
-
-			if (span == 0)
-				span = 1;
-			uint32_t lo = o->psn;
-			uint32_t hi = o->psn + span - 1;
-
-			if (psn_cmp(psn, lo) >= 0 && psn_cmp(psn, hi) <= 0)
+	out = NULL;
+	if (qp->out_index) {
+		out = qp->out_index[outstanding_hash(qp, psn)];
+		while (out) {
+			if (!((out->psn ^ psn) & UIB_BTH_PSN_MASK))
+				break;
+			out = out->hash_next;
+		}
+	}
+	if (!out) {
+		for (out = qp->out_head; out; out = out->next) {
+			if (out->is_read &&
+			    !((out->psn ^ psn) & UIB_BTH_PSN_MASK))
 				break;
 		}
-		o = o->next;
 	}
 	pthread_mutex_unlock(&qp->lock);
-	return o;
+	return out;
 }
 
 static void detach_outstanding(struct uib_qp *qp,
 			       struct uib_outstanding *target)
 {
 	pthread_mutex_lock(&qp->lock);
-	struct uib_outstanding **pp = &qp->out_head;
-
-	while (*pp && *pp != target)
-		pp = &(*pp)->next;
-	if (*pp == target) {
-		*pp = target->next;
-		qp->out_count--;
-		retire_tail(qp);
+	if (target == qp->out_head || target->prev || target->next) {
+		outstanding_unlink(qp, target);
 		if (qp->out_head)
 			uib_qp_retry_schedule(qp, qp->out_head->deadline_ns);
 		else
@@ -1336,36 +1412,32 @@ int uib_qp_handle_packet(struct uib_qp *qp, const struct sockaddr_in *src,
 
 void uib_rocev2_retransmit_tick(struct uib_qp *qp, uint64_t now)
 {
+	struct uib_outstanding *next;
+	struct uib_outstanding *out;
 	struct uib_outstanding *scan;
-	struct uib_outstanding **pp = &qp->out_head;
 	uint64_t next_deadline = UINT64_MAX;
 
 	pthread_mutex_lock(&qp->lock);
-	while (*pp) {
-		struct uib_outstanding *o = *pp;
-
-		if ((int64_t)(now - o->deadline_ns) < 0) {
-			pp = &o->next;
+	for (out = qp->out_head; out; out = next) {
+		next = out->next;
+		if ((int64_t)(now - out->deadline_ns) < 0)
 			continue;
-		}
-		if (o->retries >= UIB_MAX_RETRIES) {
-			if (o->is_final || o->is_read)
-				emit_send_wc(qp, o->wr_id, o->wr_opcode, 1,
+		if (out->retries >= UIB_MAX_RETRIES) {
+			if (out->is_final || out->is_read)
+				emit_send_wc(qp, out->wr_id, out->wr_opcode, 1,
 					     UIB_WC_RETRY_EXC_ERR, 0);
-			*pp = o->next;
-			free_outstanding(o);
-			qp->out_count--;
+			outstanding_unlink(qp, out);
+			free_outstanding(out);
 			qp->state = UIB_QPS_ERR;
 		} else {
-			uib_transport_send(qp->ctx, &o->dst, o->pkt, o->pkt_len);
-			o->retries++;
-			o->deadline_ns = now + UIB_RTO_NS;
-			if (o->deadline_ns < next_deadline)
-				next_deadline = o->deadline_ns;
-			pp = &o->next;
+			uib_transport_send(qp->ctx, &out->dst, out->pkt,
+					   out->pkt_len);
+			out->retries++;
+			out->deadline_ns = now + UIB_RTO_NS;
+			if (out->deadline_ns < next_deadline)
+				next_deadline = out->deadline_ns;
 		}
 	}
-	retire_tail(qp);
 	for (scan = qp->out_head; scan; scan = scan->next) {
 		if (scan->deadline_ns < next_deadline)
 			next_deadline = scan->deadline_ns;

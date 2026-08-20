@@ -62,6 +62,7 @@ const struct uib_protocol_ops uib_rocev2_protocol_ops = {
 	.name = "rocev2",
 	.default_port = UIB_ROCE_V2_UDP_DPORT,
 	.min_packet = UIB_BTH_BYTES + UIB_ICRC_BYTES,
+	.qp_fini = uib_rocev2_qp_fini,
 	.packet_qpn = rocev2_packet_qpn,
 	.post_send = uib_rocev2_post_send,
 	.handle_packet = uib_rocev2_handle_packet,

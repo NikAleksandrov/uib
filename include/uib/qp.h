@@ -100,6 +100,9 @@ struct uib_rq_slot {
 
 struct uib_outstanding {
 	struct uib_outstanding *next;
+	struct uib_outstanding *prev;
+	struct uib_outstanding *hash_next;
+	struct uib_outstanding **hash_pprev;
 	uint32_t                psn;
 	uint8_t                 wire_opcode;
 	uint8_t                 retries;
@@ -145,6 +148,9 @@ struct uib_qp {
 
 	struct uib_outstanding *out_head;
 	struct uib_outstanding *out_tail;
+	struct uib_outstanding **out_index;
+	uint32_t                out_index_size;
+	uint32_t                out_index_count;
 	uint32_t                out_count;
 	uint32_t                last_acked_psn;
 	uint32_t                last_rx_psn;
@@ -203,6 +209,7 @@ void uib_qp_emit_recv(struct uib_qp *qp, uint64_t wr_id,
 
 int uib_rocev2_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 			 struct uib_send_wr **bad);
+void uib_rocev2_qp_fini(struct uib_qp *qp);
 int uib_rocev2_handle_packet(struct uib_qp *qp,
 			    const struct sockaddr_in *src,
 			    const void *packet, size_t len);
