@@ -54,16 +54,18 @@ static int post_atomic(struct direct_endpoint *endpoint, uint64_t wr_id,
 	};
 	struct uib_send_wr *bad;
 
+	result_sge.addr = direct_buffer_address(endpoint, result);
+
 	return uib_post_send(endpoint->qp, &atomic, &bad);
 }
 
 static int post_uet_atomic(struct direct_endpoint *endpoint, uint64_t wr_id,
-			   uint32_t *result, uint32_t *target,
+			   uint32_t *result, uint64_t remote_address,
 			   uint32_t remote_key, uint32_t operand)
 {
 	struct uib_uet_atomic_wr atomic = {
 		.wr_id = wr_id,
-		.remote_addr = (uintptr_t)target,
+		.remote_addr = remote_address,
 		.rkey = remote_key,
 		.result_lkey = endpoint->mr->lkey,
 		.send_flags = UIB_SEND_SIGNALED,
@@ -74,6 +76,9 @@ static int post_uet_atomic(struct direct_endpoint *endpoint, uint64_t wr_id,
 		.result = result,
 	};
 	struct uib_uet_atomic_wr *bad;
+
+	atomic.result = (void *)(uintptr_t)
+		direct_buffer_address(endpoint, result);
 
 	return uib_uet_post_atomic(endpoint->qp, &atomic, &bad);
 }
@@ -97,6 +102,7 @@ static int configure_uet(struct direct_endpoint *endpoint, uint32_t initiator)
 	};
 	struct uib_uet_nscc_config congestion;
 
+	/* The target checks session identity before touching memory. */
 	if (uib_uet_session_configure(endpoint->qp, &session) < 0)
 		return -1;
 	if (uib_uet_optimized_configure(endpoint->qp,
@@ -112,6 +118,7 @@ static int configure_uet(struct direct_endpoint *endpoint, uint32_t initiator)
 int main(int argc, char **argv)
 {
 	const char *protocol = argc > 1 ? argv[1] : "uet";
+	const char *memory = argc > 2 ? argv[2] : "host";
 	struct direct_endpoint sender = {0}, receiver = {0};
 	uint8_t *send_buffer, *receive_buffer, *read_buffer, *remote_buffer;
 	uint64_t *atomic_result, *atomic_target;
@@ -124,10 +131,10 @@ int main(int argc, char **argv)
 	int rc = 1;
 	size_t i;
 
-	if (direct_endpoint_open(&sender, protocol, "127.0.0.1", 19000,
-				 EXAMPLE_BUFFER_SIZE, 32) < 0 ||
-	    direct_endpoint_open(&receiver, protocol, "127.0.0.1", 19001,
-				 EXAMPLE_BUFFER_SIZE, 32) < 0) {
+	if (direct_endpoint_open_memory(&sender, protocol, "127.0.0.1", 19000,
+					EXAMPLE_BUFFER_SIZE, 32, memory) < 0 ||
+	    direct_endpoint_open_memory(&receiver, protocol, "127.0.0.1", 19001,
+					EXAMPLE_BUFFER_SIZE, 32, memory) < 0) {
 		fprintf(stderr, "open failed: %s\n", strerror(errno));
 		goto out;
 	}
@@ -151,6 +158,7 @@ int main(int argc, char **argv)
 	for (i = 0; i < EXAMPLE_MESSAGE_SIZE; i++)
 		send_buffer[i] = (uint8_t)(i * 17 + 3);
 
+	/* SEND consumes a posted receive and produces one CQ entry per side. */
 	if (direct_post_receive(&receiver, 0x2001, receive_buffer,
 				EXAMPLE_MESSAGE_SIZE) < 0 ||
 	    direct_post_send(&sender, 0x1001, UIB_WR_SEND, send_buffer,
@@ -167,7 +175,7 @@ int main(int argc, char **argv)
 		/* WRITE and READ name a registered remote address and its rkey. */
 		if (direct_post_send(&sender, 0x1002, UIB_WR_RDMA_WRITE,
 				     send_buffer, EXAMPLE_MESSAGE_SIZE,
-				     (uintptr_t)remote_buffer,
+				     direct_buffer_address(&receiver, remote_buffer),
 				     receiver.mr->rkey) < 0 ||
 		    wait_for(&sender, 0x1002, UIB_WC_RDMA_WRITE) < 0 ||
 		    memcmp(send_buffer, remote_buffer, EXAMPLE_MESSAGE_SIZE)) {
@@ -177,7 +185,7 @@ int main(int argc, char **argv)
 		memset(read_buffer, 0, EXAMPLE_MESSAGE_SIZE);
 		if (direct_post_send(&sender, 0x1003, UIB_WR_RDMA_READ,
 				     read_buffer, EXAMPLE_MESSAGE_SIZE,
-				     (uintptr_t)remote_buffer,
+				     direct_buffer_address(&receiver, remote_buffer),
 				     receiver.mr->rkey) < 0 ||
 		    wait_for(&sender, 0x1003, UIB_WC_RDMA_READ) < 0 ||
 		    memcmp(read_buffer, remote_buffer, EXAMPLE_MESSAGE_SIZE)) {
@@ -196,7 +204,8 @@ int main(int argc, char **argv)
 		*atomic_target = 41;
 		*atomic_result = 0;
 		if (post_atomic(&sender, 0x1004, UIB_WR_ATOMIC_FETCH_ADD,
-				atomic_result, (uintptr_t)atomic_target,
+				atomic_result,
+				direct_buffer_address(&receiver, atomic_target),
 				receiver.mr->rkey, 1, 0) < 0 ||
 		    wait_for(&sender, 0x1004, UIB_WC_FETCH_ADD) < 0 ||
 		    *atomic_result != 41 || *atomic_target != 42) {
@@ -204,7 +213,8 @@ int main(int argc, char **argv)
 			goto out;
 		}
 		if (post_atomic(&sender, 0x1005, UIB_WR_ATOMIC_CMP_SWAP,
-				atomic_result, (uintptr_t)atomic_target,
+				atomic_result,
+				direct_buffer_address(&receiver, atomic_target),
 				receiver.mr->rkey, 42, 99) < 0 ||
 		    wait_for(&sender, 0x1005, UIB_WC_COMP_SWAP) < 0 ||
 		    *atomic_result != 42 || *atomic_target != 99) {
@@ -214,7 +224,9 @@ int main(int argc, char **argv)
 		*generic_target = 0xa5a5U;
 		*generic_result = 0;
 		if (post_uet_atomic(&sender, 0x1006, generic_result,
-				    generic_target, receiver.mr->rkey,
+				    direct_buffer_address(&receiver,
+							  generic_target),
+				    receiver.mr->rkey,
 				    0x00ffU) < 0 ||
 		    wait_for(&sender, 0x1006, UIB_WC_UET_ATOMIC) < 0 ||
 		    *generic_result != 0xa5a5U || *generic_target != 0xa55aU) {
@@ -232,7 +244,8 @@ int main(int argc, char **argv)
 		       (unsigned long long)congestion.cwnd,
 		       (long long)congestion.inflight,
 		       (unsigned long long)congestion.base_rtt_ns);
-		printf("UET optimized mode=%u medium=%llu standard=%llu; multipath paths=%u switches=%llu\n",
+		printf("UET optimized mode=%u medium=%llu standard=%llu; "
+		       "multipath paths=%u switches=%llu\n",
 		       optimized_mode,
 		       (unsigned long long)optimized_stats.medium_requests,
 		       (unsigned long long)optimized_stats.standard_requests,
@@ -240,7 +253,7 @@ int main(int argc, char **argv)
 		       (unsigned long long)multipath_stats.path_switches);
 	}
 
-	printf("direct UIB %s example: PASS\n", protocol);
+	printf("direct UIB %s/%s example: PASS\n", protocol, memory);
 	rc = 0;
 out:
 	direct_endpoint_close(&receiver);

@@ -14,14 +14,23 @@ struct direct_endpoint {
 	struct uib_mr *mr;
 	uint8_t *buffer;
 	size_t buffer_length;
+	int dmabuf_memory;
 };
 
 int direct_endpoint_open(struct direct_endpoint *endpoint, const char *protocol,
 			 const char *address, uint16_t port, size_t buffer_length,
 			 uint32_t queue_depth);
+int direct_endpoint_open_memory(struct direct_endpoint *endpoint,
+				const char *protocol, const char *address,
+				uint16_t port, size_t buffer_length,
+				uint32_t queue_depth, const char *memory);
 int direct_endpoint_connect(struct direct_endpoint *local,
 			    const struct direct_endpoint *remote,
 			    uint32_t path_mtu);
+int direct_endpoint_connect_address(struct direct_endpoint *local,
+				    const struct sockaddr_in *remote_address,
+				    uint32_t remote_qpn,
+				    uint32_t path_mtu);
 void direct_endpoint_close(struct direct_endpoint *endpoint);
 int direct_wait_completion(struct uib_cq *cq, struct uib_wc *completion,
 			   uint64_t timeout_ns);
@@ -31,5 +40,7 @@ int direct_post_send(struct direct_endpoint *endpoint, uint64_t wr_id,
 			     enum uib_wr_opcode opcode, void *buffer,
 			     uint32_t length, uint64_t remote_address,
 			     uint32_t remote_key);
+uint64_t direct_buffer_address(const struct direct_endpoint *endpoint,
+			       const void *buffer);
 
 #endif

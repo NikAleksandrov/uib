@@ -224,17 +224,32 @@ int main(int argc, char **argv)
 	int device_count;
 	int full_rdma = strcmp(protocol, "dummy");
 	int is_uet = !strcmp(protocol, "uet");
+	int setup_rc;
 	int rc = 1;
 	uint32_t i;
 
 	setenv("UIB_PROTOCOL", protocol, 1);
 	devices = ibv_get_device_list(&device_count);
 	device = devices ? find_uib_device(devices, device_count) : NULL;
-	if (!device || endpoint_open(&sender, device, "127.0.0.1") < 0 ||
-	    endpoint_open(&receiver, device, "127.0.0.2") < 0 ||
-	    endpoint_connect(&sender, &receiver) < 0 ||
+	if (!device) {
+		fprintf(stderr, "libibverbs device discovery failed\n");
+		goto out;
+	}
+	setup_rc = endpoint_open(&sender, device, "127.0.0.1");
+	if (setup_rc < 0) {
+		fprintf(stderr, "libibverbs sender setup failed: %s\n",
+			strerror(-setup_rc));
+		goto out;
+	}
+	setup_rc = endpoint_open(&receiver, device, "127.0.0.2");
+	if (setup_rc < 0) {
+		fprintf(stderr, "libibverbs receiver setup failed: %s\n",
+			strerror(-setup_rc));
+		goto out;
+	}
+	if (endpoint_connect(&sender, &receiver) < 0 ||
 	    endpoint_connect(&receiver, &sender) < 0) {
-		fprintf(stderr, "libibverbs endpoint setup failed\n");
+		fprintf(stderr, "libibverbs QP connection failed\n");
 		goto out;
 	}
 
@@ -247,13 +262,28 @@ int main(int argc, char **argv)
 	for (i = 0; i < VERBS_MESSAGE_SIZE; i++)
 		source[i] = (uint8_t)(i * 29 + 7);
 
-	if (post_receive(&receiver, 0x2001, receive, VERBS_MESSAGE_SIZE) < 0 ||
-	    post_operation(&sender, 0x1001, IBV_WR_SEND, source,
-			   VERBS_MESSAGE_SIZE, 0, 0, 0, 0) < 0 ||
-	    wait_completion(&sender, 0x1001, IBV_WC_SEND) < 0 ||
-	    wait_completion(&receiver, 0x2001, IBV_WC_RECV) < 0 ||
-	    memcmp(source, receive, VERBS_MESSAGE_SIZE))
+	/* These are ordinary libibverbs calls which libuibv maps into UIB. */
+	if (post_receive(&receiver, 0x2001, receive, VERBS_MESSAGE_SIZE) < 0) {
+		fprintf(stderr, "libibverbs SEND receive posting failed\n");
 		goto out;
+	}
+	if (post_operation(&sender, 0x1001, IBV_WR_SEND, source,
+			   VERBS_MESSAGE_SIZE, 0, 0, 0, 0) < 0) {
+		fprintf(stderr, "libibverbs SEND posting failed\n");
+		goto out;
+	}
+	if (wait_completion(&sender, 0x1001, IBV_WC_SEND) < 0) {
+		fprintf(stderr, "libibverbs SEND completion failed\n");
+		goto out;
+	}
+	if (wait_completion(&receiver, 0x2001, IBV_WC_RECV) < 0) {
+		fprintf(stderr, "libibverbs RECV completion failed\n");
+		goto out;
+	}
+	if (memcmp(source, receive, VERBS_MESSAGE_SIZE)) {
+		fprintf(stderr, "libibverbs SEND payload mismatch\n");
+		goto out;
+	}
 	printf("libibverbs SEND transferred and verified %u bytes\n",
 	       VERBS_MESSAGE_SIZE);
 
