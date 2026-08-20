@@ -311,6 +311,8 @@ static void enqueue_outstanding(struct uib_qp *qp, struct uib_outstanding *o)
 		qp->out_head = o;
 	qp->out_tail = o;
 	qp->out_count++;
+	if (qp->out_count == 1)
+		uib_qp_retry_schedule(qp, o->deadline_ns);
 }
 
 static void send_ack(struct uib_qp *qp, const struct sockaddr_in *dst,
@@ -786,6 +788,10 @@ static void ack_outstanding(struct uib_qp *qp, uint32_t ack_psn)
 	}
 	retire_tail(qp);
 	qp->last_acked_psn = ack_psn;
+	if (qp->out_head)
+		uib_qp_retry_schedule(qp, qp->out_head->deadline_ns);
+	else
+		uib_qp_retry_cancel(qp);
 	pthread_mutex_unlock(&qp->lock);
 }
 
@@ -806,6 +812,7 @@ static void fail_outstanding(struct uib_qp *qp, enum uib_wc_status st)
 	qp->out_count = 0;
 	qp->frag_read_out = NULL;
 	qp->frag_read_offset = 0;
+	uib_qp_retry_cancel(qp);
 	pthread_mutex_unlock(&qp->lock);
 }
 
@@ -925,6 +932,10 @@ static void detach_outstanding(struct uib_qp *qp,
 		*pp = target->next;
 		qp->out_count--;
 		retire_tail(qp);
+		if (qp->out_head)
+			uib_qp_retry_schedule(qp, qp->out_head->deadline_ns);
+		else
+			uib_qp_retry_cancel(qp);
 	}
 	pthread_mutex_unlock(&qp->lock);
 }
@@ -1327,9 +1338,11 @@ int uib_qp_handle_packet(struct uib_qp *qp, const struct sockaddr_in *src,
 
 void uib_rocev2_retransmit_tick(struct uib_qp *qp, uint64_t now)
 {
-	pthread_mutex_lock(&qp->lock);
+	struct uib_outstanding *scan;
 	struct uib_outstanding **pp = &qp->out_head;
+	uint64_t next_deadline = UINT64_MAX;
 
+	pthread_mutex_lock(&qp->lock);
 	while (*pp) {
 		struct uib_outstanding *o = *pp;
 
@@ -1349,10 +1362,20 @@ void uib_rocev2_retransmit_tick(struct uib_qp *qp, uint64_t now)
 			uib_transport_send(qp->ctx, &o->dst, o->pkt, o->pkt_len);
 			o->retries++;
 			o->deadline_ns = now + UIB_RTO_NS;
+			if (o->deadline_ns < next_deadline)
+				next_deadline = o->deadline_ns;
 			pp = &o->next;
 		}
 	}
 	retire_tail(qp);
+	for (scan = qp->out_head; scan; scan = scan->next) {
+		if (scan->deadline_ns < next_deadline)
+			next_deadline = scan->deadline_ns;
+	}
+	if (next_deadline != UINT64_MAX)
+		uib_qp_retry_schedule(qp, next_deadline);
+	else
+		uib_qp_retry_cancel(qp);
 	pthread_mutex_unlock(&qp->lock);
 }
 

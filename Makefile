@@ -139,6 +139,7 @@ URING_ASYNC_TEST := tests/uring_async_test
 PROVIDER_CQ_EVENT_TEST := tests/provider_cq_event_test
 REORDER_TEST := tests/reorder_test
 TRANSPORT_TEST := tests/transport_test
+QP_SCALE_TEST := tests/qp_scale_test
 
 DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d \
 	$(BTH_TEST).d $(RXE_TEST).d $(PROTOCOL_TEST).d $(UET_TEST).d \
@@ -151,6 +152,7 @@ DEPS += $(CQ_EVENT_TEST).d $(URING_ASYNC_TEST).d
 DEPS += $(PROVIDER_CQ_EVENT_TEST).d
 DEPS += $(REORDER_TEST).d
 DEPS += $(TRANSPORT_TEST).d
+DEPS += $(QP_SCALE_TEST).d
 
 $(TEST_BIN): tests/loopback.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
@@ -195,6 +197,9 @@ $(URING_ASYNC_TEST): tests/uring_async_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
 $(TRANSPORT_TEST): tests/transport_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+$(QP_SCALE_TEST): tests/qp_scale_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
 $(REORDER_TEST): tests/reorder_test.c $(LIB_STATIC)
@@ -333,7 +338,7 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
 	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(REORDER_TEST) \
-	$(TRANSPORT_TEST)
+	$(TRANSPORT_TEST) $(QP_SCALE_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
 	./$(DMABUF_TEST)
@@ -345,6 +350,7 @@ test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
 	./$(URING_ASYNC_TEST)
 	./$(REORDER_TEST)
 	./$(TRANSPORT_TEST)
+	./$(QP_SCALE_TEST)
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	UIB_TRANSPORT_MODE=udp-sync ./$(TEST_BIN)
 	UIB_TRANSPORT_MODE=udp-io-uring ./$(TEST_BIN)
@@ -405,7 +411,7 @@ clean:
 		$(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 		$(PROVIDER_DMABUF_TEST) $(EXTERNAL_DMABUF_TEST) \
 		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST) \
-		$(REORDER_TEST) $(TRANSPORT_TEST)
+		$(REORDER_TEST) $(TRANSPORT_TEST) $(QP_SCALE_TEST)
 
 .PHONY: shared-abi-test all examples clean install test rxe-test-build rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \

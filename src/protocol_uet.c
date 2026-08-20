@@ -692,6 +692,8 @@ static void uet_remove_track_locked(struct uib_qp *qp,
 	}
 	track->pending = 1;
 	uet_track_done(qp, track, status);
+	if (!uet->sent_count)
+		uib_qp_retry_cancel(qp);
 }
 
 static struct uib_uet_outstanding *
@@ -766,6 +768,9 @@ static int uet_transmit_locked(struct uib_qp *qp,
 	out->sent = 1;
 	uet->sent_count++;
 	out->deadline_ns = out->tx_time_ns + UIB_UET_RTX_NS;
+	if (!qp->retry_scheduled ||
+	    out->deadline_ns < qp->retry_deadline_ns)
+		uib_qp_retry_schedule(qp, out->deadline_ns);
 	if (out->entropy) {
 		uet->paths[out->path_index].sent++;
 		uet->multipath_stats.packets++;
@@ -1590,6 +1595,8 @@ static void uet_complete_out_locked(struct uib_qp *qp,
 		uet->sent_count--;
 	uet_free_outstanding(out);
 	uet_track_done(qp, track, status);
+	if (!uet->sent_count)
+		uib_qp_retry_cancel(qp);
 }
 
 static int uet_track_read_fragment(struct uib_uet_wr_track *track,
@@ -2317,6 +2324,7 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
 	struct uib_uet_outstanding *out;
+	uint64_t next_deadline = UINT64_MAX;
 
 	pthread_mutex_lock(&qp->lock);
 	out = uet->out_head;
@@ -2357,6 +2365,14 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 		out = out->next;
 	}
 	uet_drain_locked(qp);
+	for (out = uet->out_head; out; out = out->next) {
+		if (out->sent && out->deadline_ns < next_deadline)
+			next_deadline = out->deadline_ns;
+	}
+	if (next_deadline != UINT64_MAX)
+		uib_qp_retry_schedule(qp, next_deadline);
+	else
+		uib_qp_retry_cancel(qp);
 	pthread_mutex_unlock(&qp->lock);
 }
 

@@ -14,6 +14,7 @@
 /tests/protocol_test
 /tests/reorder_test
 /tests/transport_test
+/tests/qp_scale_test
 /tests/uet_test
 /tests/nscc_test
 /tests/uring_async_test

@@ -60,6 +60,8 @@ UIB_0.1 {
 		uib_qp_handle_packet;
 		uib_qp_pop_recv;
 		uib_qp_retransmit_tick;
+		uib_qp_retry_cancel;
+		uib_qp_retry_schedule;
 		uib_qp_scatter;
 		uib_reg_mr;
 		uib_reg_mr_dmabuf;
@@ -69,6 +71,7 @@ UIB_0.1 {
 		uib_req_notify_cq;
 		uib_reth_pack;
 		uib_reth_unpack;
+		uib_retry_pop_due;
 		uib_rocev2_handle_packet;
 		uib_rocev2_icrc_ipv4;
 		uib_rocev2_post_send;

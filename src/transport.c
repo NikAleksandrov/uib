@@ -36,29 +36,11 @@ void uib_transport_deliver(struct uib_context *ctx,
 void uib_transport_retransmit_walk(struct uib_context *ctx)
 {
 	uint64_t now = uib_now_ns();
-	struct uib_qp **snap;
-	uint32_t n;
-	uint32_t i;
+	struct uib_qp *qp;
 
 	pthread_rwlock_rdlock(&ctx->qp_io_lock);
-	pthread_mutex_lock(&ctx->qp_lock);
-	n = ctx->qp_table_size;
-	snap = malloc(n * sizeof(*snap));
-
-	if (snap)
-		memcpy(snap, ctx->qp_table, n * sizeof(*snap));
-	pthread_mutex_unlock(&ctx->qp_lock);
-	if (!snap) {
-		pthread_rwlock_unlock(&ctx->qp_io_lock);
-		return;
-	}
-	for (i = 1; i < n; i++) {
-		struct uib_qp *qp = snap[i];
-
-		if (qp && qp->qp_type == UIB_QPT_RC)
-			uib_qp_retransmit_tick(qp, now);
-	}
-	free(snap);
+	while ((qp = uib_retry_pop_due(ctx, now)) != NULL)
+		uib_qp_retransmit_tick(qp, now);
 	pthread_rwlock_unlock(&ctx->qp_io_lock);
 }
 

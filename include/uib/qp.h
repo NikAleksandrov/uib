@@ -149,6 +149,9 @@ struct uib_qp {
 	uint32_t                last_acked_psn;
 	uint32_t                last_rx_psn;
 	uint8_t                 last_rx_valid;
+	uint64_t                retry_deadline_ns;
+	uint32_t                retry_heap_index;
+	uint8_t                 retry_scheduled;
 
 	struct uib_rq_slot      frag_recv;
 	uint8_t                 frag_recv_active;
