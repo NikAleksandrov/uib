@@ -134,6 +134,7 @@ EXTERNAL_DMABUF_TEST := tests/external_dmabuf_test
 CQ_EVENT_TEST := tests/cq_event_test
 URING_ASYNC_TEST := tests/uring_async_test
 PROVIDER_CQ_EVENT_TEST := tests/provider_cq_event_test
+REORDER_TEST := tests/reorder_test
 
 DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d $(NEIGH_TEST).d \
 	$(BTH_TEST).d $(RXE_TEST).d $(PROTOCOL_TEST).d $(UET_TEST).d \
@@ -144,6 +145,7 @@ DEPS += $(ZEROCOPY_TEST).d $(PROVIDER_DMABUF_TEST).d \
 
 DEPS += $(CQ_EVENT_TEST).d $(URING_ASYNC_TEST).d
 DEPS += $(PROVIDER_CQ_EVENT_TEST).d
+DEPS += $(REORDER_TEST).d
 
 $(TEST_BIN): tests/loopback.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
@@ -189,6 +191,9 @@ $(CQ_EVENT_TEST): tests/cq_event_test.c $(LIB_SHARED)
 
 $(URING_ASYNC_TEST): tests/uring_async_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+$(REORDER_TEST): tests/reorder_test.c $(LIB_STATIC)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_STATIC) $(LDFLAGS) $(LDLIBS)
 
 ifeq ($(HAVE_IBVERBS),1)
 rxe-test-build: $(RXE_TEST)
@@ -310,7 +315,7 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 
 test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(BTH_TEST) \
 	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
-	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST)
+	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(REORDER_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
 	./$(DMABUF_TEST)
@@ -321,6 +326,7 @@ test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(NEIGH_TEST) $(B
 	./$(ZEROCOPY_TEST)
 	./$(CQ_EVENT_TEST)
 	./$(URING_ASYNC_TEST)
+	./$(REORDER_TEST)
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	./$(TEST_BIN)
 
@@ -365,7 +371,7 @@ install: $(LIB_TARGETS)
 	install -m 644 $(LIB_STATIC) $(DESTDIR)$(PREFIX)/lib/
 	install -m 755 $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/
 	ln -sfn $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/$(LIB_SHARED_SONAME)
-	ln -sfn $(LIB_SHARED_SONAME) $(DESTDIR)$(PREFIX)/lib/$(LIB_SHARED)
+	ln -sfn $(LIB_SHARED_SONAME) $(DESTDIR)$(PREFIX)/lib/$(LIB_STATIC)
 ifeq ($(ENABLE_PROVIDER),1)
 	install -m 755 $(LIB_PROVIDER) $(DESTDIR)$(PREFIX)/lib/
 endif
@@ -373,12 +379,13 @@ endif
 
 clean:
 	$(MAKE) -C examples clean
-	rm -f $(OBJS) $(PROV_OBJS) $(DEPS) $(LIB_STATIC) $(LIB_SHARED) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) \
+	rm -f $(OBJS) $(PROV_OBJS) $(DEPS) $(LIB_STATIC) $(LIB_STATIC) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) \
 		$(LIB_PROVIDER) $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) \
 		$(NEIGH_TEST) $(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST) \
 		$(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 		$(PROVIDER_DMABUF_TEST) $(EXTERNAL_DMABUF_TEST) \
-		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST)
+		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST) \
+		$(REORDER_TEST)
 
 .PHONY: shared-abi-test all examples clean install test rxe-test-build rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \
