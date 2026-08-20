@@ -15,6 +15,7 @@
 #include "uib/uib.h"
 
 #define UIBV_DEV_NAME "uib0"
+#define UIBV_WR_INLINE_COUNT 16U
 
 struct uibv_dev_pub {
 	struct ibv_device ibv;
@@ -304,98 +305,167 @@ static int gid_to_sockaddr(const union ibv_gid *gid, struct sockaddr_in *out,
 static int provider_post_send(struct ibv_qp *qp_ibv, struct ibv_send_wr *wr_ibv,
 			      struct ibv_send_wr **bad_ibv)
 {
+	struct uib_send_wr inline_items[UIBV_WR_INLINE_COUNT];
 	struct uibv_qp_wrap *qp = WRAP_OF(qp_ibv, struct uibv_qp_wrap, ibv);
+	struct uib_send_wr *new_items;
 	struct uib_send_wr *bad_u = NULL;
 	struct ibv_send_wr *p;
-	struct uib_send_wr *uwrs;
-	int n = 0;
+	struct uib_send_wr *items;
+	struct uib_send_wr *item;
+	size_t capacity = UIBV_WR_INLINE_COUNT;
+	size_t count = 0;
+	size_t i;
 	int rc;
-	int i;
 
-	for (p = wr_ibv; p; p = p->next)
-		n++;
-	if (n == 0)
-		return 0;
+	items = inline_items;
+	for (p = wr_ibv; p; p = p->next) {
+		if (count == capacity) {
+			size_t new_capacity = qp->cap.max_send_wr;
 
-	uwrs = calloc(n, sizeof(*uwrs));
-
-	if (!uwrs)
-		return ENOMEM;
-
-	struct ibv_send_wr *origs[n];
-
-	for (p = wr_ibv, i = 0; p; p = p->next, i++) {
-		origs[i] = p;
-		uwrs[i].wr_id      = p->wr_id;
-		uwrs[i].opcode     = map_wr_op_in(p->opcode);
-		uwrs[i].send_flags = map_send_flags_in(p->send_flags);
-		uwrs[i].imm_data   = p->imm_data;
-		uwrs[i].sg_list    = (struct uib_sge *)p->sg_list;
-		uwrs[i].num_sge    = p->num_sge;
-		uwrs[i].rdma.remote_addr = p->wr.rdma.remote_addr;
-		uwrs[i].rdma.rkey        = p->wr.rdma.rkey;
+			if (new_capacity <= capacity)
+				new_capacity = capacity * 2U;
+			if (new_capacity < capacity ||
+			    new_capacity > SIZE_MAX / sizeof(*items)) {
+				if (bad_ibv)
+					*bad_ibv = p;
+				rc = ENOMEM;
+				goto out;
+			}
+			new_items = calloc(new_capacity, sizeof(*new_items));
+			if (new_items) {
+				memcpy(new_items, items, count * sizeof(*items));
+				for (i = 0; i + 1U < count; i++)
+					new_items[i].next = &new_items[i + 1U];
+				if (count)
+					new_items[count - 1U].next = NULL;
+			}
+			if (!new_items) {
+				if (bad_ibv)
+					*bad_ibv = p;
+				rc = ENOMEM;
+				goto out;
+			}
+			if (items != inline_items)
+				free(items);
+			items = new_items;
+			capacity = new_capacity;
+		}
+		item = &items[count];
+		if (items == inline_items)
+			memset(item, 0, sizeof(*item));
+		item->wr_id = p->wr_id;
+		item->opcode = map_wr_op_in(p->opcode);
+		item->send_flags = map_send_flags_in(p->send_flags);
+		item->imm_data = p->imm_data;
+		item->sg_list = (struct uib_sge *)p->sg_list;
+		item->num_sge = p->num_sge;
+		item->rdma.remote_addr = p->wr.rdma.remote_addr;
+		item->rdma.rkey = p->wr.rdma.rkey;
 		if (p->opcode == IBV_WR_ATOMIC_FETCH_AND_ADD ||
 		    p->opcode == IBV_WR_ATOMIC_CMP_AND_SWP) {
-			uwrs[i].atomic.remote_addr = p->wr.atomic.remote_addr;
-			uwrs[i].atomic.rkey = p->wr.atomic.rkey;
-			uwrs[i].atomic.compare_add = p->wr.atomic.compare_add;
-			uwrs[i].atomic.swap = p->wr.atomic.swap;
+			item->atomic.remote_addr = p->wr.atomic.remote_addr;
+			item->atomic.rkey = p->wr.atomic.rkey;
+			item->atomic.compare_add = p->wr.atomic.compare_add;
+			item->atomic.swap = p->wr.atomic.swap;
 		}
-		uwrs[i].next       = (i + 1 < n) ? &uwrs[i + 1] : NULL;
+		if (count)
+			items[count - 1U].next = item;
+		count++;
 	}
+	if (!count)
+		return 0;
 
-	rc = uib_post_send(qp->core, uwrs, &bad_u);
+	rc = uib_post_send(qp->core, items, &bad_u);
 
-	if (rc < 0 && bad_u && bad_ibv) {
-		ptrdiff_t bi = bad_u - uwrs;
-
-		if (bi >= 0 && bi < n)
-			*bad_ibv = origs[bi];
+	if (rc < 0 && bad_u && bad_ibv &&
+	    bad_u >= items && bad_u < items + count) {
+		i = (size_t)(bad_u - items);
+		for (p = wr_ibv; i && p; i--)
+			p = p->next;
+		if (p)
+			*bad_ibv = p;
 	}
-	free(uwrs);
-	return rc < 0 ? -rc : 0;
+out:
+	if (items != inline_items)
+		free(items);
+	return rc < 0 ? -rc : rc;
 }
 
 static int provider_post_recv(struct ibv_qp *qp_ibv, struct ibv_recv_wr *wr_ibv,
 			      struct ibv_recv_wr **bad_ibv)
 {
+	struct uib_recv_wr inline_items[UIBV_WR_INLINE_COUNT];
 	struct uibv_qp_wrap *qp = WRAP_OF(qp_ibv, struct uibv_qp_wrap, ibv);
+	struct uib_recv_wr *new_items;
 	struct uib_recv_wr *bad_u = NULL;
 	struct ibv_recv_wr *p;
-	struct uib_recv_wr *uwrs;
-	int n = 0;
+	struct uib_recv_wr *items;
+	struct uib_recv_wr *item;
+	size_t capacity = UIBV_WR_INLINE_COUNT;
+	size_t count = 0;
+	size_t i;
 	int rc;
-	int i;
 
-	for (p = wr_ibv; p; p = p->next)
-		n++;
-	if (n == 0)
+	items = inline_items;
+	for (p = wr_ibv; p; p = p->next) {
+		if (count == capacity) {
+			size_t new_capacity = qp->cap.max_recv_wr;
+
+			if (new_capacity <= capacity)
+				new_capacity = capacity * 2U;
+			if (new_capacity < capacity ||
+			    new_capacity > SIZE_MAX / sizeof(*items)) {
+				if (bad_ibv)
+					*bad_ibv = p;
+				rc = ENOMEM;
+				goto out;
+			}
+			new_items = calloc(new_capacity, sizeof(*new_items));
+			if (new_items) {
+				memcpy(new_items, items, count * sizeof(*items));
+				for (i = 0; i + 1U < count; i++)
+					new_items[i].next = &new_items[i + 1U];
+				if (count)
+					new_items[count - 1U].next = NULL;
+			}
+			if (!new_items) {
+				if (bad_ibv)
+					*bad_ibv = p;
+				rc = ENOMEM;
+				goto out;
+			}
+			if (items != inline_items)
+				free(items);
+			items = new_items;
+			capacity = new_capacity;
+		}
+		item = &items[count];
+		if (items == inline_items)
+			memset(item, 0, sizeof(*item));
+		item->wr_id = p->wr_id;
+		item->sg_list = (struct uib_sge *)p->sg_list;
+		item->num_sge = p->num_sge;
+		if (count)
+			items[count - 1U].next = item;
+		count++;
+	}
+	if (!count)
 		return 0;
 
-	uwrs = calloc(n, sizeof(*uwrs));
+	rc = uib_post_recv(qp->core, items, &bad_u);
 
-	if (!uwrs)
-		return ENOMEM;
-	struct ibv_recv_wr *origs[n];
-
-	for (p = wr_ibv, i = 0; p; p = p->next, i++) {
-		origs[i] = p;
-		uwrs[i].wr_id   = p->wr_id;
-		uwrs[i].sg_list = (struct uib_sge *)p->sg_list;
-		uwrs[i].num_sge = p->num_sge;
-		uwrs[i].next    = (i + 1 < n) ? &uwrs[i + 1] : NULL;
+	if (rc < 0 && bad_u && bad_ibv &&
+	    bad_u >= items && bad_u < items + count) {
+		i = (size_t)(bad_u - items);
+		for (p = wr_ibv; i && p; i--)
+			p = p->next;
+		if (p)
+			*bad_ibv = p;
 	}
-
-	rc = uib_post_recv(qp->core, uwrs, &bad_u);
-
-	if (rc < 0 && bad_u && bad_ibv) {
-		ptrdiff_t bi = bad_u - uwrs;
-
-		if (bi >= 0 && bi < n)
-			*bad_ibv = origs[bi];
-	}
-	free(uwrs);
-	return rc < 0 ? -rc : 0;
+out:
+	if (items != inline_items)
+		free(items);
+	return rc < 0 ? -rc : rc;
 }
 
 static int provider_poll_cq(struct ibv_cq *cq_ibv, int n, struct ibv_wc *wc)
