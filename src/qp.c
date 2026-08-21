@@ -11,6 +11,7 @@
 #include "uib/context.h"
 #include "uib/transport.h"
 #include "uib/bth.h"
+#include "host_zc_internal.h"
 #include "utils.h"
 
 #define UIB_PKT_MAX (UIB_PMTU + 64)
@@ -417,7 +418,17 @@ static int scatter_recv_fragment(struct uib_qp *qp,
 	struct uib_sge *sge;
 	size_t available;
 	size_t take;
+	int rc;
 
+	if (slot->private_data) {
+		rc = uib_host_loan_place(slot, offset, data, length);
+		if (!rc) {
+			*consumed = length;
+			return 0;
+		}
+		if (rc != -ENOENT)
+			return rc;
+	}
 	if (!qp->frag_recv_mr)
 		return scatter_at(qp->pd, slot->sg_list, slot->num_sge, offset,
 				  data, length, consumed);
@@ -435,6 +446,21 @@ int uib_qp_scatter(struct uib_pd *pd, struct uib_sge *sgl, int n,
 		   size_t *consumed_out)
 {
 	return scatter_at(pd, sgl, n, msg_offset, in, in_len, consumed_out);
+}
+
+int uib_qp_scatter_recv(struct uib_qp *qp, struct uib_rq_slot *slot,
+			uint32_t msg_offset, const uint8_t *in,
+			size_t in_len, size_t *consumed_out)
+{
+	if (!qp || !slot || !consumed_out)
+		return -EINVAL;
+	if (slot->private_data &&
+	    !uib_host_loan_place(slot, msg_offset, in, in_len)) {
+		*consumed_out = in_len;
+		return 0;
+	}
+	return scatter_at(qp->pd, slot->sg_list, slot->num_sge, msg_offset,
+			  in, in_len, consumed_out);
 }
 
 static void emit_send_wc(struct uib_qp *qp, uint64_t wr_id,
@@ -482,13 +508,13 @@ void uib_qp_emit_send(struct uib_qp *qp, uint64_t wr_id,
 	emit_send_wc(qp, wr_id, wr_op, signaled, status, byte_len);
 }
 
-static void emit_recv_wc(struct uib_qp *qp, uint64_t wr_id,
+static int emit_recv_wc(struct uib_qp *qp, uint64_t wr_id,
 			 enum uib_wc_status st, enum uib_wc_opcode op,
 			 uint32_t byte_len, uint32_t src_qp,
-			 uint32_t imm_data)
+			 uint32_t imm_data, void *private_data)
 {
 	if (!qp->recv_cq)
-		return;
+		return -EINVAL;
 	struct uib_wc wc = {0};
 
 	wc.wr_id    = wr_id;
@@ -498,14 +524,30 @@ static void emit_recv_wc(struct uib_qp *qp, uint64_t wr_id,
 	wc.qp_num   = qp->qp_num;
 	wc.src_qp   = src_qp;
 	wc.imm_data = imm_data;
-	uib_cq_push(qp->recv_cq, &wc);
+	wc.private_data = private_data;
+	return uib_cq_push(qp->recv_cq, &wc);
 }
 
 void uib_qp_emit_recv(struct uib_qp *qp, uint64_t wr_id,
 		      enum uib_wc_status status, enum uib_wc_opcode opcode,
 		      uint32_t byte_len, uint32_t src_qp, uint32_t imm_data)
 {
-	emit_recv_wc(qp, wr_id, status, opcode, byte_len, src_qp, imm_data);
+	emit_recv_wc(qp, wr_id, status, opcode, byte_len, src_qp, imm_data,
+		     NULL);
+}
+
+void uib_qp_emit_recv_slot(struct uib_qp *qp, struct uib_rq_slot *slot,
+			   enum uib_wc_status status,
+			   enum uib_wc_opcode opcode, uint32_t byte_len,
+			   uint32_t src_qp, uint32_t imm_data)
+{
+	if (!qp || !slot)
+		return;
+	if (!emit_recv_wc(qp, slot->wr_id, status, opcode, byte_len, src_qp,
+			  imm_data, slot->private_data)) {
+		slot->private_data = NULL;
+		slot->private_release = NULL;
+	}
 }
 
 static void outstanding_index_add(struct uib_qp *qp,
@@ -1036,17 +1078,20 @@ int uib_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 	return qp->ctx->pops->post_send(qp, wr, bad);
 }
 
-int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
-		  struct uib_recv_wr **bad)
+static int post_recv_internal(struct uib_qp *qp, struct uib_recv_wr *wr,
+			      struct uib_recv_wr **bad, void *private_data,
+			      void (*private_release)(void *private_data))
 {
+	struct uib_rq_slot *slot;
 	struct uib_recv_wr *cur;
+	uint32_t next;
 
 	if (!qp || !wr)
 		return -EINVAL;
 
 	pthread_mutex_lock(&qp->lock);
 	for (cur = wr; cur; cur = cur->next) {
-		uint32_t next = (qp->rq_head + 1) % qp->rq_size;
+		next = (qp->rq_head + 1) % qp->rq_size;
 
 		if (next == qp->rq_tail) {
 			pthread_mutex_unlock(&qp->lock);
@@ -1054,11 +1099,17 @@ int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
 				*bad = cur;
 			return -ENOSPC;
 		}
-		struct uib_rq_slot *slot = &qp->rq[qp->rq_head];
+		slot = &qp->rq[qp->rq_head];
 
 		slot->wr_id = cur->wr_id;
 		slot->num_sge = cur->num_sge;
 		slot->heap_sge = cur->num_sge > UIB_RQ_INLINE_SGE;
+		if (private_data) {
+			slot->private_data = private_data;
+			slot->private_release = private_release;
+			private_data = NULL;
+			private_release = NULL;
+		}
 		if (slot->heap_sge) {
 			slot->sg_list = malloc((size_t)cur->num_sge *
 					       sizeof(*slot->sg_list));
@@ -1080,6 +1131,20 @@ int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
 	return 0;
 }
 
+int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
+		  struct uib_recv_wr **bad)
+{
+	return post_recv_internal(qp, wr, bad, NULL, NULL);
+}
+
+int uib_post_recv_owned(struct uib_qp *qp, struct uib_recv_wr *request,
+			void *private_data,
+			void (*private_release)(void *private_data))
+{
+	return post_recv_internal(qp, request, NULL, private_data,
+				  private_release);
+}
+
 static int pop_recv_slot(struct uib_qp *qp, struct uib_rq_slot *out)
 {
 	pthread_mutex_lock(&qp->lock);
@@ -1092,6 +1157,8 @@ static int pop_recv_slot(struct uib_qp *qp, struct uib_rq_slot *out)
 		out->sg_list = out->inline_sge;
 	qp->rq[qp->rq_tail].valid = 0;
 	qp->rq[qp->rq_tail].sg_list = NULL;
+	qp->rq[qp->rq_tail].private_data = NULL;
+	qp->rq[qp->rq_tail].private_release = NULL;
 	qp->rq_tail = (qp->rq_tail + 1) % qp->rq_size;
 	pthread_mutex_unlock(&qp->lock);
 	return 0;
@@ -1108,8 +1175,12 @@ void uib_qp_release_recv(struct uib_rq_slot *slot)
 		return;
 	if (slot->heap_sge)
 		free(slot->sg_list);
+	if (slot->private_release)
+		slot->private_release(slot->private_data);
 	slot->sg_list = NULL;
 	slot->heap_sge = 0;
+	slot->private_data = NULL;
+	slot->private_release = NULL;
 }
 
 static int verify_icrc(const uint8_t *pkt, size_t len)
@@ -1350,11 +1421,12 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 				send_ack(qp, src, psn, UIB_AETH_RNR);
 			return -ENOENT;
 		}
-		rc = scatter_at(qp->pd, slot.sg_list, slot.num_sge, 0, body,
-				body_len, &consumed);
-		emit_recv_wc(qp, slot.wr_id,
-			     rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
-			     UIB_WC_RECV, (uint32_t)consumed, qp->dest_qp_num, 0);
+		rc = uib_qp_scatter_recv(qp, &slot, 0, body, body_len,
+					 &consumed);
+		uib_qp_emit_recv_slot(qp, &slot,
+				      rc < 0 ? UIB_WC_LOC_PROT_ERR :
+				      UIB_WC_SUCCESS, UIB_WC_RECV,
+				      (uint32_t)consumed, qp->dest_qp_num, 0);
 		uib_qp_release_recv(&slot);
 		qp->last_rx_psn = psn;
 		qp->last_rx_valid = 1;
@@ -1426,9 +1498,10 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 					       body_len, &consumed);
 		uint32_t total = qp->frag_recv_offset + (uint32_t)consumed;
 
-		emit_recv_wc(qp, qp->frag_recv.wr_id,
-			     rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
-			     UIB_WC_RECV, total, qp->dest_qp_num, 0);
+		uib_qp_emit_recv_slot(qp, &qp->frag_recv,
+				      rc < 0 ? UIB_WC_LOC_PROT_ERR :
+				      UIB_WC_SUCCESS, UIB_WC_RECV, total,
+				      qp->dest_qp_num, 0);
 		uib_qp_release_recv(&qp->frag_recv);
 		qp->frag_recv_mr = NULL;
 		qp->frag_recv_active = 0;
@@ -1456,11 +1529,12 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		if (pop_recv_slot(qp, &slot) < 0)
 			return -ENOENT;
 		size_t consumed = 0;
-		int rc = scatter_at(qp->pd, slot.sg_list, slot.num_sge,
-				    0, body, body_len, &consumed);
-		emit_recv_wc(qp, slot.wr_id,
-			     rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
-			     UIB_WC_RECV, (uint32_t)consumed, sqp, 0);
+		int rc = uib_qp_scatter_recv(qp, &slot, 0, body, body_len,
+					     &consumed);
+		uib_qp_emit_recv_slot(qp, &slot,
+				      rc < 0 ? UIB_WC_LOC_PROT_ERR :
+				      UIB_WC_SUCCESS, UIB_WC_RECV,
+				      (uint32_t)consumed, sqp, 0);
 		uib_qp_release_recv(&slot);
 		qp->rq_psn++;
 		return rc;

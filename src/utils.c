@@ -23,3 +23,8 @@ uint64_t uib_mul_div_u64(uint64_t a, uint64_t b, uint64_t divisor)
 	product /= divisor;
 	return product > UINT64_MAX ? UINT64_MAX : (uint64_t)product;
 }
+
+size_t uib_align_up(size_t value, size_t alignment)
+{
+	return (value + alignment - 1) & ~(alignment - 1);
+}

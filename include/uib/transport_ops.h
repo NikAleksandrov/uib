@@ -55,6 +55,7 @@ struct uib_transport_ops {
 	void (*mr_deregister)(struct uib_context *ctx, struct uib_mr *mr);
 	int  (*get_stats)(struct uib_context *ctx,
 			  struct uib_transport_stats *stats);
+	uint32_t (*host_zc_capabilities)(struct uib_context *ctx);
 };
 
 extern const struct uib_transport_ops uib_udp_ops;

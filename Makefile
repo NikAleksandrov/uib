@@ -35,6 +35,8 @@ HAVE_DMABUF ?= $(shell printf '#include <linux/dma-buf.h>\nint x=DMA_BUF_IOCTL_S
 	$(CC) -x c -fsyntax-only - >/dev/null 2>&1 && echo 1 || echo 0)
 HAVE_ZEROCOPY ?= $(shell printf '#include <sys/socket.h>\n#include <linux/errqueue.h>\nint x=MSG_ZEROCOPY+SO_ZEROCOPY+SO_EE_ORIGIN_ZEROCOPY;\n' | \
 	$(CC) -D_GNU_SOURCE -x c -fsyntax-only - >/dev/null 2>&1 && echo 1 || echo 0)
+HAVE_URING_ZCRX ?= $(shell printf '#include <liburing.h>\nint x=IORING_OP_RECV_ZC+IORING_REGISTER_ZCRX_IFQ;\n' | \
+	$(CC) $(URING_CFLAGS) -x c -fsyntax-only - >/dev/null 2>&1 && echo 1 || echo 0)
 
 CFLAGS += $(URING_CFLAGS) $(MNL_CFLAGS) $(URCU_CFLAGS) $(IBVERBS_CFLAGS)
 LDFLAGS += -pthread
@@ -73,6 +75,10 @@ ifeq ($(HAVE_ZEROCOPY),1)
   CFLAGS += -DUIB_HAVE_ZEROCOPY
 endif
 
+ifeq ($(HAVE_URING_ZCRX),1)
+  CFLAGS += -DUIB_HAVE_URING_ZCRX
+endif
+
 SRCS := \
 	src/bth.c \
 	src/pd.c \
@@ -89,6 +95,8 @@ SRCS := \
 	src/context.c \
 	src/transport.c \
 	src/zerocopy.c \
+	src/host_zc.c \
+	src/uring_zcrx.c \
 	src/transport_udp.c \
 	src/transport_afxdp.c \
 	src/transport_tcp_devmem.c \

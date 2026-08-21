@@ -8,6 +8,7 @@
 #include "uib/qp.h"
 #include "uib/context.h"
 #include "uib/transport.h"
+#include "host_zc_internal.h"
 
 #define UIB_DUMMY_MAGIC 0x55494244u
 #define UIB_DUMMY_VERSION 1
@@ -148,11 +149,11 @@ static int dummy_deliver(struct uib_qp *qp, const uint8_t *payload,
 	rc = uib_qp_pop_recv(qp, &slot);
 	if (rc < 0)
 		return rc;
-	rc = uib_qp_scatter(qp->pd, slot.sg_list, slot.num_sge, 0,
-			    payload, payload_len, &consumed);
-	uib_qp_emit_recv(qp, slot.wr_id,
-			 rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
-			 UIB_WC_RECV, (uint32_t)consumed, sqpn, 0);
+	rc = uib_qp_scatter_recv(qp, &slot, 0, payload, payload_len,
+				 &consumed);
+	uib_qp_emit_recv_slot(qp, &slot,
+			      rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
+			      UIB_WC_RECV, (uint32_t)consumed, sqpn, 0);
 	uib_qp_release_recv(&slot);
 	return rc;
 }

@@ -102,6 +102,8 @@ struct uib_rq_slot {
 	int             num_sge;
 	int             valid;
 	int             heap_sge;
+	void           *private_data;
+	void          (*private_release)(void *private_data);
 };
 
 struct uib_outstanding {
@@ -218,6 +220,10 @@ void uib_qp_emit_send(struct uib_qp *qp, uint64_t wr_id,
 void uib_qp_emit_recv(struct uib_qp *qp, uint64_t wr_id,
 		      enum uib_wc_status status, enum uib_wc_opcode opcode,
 		      uint32_t byte_len, uint32_t src_qp, uint32_t imm_data);
+void uib_qp_emit_recv_slot(struct uib_qp *qp, struct uib_rq_slot *slot,
+			   enum uib_wc_status status,
+			   enum uib_wc_opcode opcode, uint32_t byte_len,
+			   uint32_t src_qp, uint32_t imm_data);
 
 int uib_rocev2_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 			 struct uib_send_wr **bad);

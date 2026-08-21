@@ -250,6 +250,58 @@
  */
 #define UIB_ENV_DEVMEM_QUEUE "UIB_DEVMEM_QUEUE"
 
+/**
+ * DOC: UIB_HOST_ZC
+ * @uib-env: Provider-owned host-memory receive
+ * @default: `auto`
+ * @values: `auto`, `off`, or `required`
+ *
+ * Enable TCP io_uring ZCRX when its NIC queue and kernel support are usable.
+ *
+ * Example:
+ * UIB_HOST_ZC=required UIB_HOST_ZC_IFACE=eth0 app
+ */
+#define UIB_ENV_HOST_ZC "UIB_HOST_ZC"
+
+/**
+ * DOC: UIB_HOST_ZC_IFACE
+ * @uib-env: Provider-owned host-memory receive
+ * @default: Unset; ZCRX remains inactive.
+ * @values: A network-interface name configured for TCP header/data split.
+ *
+ * Select the interface whose hardware receive queue backs the ZCRX arena.
+ *
+ * Example:
+ * UIB_HOST_ZC_IFACE=eth0 UIB_TRANSPORT_MODE=tcp-devmem app
+ */
+#define UIB_ENV_HOST_ZC_IFACE "UIB_HOST_ZC_IFACE"
+
+/**
+ * DOC: UIB_HOST_ZC_QUEUE
+ * @uib-env: Provider-owned host-memory receive
+ * @default: `0`
+ * @values: A non-negative hardware receive-queue identifier.
+ *
+ * Select the flow-steered hardware queue registered with io_uring ZCRX.
+ *
+ * Example:
+ * UIB_HOST_ZC_QUEUE=1 UIB_HOST_ZC_IFACE=eth0 app
+ */
+#define UIB_ENV_HOST_ZC_QUEUE "UIB_HOST_ZC_QUEUE"
+
+/**
+ * DOC: UIB_VIRTME_KERNEL
+ * @uib-env: Provider-owned host-memory receive
+ * @default: Unset; virtme-ng chooses its default kernel.
+ * @values: A kernel image path accepted by `vng --run`.
+ *
+ * Select the kernel image used by the focused host zero-copy VM tests.
+ *
+ * Example:
+ * UIB_VIRTME_KERNEL=/boot/vmlinuz-test make host-zc-virtme-test
+ */
+#define UIB_ENV_VIRTME_KERNEL "UIB_VIRTME_KERNEL"
+
 #define UIB_ENV_UET_CC "UIB_UET_CC"
 
 /**

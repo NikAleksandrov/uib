@@ -16,6 +16,7 @@
 #include "uib/context.h"
 #include "uib/transport.h"
 #include "uib/zerocopy.h"
+#include "uib/host_zc.h"
 #include "uib/verbs.h"
 
 #endif

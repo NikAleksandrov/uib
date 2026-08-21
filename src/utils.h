@@ -2,6 +2,7 @@
 #ifndef UIB_UTILS_H
 #define UIB_UTILS_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /* min_t/max_t names and single-evaluation semantics follow Linux minmax.h. */
@@ -21,5 +22,6 @@
 
 uint64_t uib_now_ns(void);
 uint64_t uib_mul_div_u64(uint64_t a, uint64_t b, uint64_t divisor);
+size_t uib_align_up(size_t value, size_t alignment);
 
 #endif

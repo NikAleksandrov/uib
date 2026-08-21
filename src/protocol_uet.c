@@ -18,6 +18,7 @@
 #include "uib/env.h"
 #include "uib/transport.h"
 #include "uib/mr.h"
+#include "host_zc_internal.h"
 #include "utils.h"
 
 #define UIB_UET_OUT_INDEX_MIN 64U
@@ -1335,9 +1336,8 @@ static int uet_handle_send(struct uib_qp *qp,
 	if (!uet->recv_active || uet->recv_msg_id != ntohs(ses->msg_id))
 		return -EBADMSG;
 
-	rc = uib_qp_scatter(qp->pd, uet->recv_slot.sg_list,
-			    uet->recv_slot.num_sge, offset, data, data_len,
-			    &consumed);
+	rc = uib_qp_scatter_recv(qp, &uet->recv_slot, offset, data, data_len,
+				 &consumed);
 	if (rc < 0)
 		return rc;
 	if (consumed != data_len)
@@ -1348,9 +1348,9 @@ static int uet_handle_send(struct uib_qp *qp,
 	}
 	if (uet->recv_eom && uet_psn_before(uet->recv_last_psn,
 					     uet->rx_base_psn)) {
-		uib_qp_emit_recv(qp, uet->recv_slot.wr_id, UIB_WC_SUCCESS,
-				 UIB_WC_RECV, uet->recv_total, source_pdc,
-				 uet->recv_imm);
+		uib_qp_emit_recv_slot(qp, &uet->recv_slot, UIB_WC_SUCCESS,
+				      UIB_WC_RECV, uet->recv_total,
+				      source_pdc, uet->recv_imm);
 		uib_qp_release_recv(&uet->recv_slot);
 		memset(&uet->recv_slot, 0, sizeof(uet->recv_slot));
 		uet->recv_active = 0;

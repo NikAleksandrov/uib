@@ -1,5 +1,10 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
+UIB_PRIVATE_0.1 {
+	global:
+		uib_post_recv_owned;
+};
+
 UIB_0.1 {
 	global:
 		uib_ack_cq_events;
@@ -34,6 +39,7 @@ UIB_0.1 {
 		uib_frame_parse;
 		uib_genl_family_id;
 		uib_get_cq_event;
+		uib_host_zc_capabilities;
 		uib_icrc;
 		uib_inet_csum;
 		uib_lookup_qp;
@@ -57,6 +63,7 @@ UIB_0.1 {
 		uib_pd_lookup_rkey;
 		uib_poll_cq;
 		uib_post_recv;
+		uib_post_recv_loan;
 		uib_post_send;
 		uib_protocol_default_port;
 		uib_protocol_find;
@@ -67,6 +74,7 @@ UIB_0.1 {
 		uib_psn_index_lookup;
 		uib_psn_index_remove;
 		uib_qp_emit_recv;
+		uib_qp_emit_recv_slot;
 		uib_qp_emit_send;
 		uib_qp_gather;
 		uib_qp_handle_packet;
@@ -81,6 +89,8 @@ UIB_0.1 {
 		uib_reg_mr_dmabuf_ex;
 		uib_reg_mr_dmabuf_iova;
 		uib_register_qp;
+		uib_release_rx_loan;
+		uib_repost_rx_loan;
 		uib_req_notify_cq;
 		uib_reth_pack;
 		uib_reth_unpack;
@@ -134,6 +144,7 @@ UIB_0.1 {
 		uib_uet_session_configure;
 		uib_uet_session_query;
 		uib_unregister_qp;
+		uib_wc_take_rx_loan;
 		uib_zerocopy_account_copy;
 		uib_zerocopy_account_direct;
 		uib_zerocopy_enable_socket;

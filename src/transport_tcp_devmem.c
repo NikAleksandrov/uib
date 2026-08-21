@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
+#include <sys/eventfd.h>
 #include <sys/uio.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -17,14 +18,21 @@
 #include "uib/protocol.h"
 #include "uib/mr.h"
 #include "uib/devmem.h"
+#include "uib/host_zc.h"
+#include "host_zc_internal.h"
+#include "uring_zcrx.h"
 
 #define UIB_TCP_MAX_PEERS 64
 #define UIB_TCP_MAX_FRAME 65536
 #define UIB_TCP_RXCHUNK   65536
 #define UIB_TCP_BACKLOG   16
+#define UIB_TCP_ZCRX_ENTRIES 4096U
+#define UIB_TCP_ZCRX_AREA_SIZE (64U * 1024U * 1024U)
 
 #define EP_TAG_LISTEN ((void *)0)
 #define EP_TAG_TIMER  ((void *)1)
+#define EP_TAG_ZCRX   ((void *)2)
+#define EP_TAG_WAKE   ((void *)3)
 
 struct tcp_peer {
 	int                 used;
@@ -32,6 +40,8 @@ struct tcp_peer {
 	int                 zerocopy_enabled;
 	uint32_t            zerocopy_sequence;
 	int                 hs_expect;
+	int                 zcrx_started;
+	int                 closing;
 	/* The peer listening address is both the key and delivery source. */
 	struct sockaddr_in  laddr;
 	uint8_t            *tx;
@@ -50,6 +60,8 @@ struct uib_tcp_backend {
 	int                 listen_fd;
 	int                 epfd;
 	int                 timer_fd;
+	int                 wake_fd;
+	struct uib_zcrx    *zcrx;
 	struct sockaddr_in  local;
 	struct tcp_peer     peers[UIB_TCP_MAX_PEERS];
 	pthread_mutex_t     lock;
@@ -101,6 +113,14 @@ static struct tcp_peer *peer_alloc(struct uib_tcp_backend *be)
 	return NULL;
 }
 
+static void peer_reset(struct tcp_peer *p)
+{
+	free(p->tx);
+	free(p->rx);
+	memset(p, 0, sizeof(*p));
+	p->fd = -1;
+}
+
 /* Provide a total order on IPv4 endpoints for connect-race tie-breaking. */
 static int addr_cmp(const struct sockaddr_in *a, const struct sockaddr_in *b)
 {
@@ -135,11 +155,16 @@ static void peer_drop(struct uib_tcp_backend *be, struct tcp_peer *p)
 {
 	if (!p->used)
 		return;
-	epoll_ctl(be->epfd, EPOLL_CTL_DEL, p->fd, NULL);
-	close(p->fd);
-	free(p->tx);
-	free(p->rx);
-	memset(p, 0, sizeof(*p));
+	if (p->fd >= 0) {
+		epoll_ctl(be->epfd, EPOLL_CTL_DEL, p->fd, NULL);
+		close(p->fd);
+		p->fd = -1;
+	}
+	if (p->zcrx_started) {
+		p->closing = 1;
+		return;
+	}
+	peer_reset(p);
 }
 
 static struct tcp_peer *tcp_connect(struct uib_context *ctx,
@@ -191,6 +216,8 @@ static struct tcp_peer *tcp_connect(struct uib_context *ctx,
 	ev.events = EPOLLIN;
 	ev.data.ptr = p;
 	epoll_ctl(be->epfd, EPOLL_CTL_ADD, fd, &ev);
+	if (be->wake_fd >= 0)
+		eventfd_write(be->wake_fd, 1);
 	return p;
 }
 
@@ -342,6 +369,144 @@ static int peer_readable(struct uib_context *ctx, struct tcp_peer *p)
 	return peer_parse(ctx, p);
 }
 
+static int peer_append(struct uib_context *ctx, struct tcp_peer *p,
+		       const void *data, size_t length)
+{
+	uint8_t *buffer;
+	size_t capacity;
+
+	if (p->rx_cap - p->rx_len < length) {
+		capacity = p->rx_cap ? p->rx_cap * 2 : UIB_TCP_RXCHUNK;
+		while (capacity - p->rx_len < length) {
+			if (capacity > SIZE_MAX / 2)
+				return -ENOMEM;
+			capacity *= 2;
+		}
+		buffer = realloc(p->rx, capacity);
+		if (!buffer)
+			return -ENOMEM;
+		p->rx = buffer;
+		p->rx_cap = capacity;
+	}
+	memcpy(p->rx + p->rx_len, data, length);
+	p->rx_len += length;
+	return peer_parse(ctx, p);
+}
+
+static void tcp_zcrx_receive(void *opaque, uint64_t user_data,
+			     const void *data, size_t length,
+			     struct uib_zcrx_buffer *buffer,
+			     int more, int error)
+{
+	struct uib_context *ctx = opaque;
+	struct uib_tcp_backend *be = ctx->backend;
+	struct tcp_peer *peer = (struct tcp_peer *)(uintptr_t)user_data;
+	uint32_t frame_length;
+	size_t frame_offset;
+	uint32_t frame_count;
+	uint32_t frame_index;
+
+	if (error || !length) {
+		if (buffer)
+			uib_zcrx_release(buffer);
+		if (!more) {
+			peer->zcrx_started = 0;
+			if (peer->closing) {
+				pthread_mutex_lock(&be->lock);
+				peer_reset(peer);
+				pthread_mutex_unlock(&be->lock);
+			}
+		}
+		return;
+	}
+	if (peer->closing) {
+		uib_zcrx_release(buffer);
+		if (!more) {
+			pthread_mutex_lock(&be->lock);
+			peer->zcrx_started = 0;
+			peer_reset(peer);
+			pthread_mutex_unlock(&be->lock);
+		}
+		return;
+	}
+	if (!peer->hs_expect && !peer->rx_len && length >= sizeof(uint32_t)) {
+		frame_offset = 0;
+		frame_count = 0;
+		while (length - frame_offset >= sizeof(uint32_t)) {
+			memcpy(&frame_length,
+			       (const uint8_t *)data + frame_offset,
+			       sizeof(frame_length));
+			frame_length = ntohl(frame_length);
+			if (!frame_length || frame_length > UIB_TCP_MAX_FRAME ||
+			    frame_length > length - frame_offset - sizeof(uint32_t))
+				break;
+			frame_offset += sizeof(uint32_t) + frame_length;
+			frame_count++;
+		}
+		if (frame_count && frame_offset == length) {
+			for (frame_index = 1; frame_index < frame_count;
+			     frame_index++)
+				uib_zcrx_retain(buffer);
+			frame_offset = 0;
+			for (frame_index = 0; frame_index < frame_count;
+			     frame_index++) {
+				memcpy(&frame_length,
+				       (const uint8_t *)data + frame_offset,
+				       sizeof(frame_length));
+				frame_length = ntohl(frame_length);
+				uib_transport_deliver_direct(
+					ctx, &peer->laddr,
+					(const uint8_t *)data + frame_offset +
+						sizeof(uint32_t),
+					frame_length, uib_zcrx_release, buffer);
+				frame_offset += sizeof(uint32_t) + frame_length;
+			}
+			buffer = NULL;
+		}
+	}
+	if (buffer) {
+		if (peer_append(ctx, peer, data, length) < 0) {
+			pthread_mutex_lock(&be->lock);
+			peer_drop(be, peer);
+			pthread_mutex_unlock(&be->lock);
+		}
+		uib_zcrx_release(buffer);
+	}
+	if (!more) {
+		peer->zcrx_started = 0;
+		if (peer->closing) {
+			pthread_mutex_lock(&be->lock);
+			peer_reset(peer);
+			pthread_mutex_unlock(&be->lock);
+		}
+	}
+}
+
+static int tcp_zcrx_start_pending(struct uib_tcp_backend *be)
+{
+	struct tcp_peer *peer;
+	int submitted;
+	int index;
+	int rc;
+
+	if (!be->zcrx)
+		return 0;
+	submitted = 0;
+	for (index = 0; index < UIB_TCP_MAX_PEERS; index++) {
+		peer = &be->peers[index];
+		if (!peer->used || peer->closing || peer->fd < 0 ||
+		    peer->zcrx_started)
+			continue;
+		rc = uib_zcrx_prep_recv(be->zcrx, peer->fd,
+					(uint64_t)(uintptr_t)peer);
+		if (rc < 0)
+			return rc;
+		peer->zcrx_started = 1;
+		submitted++;
+	}
+	return submitted ? uib_zcrx_submit(be->zcrx) : 0;
+}
+
 static void tcp_accept(struct uib_context *ctx)
 {
 	struct uib_tcp_backend *be = ctx->backend;
@@ -374,6 +539,7 @@ static void tcp_accept(struct uib_context *ctx)
 	ev.events = EPOLLIN;
 	ev.data.ptr = p;
 	epoll_ctl(be->epfd, EPOLL_CTL_ADD, fd, &ev);
+	tcp_zcrx_start_pending(be);
 }
 
 static void *worker_loop(void *arg)
@@ -398,10 +564,23 @@ static void *worker_loop(void *arg)
 
 				if (read(be->timer_fd, &exp, sizeof(exp)) == sizeof(exp))
 					uib_transport_retransmit_walk(ctx);
+			} else if (tag == EP_TAG_ZCRX) {
+				eventfd_t completions;
+
+				eventfd_read(uib_zcrx_event_fd(be->zcrx),
+					     &completions);
+				uib_zcrx_drain(be->zcrx, tcp_zcrx_receive, ctx);
+			} else if (tag == EP_TAG_WAKE) {
+				eventfd_t wake;
+
+				eventfd_read(be->wake_fd, &wake);
+				tcp_zcrx_start_pending(be);
 			} else {
 				struct tcp_peer *p = tag;
 
-				if (peer_readable(ctx, p) < 0) {
+				if (be->zcrx) {
+					tcp_zcrx_start_pending(be);
+				} else if (peer_readable(ctx, p) < 0) {
 					pthread_mutex_lock(&be->lock);
 					peer_drop(be, p);
 					pthread_mutex_unlock(&be->lock);
@@ -421,12 +600,18 @@ static int tcp_init(struct uib_context *ctx)
 {
 	struct uib_tcp_backend *be;
 	struct epoll_event ev;
-	int one = 1, rc;
+	const char *zcrx_mode;
+	const char *zcrx_iface;
+	const char *zcrx_queue;
+	int zcrx_required;
+	int one;
+	int rc;
 
 	be = calloc(1, sizeof(*be));
 	if (!be)
 		return -ENOMEM;
-	be->listen_fd = be->epfd = be->timer_fd = -1;
+	be->listen_fd = be->epfd = be->timer_fd = be->wake_fd = -1;
+	one = 1;
 	pthread_mutex_init(&be->lock, NULL);
 	ctx->backend = be;
 
@@ -474,6 +659,43 @@ static int tcp_init(struct uib_context *ctx)
 	ev.data.ptr = EP_TAG_LISTEN;
 	epoll_ctl(be->epfd, EPOLL_CTL_ADD, be->listen_fd, &ev);
 
+	zcrx_mode = getenv(UIB_ENV_HOST_ZC);
+	zcrx_iface = getenv(UIB_ENV_HOST_ZC_IFACE);
+	zcrx_queue = getenv(UIB_ENV_HOST_ZC_QUEUE);
+	zcrx_required = zcrx_mode && !strcmp(zcrx_mode, "required");
+	if (zcrx_mode && strcmp(zcrx_mode, "auto") &&
+	    strcmp(zcrx_mode, "off") && strcmp(zcrx_mode, "required")) {
+		rc = -EINVAL;
+		goto err;
+	}
+	if ((!zcrx_mode || strcmp(zcrx_mode, "off")) && zcrx_iface &&
+	    *zcrx_iface) {
+		rc = uib_zcrx_create(&be->zcrx, zcrx_iface,
+				      zcrx_queue ? (uint32_t)atoi(zcrx_queue) : 0,
+				      UIB_TCP_ZCRX_ENTRIES,
+				      UIB_TCP_ZCRX_AREA_SIZE);
+		if (rc < 0 && zcrx_required)
+			goto err;
+		if (rc < 0)
+			be->zcrx = NULL;
+	} else if (zcrx_required) {
+		rc = -EINVAL;
+		goto err;
+	}
+	if (be->zcrx) {
+		be->wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+		if (be->wake_fd < 0) {
+			rc = -errno;
+			goto err;
+		}
+		ev.events = EPOLLIN;
+		ev.data.ptr = EP_TAG_ZCRX;
+		epoll_ctl(be->epfd, EPOLL_CTL_ADD,
+			  uib_zcrx_event_fd(be->zcrx), &ev);
+		ev.data.ptr = EP_TAG_WAKE;
+		epoll_ctl(be->epfd, EPOLL_CTL_ADD, be->wake_fd, &ev);
+	}
+
 	be->timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
 	if (be->timer_fd >= 0) {
 		struct itimerspec its;
@@ -502,6 +724,9 @@ err:
 		close(be->listen_fd);
 	if (be->timer_fd >= 0)
 		close(be->timer_fd);
+	if (be->wake_fd >= 0)
+		close(be->wake_fd);
+	uib_zcrx_destroy(be->zcrx);
 	pthread_mutex_destroy(&be->lock);
 	free(be);
 	ctx->backend = NULL;
@@ -531,6 +756,9 @@ static void tcp_fini(struct uib_context *ctx)
 		close(be->listen_fd);
 	if (be->timer_fd >= 0)
 		close(be->timer_fd);
+	if (be->wake_fd >= 0)
+		close(be->wake_fd);
+	uib_zcrx_destroy(be->zcrx);
 	pthread_mutex_destroy(&be->lock);
 	free(be);
 	ctx->backend = NULL;
@@ -570,6 +798,15 @@ static void tcp_mr_deregister(struct uib_context *ctx, struct uib_mr *mr)
 	}
 }
 
+static uint32_t tcp_host_zc_capabilities(struct uib_context *ctx)
+{
+	struct uib_tcp_backend *be = ctx->backend;
+
+	if (!be || !be->zcrx)
+		return 0;
+	return UIB_HOST_ZC_KERNEL_ZCRX | UIB_HOST_ZC_FRAMED_DIRECT;
+}
+
 const struct uib_transport_ops uib_tcp_devmem_ops = {
 	.name          = "tcp-devmem",
 	.probe         = tcp_probe,
@@ -578,4 +815,5 @@ const struct uib_transport_ops uib_tcp_devmem_ops = {
 	.send          = tcp_send,
 	.mr_register   = tcp_mr_register,
 	.mr_deregister = tcp_mr_deregister,
+	.host_zc_capabilities = tcp_host_zc_capabilities,
 };

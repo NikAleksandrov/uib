@@ -83,6 +83,10 @@ AC_ARG_ENABLE([zerocopy],
 	AS_HELP_STRING([--disable-zerocopy],
 		[do not build MSG_ZEROCOPY socket support]), [],
 	[enable_zerocopy=auto])
+AC_ARG_ENABLE([host-zc],
+	AS_HELP_STRING([--disable-host-zc],
+		[do not build io_uring ZCRX host receive support]), [],
+	[enable_host_zc=auto])
 AC_ARG_WITH([liburing],
 	AS_HELP_STRING([--with-liburing=PREFIX],
 		[find liburing below PREFIX instead of probing]), [],
@@ -132,6 +136,18 @@ AC_LINK_IFELSE([AC_LANG_PROGRAM(
 	  io_uring_prep_recvmsg_multishot(&sqe, -1, &message, 0);
 	  io_uring_setup_buf_ring(&ring, 8, 1, 0, &error);]])], [],
 	[AC_MSG_ERROR([liburing with multishot recvmsg and provided buffer rings is required])])
+HAVE_URING_ZCRX=0
+AS_IF([test "x$enable_host_zc" != xno], [
+	AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
+		[[#include <liburing.h>]],
+		[[struct io_uring_zcrx_ifq_reg registration = { 0 };
+		  struct io_uring_zcrx_cqe completion = { 0 };
+		  return IORING_OP_RECV_ZC + IORING_REGISTER_ZCRX_IFQ +
+			 (int)registration.zcrx_id + (int)completion.off;]])],
+		[HAVE_URING_ZCRX=1])
+])
+AS_IF([test "x$enable_host_zc" = xyes && test "$HAVE_URING_ZCRX" != 1],
+	[AC_MSG_ERROR([--enable-host-zc requires io_uring ZCRX headers])])
 LIBS=$saved_LIBS
 CPPFLAGS=$saved_CPPFLAGS
 
@@ -226,6 +242,7 @@ AC_SUBST([AFXDP_LIBS])
 AC_SUBST([HAVE_DEVMEM])
 AC_SUBST([HAVE_DMABUF])
 AC_SUBST([HAVE_ZEROCOPY])
+AC_SUBST([HAVE_URING_ZCRX])
 AC_SUBST([HAVE_VIRTME])
 AC_SUBST([HAVE_IBV_TOOLS])
 
@@ -237,6 +254,7 @@ AC_MSG_NOTICE([  AF_XDP transport:    $HAVE_AFXDP])
 AC_MSG_NOTICE([  TCP devmem UAPI:     $HAVE_DEVMEM])
 AC_MSG_NOTICE([  DMA-BUF MRs:         $HAVE_DMABUF])
 AC_MSG_NOTICE([  socket zero-copy:    $HAVE_ZEROCOPY])
+AC_MSG_NOTICE([  io_uring ZCRX UAPI:  $HAVE_URING_ZCRX])
 AC_MSG_NOTICE([  virtme-ng tests:     $HAVE_VIRTME])
 AC_MSG_NOTICE([  ibverbs tools:       $HAVE_IBV_TOOLS])
 AC_OUTPUT

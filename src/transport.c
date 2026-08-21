@@ -10,7 +10,18 @@
 #include "uib/env.h"
 #include "uib/qp.h"
 #include "uib/protocol.h"
+#include "host_zc_internal.h"
 #include "utils.h"
+
+struct uib_direct_delivery {
+	uib_transport_release_fn release;
+	const uint8_t           *data;
+	void                    *opaque;
+	size_t                   len;
+	int                      claimed;
+};
+
+static _Thread_local struct uib_direct_delivery *direct_delivery;
 
 void uib_transport_deliver(struct uib_context *ctx,
 			   const struct sockaddr_in *src, const void *buf,
@@ -34,6 +45,65 @@ void uib_transport_deliver(struct uib_context *ctx,
 	}
 	uib_qp_handle_packet(qp, src, buf, len);
 	rcu_read_unlock();
+}
+
+void uib_transport_deliver_direct(struct uib_context *ctx,
+				  const struct sockaddr_in *src,
+				  const void *buf, size_t len,
+				  uib_transport_release_fn release,
+				  void *opaque)
+{
+	struct uib_direct_delivery delivery;
+
+	delivery.release = release;
+	delivery.data = buf;
+	delivery.opaque = opaque;
+	delivery.len = len;
+	delivery.claimed = 0;
+	direct_delivery = &delivery;
+	uib_transport_deliver(ctx, src, buf, len);
+	direct_delivery = NULL;
+	if (!delivery.claimed && release)
+		release(opaque);
+}
+
+void uib_transport_direct_scope(const void *data, size_t len,
+				uib_transport_release_fn release,
+				void *release_opaque,
+				uib_direct_consume_fn consume,
+				void *consume_opaque)
+{
+	struct uib_direct_delivery delivery;
+
+	delivery.release = release;
+	delivery.data = data;
+	delivery.opaque = release_opaque;
+	delivery.len = len;
+	delivery.claimed = 0;
+	direct_delivery = &delivery;
+	consume(consume_opaque);
+	direct_delivery = NULL;
+	if (!delivery.claimed && release)
+		release(release_opaque);
+}
+
+int uib_transport_claim_direct(const void *data, size_t len,
+			       uib_transport_release_fn *release, void **opaque)
+{
+	const uint8_t *end;
+	const uint8_t *start;
+
+	if (!direct_delivery || direct_delivery->claimed || !release || !opaque)
+		return -ENOENT;
+	start = data;
+	end = start + len;
+	if (start < direct_delivery->data || end < start ||
+	    end > direct_delivery->data + direct_delivery->len)
+		return -ERANGE;
+	direct_delivery->claimed = 1;
+	*release = direct_delivery->release;
+	*opaque = direct_delivery->opaque;
+	return 0;
 }
 
 void uib_transport_retransmit_walk(struct uib_context *ctx)

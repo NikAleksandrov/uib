@@ -645,6 +645,7 @@ ac_subst_vars='LTLIBOBJS
 LIBOBJS
 HAVE_IBV_TOOLS
 HAVE_VIRTME
+HAVE_URING_ZCRX
 HAVE_ZEROCOPY
 HAVE_DMABUF
 HAVE_DEVMEM
@@ -723,6 +724,7 @@ enable_af_xdp
 enable_devmem
 enable_dmabuf
 enable_zerocopy
+enable_host_zc
 with_liburing
 '
       ac_precious_vars='build_alias
@@ -1356,6 +1358,7 @@ Optional Features:
   --disable-devmem        do not build TCP devmem support
   --disable-dmabuf        do not build DMA-BUF memory registration support
   --disable-zerocopy      do not build MSG_ZEROCOPY socket support
+  --disable-host-zc       do not build io_uring ZCRX host receive support
 
 Optional Packages:
   --with-PACKAGE[=ARG]    use PACKAGE [ARG=yes]
@@ -3728,6 +3731,15 @@ else case e in #(
 esac
 fi
 
+# Check whether --enable-host-zc was given.
+if test ${enable_host_zc+y}
+then :
+  enableval=$enable_host_zc;
+else case e in #(
+  e) enable_host_zc=auto ;;
+esac
+fi
+
 
 # Check whether --with-liburing was given.
 if test ${with_liburing+y}
@@ -3930,6 +3942,35 @@ esac
 fi
 rm -f core conftest.err conftest.$ac_objext conftest.beam \
     conftest$ac_exeext conftest.$ac_ext
+HAVE_URING_ZCRX=0
+if test "x$enable_host_zc" != xno
+then :
+
+	cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#include <liburing.h>
+int
+main (void)
+{
+struct io_uring_zcrx_ifq_reg registration = { 0 };
+		  struct io_uring_zcrx_cqe completion = { 0 };
+		  return IORING_OP_RECV_ZC + IORING_REGISTER_ZCRX_IFQ +
+			 (int)registration.zcrx_id + (int)completion.off;
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"
+then :
+  HAVE_URING_ZCRX=1
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
+
+fi
+if test "x$enable_host_zc" = xyes && test "$HAVE_URING_ZCRX" != 1
+then :
+  as_fn_error $? "--enable-host-zc requires io_uring ZCRX headers" "$LINENO" 5
+fi
 LIBS=$saved_LIBS
 CPPFLAGS=$saved_CPPFLAGS
 
@@ -4250,6 +4291,7 @@ fi
 
 
 
+
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: configuration summary:" >&5
 printf "%s\n" "$as_me: configuration summary:" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   libmnl networking:   required" >&5
@@ -4266,6 +4308,8 @@ printf "%s\n" "$as_me:   TCP devmem UAPI:     $HAVE_DEVMEM" >&6;}
 printf "%s\n" "$as_me:   DMA-BUF MRs:         $HAVE_DMABUF" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   socket zero-copy:    $HAVE_ZEROCOPY" >&5
 printf "%s\n" "$as_me:   socket zero-copy:    $HAVE_ZEROCOPY" >&6;}
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}:   io_uring ZCRX UAPI:  $HAVE_URING_ZCRX" >&5
+printf "%s\n" "$as_me:   io_uring ZCRX UAPI:  $HAVE_URING_ZCRX" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   virtme-ng tests:     $HAVE_VIRTME" >&5
 printf "%s\n" "$as_me:   virtme-ng tests:     $HAVE_VIRTME" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   ibverbs tools:       $HAVE_IBV_TOOLS" >&5
