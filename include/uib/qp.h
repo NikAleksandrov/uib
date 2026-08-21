@@ -11,6 +11,7 @@
 struct uib_context;
 struct uib_pd;
 struct uib_cq;
+struct uib_outstanding_pool;
 
 struct uib_sge {
 	uint64_t addr;
@@ -92,12 +93,15 @@ struct uib_qp_attr {
 #define UIB_QP_RQ_PSN        (1u << 7)
 #define UIB_QP_SQ_PSN        (1u << 8)
 #define UIB_QP_PATH_MTU      (1u << 9)
+#define UIB_RQ_INLINE_SGE     4
 
 struct uib_rq_slot {
-	int               valid;
-	uint64_t          wr_id;
-	struct uib_sge   *sg_list;
-	int               num_sge;
+	struct uib_sge inline_sge[UIB_RQ_INLINE_SGE];
+	struct uib_sge *sg_list;
+	uint64_t        wr_id;
+	int             num_sge;
+	int             valid;
+	int             heap_sge;
 };
 
 struct uib_outstanding {
@@ -110,6 +114,7 @@ struct uib_outstanding {
 	uint8_t                 is_read;
 	uint8_t                 is_final;
 	uint8_t                 indexed;
+	uint8_t                 pool_class;
 	uint64_t                wr_id;
 	enum uib_wr_opcode      wr_opcode;
 	uint64_t                deadline_ns;
@@ -119,6 +124,9 @@ struct uib_outstanding {
 	struct uib_sge         *read_sgl;
 	int                     read_num_sge;
 	uint32_t                read_total_len;
+	uint32_t                refs;
+	struct uib_outstanding_pool *pool;
+	uint8_t                 packet[];
 };
 
 struct uib_qp {
@@ -151,6 +159,7 @@ struct uib_qp {
 	struct uib_outstanding *out_tail;
 	struct uib_outstanding *read_head;
 	struct uib_outstanding *read_tail;
+	struct uib_outstanding_pool *out_pool;
 	struct uib_psn_index     out_index;
 	uint32_t                out_count;
 	uint32_t                last_acked_psn;
@@ -161,6 +170,7 @@ struct uib_qp {
 	uint8_t                 retry_scheduled;
 
 	struct uib_rq_slot      frag_recv;
+	struct uib_mr          *frag_recv_mr;
 	uint8_t                 frag_recv_active;
 	uint32_t                frag_recv_offset;
 
@@ -201,6 +211,7 @@ int uib_qp_scatter(struct uib_pd *pd, struct uib_sge *sgl, int n,
 		   uint32_t msg_offset, const uint8_t *in, size_t in_len,
 		   size_t *consumed_out);
 int uib_qp_pop_recv(struct uib_qp *qp, struct uib_rq_slot *out);
+void uib_qp_release_recv(struct uib_rq_slot *slot);
 void uib_qp_emit_send(struct uib_qp *qp, uint64_t wr_id,
 		      enum uib_wr_opcode wr_op, int signaled,
 		      enum uib_wc_status status, uint32_t byte_len);

@@ -10,6 +10,14 @@
 #define TEST_PACKET_LENGTH 256
 
 static int failed;
+static unsigned int released;
+
+static void release_packet(void *opaque)
+{
+	unsigned int *counter = opaque;
+
+	__atomic_add_fetch(counter, 1, __ATOMIC_RELAXED);
+}
 
 static void check(const char *name, int condition)
 {
@@ -90,6 +98,9 @@ static void run_mode(const char *mode, uint16_t sender_port,
 	check("uring.rx_mode", rx_stats.rx_mode == expected);
 	check("uring.runtime_batches", rx_stats.rx_batch == 17 &&
 	      tx_stats.tx_batch == 7);
+	check("uring.sqpoll_request",
+	      tx_stats.sqpoll_requested ==
+	      (!strcmp(getenv("UIB_URING_SQPOLL"), "on") ? 1U : 0U));
 	memset(&zerocopy_stats, 0, sizeof(zerocopy_stats));
 	rc = uib_zerocopy_get_stats(sender, &zerocopy_stats);
 	check("uring.zerocopy_accounting", !rc &&
@@ -119,6 +130,71 @@ static void run_invalid_batch(void)
 	if (context)
 		uib_close_device(context);
 	setenv("UIB_URING_TX_BATCH", "64", 1);
+	setenv("UIB_URING_SQPOLL", "invalid", 1);
+	context = uib_open_device_protocol("127.0.0.1", 19610, "dummy");
+	check("uring.invalid_sqpoll", !context);
+	if (context)
+		uib_close_device(context);
+	setenv("UIB_URING_SQPOLL", "off", 1);
+	setenv("UIB_UDP_GSO", "invalid", 1);
+	context = uib_open_device_protocol("127.0.0.1", 19613, "dummy");
+	check("uring.invalid_udp_gso", !context);
+	if (context)
+		uib_close_device(context);
+	setenv("UIB_UDP_GSO", "auto", 1);
+}
+
+static void run_gso_batch(void)
+{
+	struct uib_transport_ref refs[TEST_PACKETS];
+	struct uib_transport_stats rx_stats;
+	struct uib_transport_stats tx_stats;
+	struct uib_context *receiver;
+	struct uib_context *sender;
+	struct sockaddr_in destination;
+	uint8_t packets[TEST_PACKETS][TEST_PACKET_LENGTH];
+	unsigned int i;
+	int rc;
+
+	setenv("UIB_UDP_GSO", "auto", 1);
+	setenv("UIB_ZEROCOPY", "off", 1);
+	sender = uib_open_device_protocol("127.0.0.1", 19614, "dummy");
+	receiver = uib_open_device_protocol("127.0.0.1", 19615, "dummy");
+	check("gso.contexts", sender && receiver);
+	if (!sender || !receiver)
+		goto out;
+	destination = receiver->local_addr;
+	released = 0;
+	for (i = 0; i < TEST_PACKETS; i++) {
+		memset(packets[i], (int)i, sizeof(packets[i]));
+		refs[i].dst = &destination;
+		refs[i].buf = packets[i];
+		refs[i].release = release_packet;
+		refs[i].opaque = &released;
+		refs[i].len = sizeof(packets[i]);
+		refs[i].entropy = 0;
+	}
+	rc = uib_transport_send_ref_batch(sender, refs, TEST_PACKETS);
+	check("gso.enqueue_batch", !rc);
+	memset(&tx_stats, 0, sizeof(tx_stats));
+	memset(&rx_stats, 0, sizeof(rx_stats));
+	rc = wait_for_traffic(sender, receiver, &tx_stats, &rx_stats);
+	check("gso.async_completion", !rc);
+	check("gso.release_callbacks", released == TEST_PACKETS);
+	check("gso.packet_counters", tx_stats.tx_completed == TEST_PACKETS &&
+	      rx_stats.rx_packets == TEST_PACKETS);
+	if (tx_stats.gso_enabled) {
+		check("gso.batch_counters", tx_stats.tx_gso_batches > 0 &&
+		      tx_stats.tx_gso_packets == TEST_PACKETS);
+	} else {
+		printf("%-32s %s\n", "gso.batch_counters", "SKIP");
+	}
+
+out:
+	if (sender)
+		uib_close_device(sender);
+	if (receiver)
+		uib_close_device(receiver);
 }
 
 static void run_shutdown_drain(void)
@@ -171,9 +247,14 @@ out:
 int main(void)
 {
 	setenv("UIB_TRANSPORT_MODE", "udp-io-uring", 1);
+	setenv("UIB_URING_SQPOLL", "off", 1);
 	run_mode("multishot", 19600, 19601, UIB_URING_RX_MULTISHOT, 0);
 	run_mode("batch", 19602, 19603, UIB_URING_RX_BATCHED, 0);
 	run_mode("batch", 19608, 19609, UIB_URING_RX_BATCHED, 1);
+	setenv("UIB_URING_SQPOLL", "on", 1);
+	run_mode("batch", 19611, 19612, UIB_URING_RX_BATCHED, 0);
+	setenv("UIB_URING_SQPOLL", "off", 1);
+	run_gso_batch();
 	run_shutdown_drain();
 	run_invalid_batch();
 	printf("RESULT %s\n", failed ? "FAIL" : "PASS");

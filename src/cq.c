@@ -1,4 +1,9 @@
-/* SPDX-License-Identifier: Apache-2.0 */
+/* SPDX-License-Identifier: Apache-2.0 AND BSD-2-Clause-Views */
+/*
+ * The bounded MPMC completion ring is adapted from Dmitry Vyukov's
+ * bounded MPMC queue.
+ * Copyright (c) 2010-2011 Dmitry Vyukov. All rights reserved.
+ */
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -55,6 +60,8 @@ struct uib_cq *uib_create_cq_channel(struct uib_context *ctx, int cqe,
 				     void *event_context)
 {
 	struct uib_cq *cq;
+	uint32_t capacity;
+	uint32_t i;
 
 	if (!ctx || cqe <= 0 || (channel && channel->ctx != ctx)) {
 		errno = EINVAL;
@@ -63,13 +70,25 @@ struct uib_cq *uib_create_cq_channel(struct uib_context *ctx, int cqe,
 	cq = calloc(1, sizeof(*cq));
 	if (!cq)
 		return NULL;
-	cq->ring = calloc((size_t)cqe + 1, sizeof(*cq->ring));
+	capacity = 1;
+	while (capacity < (uint32_t)cqe) {
+		if (capacity > UINT32_MAX / 2) {
+			free(cq);
+			errno = EOVERFLOW;
+			return NULL;
+		}
+		capacity <<= 1;
+	}
+	cq->ring = calloc(capacity, sizeof(*cq->ring));
 	if (!cq->ring) {
 		free(cq);
 		return NULL;
 	}
 	cq->ctx = ctx;
-	cq->cqe = cqe + 1;
+	cq->cqe = capacity;
+	cq->mask = capacity - 1;
+	for (i = 0; i < capacity; i++)
+		cq->ring[i].sequence = i;
 	cq->channel = channel;
 	cq->event_context = event_context;
 	pthread_mutex_init(&cq->lock, NULL);
@@ -140,25 +159,42 @@ int uib_cq_push(struct uib_cq *cq, const struct uib_wc *wc)
 {
 	struct uib_cq_event *event = NULL;
 	struct uib_comp_channel *channel = NULL;
-	int next;
+	struct uib_cq_slot *slot;
+	uint64_t position;
+	uint64_t sequence;
+	intptr_t difference;
 
-	pthread_mutex_lock(&cq->lock);
-	next = (cq->head + 1) % cq->cqe;
-	if (next == cq->tail) {
+	position = __atomic_load_n(&cq->enqueue_pos, __ATOMIC_RELAXED);
+	for (;;) {
+		slot = &cq->ring[position & cq->mask];
+		sequence = __atomic_load_n(&slot->sequence, __ATOMIC_ACQUIRE);
+		difference = (intptr_t)(sequence - position);
+		if (difference < 0)
+			return -ENOSPC;
+		if (difference > 0) {
+			position = __atomic_load_n(&cq->enqueue_pos,
+						   __ATOMIC_RELAXED);
+			continue;
+		}
+		if (__atomic_compare_exchange_n(&cq->enqueue_pos, &position,
+						position + 1, 0,
+						__ATOMIC_RELAXED,
+						__ATOMIC_RELAXED))
+			break;
+	}
+	slot->wc = *wc;
+	__atomic_store_n(&slot->sequence, position + 1, __ATOMIC_RELEASE);
+	if (cq->channel) {
+		pthread_mutex_lock(&cq->lock);
+		if (cq->notify_armed) {
+			cq->notify_armed = 0;
+			event = cq->armed_event;
+			cq->armed_event = NULL;
+			channel = cq->channel;
+			cq->events_outstanding++;
+		}
 		pthread_mutex_unlock(&cq->lock);
-		return -ENOSPC;
 	}
-	cq->ring[cq->head] = *wc;
-	cq->head = next;
-	if (cq->notify_armed) {
-		cq->notify_armed = 0;
-		event = cq->armed_event;
-		cq->armed_event = NULL;
-		channel = cq->channel;
-		cq->events_outstanding++;
-	}
-	pthread_cond_signal(&cq->cond);
-	pthread_mutex_unlock(&cq->lock);
 	if (event)
 		return channel_push(channel, event);
 	return 0;
@@ -166,16 +202,39 @@ int uib_cq_push(struct uib_cq *cq, const struct uib_wc *wc)
 
 int uib_poll_cq(struct uib_cq *cq, int n, struct uib_wc *out)
 {
+	struct uib_cq_slot *slot;
+	uint64_t position;
+	uint64_t sequence;
+	intptr_t difference;
 	int got = 0;
 
 	if (!cq || n < 0 || (n && !out))
 		return -EINVAL;
-	pthread_mutex_lock(&cq->lock);
-	while (got < n && cq->tail != cq->head) {
-		out[got++] = cq->ring[cq->tail];
-		cq->tail = (cq->tail + 1) % cq->cqe;
+	while (got < n) {
+		position = __atomic_load_n(&cq->dequeue_pos, __ATOMIC_RELAXED);
+		for (;;) {
+			slot = &cq->ring[position & cq->mask];
+			sequence = __atomic_load_n(&slot->sequence,
+						   __ATOMIC_ACQUIRE);
+			difference = (intptr_t)(sequence - (position + 1));
+			if (difference < 0)
+				return got;
+			if (difference > 0) {
+				position = __atomic_load_n(&cq->dequeue_pos,
+							   __ATOMIC_RELAXED);
+				continue;
+			}
+			if (__atomic_compare_exchange_n(&cq->dequeue_pos,
+							&position,
+							position + 1, 0,
+							__ATOMIC_RELAXED,
+							__ATOMIC_RELAXED))
+				break;
+		}
+		out[got++] = slot->wc;
+		__atomic_store_n(&slot->sequence, position + cq->cqe,
+				 __ATOMIC_RELEASE);
 	}
-	pthread_mutex_unlock(&cq->lock);
 	return got;
 }
 

@@ -107,6 +107,59 @@
 #define UIB_ENV_URING_TX_BATCH "UIB_URING_TX_BATCH"
 
 /**
+ * DOC: UIB_UDP_GSO
+ * @uib-env: UDP transports
+ * @default: `auto`
+ * @values: `auto`, `off`, or `on`
+ *
+ * Combine equal-sized RDMA packets into UDP GSO sends. `on` fails context
+ * creation when the kernel does not support UDP GSO; `auto` falls back.
+ *
+ * Example:
+ * UIB_UDP_GSO=off ./examples/stress_bench --protocol rocev2
+ */
+#define UIB_ENV_UDP_GSO "UIB_UDP_GSO"
+
+/**
+ * DOC: UIB_URING_SQPOLL
+ * @uib-env: Library and transparent provider
+ * @default: `off`
+ * @values: `off` or `on`
+ *
+ * Enable the optional io_uring kernel submission polling thread.
+ *
+ * Example:
+ * UIB_URING_SQPOLL=on ./examples/stress_bench
+ */
+#define UIB_ENV_URING_SQPOLL "UIB_URING_SQPOLL"
+
+/**
+ * DOC: UIB_URING_SQPOLL_IDLE
+ * @uib-env: Library and transparent provider
+ * @default: `2000`
+ * @values: A positive number of milliseconds.
+ *
+ * Set how long an idle io_uring SQPOLL thread keeps polling.
+ *
+ * Example:
+ * UIB_URING_SQPOLL=on UIB_URING_SQPOLL_IDLE=100 ./examples/stress_bench
+ */
+#define UIB_ENV_URING_SQPOLL_IDLE "UIB_URING_SQPOLL_IDLE"
+
+/**
+ * DOC: UIB_URING_SQPOLL_CPU
+ * @uib-env: Library and transparent provider
+ * @default: Unset.
+ * @values: An online CPU number.
+ *
+ * Pin the optional io_uring SQPOLL kernel thread to one CPU.
+ *
+ * Example:
+ * UIB_URING_SQPOLL=on UIB_URING_SQPOLL_CPU=3 ./examples/stress_bench
+ */
+#define UIB_ENV_URING_SQPOLL_CPU "UIB_URING_SQPOLL_CPU"
+
+/**
  * DOC: UIB_ZEROCOPY
  * @uib-env: Library and transparent provider
  * @default: `auto`

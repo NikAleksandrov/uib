@@ -29,7 +29,6 @@ int main(void)
 	uint32_t i;
 
 	pthread_mutex_init(&ctx.qp_lock, NULL);
-	pthread_rwlock_init(&ctx.qp_io_lock, NULL);
 	ctx.qp_table_size = TEST_INITIAL_CAPACITY;
 	ctx.qp_next_id = 1;
 	ctx.qp_table = calloc(ctx.qp_table_size, sizeof(*ctx.qp_table));
@@ -84,7 +83,6 @@ int main(void)
 	free(ctx.retry_heap);
 	free(ctx.qp_free_ids);
 	free(ctx.qp_table);
-	pthread_rwlock_destroy(&ctx.qp_io_lock);
 	pthread_mutex_destroy(&ctx.qp_lock);
 
 	printf("RESULT %s\n", failed ? "FAIL" : "PASS");

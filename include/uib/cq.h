@@ -33,12 +33,18 @@ struct uib_wc {
 	uint32_t         imm_data;
 };
 
+struct uib_cq_slot {
+	struct uib_wc wc;
+	uint64_t      sequence;
+};
+
 struct uib_cq {
 	struct uib_context *ctx;
-	int                 cqe;
-	int                 head;
-	int                 tail;
-	struct uib_wc      *ring;
+	struct uib_cq_slot *ring;
+	uint64_t            enqueue_pos;
+	uint64_t            dequeue_pos;
+	uint32_t            mask;
+	uint32_t            cqe;
 	struct uib_comp_channel *channel;
 	struct uib_cq_event *armed_event;
 	void                *event_context;

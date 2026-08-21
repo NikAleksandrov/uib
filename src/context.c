@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <urcu-bp.h>
 
 #include "uib/context.h"
 #include "uib/env.h"
@@ -42,7 +43,6 @@ struct uib_context *uib_open_device_protocol(const char *bind_ip,
 		snprintf(ctx->bind_ip, sizeof(ctx->bind_ip), "%s", bind_ip);
 
 	pthread_mutex_init(&ctx->qp_lock, NULL);
-	pthread_rwlock_init(&ctx->qp_io_lock, NULL);
 	ctx->qp_table_size = UIB_DEFAULT_QP_TABLE;
 	ctx->qp_table = calloc(ctx->qp_table_size, sizeof(*ctx->qp_table));
 	ctx->qp_free_ids = calloc(ctx->qp_table_size,
@@ -66,7 +66,6 @@ err_table:
 	free(ctx->retry_heap);
 	free(ctx->qp_free_ids);
 	free(ctx->qp_table);
-	pthread_rwlock_destroy(&ctx->qp_io_lock);
 	pthread_mutex_destroy(&ctx->qp_lock);
 	pthread_mutex_destroy(&ctx->zerocopy_lock);
 	free(ctx);
@@ -80,7 +79,6 @@ int uib_close_device(struct uib_context *ctx)
 	uib_transport_fini(ctx);
 	if (ctx->pops && ctx->pops->fini)
 		ctx->pops->fini(ctx);
-	pthread_rwlock_destroy(&ctx->qp_io_lock);
 	pthread_mutex_destroy(&ctx->qp_lock);
 	pthread_mutex_destroy(&ctx->zerocopy_lock);
 	free(ctx->retry_heap);
@@ -94,11 +92,12 @@ uint32_t uib_register_qp(struct uib_context *ctx, struct uib_qp *qp)
 {
 	struct uib_qp **new_retry;
 	struct uib_qp **new_table;
+	struct uib_qp **old_table;
 	uint32_t *new_free;
 	uint32_t new_size;
 	uint32_t i;
 
-	pthread_rwlock_wrlock(&ctx->qp_io_lock);
+	old_table = NULL;
 	pthread_mutex_lock(&ctx->qp_lock);
 	if (ctx->qp_free_count) {
 		i = ctx->qp_free_ids[--ctx->qp_free_count];
@@ -126,22 +125,25 @@ uint32_t uib_register_qp(struct uib_context *ctx, struct uib_qp *qp)
 		       ctx->retry_heap_size * sizeof(*new_retry));
 		free(ctx->retry_heap);
 		free(ctx->qp_free_ids);
-		free(ctx->qp_table);
+		old_table = ctx->qp_table;
 		ctx->retry_heap = new_retry;
 		ctx->qp_free_ids = new_free;
-		ctx->qp_table = new_table;
-		ctx->qp_table_size = new_size;
+		rcu_assign_pointer(ctx->qp_table, new_table);
+		__atomic_store_n(&ctx->qp_table_size, new_size,
+				 __ATOMIC_RELEASE);
 	}
 	ctx->qp_next_id++;
 found:
-	ctx->qp_table[i] = qp;
+	rcu_assign_pointer(ctx->qp_table[i], qp);
 	pthread_mutex_unlock(&ctx->qp_lock);
-	pthread_rwlock_unlock(&ctx->qp_io_lock);
+	if (old_table) {
+		synchronize_rcu();
+		free(old_table);
+	}
 	return i;
 
 no_space:
 	pthread_mutex_unlock(&ctx->qp_lock);
-	pthread_rwlock_unlock(&ctx->qp_io_lock);
 	return 0;
 }
 
@@ -272,32 +274,40 @@ struct uib_qp *uib_retry_pop_due(struct uib_context *ctx, uint64_t now_ns)
 
 void uib_unregister_qp(struct uib_context *ctx, struct uib_qp *qp)
 {
+	int removed;
+
 	if (!qp || !qp->qp_num || qp->qp_num >= ctx->qp_table_size)
 		return;
-	pthread_rwlock_wrlock(&ctx->qp_io_lock);
+	removed = 0;
 	pthread_mutex_lock(&ctx->qp_lock);
 	if (ctx->qp_table[qp->qp_num] == qp) {
 		retry_heap_remove_locked(ctx, qp);
-		ctx->qp_table[qp->qp_num] = NULL;
-		ctx->qp_free_ids[ctx->qp_free_count++] = qp->qp_num;
+		rcu_assign_pointer(ctx->qp_table[qp->qp_num], NULL);
+		removed = 1;
 	}
 	pthread_mutex_unlock(&ctx->qp_lock);
-	pthread_rwlock_unlock(&ctx->qp_io_lock);
+	if (!removed)
+		return;
+	synchronize_rcu();
+	pthread_mutex_lock(&ctx->qp_lock);
+	ctx->qp_free_ids[ctx->qp_free_count++] = qp->qp_num;
+	pthread_mutex_unlock(&ctx->qp_lock);
 }
 
 struct uib_qp *uib_lookup_qp(struct uib_context *ctx, uint32_t qpn)
 {
 	struct uib_qp *qp;
 
-	pthread_rwlock_rdlock(&ctx->qp_io_lock);
-	qp = uib_lookup_qp_locked(ctx, qpn);
-	pthread_rwlock_unlock(&ctx->qp_io_lock);
+	rcu_read_lock();
+	qp = uib_lookup_qp_rcu(ctx, qpn);
+	rcu_read_unlock();
 	return qp;
 }
 
-struct uib_qp *uib_lookup_qp_locked(struct uib_context *ctx, uint32_t qpn)
+struct uib_qp *uib_lookup_qp_rcu(struct uib_context *ctx, uint32_t qpn)
 {
-	if (qpn == 0 || qpn >= ctx->qp_table_size)
+	if (qpn == 0 ||
+	    qpn >= __atomic_load_n(&ctx->qp_table_size, __ATOMIC_ACQUIRE))
 		return NULL;
-	return ctx->qp_table[qpn];
+	return rcu_dereference(ctx->qp_table)[qpn];
 }

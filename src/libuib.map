@@ -37,7 +37,7 @@ UIB_0.1 {
 		uib_icrc;
 		uib_inet_csum;
 		uib_lookup_qp;
-		uib_lookup_qp_locked;
+		uib_lookup_qp_rcu;
 		uib_modify_qp;
 		uib_mr_check_local;
 		uib_mr_check_remote;
@@ -71,6 +71,7 @@ UIB_0.1 {
 		uib_qp_gather;
 		uib_qp_handle_packet;
 		uib_qp_pop_recv;
+		uib_qp_release_recv;
 		uib_qp_retransmit_tick;
 		uib_qp_retry_cancel;
 		uib_qp_retry_schedule;
@@ -99,6 +100,8 @@ UIB_0.1 {
 		uib_transport_retransmit_walk;
 		uib_transport_send;
 		uib_transport_send_entropy;
+		uib_transport_send_ref;
+		uib_transport_send_ref_batch;
 		uib_udp_ops;
 		uib_udp_sync_ops;
 		uib_uet_atomic_datatype_size;

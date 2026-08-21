@@ -10,8 +10,13 @@
 #include <netinet/ip.h>
 #include <netinet/udp.h>
 
+#ifdef UIB_HAVE_ZLIB
+#include <zlib.h>
+#endif
+
 #include "uib/bth.h"
 
+#ifndef UIB_HAVE_ZLIB
 static uint32_t crc_table[256];
 static pthread_once_t crc_once = PTHREAD_ONCE_INIT;
 
@@ -28,9 +33,13 @@ static void crc_table_init(void)
 		crc_table[i] = c;
 	}
 }
+#endif
 
 uint32_t uib_crc32(uint32_t crc, const void *buf, size_t len)
 {
+#ifdef UIB_HAVE_ZLIB
+	return (uint32_t)crc32_z(crc, buf, len);
+#else
 	pthread_once(&crc_once, crc_table_init);
 	const uint8_t *p = buf;
 
@@ -38,6 +47,7 @@ uint32_t uib_crc32(uint32_t crc, const void *buf, size_t len)
 	while (len--)
 		crc = crc_table[(crc ^ *p++) & 0xff] ^ (crc >> 8);
 	return ~crc;
+#endif
 }
 
 uint32_t uib_icrc(const void *packet, size_t len)

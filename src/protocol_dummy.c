@@ -41,12 +41,12 @@ static int dummy_packet_qpn(const void *packet, size_t len, uint32_t *qpn)
 static int dummy_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 			   struct uib_send_wr **bad)
 {
+	uint8_t packet[UIB_RECV_BUF_LEN];
 	struct uib_send_wr *cur;
 
 	for (cur = wr; cur; cur = cur->next) {
 		struct sockaddr_in dst = qp->remote_addr;
 		struct uib_dummy_hdr *hdr;
-		uint8_t *packet;
 		int payload_len;
 		int rc;
 
@@ -56,18 +56,12 @@ static int dummy_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 			goto err_wc;
 		}
 
-		packet = malloc(UIB_RECV_BUF_LEN);
-		if (!packet) {
-			rc = -ENOMEM;
-			goto err_wc;
-		}
 		hdr = (struct uib_dummy_hdr *)packet;
 		payload_len = uib_qp_gather(qp->pd, cur->sg_list, cur->num_sge,
 					    packet + sizeof(*hdr),
 					    UIB_RECV_BUF_LEN - sizeof(*hdr));
 		if (payload_len < 0) {
 			rc = payload_len;
-			free(packet);
 			goto err_wc;
 		}
 
@@ -82,7 +76,6 @@ static int dummy_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 			dst.sin_port = htons(UIB_DUMMY_PORT);
 		rc = uib_transport_send(qp->ctx, &dst, packet,
 					 sizeof(*hdr) + (size_t)payload_len);
-		free(packet);
 		if (rc < 0)
 			goto err_wc;
 
@@ -134,7 +127,7 @@ static int dummy_handle_packet(struct uib_qp *qp,
 	uib_qp_emit_recv(qp, slot.wr_id,
 			 rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
 			 UIB_WC_RECV, (uint32_t)consumed, ntohl(hdr->sqpn), 0);
-	free(slot.sg_list);
+	uib_qp_release_recv(&slot);
 	return rc;
 }
 

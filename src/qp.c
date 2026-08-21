@@ -14,16 +14,129 @@
 #include "utils.h"
 
 #define UIB_PKT_MAX (UIB_PMTU + 64)
+#define UIB_OUT_POOL_MAX 1024
+#define UIB_OUT_POOL_CLASSES 3
+#define UIB_TX_BATCH_STACK 64
+
+struct uib_outstanding_pool {
+	struct uib_outstanding *free[UIB_OUT_POOL_CLASSES];
+	pthread_mutex_t          lock;
+	uint32_t                 cached[UIB_OUT_POOL_CLASSES];
+	uint32_t                 refs;
+	uint32_t                 limit;
+	int                      closing;
+};
+
+static size_t outstanding_pool_capacity(uint8_t pool_class)
+{
+	static const size_t capacities[UIB_OUT_POOL_CLASSES] = {
+		256,
+		2048,
+		UIB_PKT_MAX,
+	};
+
+	return capacities[pool_class];
+}
+
+static uint8_t outstanding_pool_class(size_t packet_len)
+{
+	uint8_t pool_class;
+
+	for (pool_class = 0; pool_class < UIB_OUT_POOL_CLASSES; pool_class++) {
+		if (packet_len <= outstanding_pool_capacity(pool_class))
+			return pool_class;
+	}
+	return UIB_OUT_POOL_CLASSES;
+}
+
+static void outstanding_pool_put(struct uib_outstanding_pool *pool)
+{
+	if (!__atomic_sub_fetch(&pool->refs, 1, __ATOMIC_ACQ_REL)) {
+		pthread_mutex_destroy(&pool->lock);
+		free(pool);
+	}
+}
+
+static void outstanding_pool_push(struct uib_outstanding *out)
+{
+	struct uib_outstanding_pool *pool = out->pool;
+	uint8_t pool_class = out->pool_class;
+
+	pthread_mutex_lock(&pool->lock);
+	if (!pool->closing && pool->cached[pool_class] < pool->limit) {
+		out->next = pool->free[pool_class];
+		pool->free[pool_class] = out;
+		pool->cached[pool_class]++;
+		pthread_mutex_unlock(&pool->lock);
+		return;
+	}
+	pthread_mutex_unlock(&pool->lock);
+	free(out);
+	outstanding_pool_put(pool);
+}
+
+static void outstanding_pool_destroy(struct uib_outstanding_pool *pool)
+{
+	struct uib_outstanding *next;
+	struct uib_outstanding *out;
+	uint8_t pool_class;
+
+	if (!pool)
+		return;
+	pthread_mutex_lock(&pool->lock);
+	pool->closing = 1;
+	for (pool_class = 0; pool_class < UIB_OUT_POOL_CLASSES; pool_class++) {
+		out = pool->free[pool_class];
+		pool->free[pool_class] = NULL;
+		pool->cached[pool_class] = 0;
+		while (out) {
+			next = out->next;
+			free(out);
+			outstanding_pool_put(pool);
+			out = next;
+		}
+	}
+	pthread_mutex_unlock(&pool->lock);
+	outstanding_pool_put(pool);
+}
+
+static struct uib_outstanding_pool *
+outstanding_pool_create(uint32_t max_send_wr)
+{
+	struct uib_outstanding_pool *pool;
+	uint32_t limit;
+
+	pool = calloc(1, sizeof(*pool));
+	if (!pool)
+		return NULL;
+	if (pthread_mutex_init(&pool->lock, NULL)) {
+		free(pool);
+		return NULL;
+	}
+	limit = max_send_wr > UIB_OUT_POOL_MAX / 16 ? UIB_OUT_POOL_MAX :
+		max_send_wr * 16;
+	if (!max_send_wr)
+		limit = UIB_OUT_POOL_MAX;
+	if (limit < 64)
+		limit = 64;
+	if (limit > UIB_OUT_POOL_MAX)
+		limit = UIB_OUT_POOL_MAX;
+	pool->limit = limit;
+	pool->refs = 1;
+	return pool;
+}
 
 struct uib_qp *uib_create_qp(struct uib_pd *pd,
 			     const struct uib_qp_init_attr *attr)
 {
+	struct uib_qp *qp;
+	int rc;
+
 	if (!pd || !attr) {
 		errno = EINVAL;
 		return NULL;
 	}
-	struct uib_qp *qp = calloc(1, sizeof(*qp));
-
+	qp = calloc(1, sizeof(*qp));
 	if (!qp)
 		return NULL;
 
@@ -36,10 +149,16 @@ struct uib_qp *uib_create_qp(struct uib_pd *pd,
 	qp->max_send_sge = attr->max_send_sge ? attr->max_send_sge : 1;
 	qp->max_recv_sge = attr->max_recv_sge ? attr->max_recv_sge : 1;
 	qp->path_mtu     = UIB_PMTU;
+	qp->out_pool     = outstanding_pool_create(attr->max_send_wr);
+	if (!qp->out_pool) {
+		free(qp);
+		return NULL;
+	}
 
 	qp->rq_size = attr->max_recv_wr ? (int)attr->max_recv_wr + 1 : 65;
 	qp->rq      = calloc(qp->rq_size, sizeof(*qp->rq));
 	if (!qp->rq) {
+		outstanding_pool_destroy(qp->out_pool);
 		free(qp);
 		return NULL;
 	}
@@ -48,17 +167,18 @@ struct uib_qp *uib_create_qp(struct uib_pd *pd,
 
 	qp->qp_num = uib_register_qp(pd->ctx, qp);
 	if (qp->qp_num == 0) {
+		outstanding_pool_destroy(qp->out_pool);
 		free(qp->rq);
 		free(qp);
 		errno = ENOSPC;
 		return NULL;
 	}
-	int rc = qp->ctx->pops->qp_init ? qp->ctx->pops->qp_init(qp) : 0;
-
+	rc = qp->ctx->pops->qp_init ? qp->ctx->pops->qp_init(qp) : 0;
 	if (rc < 0) {
 		uib_unregister_qp(pd->ctx, qp);
 		pthread_mutex_destroy(&qp->lock);
 		free(qp->rq);
+		outstanding_pool_destroy(qp->out_pool);
 		free(qp);
 		errno = -rc;
 		return NULL;
@@ -67,13 +187,66 @@ struct uib_qp *uib_create_qp(struct uib_pd *pd,
 	return qp;
 }
 
-static void free_outstanding(struct uib_outstanding *o)
+static void free_outstanding(void *opaque)
 {
+	struct uib_outstanding *o = opaque;
+
 	if (!o)
 		return;
-	free(o->pkt);
+	if (__atomic_sub_fetch(&o->refs, 1, __ATOMIC_ACQ_REL))
+		return;
 	free(o->read_sgl);
-	free(o);
+	o->read_sgl = NULL;
+	outstanding_pool_push(o);
+}
+
+static struct uib_outstanding *alloc_outstanding(struct uib_qp *qp,
+						 size_t packet_len)
+{
+	struct uib_outstanding_pool *pool = qp->out_pool;
+	struct uib_outstanding *out;
+	uint8_t pool_class;
+
+	pool_class = outstanding_pool_class(packet_len);
+	if (pool_class == UIB_OUT_POOL_CLASSES)
+		return NULL;
+	pthread_mutex_lock(&pool->lock);
+	out = pool->free[pool_class];
+	if (out) {
+		pool->free[pool_class] = out->next;
+		pool->cached[pool_class]--;
+	}
+	pthread_mutex_unlock(&pool->lock);
+	if (!out) {
+		out = malloc(sizeof(*out) +
+			     outstanding_pool_capacity(pool_class));
+		if (!out)
+			return NULL;
+		__atomic_add_fetch(&pool->refs, 1, __ATOMIC_RELAXED);
+		out->pool = pool;
+	}
+	out->pool_class = pool_class;
+	out->next = NULL;
+	out->prev = NULL;
+	out->retries = 0;
+	out->is_read = 0;
+	out->is_final = 0;
+	out->indexed = 0;
+	out->read_sgl = NULL;
+	out->read_num_sge = 0;
+	out->read_total_len = 0;
+	out->pkt = out->packet;
+	out->pkt_len = packet_len;
+	out->refs = 1;
+	return out;
+}
+
+static int send_outstanding(struct uib_qp *qp,
+			    struct uib_outstanding *out)
+{
+	__atomic_add_fetch(&out->refs, 1, __ATOMIC_RELAXED);
+	return uib_transport_send_ref(qp->ctx, &out->dst, out->pkt,
+				      out->pkt_len, free_outstanding, out);
 }
 
 void uib_rocev2_qp_fini(struct uib_qp *qp)
@@ -112,10 +285,10 @@ int uib_destroy_qp(struct uib_qp *qp)
 	qp->out_head = qp->out_tail = NULL;
 	qp->read_head = qp->read_tail = NULL;
 	if (qp->frag_recv_active)
-		free(qp->frag_recv.sg_list);
+		uib_qp_release_recv(&qp->frag_recv);
 	for (i = 0; i < qp->rq_size; i++) {
 		if (qp->rq[i].valid)
-			free(qp->rq[i].sg_list);
+			uib_qp_release_recv(&qp->rq[i]);
 	}
 	pthread_mutex_unlock(&qp->lock);
 
@@ -123,6 +296,7 @@ int uib_destroy_qp(struct uib_qp *qp)
 	if (qp->pd)
 		qp->pd->refcnt--;
 	free(qp->rq);
+	outstanding_pool_destroy(qp->out_pool);
 	free(qp);
 	return 0;
 }
@@ -232,6 +406,27 @@ static int scatter_at(struct uib_pd *pd, struct uib_sge *sgl, int n,
 		off_in_sge = 0;
 	}
 	*consumed_out = consumed;
+	return 0;
+}
+
+static int scatter_recv_fragment(struct uib_qp *qp,
+				 struct uib_rq_slot *slot, uint32_t offset,
+				 const uint8_t *data, size_t length,
+				 size_t *consumed)
+{
+	struct uib_sge *sge;
+	size_t available;
+	size_t take;
+
+	if (!qp->frag_recv_mr)
+		return scatter_at(qp->pd, slot->sg_list, slot->num_sge, offset,
+				  data, length, consumed);
+	sge = &slot->sg_list[0];
+	available = offset < sge->length ? sge->length - offset : 0;
+	take = length < available ? length : available;
+	if (uib_mr_place(qp->frag_recv_mr, sge->addr + offset, data, take) < 0)
+		return -EIO;
+	*consumed = take;
 	return 0;
 }
 
@@ -424,26 +619,55 @@ static void send_ack(struct uib_qp *qp, const struct sockaddr_in *dst,
 	uib_transport_send(qp->ctx, &target, pkt, sizeof(pkt));
 }
 
+static size_t packet_length(const struct uib_qp *qp, uint8_t op,
+			    int is_first, size_t chunk)
+{
+	int is_ud = (qp->qp_type == UIB_QPT_UD);
+	size_t length = UIB_BTH_BYTES + chunk + UIB_ICRC_BYTES;
+
+	if (is_first && (op == UIB_OP_RDMA_WRITE_FIRST ||
+			 op == UIB_OP_RDMA_WRITE_ONLY ||
+			 op == UIB_OP_RDMA_READ_REQ))
+		length += UIB_RETH_BYTES;
+	if (is_ud)
+		length += UIB_DETH_BYTES;
+	length += (size_t)((-(int)chunk) & 3);
+	return length;
+}
+
 static int send_one_packet(struct uib_qp *qp, struct uib_send_wr *wr,
 			   uint8_t op, int is_first, int is_last,
 			   const uint8_t *payload, size_t chunk,
-			   uint64_t reth_va, uint32_t reth_rkey, uint32_t reth_total,
-			   uint32_t *out_psn, void **out_pkt, size_t *out_pkt_len,
-			   struct sockaddr_in *out_dst)
+			   uint64_t reth_va, uint32_t reth_rkey,
+			   uint32_t reth_total, struct uib_outstanding *out,
+			   void *packet,
+			   size_t capacity, uint32_t *out_psn,
+			   size_t *out_pkt_len, struct sockaddr_in *out_dst,
+			   int defer_send)
 {
-	uint8_t pkt[UIB_PKT_MAX];
+	struct sockaddr_in dst;
+	uint8_t *pkt = packet;
 	uint8_t *p = pkt;
-	int is_ud = (qp->qp_type == UIB_QPT_UD);
-	int is_rc = (qp->qp_type == UIB_QPT_RC);
+	uint32_t bcrc;
+	uint32_t crc;
+	uint32_t dqpn;
+	uint32_t psn;
+	uint8_t pad;
+	int is_rc;
+	int is_ud;
+	int rc;
 
-	uint32_t dqpn = is_ud ? wr->ud.remote_qpn : qp->dest_qp_num;
-	struct sockaddr_in dst = is_ud ? wr->ud.remote_addr : qp->remote_addr;
-	uint32_t psn = qp->sq_psn++;
+	if (packet_length(qp, op, is_first, chunk) > capacity)
+		return -EMSGSIZE;
+	is_ud = qp->qp_type == UIB_QPT_UD;
+	is_rc = qp->qp_type == UIB_QPT_RC;
+	dqpn = is_ud ? wr->ud.remote_qpn : qp->dest_qp_num;
+	dst = is_ud ? wr->ud.remote_addr : qp->remote_addr;
+	psn = qp->sq_psn++;
 
 	uib_bth_pack((struct uib_bth *)p, op, UIB_DEFAULT_PKEY, dqpn, psn,
-		     is_rc ? 1 : 0);
-	uint8_t pad = (uint8_t)((-(int)chunk) & 3);
-
+		     is_rc && is_last);
+	pad = (uint8_t)((-(int)chunk) & 3);
 	uib_bth_set_pad((struct uib_bth *)p, pad);
 	p += UIB_BTH_BYTES;
 
@@ -460,8 +684,6 @@ static int send_one_packet(struct uib_qp *qp, struct uib_send_wr *wr,
 	}
 
 	if (chunk > 0) {
-		if ((size_t)(p - pkt) + chunk + pad + UIB_ICRC_BYTES > sizeof(pkt))
-			return -EMSGSIZE;
 		memcpy(p, payload, chunk);
 		p += chunk;
 	}
@@ -470,15 +692,21 @@ static int send_one_packet(struct uib_qp *qp, struct uib_send_wr *wr,
 		p += pad;
 	}
 
-	uint32_t crc = uib_icrc(pkt, p - pkt);
-	uint32_t bcrc = htonl(crc);
-
+	crc = uib_icrc(pkt, p - pkt);
+	bcrc = htonl(crc);
 	memcpy(p, &bcrc, UIB_ICRC_BYTES);
 	p += UIB_ICRC_BYTES;
-
-	size_t pkt_len = p - pkt;
-	int rc = uib_transport_send(qp->ctx, &dst, pkt, pkt_len);
-
+	*out_pkt_len = (size_t)(p - pkt);
+	if (out) {
+		out->dst = dst;
+		out->pkt_len = *out_pkt_len;
+		if (defer_send)
+			rc = 0;
+		else
+			rc = send_outstanding(qp, out);
+	} else {
+		rc = uib_transport_send(qp->ctx, &dst, pkt, *out_pkt_len);
+	}
 	if (rc < 0)
 		return rc;
 
@@ -486,78 +714,63 @@ static int send_one_packet(struct uib_qp *qp, struct uib_send_wr *wr,
 		*out_psn = psn;
 	if (out_dst)
 		*out_dst = dst;
-	if (out_pkt && out_pkt_len) {
-		void *copy = malloc(pkt_len);
-
-		if (!copy)
-			return -ENOMEM;
-		memcpy(copy, pkt, pkt_len);
-		*out_pkt     = copy;
-		*out_pkt_len = pkt_len;
-	}
-	(void)is_last;
 	return 0;
 }
 
 static int post_rdma_read(struct uib_qp *qp, struct uib_send_wr *wr,
 			  size_t total)
 {
-	uint32_t mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
-	uint32_t n_resp = (total + mtu - 1) / mtu;
+	struct uib_outstanding *out;
+	struct sockaddr_in dst;
+	size_t packet_len;
+	uint32_t n_resp;
+	uint32_t mtu;
+	uint32_t psn;
+	int rc;
 
+	mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
+	n_resp = (total + mtu - 1) / mtu;
 	if (n_resp == 0)
 		n_resp = 1;
-
-	uint32_t psn;
-	void *pkt = NULL;
-	size_t pkt_len = 0;
-	struct sockaddr_in dst;
+	packet_len = packet_length(qp, UIB_OP_RDMA_READ_REQ, 1, 0);
+	out = alloc_outstanding(qp, packet_len);
+	if (!out)
+		return -ENOMEM;
+	if (wr->num_sge > 0) {
+		out->read_sgl = calloc(wr->num_sge, sizeof(*out->read_sgl));
+		if (!out->read_sgl) {
+			free_outstanding(out);
+			return -ENOMEM;
+		}
+		memcpy(out->read_sgl, wr->sg_list,
+		       wr->num_sge * sizeof(*out->read_sgl));
+		out->read_num_sge = wr->num_sge;
+		out->read_total_len = (uint32_t)total;
+	}
 	/*
 	 * Serialize transmission with insertion into the outstanding list so a
 	 * fast peer cannot ACK before the request becomes visible locally.
 	 */
 	pthread_mutex_lock(&qp->lock);
-	int rc = send_one_packet(qp, wr, UIB_OP_RDMA_READ_REQ, 1, 1,
-				 NULL, 0,
-				 wr->rdma.remote_addr, wr->rdma.rkey, (uint32_t)total,
-				 &psn, &pkt, &pkt_len, &dst);
+	rc = send_one_packet(qp, wr, UIB_OP_RDMA_READ_REQ, 1, 1, NULL, 0,
+			     wr->rdma.remote_addr, wr->rdma.rkey,
+			     (uint32_t)total, out, out->pkt, out->pkt_len, &psn,
+			     &out->pkt_len, &dst, 0);
 	if (rc < 0) {
 		pthread_mutex_unlock(&qp->lock);
+		free_outstanding(out);
 		return rc;
 	}
 	qp->sq_psn += (n_resp - 1);
-
-	struct uib_outstanding *o = calloc(1, sizeof(*o));
-
-	if (!o) {
-		free(pkt);
-		pthread_mutex_unlock(&qp->lock);
-		return -ENOMEM;
-	}
-	o->psn          = psn;
-	o->wire_opcode  = UIB_OP_RDMA_READ_REQ;
-	o->signaled     = (wr->send_flags & UIB_SEND_SIGNALED) ? 1 : 0;
-	o->is_read      = 1;
-	o->is_final     = 1;
-	o->wr_id        = wr->wr_id;
-	o->wr_opcode    = wr->opcode;
-	o->dst          = dst;
-	o->pkt          = pkt;
-	o->pkt_len      = pkt_len;
-
-	if (wr->num_sge > 0) {
-		o->read_sgl = calloc(wr->num_sge, sizeof(*o->read_sgl));
-		if (!o->read_sgl) {
-			free_outstanding(o);
-			pthread_mutex_unlock(&qp->lock);
-			return -ENOMEM;
-		}
-		memcpy(o->read_sgl, wr->sg_list,
-		       wr->num_sge * sizeof(*o->read_sgl));
-		o->read_num_sge   = wr->num_sge;
-		o->read_total_len = (uint32_t)total;
-	}
-	enqueue_outstanding(qp, o);
+	out->psn = psn;
+	out->wire_opcode = UIB_OP_RDMA_READ_REQ;
+	out->signaled = (wr->send_flags & UIB_SEND_SIGNALED) ? 1 : 0;
+	out->is_read = 1;
+	out->is_final = 1;
+	out->wr_id = wr->wr_id;
+	out->wr_opcode = wr->opcode;
+	out->dst = dst;
+	enqueue_outstanding(qp, out);
 	pthread_mutex_unlock(&qp->lock);
 	return 0;
 }
@@ -606,105 +819,164 @@ static uint8_t pick_opcode(enum uib_qp_type qpt, enum uib_wr_opcode op,
 
 static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 {
-	int with_imm = (wr->opcode == UIB_WR_SEND_WITH_IMM);
-	int is_ud = (qp->qp_type == UIB_QPT_UD);
-	int is_rc = (qp->qp_type == UIB_QPT_RC);
-	size_t total = 0;
+	struct uib_transport_ref stack_refs[UIB_TX_BATCH_STACK];
+	struct uib_transport_ref *refs;
+	struct uib_outstanding *out;
+	struct sockaddr_in dst;
+	const uint8_t *message;
+	struct uib_mr *mr;
+	uint8_t stack_packet[UIB_PKT_MAX];
+	uint8_t *owned_message;
+	uint8_t *packet;
+	size_t packet_len;
+	size_t chunk;
+	size_t total;
+	size_t off;
+	uint32_t mtu;
+	uint32_t psn;
+	uint32_t n;
 	uint32_t i;
+	uint32_t built;
+	uint8_t op;
+	int is_first;
+	int with_imm;
+	int is_last;
+	int is_rc;
+	int is_ud;
+	int err;
+	int rc;
 
+	with_imm = wr->opcode == UIB_WR_SEND_WITH_IMM;
+	is_ud = qp->qp_type == UIB_QPT_UD;
+	is_rc = qp->qp_type == UIB_QPT_RC;
+	total = 0;
 	for (i = 0; i < (uint32_t)wr->num_sge; i++)
 		total += wr->sg_list[i].length;
-
 	if (wr->opcode == UIB_WR_RDMA_READ)
 		return post_rdma_read(qp, wr, total);
 	if (wr->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
 	    wr->opcode == UIB_WR_ATOMIC_CMP_SWAP)
 		return -EOPNOTSUPP;
-
-	uint32_t mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
-
+	mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
 	if (is_ud && total > mtu)
 		return -EMSGSIZE;
-
-	uint8_t *msgbuf = NULL;
-
+	message = NULL;
+	owned_message = NULL;
 	if (total > 0) {
-		msgbuf = malloc(total);
-		if (!msgbuf)
-			return -ENOMEM;
-		int rc = gather_total(qp->pd, wr->sg_list, wr->num_sge, msgbuf, total);
-
-		if (rc < 0) {
-			free(msgbuf);
-			return rc;
+		if (wr->num_sge == 1) {
+			mr = uib_mr_lookup_local(
+				qp->pd, wr->sg_list[0].lkey,
+				(const void *)(uintptr_t)wr->sg_list[0].addr,
+				wr->sg_list[0].length, 0);
+			if (!mr)
+				return -EACCES;
+			if (mr->kind == UIB_MR_HOST)
+				message = (const uint8_t *)(uintptr_t)
+					wr->sg_list[0].addr;
+		}
+		if (!message) {
+			owned_message = malloc(total);
+			if (!owned_message)
+				return -ENOMEM;
+			rc = gather_total(qp->pd, wr->sg_list, wr->num_sge,
+					  owned_message, total);
+			if (rc < 0) {
+				free(owned_message);
+				return rc;
+			}
+			message = owned_message;
 		}
 	}
-
-	uint32_t n = (total <= mtu) ? 1 : (uint32_t)((total + mtu - 1) / mtu);
-
+	n = total <= mtu ? 1 : (uint32_t)((total + mtu - 1) / mtu);
 	if (n == 0)
 		n = 1;
-
-	int err = 0;
-
+	refs = stack_refs;
+	if (is_rc && n > UIB_TX_BATCH_STACK) {
+		refs = malloc((size_t)n * sizeof(*refs));
+		if (!refs) {
+			free(owned_message);
+			return -ENOMEM;
+		}
+	}
+	err = 0;
+	built = 0;
+	if (is_rc)
+		pthread_mutex_lock(&qp->lock);
 	for (i = 0; i < n; i++) {
-		size_t off    = (size_t)i * mtu;
-		size_t chunk  = (off + mtu > total) ? (total - off) : mtu;
-		int    is_first = (i == 0);
-		int    is_last  = (i == n - 1);
-		uint8_t op = pick_opcode(qp->qp_type, wr->opcode, with_imm, n, i);
-
+		off = (size_t)i * mtu;
+		chunk = off + mtu > total ? total - off : mtu;
+		is_first = i == 0;
+		is_last = i == n - 1;
+		op = pick_opcode(qp->qp_type, wr->opcode, with_imm, n, i);
 		if (op == UIB_BTH_INVALID_OPCODE) {
 			err = -EINVAL;
 			break;
 		}
-
-		uint32_t psn = 0;
-		void    *pkt_copy = NULL;
-		size_t   pkt_len = 0;
-		struct sockaddr_in dst;
-
-		if (is_rc)
-			pthread_mutex_lock(&qp->lock);
-		int rc = send_one_packet(qp, wr, op, is_first, is_last,
-					 msgbuf ? msgbuf + off : NULL, chunk,
-					 wr->rdma.remote_addr, wr->rdma.rkey,
-					 (uint32_t)total,
-					 &psn,
-					 is_rc ? &pkt_copy : NULL,
-					 is_rc ? &pkt_len : NULL,
-					 &dst);
-		if (rc < 0) {
-			if (is_rc)
-				pthread_mutex_unlock(&qp->lock);
-			err = rc;
-			break;
-		}
-
+		packet_len = packet_length(qp, op, is_first, chunk);
+		out = NULL;
+		packet = stack_packet;
 		if (is_rc) {
-			struct uib_outstanding *o = calloc(1, sizeof(*o));
-
-			if (!o) {
-				free(pkt_copy);
-				pthread_mutex_unlock(&qp->lock);
+			out = alloc_outstanding(qp, packet_len);
+			if (!out) {
 				err = -ENOMEM;
 				break;
 			}
-			o->psn         = psn;
-			o->wire_opcode = op;
-			o->signaled    = (wr->send_flags & UIB_SEND_SIGNALED) ? 1 : 0;
-			o->is_final    = is_last;
-			o->wr_id       = wr->wr_id;
-			o->wr_opcode   = wr->opcode;
-			o->dst         = dst;
-			o->pkt         = pkt_copy;
-			o->pkt_len     = pkt_len;
-			enqueue_outstanding(qp, o);
-			pthread_mutex_unlock(&qp->lock);
+			packet = out->pkt;
+		}
+		rc = send_one_packet(qp, wr, op, is_first, is_last,
+				     message ? message + off : NULL, chunk,
+				     wr->rdma.remote_addr, wr->rdma.rkey,
+				     (uint32_t)total, out, packet, packet_len,
+				     &psn, &packet_len, &dst, is_rc);
+		if (rc < 0) {
+			free_outstanding(out);
+			err = rc;
+			break;
+		}
+		if (is_rc) {
+			out->psn = psn;
+			out->wire_opcode = op;
+			out->signaled =
+				(wr->send_flags & UIB_SEND_SIGNALED) ? 1 : 0;
+			out->is_final = is_last;
+			out->wr_id = wr->wr_id;
+			out->wr_opcode = wr->opcode;
+			out->dst = dst;
+			out->pkt_len = packet_len;
+			refs[built].dst = &out->dst;
+			refs[built].buf = out->pkt;
+			refs[built].release = free_outstanding;
+			refs[built].opaque = out;
+			refs[built].len = out->pkt_len;
+			refs[built].entropy = 0;
+			built++;
 		}
 	}
-	free(msgbuf);
-
+	if (is_rc && !err) {
+		for (i = 0; i < built; i++) {
+			out = refs[i].opaque;
+			__atomic_add_fetch(&out->refs, 1, __ATOMIC_RELAXED);
+		}
+		rc = uib_transport_send_ref_batch(qp->ctx, refs, built);
+		if (rc < 0) {
+			err = rc;
+		} else {
+			for (i = 0; i < built; i++) {
+				out = refs[i].opaque;
+				enqueue_outstanding(qp, out);
+			}
+			built = 0;
+		}
+	}
+	for (i = 0; i < built; i++) {
+		out = refs[i].opaque;
+		free_outstanding(out);
+	}
+	if (is_rc)
+		pthread_mutex_unlock(&qp->lock);
+	if (refs != stack_refs)
+		free(refs);
+	free(owned_message);
 	if (!is_rc && !err)
 		emit_send_wc(qp, wr->wr_id, wr->opcode,
 			     wr->send_flags & UIB_SEND_SIGNALED,
@@ -784,14 +1056,20 @@ int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
 		}
 		struct uib_rq_slot *slot = &qp->rq[qp->rq_head];
 
-		slot->wr_id   = cur->wr_id;
+		slot->wr_id = cur->wr_id;
 		slot->num_sge = cur->num_sge;
-		slot->sg_list = calloc(cur->num_sge, sizeof(struct uib_sge));
-		if (!slot->sg_list) {
-			pthread_mutex_unlock(&qp->lock);
-			if (bad)
-				*bad = cur;
-			return -ENOMEM;
+		slot->heap_sge = cur->num_sge > UIB_RQ_INLINE_SGE;
+		if (slot->heap_sge) {
+			slot->sg_list = malloc((size_t)cur->num_sge *
+					       sizeof(*slot->sg_list));
+			if (!slot->sg_list) {
+				pthread_mutex_unlock(&qp->lock);
+				if (bad)
+					*bad = cur;
+				return -ENOMEM;
+			}
+		} else {
+			slot->sg_list = slot->inline_sge;
 		}
 		memcpy(slot->sg_list, cur->sg_list,
 		       cur->num_sge * sizeof(struct uib_sge));
@@ -810,6 +1088,8 @@ static int pop_recv_slot(struct uib_qp *qp, struct uib_rq_slot *out)
 		return -ENOENT;
 	}
 	*out = qp->rq[qp->rq_tail];
+	if (!out->heap_sge)
+		out->sg_list = out->inline_sge;
 	qp->rq[qp->rq_tail].valid = 0;
 	qp->rq[qp->rq_tail].sg_list = NULL;
 	qp->rq_tail = (qp->rq_tail + 1) % qp->rq_size;
@@ -820,6 +1100,16 @@ static int pop_recv_slot(struct uib_qp *qp, struct uib_rq_slot *out)
 int uib_qp_pop_recv(struct uib_qp *qp, struct uib_rq_slot *out)
 {
 	return pop_recv_slot(qp, out);
+}
+
+void uib_qp_release_recv(struct uib_rq_slot *slot)
+{
+	if (!slot)
+		return;
+	if (slot->heap_sge)
+		free(slot->sg_list);
+	slot->sg_list = NULL;
+	slot->heap_sge = 0;
 }
 
 static int verify_icrc(const uint8_t *pkt, size_t len)
@@ -892,6 +1182,7 @@ static void send_read_response(struct uib_qp *qp, const struct sockaddr_in *dst,
 			       uint32_t start_psn, uint64_t va, uint32_t rkey,
 			       uint32_t length)
 {
+	uint8_t packet[UIB_PKT_MAX];
 	struct uib_mr *mr;
 	uint32_t mtu;
 	uint32_t n;
@@ -911,11 +1202,20 @@ static void send_read_response(struct uib_qp *qp, const struct sockaddr_in *dst,
 		n = 1;
 
 	for (i = 0; i < n; i++) {
-		uint32_t off   = i * mtu;
-		uint32_t chunk = (off + mtu > length) ? (length - off) : mtu;
-		uint8_t pad = (uint8_t)((-(int)chunk) & 3);
-		uint8_t op;
+		uint8_t *pkt = packet;
+		uint8_t *p;
+		size_t pkt_len;
+		uint32_t chunk;
+		uint32_t bcrc;
+		uint32_t crc;
+		uint32_t off;
 		int has_aeth;
+		uint8_t pad;
+		uint8_t op;
+
+		off = i * mtu;
+		chunk = off + mtu > length ? length - off : mtu;
+		pad = (uint8_t)((-(int)chunk) & 3);
 
 		if (n == 1) {
 			op = UIB_OP_RDMA_READ_RESP_ONLY;
@@ -931,13 +1231,11 @@ static void send_read_response(struct uib_qp *qp, const struct sockaddr_in *dst,
 			has_aeth = 0;
 		}
 
-		size_t pkt_len = UIB_BTH_BYTES + (has_aeth ? UIB_AETH_BYTES : 0)
-				 + chunk + pad + UIB_ICRC_BYTES;
-		uint8_t *pkt = malloc(pkt_len);
-
-		if (!pkt)
+		pkt_len = UIB_BTH_BYTES + (has_aeth ? UIB_AETH_BYTES : 0) +
+			chunk + pad + UIB_ICRC_BYTES;
+		if (pkt_len > sizeof(packet))
 			return;
-		uint8_t *p = pkt;
+		p = pkt;
 
 		uib_bth_pack((struct uib_bth *)p, op, UIB_DEFAULT_PKEY,
 			     qp->dest_qp_num, start_psn + i, 0);
@@ -949,7 +1247,6 @@ static void send_read_response(struct uib_qp *qp, const struct sockaddr_in *dst,
 			p += UIB_AETH_BYTES;
 		}
 		if (uib_mr_read(mr, va + off, p, chunk) < 0) {
-			free(pkt);
 			send_ack(qp, dst, start_psn, UIB_AETH_NAK_REM_ACC);
 			return;
 		}
@@ -958,13 +1255,12 @@ static void send_read_response(struct uib_qp *qp, const struct sockaddr_in *dst,
 			memset(p, 0, pad);
 			p += pad;
 		}
-		uint32_t crc = uib_icrc(pkt, p - pkt);
-		uint32_t bcrc = htonl(crc);
+		crc = uib_icrc(pkt, p - pkt);
+		bcrc = htonl(crc);
 
 		memcpy(p, &bcrc, UIB_ICRC_BYTES);
 
 		uib_transport_send(qp->ctx, dst, pkt, pkt_len);
-		free(pkt);
 	}
 }
 
@@ -1046,19 +1342,20 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 	case UIB_OP_SEND_ONLY:
 	case UIB_OP_SEND_ONLY_WITH_IMM: {
 		struct uib_rq_slot slot;
+		size_t consumed = 0;
+		int rc;
 
 		if (pop_recv_slot(qp, &slot) < 0) {
 			if (is_rc)
 				send_ack(qp, src, psn, UIB_AETH_RNR);
 			return -ENOENT;
 		}
-		size_t consumed = 0;
-		int rc = scatter_at(qp->pd, slot.sg_list, slot.num_sge,
-				    0, body, body_len, &consumed);
+		rc = scatter_at(qp->pd, slot.sg_list, slot.num_sge, 0, body,
+				body_len, &consumed);
 		emit_recv_wc(qp, slot.wr_id,
 			     rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
 			     UIB_WC_RECV, (uint32_t)consumed, qp->dest_qp_num, 0);
-		free(slot.sg_list);
+		uib_qp_release_recv(&slot);
 		qp->last_rx_psn = psn;
 		qp->last_rx_valid = 1;
 		qp->rq_psn = psn + 1;
@@ -1069,24 +1366,33 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 	}
 	case UIB_OP_SEND_FIRST: {
 		struct uib_rq_slot slot;
+		size_t consumed = 0;
+		int rc;
 
 		if (pop_recv_slot(qp, &slot) < 0) {
 			if (is_rc)
 				send_ack(qp, src, psn, UIB_AETH_RNR);
 			return -ENOENT;
 		}
-		size_t consumed = 0;
-		int rc = scatter_at(qp->pd, slot.sg_list, slot.num_sge,
-				    0, body, body_len, &consumed);
+		qp->frag_recv_mr = NULL;
+		if (slot.num_sge == 1)
+			qp->frag_recv_mr = uib_mr_lookup_local(
+				qp->pd, slot.sg_list[0].lkey,
+				(const void *)(uintptr_t)slot.sg_list[0].addr,
+				slot.sg_list[0].length, 0);
+		rc = scatter_recv_fragment(qp, &slot, 0, body, body_len,
+					   &consumed);
 		qp->frag_recv = slot;
+		if (!qp->frag_recv.heap_sge)
+			qp->frag_recv.sg_list = qp->frag_recv.inline_sge;
 		qp->frag_recv_active = 1;
 		qp->frag_recv_offset = (uint32_t)consumed;
 		qp->last_rx_psn = psn;
 		qp->last_rx_valid = 1;
 		qp->rq_psn = psn + 1;
-		if (is_rc)
+		if (is_rc && rc < 0)
 			send_ack(qp, src, psn,
-				 rc < 0 ? UIB_AETH_NAK_INV_REQ : UIB_AETH_ACK);
+				 UIB_AETH_NAK_INV_REQ);
 		return rc;
 	}
 	case UIB_OP_SEND_MIDDLE: {
@@ -1096,15 +1402,15 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 			return -EBADMSG;
 		}
 		size_t consumed = 0;
-		int rc = scatter_at(qp->pd, qp->frag_recv.sg_list,
-				    qp->frag_recv.num_sge,
-				    qp->frag_recv_offset, body, body_len, &consumed);
+		int rc = scatter_recv_fragment(qp, &qp->frag_recv,
+					       qp->frag_recv_offset, body,
+					       body_len, &consumed);
 		qp->frag_recv_offset += (uint32_t)consumed;
 		qp->last_rx_psn = psn;
 		qp->rq_psn = psn + 1;
-		if (is_rc)
+		if (is_rc && rc < 0)
 			send_ack(qp, src, psn,
-				 rc < 0 ? UIB_AETH_NAK_INV_REQ : UIB_AETH_ACK);
+				 UIB_AETH_NAK_INV_REQ);
 		return rc;
 	}
 	case UIB_OP_SEND_LAST:
@@ -1115,16 +1421,16 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 			return -EBADMSG;
 		}
 		size_t consumed = 0;
-		int rc = scatter_at(qp->pd, qp->frag_recv.sg_list,
-				    qp->frag_recv.num_sge,
-				    qp->frag_recv_offset, body, body_len, &consumed);
+		int rc = scatter_recv_fragment(qp, &qp->frag_recv,
+					       qp->frag_recv_offset, body,
+					       body_len, &consumed);
 		uint32_t total = qp->frag_recv_offset + (uint32_t)consumed;
 
 		emit_recv_wc(qp, qp->frag_recv.wr_id,
 			     rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
 			     UIB_WC_RECV, total, qp->dest_qp_num, 0);
-		free(qp->frag_recv.sg_list);
-		qp->frag_recv.sg_list = NULL;
+		uib_qp_release_recv(&qp->frag_recv);
+		qp->frag_recv_mr = NULL;
 		qp->frag_recv_active = 0;
 		qp->frag_recv_offset = 0;
 		qp->last_rx_psn = psn;
@@ -1155,7 +1461,7 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		emit_recv_wc(qp, slot.wr_id,
 			     rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
 			     UIB_WC_RECV, (uint32_t)consumed, sqp, 0);
-		free(slot.sg_list);
+		uib_qp_release_recv(&slot);
 		qp->rq_psn++;
 		return rc;
 	}
@@ -1226,8 +1532,6 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		qp->last_rx_psn = psn;
 		qp->last_rx_valid = 1;
 		qp->rq_psn = psn + 1;
-		if (is_rc)
-			send_ack(qp, src, psn, UIB_AETH_ACK);
 		return 0;
 	}
 	case UIB_OP_RDMA_WRITE_MIDDLE: {
@@ -1241,13 +1545,14 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 
 		if (uib_mr_place(qp->frag_write_mr,
 				 qp->frag_write_va + qp->frag_write_offset,
-				 body, take) < 0)
+				 body, take) < 0) {
+			if (is_rc)
+				send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
 			return -EIO;
+		}
 		qp->frag_write_offset += (uint32_t)take;
 		qp->last_rx_psn = psn;
 		qp->rq_psn = psn + 1;
-		if (is_rc)
-			send_ack(qp, src, psn, UIB_AETH_ACK);
 		return 0;
 	}
 	case UIB_OP_RDMA_WRITE_LAST:
@@ -1412,8 +1717,7 @@ static void rocev2_retransmit_list(struct uib_qp *qp,
 				qp->state = UIB_QPS_ERR;
 				continue;
 			}
-			uib_transport_send(qp->ctx, &out->dst, out->pkt,
-					   out->pkt_len);
+			send_outstanding(qp, out);
 			out->retries++;
 			out->deadline_ns = now + UIB_RTO_NS;
 		}

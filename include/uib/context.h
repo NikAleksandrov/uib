@@ -25,7 +25,6 @@ struct uib_context {
 
 	pthread_mutex_t     qp_lock;
 	pthread_mutex_t     zerocopy_lock;
-	pthread_rwlock_t    qp_io_lock;
 	struct uib_qp     **qp_table;
 	uint32_t           *qp_free_ids;
 	struct uib_qp     **retry_heap;
@@ -48,7 +47,7 @@ int uib_close_device(struct uib_context *ctx);
 uint32_t uib_register_qp(struct uib_context *ctx, struct uib_qp *qp);
 void     uib_unregister_qp(struct uib_context *ctx, struct uib_qp *qp);
 struct uib_qp *uib_lookup_qp(struct uib_context *ctx, uint32_t qpn);
-struct uib_qp *uib_lookup_qp_locked(struct uib_context *ctx, uint32_t qpn);
+struct uib_qp *uib_lookup_qp_rcu(struct uib_context *ctx, uint32_t qpn);
 void uib_qp_retry_schedule(struct uib_qp *qp, uint64_t deadline_ns);
 void uib_qp_retry_cancel(struct uib_qp *qp);
 struct uib_qp *uib_retry_pop_due(struct uib_context *ctx, uint64_t now_ns);

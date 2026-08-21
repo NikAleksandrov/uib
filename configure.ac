@@ -31,6 +31,40 @@ AC_LINK_IFELSE([AC_LANG_PROGRAM(
 CPPFLAGS=$saved_CPPFLAGS
 LIBS=$saved_LIBS
 
+AS_IF([$PKG_CONFIG --exists liburcu-bp], [
+	URCU_CFLAGS=`$PKG_CONFIG --cflags liburcu-bp`
+	URCU_LIBS=`$PKG_CONFIG --libs liburcu-bp`
+], [
+	AC_MSG_ERROR([liburcu-bp development files are required])
+])
+saved_CPPFLAGS=$CPPFLAGS
+saved_LIBS=$LIBS
+CPPFLAGS="$CPPFLAGS $URCU_CFLAGS"
+LIBS="$URCU_LIBS $LIBS"
+AC_LINK_IFELSE([AC_LANG_PROGRAM(
+	[[#include <urcu-bp.h>]],
+	[[rcu_read_lock(); rcu_read_unlock(); synchronize_rcu();]])], [],
+	[AC_MSG_ERROR([a usable liburcu-bp library is required])])
+CPPFLAGS=$saved_CPPFLAGS
+LIBS=$saved_LIBS
+
+HAVE_ZLIB=0
+ZLIB_CFLAGS=
+ZLIB_LIBS=
+AS_IF([$PKG_CONFIG --exists zlib], [
+	ZLIB_CFLAGS=`$PKG_CONFIG --cflags zlib`
+	ZLIB_LIBS=`$PKG_CONFIG --libs zlib`
+	saved_CPPFLAGS=$CPPFLAGS
+	saved_LIBS=$LIBS
+	CPPFLAGS="$CPPFLAGS $ZLIB_CFLAGS"
+	LIBS="$ZLIB_LIBS $LIBS"
+	AC_LINK_IFELSE([AC_LANG_PROGRAM(
+		[[#include <zlib.h>]],
+		[[return (int)crc32_z(0, "uib", 3);]])], [HAVE_ZLIB=1])
+	CPPFLAGS=$saved_CPPFLAGS
+	LIBS=$saved_LIBS
+])
+
 AC_ARG_ENABLE([provider],
 	AS_HELP_STRING([--disable-provider],
 		[do not build the transparent libibverbs provider]), [],
@@ -177,6 +211,11 @@ AC_SUBST([URING_CFLAGS])
 AC_SUBST([URING_LIBS])
 AC_SUBST([MNL_CFLAGS])
 AC_SUBST([MNL_LIBS])
+AC_SUBST([URCU_CFLAGS])
+AC_SUBST([URCU_LIBS])
+AC_SUBST([HAVE_ZLIB])
+AC_SUBST([ZLIB_CFLAGS])
+AC_SUBST([ZLIB_LIBS])
 AC_SUBST([HAVE_IBVERBS])
 AC_SUBST([ENABLE_PROVIDER])
 AC_SUBST([IBVERBS_CFLAGS])
@@ -192,6 +231,7 @@ AC_SUBST([HAVE_IBV_TOOLS])
 
 AC_MSG_NOTICE([configuration summary:])
 AC_MSG_NOTICE([  libmnl networking:   required])
+AC_MSG_NOTICE([  optimized CRC32:     $HAVE_ZLIB])
 AC_MSG_NOTICE([  libibverbs provider: $ENABLE_PROVIDER])
 AC_MSG_NOTICE([  AF_XDP transport:    $HAVE_AFXDP])
 AC_MSG_NOTICE([  TCP devmem UAPI:     $HAVE_DEVMEM])

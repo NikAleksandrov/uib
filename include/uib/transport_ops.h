@@ -10,6 +10,17 @@ struct uib_context;
 struct uib_mr;
 struct uib_transport_stats;
 
+typedef void (*uib_transport_release_fn)(void *opaque);
+
+struct uib_transport_ref {
+	const struct sockaddr_in *dst;
+	const void               *buf;
+	uib_transport_release_fn  release;
+	void                     *opaque;
+	size_t                    len;
+	uint16_t                  entropy;
+};
+
 /*
  * Selectable datapath backends. UDP_IO_URING is the default and is always
  * available; the others probe at init and fall back to it when unusable.
@@ -33,6 +44,13 @@ struct uib_transport_ops {
 	int  (*send_entropy)(struct uib_context *ctx,
 			     const struct sockaddr_in *dst, const void *buf,
 			     size_t len, uint16_t entropy);
+	int  (*send_ref)(struct uib_context *ctx,
+			 const struct sockaddr_in *dst, const void *buf,
+			 size_t len, uib_transport_release_fn release,
+			 void *opaque);
+	int  (*send_ref_batch)(struct uib_context *ctx,
+			       const struct uib_transport_ref *refs,
+			       size_t count);
 	int  (*mr_register)(struct uib_context *ctx, struct uib_mr *mr);
 	void (*mr_deregister)(struct uib_context *ctx, struct uib_mr *mr);
 	int  (*get_stats)(struct uib_context *ctx,

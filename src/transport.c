@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include <urcu-bp.h>
 
 #include "uib/transport.h"
 #include "uib/context.h"
@@ -18,21 +19,21 @@ void uib_transport_deliver(struct uib_context *ctx,
 	struct uib_qp *qp;
 	uint32_t dqpn;
 
-	pthread_rwlock_rdlock(&ctx->qp_io_lock);
+	rcu_read_lock();
 	if (!ctx->pops || !ctx->pops->packet_qpn ||
 	    len < ctx->pops->min_packet ||
 	    ctx->pops->packet_qpn(buf, len, &dqpn) < 0) {
-		pthread_rwlock_unlock(&ctx->qp_io_lock);
+		rcu_read_unlock();
 		return;
 	}
-	qp = uib_lookup_qp_locked(ctx, dqpn);
+	qp = uib_lookup_qp_rcu(ctx, dqpn);
 
 	if (!qp) {
-		pthread_rwlock_unlock(&ctx->qp_io_lock);
+		rcu_read_unlock();
 		return;
 	}
 	uib_qp_handle_packet(qp, src, buf, len);
-	pthread_rwlock_unlock(&ctx->qp_io_lock);
+	rcu_read_unlock();
 }
 
 void uib_transport_retransmit_walk(struct uib_context *ctx)
@@ -40,10 +41,10 @@ void uib_transport_retransmit_walk(struct uib_context *ctx)
 	uint64_t now = uib_now_ns();
 	struct uib_qp *qp;
 
-	pthread_rwlock_rdlock(&ctx->qp_io_lock);
+	rcu_read_lock();
 	while ((qp = uib_retry_pop_due(ctx, now)) != NULL)
 		uib_qp_retransmit_tick(qp, now);
-	pthread_rwlock_unlock(&ctx->qp_io_lock);
+	rcu_read_unlock();
 }
 
 static const char *mode_name(enum uib_transport_mode m)
@@ -128,6 +129,49 @@ int uib_transport_send_entropy(struct uib_context *ctx,
 	if (ctx->tops->send_entropy)
 		return ctx->tops->send_entropy(ctx, dst, buf, len, entropy);
 	return ctx->tops->send(ctx, dst, buf, len);
+}
+
+int uib_transport_send_ref(struct uib_context *ctx,
+			   const struct sockaddr_in *dst, const void *buf,
+			   size_t len, uib_transport_release_fn release,
+			   void *opaque)
+{
+	int rc;
+
+	if (ctx->tops->send_ref)
+		return ctx->tops->send_ref(ctx, dst, buf, len, release, opaque);
+	rc = ctx->tops->send(ctx, dst, buf, len);
+	release(opaque);
+	return rc;
+}
+
+int uib_transport_send_ref_batch(struct uib_context *ctx,
+				 const struct uib_transport_ref *refs,
+				 size_t count)
+{
+	size_t i;
+	int rc;
+
+	if (!count)
+		return 0;
+	if (ctx->tops->send_ref_batch)
+		return ctx->tops->send_ref_batch(ctx, refs, count);
+	for (i = 0; i < count; i++) {
+		if (refs[i].entropy)
+			rc = uib_transport_send_entropy(ctx, refs[i].dst,
+						refs[i].buf, refs[i].len,
+						refs[i].entropy);
+		else
+			rc = ctx->tops->send(ctx, refs[i].dst, refs[i].buf,
+					     refs[i].len);
+		refs[i].release(refs[i].opaque);
+		if (rc < 0) {
+			for (i++; i < count; i++)
+				refs[i].release(refs[i].opaque);
+			return rc;
+		}
+	}
+	return 0;
 }
 
 int uib_transport_get_stats(struct uib_context *ctx,

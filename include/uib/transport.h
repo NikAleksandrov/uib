@@ -25,11 +25,18 @@ struct uib_transport_stats {
 	uint64_t tx_submitted;
 	uint64_t tx_completed;
 	uint64_t tx_errors;
+	uint64_t tx_gso_batches;
+	uint64_t tx_gso_packets;
 	uint64_t rx_packets;
+	uint64_t rx_gro_batches;
 	uint64_t rx_completion_batches;
 	uint32_t rx_largest_batch;
 	uint32_t rx_batch;
 	uint32_t tx_batch;
+	uint32_t sqpoll_requested;
+	uint32_t sqpoll_active;
+	uint32_t gso_enabled;
+	uint32_t gro_enabled;
 	enum uib_uring_rx_mode rx_mode;
 };
 
@@ -40,6 +47,13 @@ int uib_transport_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 int uib_transport_send_entropy(struct uib_context *ctx,
 			       const struct sockaddr_in *dst,
 			       const void *buf, size_t len, uint16_t entropy);
+int uib_transport_send_ref(struct uib_context *ctx,
+			   const struct sockaddr_in *dst, const void *buf,
+			   size_t len, uib_transport_release_fn release,
+			   void *opaque);
+int uib_transport_send_ref_batch(struct uib_context *ctx,
+				 const struct uib_transport_ref *refs,
+				 size_t count);
 int uib_transport_get_stats(struct uib_context *ctx,
 			    struct uib_transport_stats *stats);
 

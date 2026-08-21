@@ -2,10 +2,12 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <urcu-bp.h>
 
 #include "uib/context.h"
 #include "uib/mr.h"
 #include "uib/pd.h"
+#include "mr_internal.h"
 
 #define UIB_MR_TABLE_INITIAL_SIZE	64U
 #define UIB_MR_TABLE_LOAD_NUMERATOR	3U
@@ -16,16 +18,15 @@
 
 static uint32_t pd_handle_next = 1;
 
-static uint64_t mr_base(const struct uib_mr *mr)
-{
-	if (mr->kind == UIB_MR_DMABUF)
-		return mr->iova;
-	return (uint64_t)(uintptr_t)mr->addr;
-}
+struct uib_mr_table {
+	struct uib_mr **lkey;
+	struct uib_mr **rkey;
+	uint32_t        size;
+};
 
 static uint64_t mr_limit(const struct uib_mr *mr)
 {
-	return mr_base(mr) + mr->length;
+	return uib_mr_base(mr) + mr->length;
 }
 
 static uint32_t hash_key(uint32_t key)
@@ -37,11 +38,40 @@ static uint32_t hash_key(uint32_t key)
 	return key ^ (key >> 16);
 }
 
+static struct uib_mr_table *mr_table_alloc(uint32_t size)
+{
+	struct uib_mr_table *table;
+
+	table = malloc(sizeof(*table));
+	if (!table)
+		return NULL;
+	table->lkey = calloc(size, sizeof(*table->lkey));
+	table->rkey = calloc(size, sizeof(*table->rkey));
+	if (!table->lkey || !table->rkey) {
+		free(table->rkey);
+		free(table->lkey);
+		free(table);
+		return NULL;
+	}
+	table->size = size;
+	return table;
+}
+
+static void mr_table_free(struct uib_mr_table *table)
+{
+	if (!table)
+		return;
+	free(table->rkey);
+	free(table->lkey);
+	free(table);
+}
+
 static void hash_insert(struct uib_mr **table, uint32_t size,
 			struct uib_mr *mr, uint32_t key)
 {
-	uint32_t slot = hash_key(key) & (size - 1U);
+	uint32_t slot;
 
+	slot = hash_key(key) & (size - 1U);
 	while (table[slot])
 		slot = (slot + 1U) & (size - 1U);
 	table[slot] = mr;
@@ -53,8 +83,6 @@ static struct uib_mr *hash_lookup(struct uib_mr **table, uint32_t size,
 	struct uib_mr *mr;
 	uint32_t slot;
 
-	if (!table || !size)
-		return NULL;
 	slot = hash_key(key) & (size - 1U);
 	while ((mr = table[slot]) != NULL) {
 		if ((remote ? mr->rkey : mr->lkey) == key)
@@ -62,63 +90,6 @@ static struct uib_mr *hash_lookup(struct uib_mr **table, uint32_t size,
 		slot = (slot + 1U) & (size - 1U);
 	}
 	return NULL;
-}
-
-static void hash_remove(struct uib_mr **table, uint32_t size,
-			struct uib_mr *mr, uint32_t key, int remote)
-{
-	struct uib_mr *move;
-	uint32_t slot;
-
-	slot = hash_key(key) & (size - 1U);
-	while (table[slot] && table[slot] != mr)
-		slot = (slot + 1U) & (size - 1U);
-	if (!table[slot])
-		return;
-	table[slot] = NULL;
-	slot = (slot + 1U) & (size - 1U);
-	while ((move = table[slot]) != NULL) {
-		table[slot] = NULL;
-		hash_insert(table, size, move, remote ? move->rkey : move->lkey);
-		slot = (slot + 1U) & (size - 1U);
-	}
-}
-
-static void hash_tree(struct uib_mr *mr, struct uib_mr **lkey_table,
-		      struct uib_mr **rkey_table, uint32_t size)
-{
-	if (!mr)
-		return;
-	hash_tree(mr->addr_left, lkey_table, rkey_table, size);
-	hash_insert(lkey_table, size, mr, mr->lkey);
-	hash_insert(rkey_table, size, mr, mr->rkey);
-	hash_tree(mr->addr_right, lkey_table, rkey_table, size);
-}
-
-static int hash_grow(struct uib_pd *pd)
-{
-	struct uib_mr **rkey_table;
-	struct uib_mr **lkey_table;
-	uint32_t size;
-
-	if ((pd->mr_count + 1U) * UIB_MR_TABLE_LOAD_DENOMINATOR <=
-	    pd->mr_table_size * UIB_MR_TABLE_LOAD_NUMERATOR)
-		return 0;
-	size = pd->mr_table_size << 1;
-	lkey_table = calloc(size, sizeof(*lkey_table));
-	rkey_table = calloc(size, sizeof(*rkey_table));
-	if (!lkey_table || !rkey_table) {
-		free(lkey_table);
-		free(rkey_table);
-		return -ENOMEM;
-	}
-	hash_tree(pd->mr_addr_root, lkey_table, rkey_table, size);
-	free(pd->lkey_table);
-	free(pd->rkey_table);
-	pd->lkey_table = lkey_table;
-	pd->rkey_table = rkey_table;
-	pd->mr_table_size = size;
-	return 0;
 }
 
 static void addr_update(struct uib_mr *mr)
@@ -184,8 +155,8 @@ static void addr_rotate_right(struct uib_pd *pd, struct uib_mr *mr)
 
 static int addr_less(const struct uib_mr *left, const struct uib_mr *right)
 {
-	uint64_t left_base = mr_base(left);
-	uint64_t right_base = mr_base(right);
+	uint64_t left_base = uib_mr_base(left);
+	uint64_t right_base = uib_mr_base(right);
 
 	if (left_base != right_base)
 		return left_base < right_base;
@@ -240,13 +211,29 @@ static void addr_remove(struct uib_pd *pd, struct uib_mr *mr)
 	addr_update_ancestors(parent);
 }
 
-static int region_contains(const struct uib_mr *mr, uint64_t va, size_t len)
+static void hash_tree(struct uib_mr *mr, struct uib_mr_table *table)
 {
-	uint64_t base = mr_base(mr);
+	if (!mr)
+		return;
+	hash_tree(mr->addr_left, table);
+	hash_insert(table->lkey, table->size, mr, mr->lkey);
+	hash_insert(table->rkey, table->size, mr, mr->rkey);
+	hash_tree(mr->addr_right, table);
+}
 
-	if (va < base || va - base > mr->length)
-		return 0;
-	return len <= mr->length - (size_t)(va - base);
+static struct uib_mr *key_lookup(struct uib_pd *pd, uint32_t key, int remote)
+{
+	struct uib_mr_table *table;
+	struct uib_mr *mr;
+
+	rcu_read_lock();
+	table = rcu_dereference(pd->mr_table);
+	if (remote)
+		mr = hash_lookup(table->rkey, table->size, key, 1);
+	else
+		mr = hash_lookup(table->lkey, table->size, key, 0);
+	rcu_read_unlock();
+	return mr;
 }
 
 static struct uib_mr *addr_lookup(struct uib_mr *mr, uint64_t va,
@@ -259,10 +246,10 @@ static struct uib_mr *addr_lookup(struct uib_mr *mr, uint64_t va,
 	found = addr_lookup(mr->addr_left, va, len, access);
 	if (found)
 		return found;
-	if (region_contains(mr, va, len) &&
+	if (uib_mr_contains(mr, va, len) &&
 	    (mr->access & access) == access)
 		return mr;
-	if (mr_base(mr) > va)
+	if (uib_mr_base(mr) > va)
 		return NULL;
 	return addr_lookup(mr->addr_right, va, len, access);
 }
@@ -276,23 +263,16 @@ struct uib_pd *uib_alloc_pd(struct uib_context *ctx)
 	pd = calloc(1, sizeof(*pd));
 	if (!pd)
 		return NULL;
-	pd->lkey_table = calloc(UIB_MR_TABLE_INITIAL_SIZE,
-				sizeof(*pd->lkey_table));
-	pd->rkey_table = calloc(UIB_MR_TABLE_INITIAL_SIZE,
-				sizeof(*pd->rkey_table));
-	if (!pd->lkey_table || !pd->rkey_table) {
-		free(pd->lkey_table);
-		free(pd->rkey_table);
+	pd->mr_table = mr_table_alloc(UIB_MR_TABLE_INITIAL_SIZE);
+	if (!pd->mr_table) {
 		free(pd);
 		return NULL;
 	}
 	pd->ctx = ctx;
 	pd->handle = __atomic_fetch_add(&pd_handle_next, 1, __ATOMIC_RELAXED);
-	pd->mr_table_size = UIB_MR_TABLE_INITIAL_SIZE;
 	pd->refcnt = 1;
-	if (pthread_rwlock_init(&pd->mr_lock, NULL)) {
-		free(pd->lkey_table);
-		free(pd->rkey_table);
+	if (pthread_mutex_init(&pd->mr_lock, NULL)) {
+		mr_table_free(pd->mr_table);
 		free(pd);
 		return NULL;
 	}
@@ -303,44 +283,67 @@ int uib_dealloc_pd(struct uib_pd *pd)
 {
 	if (!pd)
 		return -EINVAL;
-	pthread_rwlock_wrlock(&pd->mr_lock);
+	pthread_mutex_lock(&pd->mr_lock);
 	if (pd->mr_count) {
-		pthread_rwlock_unlock(&pd->mr_lock);
+		pthread_mutex_unlock(&pd->mr_lock);
 		return -EBUSY;
 	}
-	pthread_rwlock_unlock(&pd->mr_lock);
-	pthread_rwlock_destroy(&pd->mr_lock);
-	free(pd->lkey_table);
-	free(pd->rkey_table);
+	pthread_mutex_unlock(&pd->mr_lock);
+	pthread_mutex_destroy(&pd->mr_lock);
+	mr_table_free(pd->mr_table);
 	free(pd);
 	return 0;
 }
 
 int uib_pd_attach_mr(struct uib_pd *pd, struct uib_mr *mr)
 {
-	int rc;
+	struct uib_mr_table *old_table;
+	struct uib_mr_table *new_table;
+	uint32_t size;
 
-	pthread_rwlock_wrlock(&pd->mr_lock);
-	rc = hash_grow(pd);
-	if (rc < 0)
-		goto out;
-	hash_insert(pd->lkey_table, pd->mr_table_size, mr, mr->lkey);
-	hash_insert(pd->rkey_table, pd->mr_table_size, mr, mr->rkey);
+	pthread_mutex_lock(&pd->mr_lock);
+	old_table = pd->mr_table;
+	size = old_table->size;
+	if ((pd->mr_count + 1U) * UIB_MR_TABLE_LOAD_DENOMINATOR >
+	    size * UIB_MR_TABLE_LOAD_NUMERATOR)
+		size <<= 1;
+	new_table = mr_table_alloc(size);
+	if (!new_table) {
+		pthread_mutex_unlock(&pd->mr_lock);
+		return -ENOMEM;
+	}
+	hash_tree(pd->mr_addr_root, new_table);
+	hash_insert(new_table->lkey, size, mr, mr->lkey);
+	hash_insert(new_table->rkey, size, mr, mr->rkey);
 	addr_insert(pd, mr);
 	pd->mr_count++;
-out:
-	pthread_rwlock_unlock(&pd->mr_lock);
-	return rc;
+	rcu_assign_pointer(pd->mr_table, new_table);
+	pthread_mutex_unlock(&pd->mr_lock);
+	synchronize_rcu();
+	mr_table_free(old_table);
+	return 0;
 }
 
-void uib_pd_detach_mr(struct uib_pd *pd, struct uib_mr *mr)
+int uib_pd_detach_mr(struct uib_pd *pd, struct uib_mr *mr)
 {
-	pthread_rwlock_wrlock(&pd->mr_lock);
-	hash_remove(pd->lkey_table, pd->mr_table_size, mr, mr->lkey, 0);
-	hash_remove(pd->rkey_table, pd->mr_table_size, mr, mr->rkey, 1);
+	struct uib_mr_table *old_table;
+	struct uib_mr_table *new_table;
+
+	pthread_mutex_lock(&pd->mr_lock);
+	old_table = pd->mr_table;
+	new_table = mr_table_alloc(old_table->size);
+	if (!new_table) {
+		pthread_mutex_unlock(&pd->mr_lock);
+		return -ENOMEM;
+	}
 	addr_remove(pd, mr);
 	pd->mr_count--;
-	pthread_rwlock_unlock(&pd->mr_lock);
+	hash_tree(pd->mr_addr_root, new_table);
+	rcu_assign_pointer(pd->mr_table, new_table);
+	pthread_mutex_unlock(&pd->mr_lock);
+	synchronize_rcu();
+	mr_table_free(old_table);
+	return 0;
 }
 
 struct uib_mr *uib_pd_lookup_lkey(struct uib_pd *pd, uint32_t lkey)
@@ -349,9 +352,7 @@ struct uib_mr *uib_pd_lookup_lkey(struct uib_pd *pd, uint32_t lkey)
 
 	if (!pd)
 		return NULL;
-	pthread_rwlock_rdlock(&pd->mr_lock);
-	mr = hash_lookup(pd->lkey_table, pd->mr_table_size, lkey, 0);
-	pthread_rwlock_unlock(&pd->mr_lock);
+	mr = key_lookup(pd, lkey, 0);
 	return mr;
 }
 
@@ -361,9 +362,7 @@ struct uib_mr *uib_pd_lookup_rkey(struct uib_pd *pd, uint32_t rkey)
 
 	if (!pd)
 		return NULL;
-	pthread_rwlock_rdlock(&pd->mr_lock);
-	mr = hash_lookup(pd->rkey_table, pd->mr_table_size, rkey, 1);
-	pthread_rwlock_unlock(&pd->mr_lock);
+	mr = key_lookup(pd, rkey, 1);
 	return mr;
 }
 
@@ -384,8 +383,8 @@ struct uib_mr *uib_pd_lookup_address(struct uib_pd *pd, uint64_t va,
 
 	if (!pd)
 		return NULL;
-	pthread_rwlock_rdlock(&pd->mr_lock);
+	pthread_mutex_lock(&pd->mr_lock);
 	mr = addr_lookup(pd->mr_addr_root, va, len, access);
-	pthread_rwlock_unlock(&pd->mr_lock);
+	pthread_mutex_unlock(&pd->mr_lock);
 	return mr;
 }

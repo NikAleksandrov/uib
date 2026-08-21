@@ -700,11 +700,12 @@ static void print_stats(const struct options *options, uint64_t wall_ns,
 			const struct rusage *after, uint64_t *latency_ns,
 			const struct direct_endpoint *sender)
 {
-	struct uib_zerocopy_stats zerocopy;
-	const char *zerocopy_mode;
 	long double seconds;
 	long double average;
 	long double bytes;
+	struct uib_transport_stats transport;
+	struct uib_zerocopy_stats zerocopy;
+	const char *zerocopy_mode;
 	uint64_t system_ns;
 	uint64_t user_ns;
 	uint32_t i;
@@ -768,6 +769,15 @@ static void print_stats(const struct options *options, uint64_t wall_ns,
 		       (unsigned long long)zerocopy.zerocopy_calls,
 		       (unsigned long long)zerocopy.zerocopy_bytes,
 		       (unsigned long long)zerocopy.deferred_copies);
+	}
+	if (!uib_transport_get_stats(sender->context, &transport)) {
+		printf("  UDP GSO / GRO         : %s / %s (%llu batches, "
+		       "%llu packets; %llu RX batches)\n",
+		       transport.gso_enabled ? "on" : "off",
+		       transport.gro_enabled ? "on" : "off",
+		       (unsigned long long)transport.tx_gso_batches,
+		       (unsigned long long)transport.tx_gso_packets,
+		       (unsigned long long)transport.rx_gro_batches);
 	}
 	printf("  operations            : %u SENDs (%u bytes each, window %u)\n",
 	       options->iterations, options->message_size, options->window);

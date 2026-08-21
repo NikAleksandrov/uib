@@ -24,3 +24,8 @@ in Ultra Ethernet Specification 1.0.2. UIB is an independent project, is
 not affiliated with or certified by the Ultra Ethernet Consortium, and does
 not claim complete specification conformance or interoperability with
 third-party UET implementations.
+
+The bounded MPMC completion ring is adapted from Dmitry Vyukov's bounded MPMC
+queue. Copyright 2010-2011 Dmitry Vyukov. See
+LICENSES/BSD-2-Clause-Views-Dmitry-Vyukov.txt and
+https://www.1024cores.net/home/lock-free-algorithms/queues/bounded-mpmc-queue.

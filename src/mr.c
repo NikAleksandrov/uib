@@ -248,8 +248,13 @@ struct uib_mr *uib_reg_mr_dmabuf_iova(struct uib_pd *pd, int dmabuf_fd,
 
 int uib_dereg_mr(struct uib_mr *mr)
 {
+	int rc;
+
 	if (!mr)
 		return -EINVAL;
+	rc = uib_pd_detach_mr(mr->pd, mr);
+	if (rc < 0)
+		return rc;
 	if (mr->kind == UIB_MR_DMABUF) {
 		struct uib_pd *pd = mr->pd;
 
@@ -262,7 +267,6 @@ int uib_dereg_mr(struct uib_mr *mr)
 	} else if (mr->pinned) {
 		munlock(mr->addr, mr->length);
 	}
-	uib_pd_detach_mr(mr->pd, mr);
 	free(mr);
 	return 0;
 }

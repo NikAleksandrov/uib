@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <urcu-bp.h>
 
 #include "uib/context.h"
 #include "uib/qp.h"
@@ -66,15 +67,15 @@ static void *lookup_worker(void *opaque)
 	pthread_mutex_unlock(worker->start_lock);
 	for (i = 0; i < worker->lookups; i++) {
 		qpn = 1 + ((i + worker->thread_id) % BENCH_QPS);
-		pthread_rwlock_rdlock(&ctx->qp_io_lock);
+		rcu_read_lock();
 		if (worker->serialized) {
 			pthread_mutex_lock(&ctx->qp_lock);
 			qp = ctx->qp_table[qpn];
 			pthread_mutex_unlock(&ctx->qp_lock);
 		} else {
-			qp = uib_lookup_qp_locked(ctx, qpn);
+			qp = uib_lookup_qp_rcu(ctx, qpn);
 		}
-		pthread_rwlock_unlock(&ctx->qp_io_lock);
+		rcu_read_unlock();
 		checksum += qp ? qp->qp_num : 0;
 	}
 	worker->checksum = checksum;
@@ -189,7 +190,6 @@ int main(void)
 	if (!ctx.qp_table || !qps)
 		return 2;
 	pthread_mutex_init(&ctx.qp_lock, NULL);
-	pthread_rwlock_init(&ctx.qp_io_lock, NULL);
 	for (i = 0; i < BENCH_QPS; i++) {
 		qps[i].qp_num = i + 1;
 		ctx.qp_table[i + 1] = &qps[i];
@@ -215,7 +215,6 @@ int main(void)
 	       100.0 * (1.0 - direct.nanoseconds_per_lookup /
 			serialized.nanoseconds_per_lookup));
 	printf("RESULT PASS\n");
-	pthread_rwlock_destroy(&ctx.qp_io_lock);
 	pthread_mutex_destroy(&ctx.qp_lock);
 	free(qps);
 	free(ctx.qp_table);

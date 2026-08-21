@@ -21,6 +21,9 @@
 #include "utils.h"
 
 #define UIB_UET_OUT_INDEX_MIN 64U
+#define UIB_UET_OUT_POOL_CLASSES 3U
+#define UIB_UET_OUT_POOL_LIMIT UIB_UET_PDC_MPR
+#define UIB_UET_PACKET_MAX UIB_RECV_BUF_LEN
 
 enum uib_uet_pdc_state {
 	UIB_UET_PDC_CLOSED,
@@ -47,12 +50,15 @@ struct uib_uet_wr_track {
 	uint8_t atomic_datatype;
 };
 
+struct uib_uet_out_pool;
+
 struct uib_uet_outstanding {
 	struct uib_uet_outstanding *next;
 	struct uib_uet_outstanding *prev;
 	struct uib_uet_outstanding *ack_next;
 	struct uib_uet_outstanding *ack_prev;
 	struct uib_uet_wr_track *track;
+	struct uib_uet_out_pool *pool;
 	struct sockaddr_in dst;
 	uint8_t *packet;
 	size_t packet_len;
@@ -69,6 +75,17 @@ struct uib_uet_outstanding {
 	uint8_t retries;
 	uint8_t sent;
 	uint8_t indexed;
+	uint8_t pool_class;
+	uint32_t refs;
+	uint8_t storage[];
+};
+
+struct uib_uet_out_pool {
+	struct uib_uet_outstanding *free[UIB_UET_OUT_POOL_CLASSES];
+	pthread_mutex_t              lock;
+	uint32_t                     cached[UIB_UET_OUT_POOL_CLASSES];
+	uint32_t                     refs;
+	int                          closing;
 };
 
 struct uib_uet_qp {
@@ -88,6 +105,7 @@ struct uib_uet_qp {
 	struct uib_uet_outstanding *ack_head;
 	struct uib_uet_outstanding *ack_tail;
 	struct uib_uet_outstanding *tx_cursor;
+	struct uib_uet_out_pool *out_pool;
 	struct uib_psn_index out_index;
 	struct uib_uet_nscc nscc;
 	uint32_t receiver_bytes;
@@ -126,6 +144,148 @@ struct uib_uet_qp {
 		int valid;
 	} response_cache[UIB_UET_PDC_MPR];
 };
+
+static size_t uet_out_pool_capacity(uint8_t pool_class)
+{
+	static const size_t capacities[UIB_UET_OUT_POOL_CLASSES] = {
+		256,
+		2048,
+		UIB_UET_PACKET_MAX,
+	};
+
+	return capacities[pool_class];
+}
+
+static uint8_t uet_out_pool_class(size_t packet_len)
+{
+	uint8_t pool_class;
+
+	for (pool_class = 0; pool_class < UIB_UET_OUT_POOL_CLASSES;
+	     pool_class++) {
+		if (packet_len <= uet_out_pool_capacity(pool_class))
+			return pool_class;
+	}
+	return UIB_UET_OUT_POOL_CLASSES;
+}
+
+static void uet_out_pool_put(struct uib_uet_out_pool *pool)
+{
+	if (!__atomic_sub_fetch(&pool->refs, 1, __ATOMIC_ACQ_REL)) {
+		pthread_mutex_destroy(&pool->lock);
+		free(pool);
+	}
+}
+
+static void uet_out_pool_push(struct uib_uet_outstanding *out)
+{
+	struct uib_uet_out_pool *pool = out->pool;
+	uint8_t pool_class = out->pool_class;
+
+	pthread_mutex_lock(&pool->lock);
+	if (!pool->closing &&
+	    pool->cached[pool_class] < UIB_UET_OUT_POOL_LIMIT) {
+		out->next = pool->free[pool_class];
+		pool->free[pool_class] = out;
+		pool->cached[pool_class]++;
+		pthread_mutex_unlock(&pool->lock);
+		return;
+	}
+	pthread_mutex_unlock(&pool->lock);
+	free(out);
+	uet_out_pool_put(pool);
+}
+
+static struct uib_uet_out_pool *uet_out_pool_create(void)
+{
+	struct uib_uet_out_pool *pool;
+
+	pool = calloc(1, sizeof(*pool));
+	if (!pool)
+		return NULL;
+	if (pthread_mutex_init(&pool->lock, NULL)) {
+		free(pool);
+		return NULL;
+	}
+	pool->refs = 1;
+	return pool;
+}
+
+static void uet_out_pool_destroy(struct uib_uet_out_pool *pool)
+{
+	struct uib_uet_outstanding *next;
+	struct uib_uet_outstanding *out;
+	uint8_t pool_class;
+
+	if (!pool)
+		return;
+	pthread_mutex_lock(&pool->lock);
+	pool->closing = 1;
+	for (pool_class = 0; pool_class < UIB_UET_OUT_POOL_CLASSES;
+	     pool_class++) {
+		out = pool->free[pool_class];
+		pool->free[pool_class] = NULL;
+		pool->cached[pool_class] = 0;
+		while (out) {
+			next = out->next;
+			free(out);
+			uet_out_pool_put(pool);
+			out = next;
+		}
+	}
+	pthread_mutex_unlock(&pool->lock);
+	uet_out_pool_put(pool);
+}
+
+static struct uib_uet_outstanding *
+uet_alloc_outstanding(struct uib_uet_qp *uet, size_t packet_len)
+{
+	struct uib_uet_out_pool *pool = uet->out_pool;
+	struct uib_uet_outstanding *out;
+	uint8_t pool_class;
+
+	pool_class = uet_out_pool_class(packet_len);
+	if (pool_class == UIB_UET_OUT_POOL_CLASSES)
+		return NULL;
+	pthread_mutex_lock(&pool->lock);
+	out = pool->free[pool_class];
+	if (out) {
+		pool->free[pool_class] = out->next;
+		pool->cached[pool_class]--;
+	}
+	pthread_mutex_unlock(&pool->lock);
+	if (!out) {
+		out = malloc(sizeof(*out) +
+			     uet_out_pool_capacity(pool_class));
+		if (!out)
+			return NULL;
+		__atomic_add_fetch(&pool->refs, 1, __ATOMIC_RELAXED);
+		out->pool = pool;
+	}
+	out->next = NULL;
+	out->prev = NULL;
+	out->ack_next = NULL;
+	out->ack_prev = NULL;
+	out->track = NULL;
+	out->pool = pool;
+	out->pool_class = pool_class;
+	out->packet = out->storage;
+	out->packet_len = packet_len;
+	out->deadline_ns = 0;
+	out->tx_time_ns = 0;
+	out->psn = 0;
+	out->nominal_len = 0;
+	out->read_offset = 0;
+	out->read_len = 0;
+	out->msg_id = 0;
+	out->request_header = 0;
+	out->path_index = 0;
+	out->entropy = 0;
+	out->retries = 0;
+	out->sent = 0;
+	out->indexed = 0;
+	out->refs = 1;
+	return out;
+}
 
 static void uet_debug(struct uib_qp *qp, const char *format, ...)
 {
@@ -352,7 +512,13 @@ static int uet_qp_init(struct uib_qp *qp)
 
 	if (!uet)
 		return -ENOMEM;
+	uet->out_pool = uet_out_pool_create();
+	if (!uet->out_pool) {
+		free(uet);
+		return -ENOMEM;
+	}
 	if (uib_psn_index_init(&uet->out_index, UIB_UET_OUT_INDEX_MIN)) {
+		uet_out_pool_destroy(uet->out_pool);
 		free(uet);
 		return -ENOMEM;
 	}
@@ -630,12 +796,15 @@ static void uet_free_track(struct uib_uet_wr_track *track)
 	free(track);
 }
 
-static void uet_free_outstanding(struct uib_uet_outstanding *out)
+static void uet_free_outstanding(void *opaque)
 {
+	struct uib_uet_outstanding *out = opaque;
+
 	if (!out)
 		return;
-	free(out->packet);
-	free(out);
+	if (__atomic_sub_fetch(&out->refs, 1, __ATOMIC_ACQ_REL))
+		return;
+	uet_out_pool_push(out);
 }
 
 static void uet_outstanding_index_add(struct uib_uet_qp *uet,
@@ -759,8 +928,9 @@ static void uet_qp_fini(struct uib_qp *qp)
 		uet_free_track(track);
 	}
 	if (uet->recv_active)
-		free(uet->recv_slot.sg_list);
+		uib_qp_release_recv(&uet->recv_slot);
 	uib_psn_index_destroy(&uet->out_index);
+	uet_out_pool_destroy(uet->out_pool);
 	free(uet);
 	qp->protocol_private = NULL;
 }
@@ -859,6 +1029,7 @@ static int uet_transmit_locked(struct uib_qp *qp,
 			       struct uib_uet_outstanding *out)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_transport_ref ref;
 	int rc;
 
 	if (uet->sent_count >= UIB_UET_PDC_MPR)
@@ -869,8 +1040,14 @@ static int uet_transmit_locked(struct uib_qp *qp,
 	out->tx_time_ns = uib_now_ns();
 	if (!out->entropy)
 		uet_select_path(uet, out, out->tx_time_ns);
-	rc = uib_transport_send_entropy(qp->ctx, &out->dst, out->packet,
-					out->packet_len, out->entropy);
+	ref.dst = &out->dst;
+	ref.buf = out->packet;
+	ref.release = uet_free_outstanding;
+	ref.opaque = out;
+	ref.len = out->packet_len;
+	ref.entropy = out->entropy;
+	__atomic_add_fetch(&out->refs, 1, __ATOMIC_RELAXED);
+	rc = uib_transport_send_ref_batch(qp->ctx, &ref, 1);
 	if (rc < 0)
 		return rc;
 	out->sent = 1;
@@ -924,7 +1101,8 @@ static int uet_send_one_response(struct uib_qp *qp,
 	struct uib_uet_ses_rsp *response;
 	struct uib_uet_ses_rsp_data *response_data;
 	struct uib_uet_ses_rsp_data_small *small_response;
-	uint8_t *packet;
+	uint8_t packet_storage[UIB_RECV_BUF_LEN];
+	uint8_t *packet = packet_storage;
 	size_t packet_len;
 	size_t response_len;
 	uint8_t next;
@@ -938,16 +1116,15 @@ static int uet_send_one_response(struct uib_qp *qp,
 		data_len ? sizeof(*response_data) : sizeof(*response);
 	packet_len = sizeof(struct uib_uet_pds_ack) + sizeof(*extension) +
 		response_len + data_len;
-	packet = calloc(1, packet_len);
-	if (!packet)
-		return -ENOMEM;
+	if (packet_len > sizeof(packet_storage))
+		return -EMSGSIZE;
+	memset(packet, 0, sizeof(struct uib_uet_pds_ack) +
+	       sizeof(*extension) + response_len);
 	rc = uib_uet_build_ack(packet, packet_len, cack_psn,
 			       ntohl(request->psn), uet->spdcid,
 			       ntohs(request->spdcid), next);
-	if (rc < 0) {
-		free(packet);
+	if (rc < 0)
 		return rc;
-	}
 	((struct uib_uet_pds_ack *)packet)->prologue.type_next_flags =
 		uib_uet_prologue_pack(UIB_UET_PDS_TYPE_ACK_CC, next,
 				       ecn_marked ? UIB_UET_ACK_FLAG_M : 0);
@@ -1006,7 +1183,6 @@ static int uet_send_one_response(struct uib_qp *qp,
 		dst.sin_port = htons(UIB_UET_DEFAULT_PORT);
 	rc = uib_transport_send_entropy(qp->ctx, &dst, packet, packet_len,
 					ntohs(destination->sin_port));
-	free(packet);
 	return rc;
 }
 
@@ -1150,7 +1326,7 @@ static int uet_handle_send(struct uib_qp *qp,
 		uib_qp_emit_recv(qp, uet->recv_slot.wr_id, UIB_WC_SUCCESS,
 				 UIB_WC_RECV, uet->recv_total, source_pdc,
 				 uet->recv_imm);
-		free(uet->recv_slot.sg_list);
+		uib_qp_release_recv(&uet->recv_slot);
 		memset(&uet->recv_slot, 0, sizeof(uet->recv_slot));
 		uet->recv_active = 0;
 		uet->recv_eom = 0;
@@ -2021,8 +2197,9 @@ static struct uib_uet_wr_track *uet_alloc_track(struct uib_qp *qp,
 						uint32_t total_len,
 						uint32_t packets)
 {
-	struct uib_uet_wr_track *track = calloc(1, sizeof(*track));
+	struct uib_uet_wr_track *track;
 
+	track = calloc(1, sizeof(*track));
 	if (!track)
 		return NULL;
 	track->wr_id = wr->wr_id;
@@ -2056,8 +2233,10 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
 	struct uib_uet_wr_track *track;
+	const uint8_t *message = NULL;
+	uint8_t *owned_message = NULL;
 	struct sockaddr_in dst = qp->remote_addr;
-	uint8_t *message = NULL;
+	struct uib_mr *mr;
 	uint32_t total_len = 0;
 	uint32_t chunk_max, packets;
 	uint16_t wr_msg_id;
@@ -2079,14 +2258,27 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 		total_len += wr->sg_list[i].length;
 	}
 	if (wr->opcode != UIB_WR_RDMA_READ && !fetching_atomic) {
-		message = malloc(total_len ? total_len : 1);
-		if (!message)
-			return -ENOMEM;
-		rc = uib_qp_gather(qp->pd, wr->sg_list, wr->num_sge,
-				   message, total_len);
-		if (rc < 0) {
-			free(message);
-			return rc;
+		if (wr->num_sge == 1) {
+			mr = uib_mr_lookup_local(qp->pd, wr->sg_list[0].lkey,
+				(const void *)(uintptr_t)wr->sg_list[0].addr,
+				wr->sg_list[0].length, 0);
+			if (!mr)
+				return -EACCES;
+			if (mr->kind == UIB_MR_HOST)
+				message = (const uint8_t *)(uintptr_t)
+					wr->sg_list[0].addr;
+		}
+		if (!message) {
+			owned_message = malloc(total_len ? total_len : 1);
+			if (!owned_message)
+				return -ENOMEM;
+			rc = uib_qp_gather(qp->pd, wr->sg_list, wr->num_sge,
+					   owned_message, total_len);
+			if (rc < 0) {
+				free(owned_message);
+				return rc;
+			}
+			message = owned_message;
 		}
 	}
 
@@ -2100,13 +2292,13 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 		chunk_max = qp->path_mtu - sizeof(struct uib_uet_pds_ack) -
 			sizeof(struct uib_uet_ses_rsp);
 	if (!chunk_max) {
-		free(message);
+		free(owned_message);
 		return -EMSGSIZE;
 	}
 	packets = wr->opcode == UIB_WR_RDMA_READ || fetching_atomic ? 1 :
 		(total_len ? (total_len + chunk_max - 1) / chunk_max : 1);
 	if (packets > UIB_UET_PDC_MPR) {
-		free(message);
+		free(owned_message);
 		return -EMSGSIZE;
 	}
 	if (packets == 1 && total_len <= UIB_UET_SES_LENGTH_MASK &&
@@ -2123,7 +2315,7 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 	}
 	track = uet_alloc_track(qp, wr, total_len, packets);
 	if (!track) {
-		free(message);
+		free(owned_message);
 		return -ENOMEM;
 	}
 
@@ -2148,7 +2340,7 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 		break;
 	default:
 		uet_free_track(track);
-		free(message);
+			free(owned_message);
 		return -EOPNOTSUPP;
 	}
 	if (!dst.sin_port)
@@ -2201,14 +2393,8 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 			rc = -EMSGSIZE;
 			goto fail_track;
 		}
-		out = calloc(1, sizeof(*out));
+		out = uet_alloc_outstanding(uet, packet_len);
 		if (!out) {
-			rc = -ENOMEM;
-			goto fail_track;
-		}
-		out->packet = calloc(1, packet_len);
-		if (!out->packet) {
-			free(out);
 			rc = -ENOMEM;
 			goto fail_track;
 		}
@@ -2367,14 +2553,14 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 		if (rc < 0)
 			goto fail_track;
 	}
-	free(message);
+	free(owned_message);
 	return 0;
 
 fail_track:
 	pthread_mutex_lock(&qp->lock);
 	uet_remove_track_locked(qp, track, UIB_WC_LOC_PROT_ERR);
 	pthread_mutex_unlock(&qp->lock);
-	free(message);
+	free(owned_message);
 	return rc;
 }
 

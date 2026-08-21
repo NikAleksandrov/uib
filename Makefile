@@ -15,8 +15,16 @@ URING_CFLAGS ?= $(if $(wildcard ../liburing/src/include/liburing.h),-I../liburin
 URING_LIBS ?= $(if $(wildcard /usr/lib/x86_64-linux-gnu/liburing.so),-luring,-l:liburing.so.2)
 MNL_CFLAGS ?= $(shell pkg-config --cflags libmnl 2>/dev/null)
 MNL_LIBS ?= $(shell pkg-config --libs libmnl 2>/dev/null)
+URCU_CFLAGS ?= $(shell pkg-config --cflags liburcu-bp 2>/dev/null)
+URCU_LIBS ?= $(shell pkg-config --libs liburcu-bp 2>/dev/null)
+HAVE_ZLIB ?= $(shell pkg-config --exists zlib 2>/dev/null && echo 1 || echo 0)
+ZLIB_CFLAGS ?= $(shell pkg-config --cflags zlib 2>/dev/null)
+ZLIB_LIBS ?= $(shell pkg-config --libs zlib 2>/dev/null)
 ifeq ($(strip $(MNL_LIBS)),)
   $(error libmnl development files are required)
+endif
+ifeq ($(strip $(URCU_LIBS)),)
+  $(error liburcu-bp development files are required)
 endif
 HAVE_IBVERBS ?= $(shell printf '#include <infiniband/verbs.h>\n' | \
 	$(CC) -x c -fsyntax-only - >/dev/null 2>&1 && echo 1 || echo 0)
@@ -28,9 +36,14 @@ HAVE_DMABUF ?= $(shell printf '#include <linux/dma-buf.h>\nint x=DMA_BUF_IOCTL_S
 HAVE_ZEROCOPY ?= $(shell printf '#include <sys/socket.h>\n#include <linux/errqueue.h>\nint x=MSG_ZEROCOPY+SO_ZEROCOPY+SO_EE_ORIGIN_ZEROCOPY;\n' | \
 	$(CC) -D_GNU_SOURCE -x c -fsyntax-only - >/dev/null 2>&1 && echo 1 || echo 0)
 
-CFLAGS += $(URING_CFLAGS) $(MNL_CFLAGS) $(IBVERBS_CFLAGS)
+CFLAGS += $(URING_CFLAGS) $(MNL_CFLAGS) $(URCU_CFLAGS) $(IBVERBS_CFLAGS)
 LDFLAGS += -pthread
-LDLIBS += $(URING_LIBS) $(MNL_LIBS)
+LDLIBS += $(URING_LIBS) $(MNL_LIBS) $(URCU_LIBS)
+
+ifeq ($(HAVE_ZLIB),1)
+  CFLAGS += -DUIB_HAVE_ZLIB $(ZLIB_CFLAGS)
+  LDLIBS += $(ZLIB_LIBS)
+endif
 
 # AF_XDP backend (udp-zc-afxdp) is compiled with real libxdp glue only when
 # libxdp/libbpf are available; otherwise transport_afxdp.c compiles to a stub

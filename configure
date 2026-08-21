@@ -655,6 +655,11 @@ IBVERBS_LIBS
 IBVERBS_CFLAGS
 ENABLE_PROVIDER
 HAVE_IBVERBS
+ZLIB_LIBS
+ZLIB_CFLAGS
+HAVE_ZLIB
+URCU_LIBS
+URCU_CFLAGS
 MNL_LIBS
 MNL_CFLAGS
 URING_LIBS
@@ -3605,6 +3610,79 @@ rm -f core conftest.err conftest.$ac_objext conftest.beam \
 CPPFLAGS=$saved_CPPFLAGS
 LIBS=$saved_LIBS
 
+if $PKG_CONFIG --exists liburcu-bp
+then :
+
+	URCU_CFLAGS=`$PKG_CONFIG --cflags liburcu-bp`
+	URCU_LIBS=`$PKG_CONFIG --libs liburcu-bp`
+
+else case e in #(
+  e)
+	as_fn_error $? "liburcu-bp development files are required" "$LINENO" 5
+ ;;
+esac
+fi
+saved_CPPFLAGS=$CPPFLAGS
+saved_LIBS=$LIBS
+CPPFLAGS="$CPPFLAGS $URCU_CFLAGS"
+LIBS="$URCU_LIBS $LIBS"
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#include <urcu-bp.h>
+int
+main (void)
+{
+rcu_read_lock(); rcu_read_unlock(); synchronize_rcu();
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"
+then :
+
+else case e in #(
+  e) as_fn_error $? "a usable liburcu-bp library is required" "$LINENO" 5 ;;
+esac
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam \
+    conftest$ac_exeext conftest.$ac_ext
+CPPFLAGS=$saved_CPPFLAGS
+LIBS=$saved_LIBS
+
+HAVE_ZLIB=0
+ZLIB_CFLAGS=
+ZLIB_LIBS=
+if $PKG_CONFIG --exists zlib
+then :
+
+	ZLIB_CFLAGS=`$PKG_CONFIG --cflags zlib`
+	ZLIB_LIBS=`$PKG_CONFIG --libs zlib`
+	saved_CPPFLAGS=$CPPFLAGS
+	saved_LIBS=$LIBS
+	CPPFLAGS="$CPPFLAGS $ZLIB_CFLAGS"
+	LIBS="$ZLIB_LIBS $LIBS"
+	cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#include <zlib.h>
+int
+main (void)
+{
+return (int)crc32_z(0, "uib", 3);
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_link "$LINENO"
+then :
+  HAVE_ZLIB=1
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam \
+    conftest$ac_exeext conftest.$ac_ext
+	CPPFLAGS=$saved_CPPFLAGS
+	LIBS=$saved_LIBS
+
+fi
+
 # Check whether --enable-provider was given.
 if test ${enable_provider+y}
 then :
@@ -4167,10 +4245,17 @@ fi
 
 
 
+
+
+
+
+
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: configuration summary:" >&5
 printf "%s\n" "$as_me: configuration summary:" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   libmnl networking:   required" >&5
 printf "%s\n" "$as_me:   libmnl networking:   required" >&6;}
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}:   optimized CRC32:     $HAVE_ZLIB" >&5
+printf "%s\n" "$as_me:   optimized CRC32:     $HAVE_ZLIB" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   libibverbs provider: $ENABLE_PROVIDER" >&5
 printf "%s\n" "$as_me:   libibverbs provider: $ENABLE_PROVIDER" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   AF_XDP transport:    $HAVE_AFXDP" >&5
