@@ -59,6 +59,8 @@ The core library requires:
     buffer-ring APIs (Debian/Ubuntu: liburing-dev; Fedora: liburing-devel);
   * libmnl headers and runtime library for generic-netlink netdev control
     (Debian/Ubuntu: libmnl-dev; Fedora: libmnl-devel); and
+  * liburcu-bp headers and runtime library for lockless QP and MR lookup
+    (Debian/Ubuntu: liburcu-dev; Fedora: userspace-rcu-devel); and
   * autoconf 2.69 or newer only when regenerating configure.
 
 Optional functionality is enabled when configure finds its dependencies:
@@ -74,9 +76,12 @@ Optional functionality is enabled when configure finds its dependencies:
   * Linux dma-buf headers enable mmap-backed system/GPU DMA-BUF registration;
   * Linux headers defining SO_ZEROCOPY and MSG_ZEROCOPY enable optional socket
     transmit zero-copy;
+  * zlib development files accelerate the RoCEv2 invariant CRC
+    (Debian/Ubuntu: zlib1g-dev; Fedora: zlib-devel);
   * virtme-ng, a kernel image, iproute2 and rdma-core tools run the VM/RXE
     integration tests; and
-  * perftest or rdma-core's ibv_rc_pingpong provides standard tools coverage.
+  * perftest provides `ib_write_bw` benchmark-matrix rows, while rdma-core's
+    `ibv_rc_pingpong` provides the standard-tools interoperability test.
 
 Run the checked-in configure script, then build:
 

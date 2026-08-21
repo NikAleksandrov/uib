@@ -251,12 +251,12 @@ Find a QP by QPN with internal synchronization.
 .br
 Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &init); uib_lookup_qp(ctx, qpn);\fP
 .TP
-.B uib_lookup_qp_locked
-struct uib_qp *uib_lookup_qp_locked(struct uib_context *ctx, uint32_t qpn);
+.B uib_lookup_qp_rcu
+struct uib_qp *uib_lookup_qp_rcu(struct uib_context *ctx, uint32_t qpn);
 .br
-Find a QP while the caller holds the context lock.
+Find a QP while the caller holds an RCU read lock.
 .br
-Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &init); uib_lookup_qp_locked(ctx, qpn);\fP
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &init); rcu_read_lock(); qp = uib_lookup_qp_rcu(ctx, qpn); rcu_read_unlock();\fP
 .SS "Completion queues and events"
 .TP
 .B uib_create_comp_channel
@@ -473,7 +473,7 @@ Release an unused protection domain.
 Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); uib_dealloc_pd(pd);\fP
 .TP
 .B uib_pd_detach_mr
-void uib_pd_detach_mr(struct uib_pd *pd, struct uib_mr *mr);
+int uib_pd_detach_mr(struct uib_pd *pd, struct uib_mr *mr);
 .br
 Remove an MR from a protection domain.
 .br
@@ -791,6 +791,13 @@ Consume the oldest posted receive request.
 .br
 Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &init); uib_qp_pop_recv(qp, out);\fP
 .TP
+.B uib_qp_release_recv
+void uib_qp_release_recv(struct uib_rq_slot *slot);
+.br
+Release storage retained by a popped receive slot.
+.br
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &init); uib_qp_pop_recv(qp, &slot); uib_qp_release_recv(&slot);\fP
+.TP
 .B uib_rocev2_handle_packet
 int uib_rocev2_handle_packet(struct uib_qp *qp, const struct sockaddr_in *src, const void *packet, size_t len);
 .br
@@ -868,6 +875,20 @@ int uib_transport_send_entropy(struct uib_context *ctx, const struct sockaddr_in
 Send a packet with path\-selection entropy.
 .br
 Example: \fBctx = uib_open_device("0.0.0.0", 4791); uib_transport_send_entropy(ctx, dst, buf, len, entropy);\fP
+.TP
+.B uib_transport_send_ref
+int uib_transport_send_ref(struct uib_context *ctx, const struct sockaddr_in *dst, const void *buf, size_t len, uib_transport_release_fn release, void *opaque);
+.br
+Send while retaining a caller\-owned buffer.
+.br
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); uib_transport_send_ref(ctx, dst, buf, len, release, opaque);\fP
+.TP
+.B uib_transport_send_ref_batch
+int uib_transport_send_ref_batch(struct uib_context *ctx, const struct uib_transport_ref *refs, size_t count);
+.br
+Send retained buffers as one transport batch.
+.br
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); refs[0].buf = buf; refs[0].release = release; uib_transport_send_ref_batch(ctx, refs, 1);\fP
 .TP
 .B uib_transport_get_stats
 int uib_transport_get_stats(struct uib_context *ctx, struct uib_transport_stats *stats);
@@ -1214,6 +1235,33 @@ Accepted values: 1 through 256
 .br
 Example: \fBUIB_URING_TX_BATCH=128 ./examples/stress_bench\fP
 .TP
+.B UIB_URING_SQPOLL
+Enable the optional io_uring kernel submission polling thread.
+.br
+Default: off
+.br
+Accepted values: off or on
+.br
+Example: \fBUIB_URING_SQPOLL=on ./examples/stress_bench\fP
+.TP
+.B UIB_URING_SQPOLL_IDLE
+Set how long an idle io_uring SQPOLL thread keeps polling.
+.br
+Default: 2000
+.br
+Accepted values: A positive number of milliseconds.
+.br
+Example: \fBUIB_URING_SQPOLL=on UIB_URING_SQPOLL_IDLE=100 ./examples/stress_bench\fP
+.TP
+.B UIB_URING_SQPOLL_CPU
+Pin the optional io_uring SQPOLL kernel thread to one CPU.
+.br
+Default: Unset.
+.br
+Accepted values: An online CPU number.
+.br
+Example: \fBUIB_URING_SQPOLL=on UIB_URING_SQPOLL_CPU=3 ./examples/stress_bench\fP
+.TP
 .B UIB_ZEROCOPY
 Control optional socket and AF_XDP transmit zero\-copy.
 .br
@@ -1231,6 +1279,16 @@ Default: 10240 in auto mode; 1024 in on or required mode.
 Accepted values: A non\-negative byte count.
 .br
 Example: \fBUIB_ZEROCOPY_THRESHOLD=4096 ./examples/stress_bench\fP
+.SS "UDP transports"
+.TP
+.B UIB_UDP_GSO
+Combine equal\-sized RDMA packets into UDP GSO sends. on fails context creation when the kernel does not support UDP GSO; auto falls back.
+.br
+Default: auto
+.br
+Accepted values: auto, off, or on
+.br
+Example: \fBUIB_UDP_GSO=off ./examples/stress_bench \-\-protocol rocev2\fP
 .SS "AF_XDP transport"
 .TP
 .B UIB_AFXDP_IFACE

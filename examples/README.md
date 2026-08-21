@@ -82,6 +82,13 @@ Run the complete protocol/transport/memory matrix and generate CSV comparisons:
 
     make benchmark-local
 
+The first rows are unmodified `ib_write_bw` runs through the transparent
+provider for RoCEv2 and UET over each locally runnable transport. They record
+actual peak/average bandwidth, message rate, elapsed time, user/system/total
+CPU time, and CPU utilization. Install perftest to enable those rows; otherwise
+they are explicit skips. Dummy RDMA WRITE and a local AF_XDP peer are reported
+as capability skips.
+
 The output directory contains raw results, copied-vs-zero-copy percentage
 changes, DMA-BUF-vs-host percentage changes, and explicit skips for unavailable
 AF_XDP hardware. It also contains `sync-async-comparison.csv`, with actual

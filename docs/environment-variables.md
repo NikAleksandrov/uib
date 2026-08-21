@@ -20,8 +20,17 @@ when the relevant context, transport, benchmark, or test is created.
 | <code>UIB_URING_RX_MODE</code> | `auto` | `auto`, `multishot`, or `batch` | Select multishot receive or the portable batched fallback. | <code>UIB_URING_RX_MODE=batch ./tests/loopback</code> |
 | <code>UIB_URING_RX_BATCH</code> | `64` | `1` through `256` | Set RX CQEs reaped per worker pass and batched RX depth. | <code>UIB_URING_RX_BATCH=128 ./examples/stress_bench</code> |
 | <code>UIB_URING_TX_BATCH</code> | `64` | `1` through `256` | Limit send SQEs submitted by the io_uring worker per pass. | <code>UIB_URING_TX_BATCH=128 ./examples/stress_bench</code> |
+| <code>UIB_URING_SQPOLL</code> | `off` | `off` or `on` | Enable the optional io_uring kernel submission polling thread. | <code>UIB_URING_SQPOLL=on ./examples/stress_bench</code> |
+| <code>UIB_URING_SQPOLL_IDLE</code> | `2000` | A positive number of milliseconds. | Set how long an idle io_uring SQPOLL thread keeps polling. | <code>UIB_URING_SQPOLL=on UIB_URING_SQPOLL_IDLE=100 ./examples/stress_bench</code> |
+| <code>UIB_URING_SQPOLL_CPU</code> | Unset. | An online CPU number. | Pin the optional io_uring SQPOLL kernel thread to one CPU. | <code>UIB_URING_SQPOLL=on UIB_URING_SQPOLL_CPU=3 ./examples/stress_bench</code> |
 | <code>UIB_ZEROCOPY</code> | `auto` | `off`, `auto`, `on`, or `required` | Control optional socket and AF_XDP transmit zero-copy. | <code>UIB_ZEROCOPY=required ./examples/stress_bench</code> |
 | <code>UIB_ZEROCOPY_THRESHOLD</code> | 10240 in auto mode; 1024 in on or required mode. | A non-negative byte count. | Override the minimum packet size used for socket zero-copy. | <code>UIB_ZEROCOPY_THRESHOLD=4096 ./examples/stress_bench</code> |
+
+## UDP transports
+
+| Variable | Default | Accepted values | Description | Example |
+|---|---|---|---|---|
+| <code>UIB_UDP_GSO</code> | `auto` | `auto`, `off`, or `on` | Combine equal-sized RDMA packets into UDP GSO sends. `on` fails context creation when the kernel does not support UDP GSO; `auto` falls back. | <code>UIB_UDP_GSO=off ./examples/stress_bench --protocol rocev2</code> |
 
 ## AF_XDP transport
 
