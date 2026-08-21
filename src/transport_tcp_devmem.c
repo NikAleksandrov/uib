@@ -34,6 +34,7 @@ struct tcp_peer {
 	int                 hs_expect;
 	/* The peer listening address is both the key and delivery source. */
 	struct sockaddr_in  laddr;
+	uint8_t            *tx;
 	uint8_t            *rx;
 	size_t              rx_len;
 	size_t              rx_cap;
@@ -136,6 +137,7 @@ static void peer_drop(struct uib_tcp_backend *be, struct tcp_peer *p)
 		return;
 	epoll_ctl(be->epfd, EPOLL_CTL_DEL, p->fd, NULL);
 	close(p->fd);
+	free(p->tx);
 	free(p->rx);
 	memset(p, 0, sizeof(*p));
 }
@@ -215,11 +217,14 @@ static int tcp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 		pthread_mutex_unlock(&be->lock);
 		return -EIO;
 	}
-	frame = malloc(sizeof(uint32_t) + len);
-	if (!frame) {
-		pthread_mutex_unlock(&be->lock);
-		return -ENOMEM;
+	if (!p->tx) {
+		p->tx = malloc(sizeof(uint32_t) + UIB_TCP_MAX_FRAME);
+		if (!p->tx) {
+			pthread_mutex_unlock(&be->lock);
+			return -ENOMEM;
+		}
 	}
+	frame = p->tx;
 	nlen = htonl((uint32_t)len);
 	memcpy(frame, &nlen, sizeof(nlen));
 	memcpy(frame + sizeof(uint32_t), buf, len);
@@ -243,7 +248,6 @@ static int tcp_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 	}
 	if (rc < 0)
 		peer_drop(be, p);
-	free(frame);
 	pthread_mutex_unlock(&be->lock);
 	return rc;
 }
@@ -314,26 +318,26 @@ static int peer_parse(struct uib_context *ctx, struct tcp_peer *p)
 
 static int peer_readable(struct uib_context *ctx, struct tcp_peer *p)
 {
-	uint8_t chunk[UIB_TCP_RXCHUNK];
+	uint8_t *buffer;
+	size_t capacity;
 	ssize_t n;
 
-	n = recv(p->fd, chunk, sizeof(chunk), 0);
+	if (p->rx_cap - p->rx_len < UIB_TCP_RXCHUNK) {
+		capacity = p->rx_cap ? p->rx_cap * 2 : UIB_TCP_RXCHUNK;
+		while (capacity - p->rx_len < UIB_TCP_RXCHUNK) {
+			if (capacity > SIZE_MAX / 2)
+				return -1;
+			capacity *= 2;
+		}
+		buffer = realloc(p->rx, capacity);
+		if (!buffer)
+			return -1;
+		p->rx = buffer;
+		p->rx_cap = capacity;
+	}
+	n = recv(p->fd, p->rx + p->rx_len, p->rx_cap - p->rx_len, 0);
 	if (n <= 0)
 		return -1;
-
-	if (p->rx_len + (size_t)n > p->rx_cap) {
-		size_t nc = p->rx_cap ? p->rx_cap * 2 : UIB_TCP_RXCHUNK;
-
-		while (nc < p->rx_len + (size_t)n)
-			nc *= 2;
-		uint8_t *nb = realloc(p->rx, nc);
-
-		if (!nb)
-			return -1;
-		p->rx = nb;
-		p->rx_cap = nc;
-	}
-	memcpy(p->rx + p->rx_len, chunk, (size_t)n);
 	p->rx_len += (size_t)n;
 	return peer_parse(ctx, p);
 }
@@ -517,6 +521,7 @@ static void tcp_fini(struct uib_context *ctx)
 	for (i = 0; i < UIB_TCP_MAX_PEERS; i++) {
 		if (be->peers[i].used) {
 			close(be->peers[i].fd);
+			free(be->peers[i].tx);
 			free(be->peers[i].rx);
 		}
 	}
