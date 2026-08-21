@@ -107,10 +107,12 @@ struct uib_uet_qp {
 	struct uib_uet_outstanding *tx_cursor;
 	struct uib_uet_out_pool *out_pool;
 	struct uib_psn_index out_index;
+	uint32_t unindexed_count;
 	struct uib_uet_nscc nscc;
 	uint32_t receiver_bytes;
 	uint32_t previous_received_units;
 	int nscc_enabled;
+	int debug;
 	struct uib_uet_session_config session;
 	enum uib_uet_optimized_mode optimized_mode;
 	struct uib_uet_optimized_stats optimized_stats;
@@ -289,9 +291,10 @@ uet_alloc_outstanding(struct uib_uet_qp *uet, size_t packet_len)
 
 static void uet_debug(struct uib_qp *qp, const char *format, ...)
 {
+	struct uib_uet_qp *uet = qp->protocol_private;
 	va_list args;
 
-	if (!getenv(UIB_ENV_UET_DEBUG))
+	if (!uet || !uet->debug)
 		return;
 	fprintf(stderr, "uib: uet qpn %u: ", qp->qp_num);
 	va_start(args, format);
@@ -546,6 +549,7 @@ static int uet_qp_init(struct uib_qp *qp)
 	uet->previous_path = UINT16_MAX;
 	cc = getenv(UIB_ENV_UET_CC);
 	uet->nscc_enabled = !cc || strcmp(cc, "none");
+	uet->debug = !!getenv(UIB_ENV_UET_DEBUG);
 	uet_nscc_init(qp, uet);
 	qp->protocol_private = uet;
 	return 0;
@@ -810,16 +814,21 @@ static void uet_free_outstanding(void *opaque)
 static void uet_outstanding_index_add(struct uib_uet_qp *uet,
 				      struct uib_uet_outstanding *out)
 {
-	if (uib_psn_index_insert(&uet->out_index, out->psn, out))
+	if (uib_psn_index_insert(&uet->out_index, out->psn, out)) {
+		uet->unindexed_count++;
 		return;
+	}
 	out->indexed = 1;
 }
 
 static void uet_outstanding_index_remove(struct uib_uet_qp *uet,
 					 struct uib_uet_outstanding *out)
 {
-	if (!out->indexed)
+	if (!out->indexed) {
+		if (uet->unindexed_count)
+			uet->unindexed_count--;
 		return;
+	}
 	uib_psn_index_remove(&uet->out_index, out->psn, out);
 	out->indexed = 0;
 }
@@ -984,8 +993,11 @@ uet_find_outstanding(struct uib_uet_qp *uet, uint32_t psn, uint16_t msg_id)
 	out = uib_psn_index_lookup(&uet->out_index, psn);
 	if (out && (!msg_id || out->msg_id == msg_id))
 		return out;
+	if (!uet->unindexed_count)
+		return NULL;
 	for (out = uet->out_head; out; out = out->next) {
-		if (out->psn == psn && (!msg_id || out->msg_id == msg_id))
+		if (!out->indexed && out->psn == psn &&
+		    (!msg_id || out->msg_id == msg_id))
 			return out;
 	}
 	return NULL;
@@ -1025,63 +1037,76 @@ static void uet_select_path(struct uib_uet_qp *uet,
 	}
 }
 
-static int uet_transmit_locked(struct uib_qp *qp,
-			       struct uib_uet_outstanding *out)
-{
-	struct uib_uet_qp *uet = qp->protocol_private;
-	struct uib_transport_ref ref;
-	int rc;
-
-	if (uet->sent_count >= UIB_UET_PDC_MPR)
-		return -EAGAIN;
-	if (uet->nscc_enabled &&
-	    !uib_uet_nscc_can_send(&uet->nscc, out->nominal_len))
-		return -EAGAIN;
-	out->tx_time_ns = uib_now_ns();
-	if (!out->entropy)
-		uet_select_path(uet, out, out->tx_time_ns);
-	ref.dst = &out->dst;
-	ref.buf = out->packet;
-	ref.release = uet_free_outstanding;
-	ref.opaque = out;
-	ref.len = out->packet_len;
-	ref.entropy = out->entropy;
-	__atomic_add_fetch(&out->refs, 1, __ATOMIC_RELAXED);
-	rc = uib_transport_send_ref_batch(qp->ctx, &ref, 1);
-	if (rc < 0)
-		return rc;
-	out->sent = 1;
-	uet->sent_count++;
-	out->deadline_ns = out->tx_time_ns + UIB_UET_RTX_NS;
-	if (!qp->retry_scheduled ||
-	    out->deadline_ns < qp->retry_deadline_ns)
-		uib_qp_retry_schedule(qp, out->deadline_ns);
-	if (out->entropy) {
-		uet->paths[out->path_index].sent++;
-		uet->multipath_stats.packets++;
-	}
-	if (uet->nscc_enabled)
-		uib_uet_nscc_on_send(&uet->nscc, out->nominal_len);
-	return 0;
-}
-
 static int uet_drain_locked(struct uib_qp *qp)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_outstanding *outstanding[UIB_UET_PDC_MPR];
 	struct uib_uet_outstanding *candidate;
-	int rc = 0;
+	struct uib_uet_outstanding *out;
+	struct uib_transport_ref refs[UIB_UET_PDC_MPR];
+	struct uib_uet_nscc nscc_before;
+	uint64_t deadline;
+	uint64_t now_ns;
+	uint32_t capacity;
+	uint32_t count;
+	uint32_t i;
+	int rc;
 
-	while ((candidate = uet->tx_cursor) != NULL) {
-		rc = uet_transmit_locked(qp, candidate);
-		if (rc == -EAGAIN)
-			return 0;
-		if (rc < 0)
-			return rc;
-		uet->tx_cursor = candidate->next;
-		while (uet->tx_cursor && uet->tx_cursor->sent)
-			uet->tx_cursor = uet->tx_cursor->next;
+	capacity = UIB_UET_PDC_MPR - uet->sent_count;
+	candidate = uet->tx_cursor;
+	count = 0;
+	if (uet->nscc_enabled)
+		nscc_before = uet->nscc;
+	now_ns = uib_now_ns();
+	while (candidate && count < capacity) {
+		if (uet->nscc_enabled &&
+		    !uib_uet_nscc_can_send(&uet->nscc,
+					  candidate->nominal_len))
+			break;
+		candidate->tx_time_ns = now_ns;
+		if (!candidate->entropy)
+			uet_select_path(uet, candidate, now_ns);
+		refs[count].dst = &candidate->dst;
+		refs[count].buf = candidate->packet;
+		refs[count].release = uet_free_outstanding;
+		refs[count].opaque = candidate;
+		refs[count].len = candidate->packet_len;
+		refs[count].entropy = candidate->entropy;
+		outstanding[count] = candidate;
+		__atomic_add_fetch(&candidate->refs, 1, __ATOMIC_RELAXED);
+		if (uet->nscc_enabled)
+			uib_uet_nscc_on_send(&uet->nscc,
+					     candidate->nominal_len);
+		count++;
+		candidate = candidate->next;
+		while (candidate && candidate->sent)
+			candidate = candidate->next;
 	}
-	return rc;
+	if (!count)
+		return 0;
+	rc = uib_transport_send_ref_batch(qp->ctx, refs, count);
+	if (rc < 0) {
+		if (uet->nscc_enabled)
+			uet->nscc = nscc_before;
+		return rc;
+	}
+	deadline = UINT64_MAX;
+	for (i = 0; i < count; i++) {
+		out = outstanding[i];
+		out->sent = 1;
+		uet->sent_count++;
+		out->deadline_ns = out->tx_time_ns + UIB_UET_RTX_NS;
+		if (out->deadline_ns < deadline)
+			deadline = out->deadline_ns;
+		if (out->entropy) {
+			uet->paths[out->path_index].sent++;
+			uet->multipath_stats.packets++;
+		}
+	}
+	uet->tx_cursor = candidate;
+	if (!qp->retry_scheduled || deadline < qp->retry_deadline_ns)
+		uib_qp_retry_schedule(qp, deadline);
+	return 0;
 }
 
 static int uet_send_one_response(struct uib_qp *qp,
@@ -2548,11 +2573,13 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 		uet_link_outstanding(uet, out);
 		uet_debug(qp, "tx request psn=%u msg=%u opcode=%u len=%zu",
 			  out->psn, out->msg_id, ses_opcode, data_len);
-		rc = uet_drain_locked(qp);
 		pthread_mutex_unlock(&qp->lock);
-		if (rc < 0)
-			goto fail_track;
 	}
+	pthread_mutex_lock(&qp->lock);
+	rc = uet_drain_locked(qp);
+	pthread_mutex_unlock(&qp->lock);
+	if (rc < 0)
+		goto fail_track;
 	free(owned_message);
 	return 0;
 

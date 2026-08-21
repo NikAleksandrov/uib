@@ -8,7 +8,7 @@
 #define UIB_PSN_INDEX_INITIAL_SIZE	64U
 #define UIB_PSN_INDEX_LOAD_NUMERATOR	3U
 #define UIB_PSN_INDEX_LOAD_DENOMINATOR	4U
-#define UIB_PSN_HASH_MULTIPLIER		0x9e370001U
+#define UIB_PSN_HASH_MULTIPLIER		0x9e3779b1U
 
 static uint32_t psn_hash(uint32_t size, uint32_t psn)
 {
