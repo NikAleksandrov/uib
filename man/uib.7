@@ -1141,7 +1141,7 @@ Example: \fBctx = uib_open_device("0.0.0.0", 4791); uib_zerocopy_account_copy(ct
 .B uib_zerocopy_account_direct
 void uib_zerocopy_account_direct(struct uib_context *ctx, size_t length, uint32_t capability);
 .br
-Account bytes transferred without copying.
+Account a requested zero\-copy transfer.
 .br
 Example: \fBctx = uib_open_device("0.0.0.0", 4791); uib_zerocopy_account_direct(ctx, length, capability);\fP
 .TP

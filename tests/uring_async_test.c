@@ -106,6 +106,19 @@ static void run_mode(const char *mode, uint16_t sender_port,
 	check("uring.zerocopy_accounting", !rc &&
 	      zerocopy_stats.copied_calls + zerocopy_stats.zerocopy_calls ==
 	      TEST_PACKETS);
+	if (zerocopy && zerocopy_stats.zerocopy_calls) {
+		check("uring.zerocopy_completions",
+		      zerocopy_stats.completions ==
+		      zerocopy_stats.zerocopy_calls);
+		check("uring.deferred_copy_bound",
+		      zerocopy_stats.deferred_copies <=
+		      zerocopy_stats.completions);
+		check("uring.loopback_deferred",
+		      zerocopy_stats.deferred_copies ==
+		      zerocopy_stats.completions);
+		check("uring.zerocopy_capability",
+		      zerocopy_stats.capabilities & UIB_ZEROCOPY_CAP_MSG);
+	}
 
 out:
 	if (sender)

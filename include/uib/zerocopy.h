@@ -23,10 +23,13 @@ enum uib_zerocopy_capability {
 };
 
 struct uib_zerocopy_stats {
+	/* Calls and bytes sent through an explicitly copied transport path. */
 	uint64_t copied_calls;
 	uint64_t copied_bytes;
+	/* Zero-copy requests; subtract deferred_copies after completion. */
 	uint64_t zerocopy_calls;
 	uint64_t zerocopy_bytes;
+	/* Kernel ownership-release notifications and copied fallbacks. */
 	uint64_t completions;
 	uint64_t deferred_copies;
 	uint64_t errors;

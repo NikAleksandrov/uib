@@ -40,7 +40,13 @@ run_one()
 	expected=$7
 	affinity=$8
 	mtu=$9
+	run_window=$window
 	log=$(mktemp)
+	if [ "$protocol" = dummy ] && [ "$transport" != tcp-devmem ] &&
+	   [ "$run_window" -gt 16 ]; then
+		# Dummy has no ACK-based flow control; bound each UDP burst.
+		run_window=16
+	fi
 
 	if [ "$protocol" = rocev2 ] && [ "$mtu" -gt 4096 ]; then
 		printf '%s,%s,%s,%s,mtu-%s: RoCEv2 path MTU maximum is 4096\n' \
@@ -80,7 +86,7 @@ run_one()
 			"$project_dir/examples/stress_bench" \
 			--protocol "$protocol" --memory "$memory" \
 			--iterations "$iterations" --size "$message_size" \
-			--window "$window" --mtu "$mtu" --csv >"$log" 2>&1
+			--window "$run_window" --mtu "$mtu" --csv >"$log" 2>&1
 		status=$?
 	else
 		timeout 120 env \
@@ -90,7 +96,7 @@ run_one()
 			"$project_dir/examples/stress_bench" \
 			--protocol "$protocol" --memory "$memory" \
 			--iterations "$iterations" --size "$message_size" \
-			--window "$window" --mtu "$mtu" --csv >"$log" 2>&1
+			--window "$run_window" --mtu "$mtu" --csv >"$log" 2>&1
 		status=$?
 	fi
 	if [ "$status" -eq 0 ]; then

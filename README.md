@@ -71,8 +71,9 @@ Optional functionality is enabled when configure finds its dependencies:
   * libxdp and libbpf development files build the AF_XDP transport
     (Debian/Ubuntu: libxdp-dev and libbpf-dev; Fedora: libxdp-devel and
     libbpf-devel);
-  * Linux headers defining SO_DEVMEM_DMABUF enable TCP netdev DMA-BUF queue
-    binding scaffolding;
+  * Linux headers defining SO_DEVMEM_DMABUF build the explicit netdev DMA-BUF
+    queue-binding helper; transports do not activate it without a complete
+    device-memory receive datapath;
   * Linux dma-buf headers enable mmap-backed system/GPU DMA-BUF registration;
   * Linux headers defining SO_ZEROCOPY and MSG_ZEROCOPY enable optional socket
     transmit zero-copy;
@@ -143,6 +144,8 @@ UIB_ZEROCOPY=off, auto, on or required controls MSG_ZEROCOPY and AF_XDP copy
 selection. Auto uses socket zero-copy for packets at least 10 KiB. On and
 required use a 1 KiB floor so small protocol ACKs cannot stall waiting for a
 TCP zero-copy completion. Override either threshold with UIB_ZEROCOPY_THRESHOLD.
+Socket zero-copy is transmit-only. io_uring multishot receive is batched, not
+zero-copy into a verbs MR; AF_XDP native zero-copy ends at its UMEM frame.
 
 AF_XDP transmits complete Ethernet frames and deliberately performs no route,
 ARP or neighbor-table discovery. Set `UIB_AFXDP_IFACE` to the bound interface

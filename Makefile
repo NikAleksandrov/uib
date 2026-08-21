@@ -344,6 +344,11 @@ benchmark-smoke: examples
 	UIB_BENCH_ITERATIONS=64 UIB_BENCH_SIZE=16384 UIB_BENCH_WINDOW=16 \
 		./examples/benchmark_matrix.sh /tmp/uib-benchmark-smoke
 
+dummy-reorder-test: examples
+	UIB_TRANSPORT_MODE=udp-io-uring UIB_ZEROCOPY=off \
+		./examples/stress_bench --protocol dummy --iterations 4096 \
+		--size 1024 --window 64
+
 ib-write-bw-test: examples
 	./tests/run_ib_write_bw_matrix.sh
 
@@ -459,6 +464,7 @@ guest-test: all rxe-test-build
 	$(MAKE) rocev2-loss-test
 	$(MAKE) uet-congestion-test
 	$(MAKE) uet-multipath-test
+	$(MAKE) dummy-reorder-test
 	$(MAKE) examples-test
 	$(MAKE) examples-stress-test
 	$(MAKE) sync-transport-test
@@ -524,7 +530,7 @@ clean:
 	examples-stress-test sync-transport-test dmabuf-e2e-test \
 	zerocopy-e2e-test \
 	benchmark-all benchmark-local benchmark-report benchmark-doc \
-	benchmark-smoke ib-write-bw-test \
+	benchmark-smoke ib-write-bw-test dummy-reorder-test \
 	scaling-benchmark scaling-test \
 	provider-dmabuf-test provider-cq-event-test \
 	gpu-dmabuf-test external-dmabuf-test remote-benchmark-test \

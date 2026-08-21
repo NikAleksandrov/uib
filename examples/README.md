@@ -63,7 +63,9 @@ The protocol path MTU defaults to 1500 bytes; select another value with
 
 Select DMA-BUF memory with `--memory dmabuf`. Select copied or socket
 zero-copy transport with UIB_ZEROCOPY=off or required. The stats distinguish
-zero-copy requests from kernel-deferred copies.
+zero-copy requests from kernel-deferred copies. These are transmit statistics:
+receive still places data into the posted verbs buffer with a CPU copy, while
+AF_XDP native zero-copy ends at UMEM.
 
 For io_uring tuning, UIB_URING_RX_BATCH and UIB_URING_TX_BATCH select the RX
 completion/one-shot depth and TX submission batch respectively. Both default

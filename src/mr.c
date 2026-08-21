@@ -54,6 +54,7 @@ static int dmabuf_sync(struct uib_mr *mr, uint64_t flags)
 static int dmabuf_map(struct uib_mr *mr)
 {
 #ifdef UIB_HAVE_DMABUF
+	size_t aligned_offset;
 	size_t page_offset;
 	size_t map_length;
 	off_t map_offset;
@@ -67,7 +68,10 @@ static int dmabuf_map(struct uib_mr *mr)
 	if (mr->length > SIZE_MAX - page_offset)
 		return -EOVERFLOW;
 	map_length = mr->length + page_offset;
-	map_offset = (off_t)(mr->dmabuf_offset - page_offset);
+	aligned_offset = mr->dmabuf_offset - page_offset;
+	map_offset = (off_t)aligned_offset;
+	if (map_offset < 0 || (uintmax_t)map_offset != (uintmax_t)aligned_offset)
+		return -EOVERFLOW;
 	mapping = mmap(NULL, map_length, PROT_READ | PROT_WRITE, MAP_SHARED,
 		       mr->dmabuf_fd, map_offset);
 	if (mapping == MAP_FAILED)
@@ -150,6 +154,10 @@ static struct uib_mr *reg_mr_dmabuf(struct uib_pd *pd, int dmabuf_fd,
 		errno = EINVAL;
 		return NULL;
 	}
+	if (offset > SIZE_MAX - length) {
+		errno = EOVERFLOW;
+		return NULL;
+	}
 	if (flags & ~(UIB_DMABUF_ALLOW_MMAP | UIB_DMABUF_ALLOW_DEVICE |
 		      UIB_DMABUF_REQUIRE_ZEROCOPY)) {
 		errno = EINVAL;
@@ -194,13 +202,15 @@ static struct uib_mr *reg_mr_dmabuf(struct uib_pd *pd, int dmabuf_fd,
 		rc = dmabuf_map(mr);
 
 	if ((flags & UIB_DMABUF_ALLOW_DEVICE) && pd->ctx && pd->ctx->tops &&
+	    pd->ctx->tops->mr_capabilities &&
 	    pd->ctx->tops->mr_register &&
 	    !pd->ctx->tops->mr_register(pd->ctx, mr)) {
 		mr->capabilities |= pd->ctx->tops->mr_capabilities;
 		rc = 0;
 	}
 	if (!(mr->capabilities & (UIB_MR_CAP_CPU_MAPPED |
-				 UIB_MR_CAP_DEVICE_RX))) {
+				 UIB_MR_CAP_DEVICE_RX |
+				 UIB_MR_CAP_DEVICE_TX))) {
 		rc = -EOPNOTSUPP;
 		goto err_backend;
 	}

@@ -14,8 +14,15 @@ UIB keeps these independent and optional:
     backend requires an explicit next-hop MAC in UIB_AFXDP_PEER_MAC and does
     not perform route or neighbor discovery.
   * Netdev device-memory TCP is a separate hardware facility. The current
-    queue-binding setup is present, but UIB does not advertise device RX/TX
-    until framed protocol headers can be handled outside opaque GPU memory.
+    queue-binding helper is present, but UIB does not activate it or advertise
+    device RX/TX until framed protocol headers can be handled outside opaque
+    GPU memory. Registration hooks with no advertised device capability are
+    never called, preventing an unusable binding from consuming an RX queue.
+
+None of these mechanisms currently performs direct placement from the NIC into
+an arbitrary verbs receive SGE. AF_XDP zero-copy ends at UMEM; socket receive
+and protocol placement still copy. `zerocopy_calls` and `zerocopy_bytes` count
+kernel zero-copy requests, not proven copy-free application payloads.
 
 DMA-BUF registration
 --------------------
@@ -66,14 +73,23 @@ the standard DMA-BUF fd produced by those stacks.
 Socket zero-copy semantics
 --------------------------
 
-The UDP io_uring and framed TCP transports enable socket zero-copy when
-requested. UDP submits eligible packets with IORING_OP_SENDMSG_ZC and keeps
-each packet alive until its notification CQE; TCP uses MSG_ZEROCOPY and
-consumes the error-queue completion before releasing the packet buffer.
-Statistics are available through uib_zerocopy_get_stats(). Linux may accept
-MSG_ZEROCOPY but report
-SO_EE_CODE_ZEROCOPY_COPIED; this is counted as a deferred copy. Loopback does
-this by design, so zero-copy is commonly slower in local smoke tests.
+The UDP io_uring and framed TCP transports enable socket transmit zero-copy
+when requested. UDP submits eligible packets with IORING_OP_SENDMSG_ZC, asks
+Linux for `IORING_SEND_ZC_REPORT_USAGE`, and keeps each packet alive until its
+notification CQE. A notification carrying `IORING_NOTIF_USAGE_ZC_COPIED`
+increments `deferred_copies`. TCP and synchronous UDP use MSG_ZEROCOPY and
+consume the error-queue completion before releasing the packet buffer;
+SO_EE_CODE_ZEROCOPY_COPIED increments the same counter. Statistics are
+available through uib_zerocopy_get_stats(). Loopback reports copied fallback
+by design, so zero-copy is commonly slower in local smoke tests.
+
+Ordinary UDP receive uses io_uring multishot provided buffers or a batch of
+one-shot receive buffers. These remove receive submissions and allocation from
+the hot path, but the kernel still copies into those buffers. AF_XDP native
+mode lets the NIC DMA into UMEM, after which UIB parses the packet and copies
+the payload into the selected posted receive SGE. TCP receive similarly copies
+through its framing buffer. Consequently UIB_MR_CAP_DEVICE_RX and
+UIB_MR_CAP_DEVICE_TX are not advertised by any current transport.
 
 UIB_ZEROCOPY=auto uses a 10 KiB threshold, matching the kernel guidance that
 small sends rarely recover the completion-processing cost. `on` and `required`
@@ -100,12 +116,14 @@ It produces:
 `make benchmark-report` runs that matrix and additionally creates
 `benchmark.txt`, an aligned ASCII report, and `benchmark.md`, a GitHub-ready
 Markdown report. Both include actual values and percentage changes. Every row
-has unpinned and CPU-pinned variants; `UIB_BENCH_PIN_CPU` overrides the first
-CPU allowed by the current cpuset. The matrix also measures 1500-, 4096-, and
-8192-byte path MTUs and keeps comparisons within the same MTU. RoCEv2 rows at
-8192 bytes are reported as unsupported because the protocol's maximum path MTU
-is 4096 bytes. Set `UIB_BENCH_OUTPUT` to select the report directory.
-Unexpected matrix failures make the target fail.
+shows its actual operation window and has unpinned and CPU-pinned variants;
+`UIB_BENCH_PIN_CPU` overrides the first CPU allowed by the current cpuset. The
+dummy UDP protocol has ordering but intentionally has no ACK-based flow
+control, so the matrix limits its burst to 16 operations. The matrix also
+measures 1500-, 4096-, and 8192-byte path MTUs and keeps comparisons within the
+same MTU. RoCEv2 rows at 8192 bytes are reported as unsupported because the
+protocol's maximum path MTU is 4096 bytes. Set `UIB_BENCH_OUTPUT` to select the
+report directory. Unexpected matrix failures make the target fail.
 
 Results are measurements, not an assertion that zero-copy is faster. Message
 size, NIC, IOMMU, exporter, NUMA placement and deferred-copy behavior determine

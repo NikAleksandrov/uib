@@ -741,10 +741,11 @@ static void submit_tx(struct uib_udp_backend *be)
 			break;
 		}
 #ifdef UIB_HAVE_ZEROCOPY
-		if (tx->zerocopy)
+		if (tx->zerocopy) {
 			io_uring_prep_sendmsg_zc(sqe, ring_socket(be),
 						   &tx->message, MSG_NOSIGNAL);
-		else
+			sqe->ioprio |= IORING_SEND_ZC_REPORT_USAGE;
+		} else
 #endif
 			io_uring_prep_sendmsg(sqe, ring_socket(be),
 						  &tx->message, MSG_NOSIGNAL);
@@ -795,6 +796,9 @@ static void complete_tx(struct uib_context *ctx, struct uib_udp_tx *tx,
 	if (cqe->flags & IORING_CQE_F_NOTIF) {
 		__atomic_fetch_add(&ctx->zerocopy.completions, 1,
 				   __ATOMIC_RELAXED);
+		if ((uint32_t)cqe->res & IORING_NOTIF_USAGE_ZC_COPIED)
+			__atomic_fetch_add(&ctx->zerocopy.deferred_copies, 1,
+					   __ATOMIC_RELAXED);
 		inflight_remove(be, tx);
 		free_tx(be, tx);
 		return;

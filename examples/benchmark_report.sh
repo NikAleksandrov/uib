@@ -138,10 +138,10 @@ fi
 	}' "$ib_write_bw"
 
 	printf '\n## Native UIB stress benchmark\n\n'
-	printf '%s' '| Protocol | Transport | Memory | MTU | Affinity | Send mode | Gbit/s | '
+	printf '%s' '| Protocol | Transport | Memory | MTU | Window | Affinity | Send mode | Gbit/s | '
 	printf '%s' 'MiB/s | CPU s | CPU % | Average us | p50 us | p95 us | '
 	printf '%s\n' 'p99 us | Deferred/requests |'
-	printf '|---|---|---|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n'
+	printf '|---|---|---|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n'
 	awk -F, 'NR > 1 {
 		if ($4 == "udp-io-uring")
 			transport = "UDP async";
@@ -157,10 +157,10 @@ fi
 			mode = "`SENDMSG_ZC`";
 		else
 			mode = "`MSG_ZEROCOPY`";
-		format = "| %s | %s | %s | %s | %s | %s | %.3f | %.1f | %.3f | " \
+		format = "| %s | %s | %s | %s | %s | %s | %s | %.3f | %.1f | %.3f | " \
 			"%.1f | %.1f | %.1f | %.1f | %.1f | %s/%s |\n";
 		printf format,
-			$3, transport, $5, $26, $27, mode, $14, $15, $11, $16,
+			$3, transport, $5, $26, $9, $27, mode, $14, $15, $11, $16,
 			$18 / 1000, $19 / 1000, $20 / 1000, $21 / 1000,
 			$25, $23;
 	}' "$results"

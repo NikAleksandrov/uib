@@ -96,6 +96,11 @@ int main(void)
 				    UIB_DMABUF_ALLOW_MMAP |
 				    UIB_DMABUF_REQUIRE_ZEROCOPY) &&
 	      errno == EOPNOTSUPP);
+	check("dmabuf.offset_overflow",
+	      !uib_reg_mr_dmabuf_ex(pd, fd, SIZE_MAX - 1024, 4096,
+				    UIB_ACCESS_REMOTE_WRITE,
+				    UIB_DMABUF_ALLOW_MMAP) &&
+	      errno == EOVERFLOW);
 	if (!pipe(pipefd)) {
 		check("dmabuf.nonmappable",
 		      !uib_reg_mr_dmabuf_ex(pd, pipefd[0], 0, 4096,
