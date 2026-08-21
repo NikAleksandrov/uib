@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: Linux-OpenIB */
+/* SPDX-License-Identifier: Apache-2.0 AND Linux-OpenIB */
 /*
  * RoCEv2 ICRC pseudo-header handling is adapted from Linux RXE.
  * Copyright (c) 2016 Mellanox Technologies Ltd. All rights reserved.

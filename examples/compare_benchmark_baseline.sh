@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 set -eu
 
 baseline=${1:?usage: compare_benchmark_baseline.sh BASELINE.md OUTPUT_DIRECTORY}

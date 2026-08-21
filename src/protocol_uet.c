@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * Wire formats and transport behavior follow the Ultra Ethernet
  * Specification 1.0.2 published by the Ultra Ethernet Consortium.

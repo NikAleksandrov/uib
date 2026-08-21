@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef UIB_CQ_H
 #define UIB_CQ_H
 

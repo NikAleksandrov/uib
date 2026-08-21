@@ -243,3 +243,11 @@ MTU-sized response-data packets, SEND with header data, RDMA WRITE/READ, the
 required 8/16/32/64-bit signed and unsigned atomic operation matrix, exact-once
 fetching atomics, NSCC, and oblivious/path-aware entropy multipath with timeout
 failover. ROD and UUD are intentionally not implemented.
+
+License
+-------
+
+UIB's original code is licensed under the [Apache License 2.0](LICENSE). The
+source repository is a mixed-license distribution: files incorporating
+separately licensed material identify their terms with SPDX headers. See the
+[license map](LICENSES/README.md), [NOTICE](NOTICE), and [AUTHORS](AUTHORS).

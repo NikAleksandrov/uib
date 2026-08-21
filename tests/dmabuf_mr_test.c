@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+/* SPDX-License-Identifier: Apache-2.0 */
 /*
  * Unit test for DMA-BUF MR data access. A memfd exercises the system-memory
  * mapping path without special hardware. A pipe models a non-mappable exporter

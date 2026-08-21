@@ -1,7 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+
 CC      ?= cc
 AR      ?= ar
 PREFIX  ?= /usr/local
 MANDIR  ?= $(PREFIX)/share/man
+DOCDIR  ?= $(PREFIX)/share/doc/uib
 
 -include config.mk
 
@@ -104,6 +107,9 @@ all: $(LIB_TARGETS)
 
 docs:
 	python3 $(DOC_GENERATOR)
+
+license-check:
+	./scripts/check-licenses.sh
 
 docs-check:
 	python3 $(DOC_GENERATOR) --check
@@ -405,7 +411,7 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 	UIB_PROTOCOL=uet UIB_UET_OPTIMIZED=medium ./$(TEST_BIN)
 	UIB_PROTOCOL=uet UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 
-test: shared-abi-test $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
+test: shared-abi-test license-check $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
 	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(REORDER_TEST) \
 	$(TRANSPORT_TEST) $(QP_SCALE_TEST) $(PSN_INDEX_TEST)
@@ -467,6 +473,8 @@ install: $(LIB_TARGETS) $(MAN_PAGE)
 	install -d $(DESTDIR)$(PREFIX)/lib
 	install -d $(DESTDIR)$(PREFIX)/include/uib
 	install -d $(DESTDIR)$(MANDIR)/man7
+	install -d $(DESTDIR)$(DOCDIR)
+	install -d $(DESTDIR)$(DOCDIR)/LICENSES
 	install -m 644 $(LIB_STATIC) $(DESTDIR)$(PREFIX)/lib/
 	install -m 755 $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/
 	ln -sfn $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/$(LIB_SHARED_SONAME)
@@ -476,6 +484,9 @@ ifeq ($(ENABLE_PROVIDER),1)
 endif
 	install -m 644 include/uib/*.h $(DESTDIR)$(PREFIX)/include/uib/
 	install -m 644 $(MAN_PAGE) $(DESTDIR)$(MANDIR)/man7/
+	install -m 644 LICENSE NOTICE AUTHORS $(DESTDIR)$(DOCDIR)/
+	install -m 644 LICENSES/*.txt $(DESTDIR)$(DOCDIR)/LICENSES/
+	install -m 644 LICENSES/README.md $(DESTDIR)$(DOCDIR)/LICENSES/
 
 clean:
 	$(MAKE) -C examples clean
@@ -489,7 +500,7 @@ clean:
 		$(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) $(PROVIDER_DISPATCH_BENCH) \
 		$(PROVIDER_WR_BENCH) $(PSN_INDEX_TEST)
 
-.PHONY: shared-abi-test all docs docs-check examples clean install test rxe-test-build \
+.PHONY: shared-abi-test all license-check docs docs-check examples clean install test rxe-test-build \
 	rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \
 	uet-congestion-test uet-multipath-test examples-test \

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef UIB_PROTOCOL_H
 #define UIB_PROTOCOL_H
 

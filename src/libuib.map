@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
 UIB_0.1 {
 	global:
 		uib_ack_cq_events;

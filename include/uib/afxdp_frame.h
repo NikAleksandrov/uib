@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef UIB_AFXDP_FRAME_H
 #define UIB_AFXDP_FRAME_H
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef UIB_VERBS_H
 #define UIB_VERBS_H
 

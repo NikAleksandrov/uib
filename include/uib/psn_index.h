@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 #ifndef UIB_PSN_INDEX_H
 #define UIB_PSN_INDEX_H
 

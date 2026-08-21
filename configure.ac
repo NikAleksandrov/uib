@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 AC_PREREQ([2.69])
 AC_INIT([uib], [0.1], [razor@blackwall.org])
 AC_CONFIG_SRCDIR([src/context.c])

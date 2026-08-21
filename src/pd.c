@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 AND Unlicense */
 #include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>

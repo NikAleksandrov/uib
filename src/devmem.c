@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <errno.h>
 #include <net/if.h>
 #include <stdint.h>

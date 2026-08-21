@@ -1,0 +1,26 @@
+UIB
+Copyright 2026 Nikolay Aleksandrov
+
+The generated configure script was produced by GNU Autoconf and retains the
+Free Software Foundation permission notice embedded in that file.
+
+The RoCEv2 ICRC pseudo-header handling in src/bth.c is adapted from Linux RXE
+under the Linux-OpenIB license. The original code is copyright 2016 Mellanox
+Technologies Ltd. and copyright 2015 System Fabric Works, Inc. See
+LICENSES/Linux-OpenIB.txt.
+
+The lowbias32 integer mixer used for registered-memory indexing was published
+by Chris Wellons in Hash Function Prospector and released under the Unlicense.
+See LICENSES/Unlicense.txt and https://github.com/skeeto/hash-prospector.
+
+The min_t and max_t helper interface follows Linux kernel minmax.h. UIB uses
+an independently expressed userspace implementation under Apache-2.0.
+
+The RoCEv2 implementation follows the InfiniBand Architecture Specification
+and its RoCEv2 annex published by the InfiniBand Trade Association.
+
+The UET wire protocol and NSCC implementation are based on selected mechanisms described
+in Ultra Ethernet Specification 1.0.2. UIB is an independent project, is
+not affiliated with or certified by the Ultra Ethernet Consortium, and does
+not claim complete specification conformance or interoperability with
+third-party UET implementations.

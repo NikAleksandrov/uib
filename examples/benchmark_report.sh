@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 set -eu
 
 output=${1:?usage: benchmark_report.sh OUTPUT_DIRECTORY}
