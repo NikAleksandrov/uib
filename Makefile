@@ -182,6 +182,9 @@ MR_SCALE_TEST := tests/mr_scale_test
 PROVIDER_DISPATCH_BENCH := tests/provider_dispatch_bench
 PROVIDER_WR_BENCH := tests/provider_wr_bench
 PSN_INDEX_TEST := tests/psn_index_test
+HOST_ZC_TEST := tests/host_zc_test
+HOST_ZC_E2E_TEST := tests/host_zc_e2e_test
+HOST_ZC_BENCH := tests/host_zc_bench
 ifeq ($(HAVE_IBVERBS),1)
 SCALING_PROVIDER_BENCH := $(PROVIDER_DISPATCH_BENCH)
 SCALING_PROVIDER_WR_BENCH := $(PROVIDER_WR_BENCH)
@@ -204,6 +207,9 @@ DEPS += $(MR_SCALE_TEST).d
 DEPS += $(PROVIDER_DISPATCH_BENCH).d
 DEPS += $(PROVIDER_WR_BENCH).d
 DEPS += $(PSN_INDEX_TEST).d
+DEPS += $(HOST_ZC_TEST).d
+DEPS += $(HOST_ZC_E2E_TEST).d
+DEPS += $(HOST_ZC_BENCH).d
 
 $(TEST_BIN): tests/loopback.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
@@ -269,6 +275,21 @@ $(PROVIDER_WR_BENCH): tests/provider_wr_bench.c $(LIB_PROVIDER)
 
 $(PSN_INDEX_TEST): tests/psn_index_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+$(HOST_ZC_TEST): tests/host_zc_test.c $(LIB_STATIC)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_STATIC) $(LDFLAGS) $(LDLIBS)
+
+$(HOST_ZC_E2E_TEST): tests/host_zc_e2e_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+$(HOST_ZC_BENCH): tests/host_zc_bench.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+host-zc-benchmark: $(HOST_ZC_BENCH)
+	./$(HOST_ZC_BENCH)
+
+host-zc-virtme-test:
+	./tests/run_host_zc_virtme.sh
 
 $(REORDER_TEST): tests/reorder_test.c $(LIB_STATIC)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_STATIC) $(LDFLAGS) $(LDLIBS)
@@ -443,7 +464,8 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 test: shared-abi-test license-check $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
 	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(REORDER_TEST) \
-	$(TRANSPORT_TEST) $(QP_SCALE_TEST) $(PSN_INDEX_TEST)
+	$(TRANSPORT_TEST) $(QP_SCALE_TEST) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
+	$(HOST_ZC_E2E_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
 	./$(DMABUF_TEST)
@@ -457,6 +479,8 @@ test: shared-abi-test license-check $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(B
 	./$(TRANSPORT_TEST)
 	./$(QP_SCALE_TEST)
 	./$(PSN_INDEX_TEST)
+	./$(HOST_ZC_TEST)
+	./$(HOST_ZC_E2E_TEST)
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	UIB_TRANSPORT_MODE=udp-sync ./$(TEST_BIN)
 	UIB_TRANSPORT_MODE=udp-io-uring ./$(TEST_BIN)
@@ -529,7 +553,8 @@ clean:
 		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST) \
 		$(REORDER_TEST) $(TRANSPORT_TEST) $(QP_SCALE_TEST) \
 		$(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) $(PROVIDER_DISPATCH_BENCH) \
-		$(PROVIDER_WR_BENCH) $(PSN_INDEX_TEST)
+		$(PROVIDER_WR_BENCH) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
+		$(HOST_ZC_E2E_TEST) $(HOST_ZC_BENCH)
 
 .PHONY: shared-abi-test all license-check docs docs-check examples clean install test rxe-test-build \
 	rxe-test rxe-tools-test \
@@ -543,6 +568,8 @@ clean:
 	provider-dmabuf-test provider-cq-event-test \
 	gpu-dmabuf-test external-dmabuf-test remote-benchmark-test \
 	namespace-benchmark-test guest-test \
-	optional-features-test virtme-test configure-test test-all
+	optional-features-test virtme-test configure-test test-all \
+	host-zc-benchmark host-zc-virtme-test
+
 
 -include $(DEPS)
