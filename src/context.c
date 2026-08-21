@@ -7,13 +7,14 @@
 #include <sys/socket.h>
 
 #include "uib/context.h"
+#include "uib/env.h"
 #include "uib/qp.h"
 #include "uib/transport.h"
 #include "uib/protocol.h"
 
 struct uib_context *uib_open_device(const char *bind_ip, uint16_t bind_port)
 {
-	const char *protocol = getenv("UIB_PROTOCOL");
+	const char *protocol = getenv(UIB_ENV_PROTOCOL);
 
 	return uib_open_device_protocol(bind_ip, bind_port, protocol);
 }

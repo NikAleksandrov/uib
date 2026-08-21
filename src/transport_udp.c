@@ -15,6 +15,7 @@
 
 #include "uib/transport.h"
 #include "uib/context.h"
+#include "uib/env.h"
 #include "uib/protocol.h"
 #include "uib/afxdp_frame.h"
 
@@ -632,7 +633,7 @@ seen:
 
 static int setup_rx(struct uib_udp_backend *be)
 {
-	const char *mode = getenv("UIB_URING_RX_MODE");
+	const char *mode = getenv(UIB_ENV_URING_RX_MODE);
 	int rc;
 
 	if (mode && !strcmp(mode, "batch"))
@@ -753,7 +754,7 @@ static int parse_batch_size(const char *name, unsigned int *value)
 
 static int setup_socket(struct uib_context *ctx, struct uib_udp_backend *be)
 {
-	const char *udp_mode = getenv("UIB_UDP_MODE");
+	const char *udp_mode = getenv(UIB_ENV_UDP_MODE);
 	int socket_buffer = UIB_SOCKET_BUFFER_SIZE;
 	int allow_raw;
 
@@ -828,7 +829,7 @@ static void cleanup_backend(struct uib_udp_backend *be)
 
 static int udp_init_common(struct uib_context *ctx, int asynchronous)
 {
-	const char *drop_tx = getenv("UIB_TEST_DROP_TX");
+	const char *drop_tx = getenv(UIB_ENV_TEST_DROP_TX);
 	struct uib_udp_backend *be;
 	int thread_rc;
 	int rc;
@@ -844,11 +845,11 @@ static int udp_init_common(struct uib_context *ctx, int asynchronous)
 	be->rx_batch = UIB_URING_BATCH_DEFAULT;
 	if (asynchronous)
 		be->tx_batch = UIB_URING_TX_BATCH_DEFAULT;
-	rc = parse_batch_size("UIB_URING_RX_BATCH", &be->rx_batch);
+	rc = parse_batch_size(UIB_ENV_URING_RX_BATCH, &be->rx_batch);
 	if (rc < 0)
 		goto error;
 	if (asynchronous) {
-		rc = parse_batch_size("UIB_URING_TX_BATCH", &be->tx_batch);
+		rc = parse_batch_size(UIB_ENV_URING_TX_BATCH, &be->tx_batch);
 		if (rc < 0)
 			goto error;
 	}

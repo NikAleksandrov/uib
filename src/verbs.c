@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 
 #include "uib/verbs.h"
+#include "uib/env.h"
 #include "uib/protocol.h"
 #include "uib/transport.h"
 
@@ -15,7 +16,7 @@ struct uibv_device **uibv_get_device_list(int *num)
 {
 	struct ifaddrs *ifa, *cur;
 	uint16_t protocol_port =
-		uib_protocol_default_port(getenv("UIB_PROTOCOL"));
+		uib_protocol_default_port(getenv(UIB_ENV_PROTOCOL));
 
 	if (getifaddrs(&ifa) != 0)
 		return NULL;

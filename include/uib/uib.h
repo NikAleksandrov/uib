@@ -1,6 +1,7 @@
 #ifndef UIB_H
 #define UIB_H
 
+#include "uib/env.h"
 #include "uib/types.h"
 #include "uib/transport_ops.h"
 #include "uib/protocol.h"

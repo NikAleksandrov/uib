@@ -5,6 +5,7 @@
 
 #include "uib/transport.h"
 #include "uib/context.h"
+#include "uib/env.h"
 #include "uib/qp.h"
 #include "uib/protocol.h"
 #include "utils.h"
@@ -61,7 +62,7 @@ static const char *mode_name(enum uib_transport_mode m)
 
 enum uib_transport_mode uib_transport_mode_from_env(void)
 {
-	const char *s = getenv("UIB_TRANSPORT_MODE");
+	const char *s = getenv(UIB_ENV_TRANSPORT_MODE);
 
 	if (!s || !*s)
 		return UIB_MODE_UDP_IO_URING;

@@ -10,6 +10,7 @@
 #endif
 
 #include "uib/context.h"
+#include "uib/env.h"
 #include "uib/zerocopy.h"
 
 #define UIB_ZEROCOPY_DEFAULT_THRESHOLD (10U * 1024U)
@@ -32,7 +33,7 @@ static size_t message_length(const struct msghdr *message)
 
 static enum uib_zerocopy_mode mode_from_env(void)
 {
-	const char *value = getenv("UIB_ZEROCOPY");
+	const char *value = getenv(UIB_ENV_ZEROCOPY);
 
 	if (!value || !*value || !strcmp(value, "auto"))
 		return UIB_ZEROCOPY_AUTO;
@@ -47,7 +48,7 @@ static enum uib_zerocopy_mode mode_from_env(void)
 
 void uib_zerocopy_init(struct uib_context *ctx)
 {
-	const char *threshold = getenv("UIB_ZEROCOPY_THRESHOLD");
+	const char *threshold = getenv(UIB_ENV_ZEROCOPY_THRESHOLD);
 	unsigned long parsed;
 	char *end = NULL;
 

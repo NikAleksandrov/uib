@@ -14,6 +14,7 @@
 #include "uib/protocol.h"
 #include "uib/qp.h"
 #include "uib/context.h"
+#include "uib/env.h"
 #include "uib/transport.h"
 #include "uib/mr.h"
 #include "utils.h"
@@ -129,7 +130,7 @@ static void uet_debug(struct uib_qp *qp, const char *format, ...)
 {
 	va_list args;
 
-	if (!getenv("UIB_UET_DEBUG"))
+	if (!getenv(UIB_ENV_UET_DEBUG))
 		return;
 	fprintf(stderr, "uib: uet qpn %u: ", qp->qp_num);
 	va_start(args, format);
@@ -333,7 +334,7 @@ static void uet_nscc_init(struct uib_qp *qp, struct uib_uet_qp *uet)
 	const char *cc;
 
 	uib_uet_nscc_config_default(&config, qp->path_mtu + 40);
-	cc = getenv("UIB_UET_NSCC_MAX_WND");
+	cc = getenv(UIB_ENV_UET_NSCC_MAX_WND);
 	if (cc && strtoull(cc, NULL, 0) >= config.mtu) {
 		config.max_wnd = (uint32_t)strtoull(cc, NULL, 0);
 		config.bdp = config.max_wnd;
@@ -358,7 +359,7 @@ static int uet_qp_init(struct uib_qp *qp)
 	uet->next_msg_id = 1;
 	uet->session.pid_on_fep = (uint16_t)qp->qp_num;
 	uet->optimized_mode = UIB_UET_OPTIMIZED_AUTO;
-	optimized = getenv("UIB_UET_OPTIMIZED");
+	optimized = getenv(UIB_ENV_UET_OPTIMIZED);
 	if (optimized && !strcmp(optimized, "off"))
 		uet->optimized_mode = UIB_UET_OPTIMIZED_OFF;
 	else if (optimized && !strcmp(optimized, "small"))
@@ -369,14 +370,14 @@ static int uet_qp_init(struct uib_qp *qp)
 	uet->multipath.path_count = UIB_UET_MAX_PATHS;
 	uet->multipath.ecn_hold_ns = UIB_UET_RTX_NS;
 	uet->multipath.failure_hold_ns = UIB_UET_DEFAULT_FAILURE_HOLD_NS;
-	multipath = getenv("UIB_UET_MULTIPATH");
+	multipath = getenv(UIB_ENV_UET_MULTIPATH);
 	if (multipath && !strcmp(multipath, "oblivious"))
 		uet->multipath.mode = UIB_UET_MULTIPATH_OBLIVIOUS;
 	else if (multipath && !strcmp(multipath, "path-aware"))
 		uet->multipath.mode = UIB_UET_MULTIPATH_PATH_AWARE;
 	uet->path_cursor = (uint16_t)(qp->qp_num % UIB_UET_MAX_PATHS);
 	uet->previous_path = UINT16_MAX;
-	cc = getenv("UIB_UET_CC");
+	cc = getenv(UIB_ENV_UET_CC);
 	uet->nscc_enabled = !cc || strcmp(cc, "none");
 	uet_nscc_init(qp, uet);
 	qp->protocol_private = uet;

@@ -13,6 +13,7 @@
 
 #include "uib/transport.h"
 #include "uib/context.h"
+#include "uib/env.h"
 #include "uib/protocol.h"
 #include "uib/mr.h"
 #include "uib/devmem.h"
@@ -532,8 +533,8 @@ static void tcp_fini(struct uib_context *ctx)
 
 static int tcp_mr_register(struct uib_context *ctx, struct uib_mr *mr)
 {
-	const char *ifn = getenv("UIB_DEVMEM_IFACE");
-	const char *qs  = getenv("UIB_DEVMEM_QUEUE");
+	const char *ifn = getenv(UIB_ENV_DEVMEM_IFACE);
+	const char *qs  = getenv(UIB_ENV_DEVMEM_QUEUE);
 	struct uib_devmem_binding *b;
 	int rc;
 

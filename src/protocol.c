@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "uib/protocol.h"
+#include "uib/env.h"
 
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 
@@ -28,7 +29,7 @@ const struct uib_protocol_ops *uib_protocol_find(const char *name)
 
 const struct uib_protocol_ops *uib_protocol_from_env(void)
 {
-	return uib_protocol_find(getenv("UIB_PROTOCOL"));
+	return uib_protocol_find(getenv(UIB_ENV_PROTOCOL));
 }
 
 uint16_t uib_protocol_default_port(const char *name)

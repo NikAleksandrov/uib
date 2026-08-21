@@ -1,0 +1,8 @@
+{
+  "markdown": {
+    "environment_table_header": "| Variable | Default | Accepted values | Description | Example |",
+    "environment_table_rule": "|---|---|---|---|---|",
+    "api_table_header": "| Function | Declaration | Description | Example |",
+    "api_table_rule": "|---|---|---|---|"
+  }
+}

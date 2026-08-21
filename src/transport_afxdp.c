@@ -6,6 +6,7 @@
 
 #include "uib/transport.h"
 #include "uib/context.h"
+#include "uib/env.h"
 #include "uib/protocol.h"
 #include "uib/afxdp_frame.h"
 
@@ -108,7 +109,7 @@ static void reap_completions(struct uib_afxdp_backend *be)
 
 static int afxdp_probe(void)
 {
-	const char *ifn = getenv("UIB_AFXDP_IFACE");
+	const char *ifn = getenv(UIB_ENV_AFXDP_IFACE);
 
 	return (ifn && *ifn) ? 1 : 0;
 }
@@ -318,9 +319,9 @@ static int afxdp_init(struct uib_context *ctx)
 		.xdp_flags = 0,
 		.bind_flags = XDP_USE_NEED_WAKEUP,
 	};
-	const char *ifn = getenv("UIB_AFXDP_IFACE");
-	const char *qs  = getenv("UIB_AFXDP_QUEUE");
-	const char *pm  = getenv("UIB_AFXDP_PEER_MAC");
+	const char *ifn = getenv(UIB_ENV_AFXDP_IFACE);
+	const char *qs  = getenv(UIB_ENV_AFXDP_QUEUE);
+	const char *pm  = getenv(UIB_ENV_AFXDP_PEER_MAC);
 	uint64_t umem_sz = (uint64_t)UIB_AFXDP_NUM_FRAMES * UIB_AFXDP_FRAME_SIZE;
 	uint32_t idx = 0, i;
 	int rc;

@@ -542,15 +542,16 @@ const char *ibv_get_device_name(struct ibv_device *dev)
 
 static const char *bind_ip_from_env(void)
 {
-	const char *ip = getenv("UIB_BIND_IP");
+	const char *ip = getenv(UIB_ENV_BIND_IP);
 
 	return ip && *ip ? ip : "0.0.0.0";
 }
 
 static uint16_t bind_port_from_env(void)
 {
-	const char *p = getenv("UIB_BIND_PORT");
-	uint16_t default_port = uib_protocol_default_port(getenv("UIB_PROTOCOL"));
+	const char *p = getenv(UIB_ENV_BIND_PORT);
+	uint16_t default_port =
+		uib_protocol_default_port(getenv(UIB_ENV_PROTOCOL));
 
 	if (!p || !*p)
 		return default_port;

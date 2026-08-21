@@ -91,6 +91,7 @@ LIB_SHARED_SONAME := libuib.so.0
 LIB_SHARED_REAL := libuib.so.0.1.0
 LIB_MAP      := src/libuib.map
 LIB_PROVIDER := libuibv.so
+DOC_GENERATOR := scripts/generate-docs.py
 
 LIB_TARGETS := $(LIB_STATIC) $(LIB_SHARED)
 ifeq ($(ENABLE_PROVIDER),1)
@@ -98,6 +99,12 @@ ifeq ($(ENABLE_PROVIDER),1)
 endif
 
 all: $(LIB_TARGETS)
+
+docs:
+	python3 $(DOC_GENERATOR)
+
+docs-check:
+	python3 $(DOC_GENERATOR) --check
 
 examples: all
 	$(MAKE) -C examples HAVE_IBVERBS=$(HAVE_IBVERBS) \
@@ -478,7 +485,8 @@ clean:
 		$(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) $(PROVIDER_DISPATCH_BENCH) \
 		$(PROVIDER_WR_BENCH) $(PSN_INDEX_TEST)
 
-.PHONY: shared-abi-test all examples clean install test rxe-test-build rxe-test rxe-tools-test \
+.PHONY: shared-abi-test all docs docs-check examples clean install test rxe-test-build \
+	rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \
 	uet-congestion-test uet-multipath-test examples-test \
 	examples-stress-test sync-transport-test dmabuf-e2e-test \
