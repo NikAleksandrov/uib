@@ -19,10 +19,12 @@ UIB keeps these independent and optional:
     GPU memory. Registration hooks with no advertised device capability are
     never called, preventing an unusable binding from consuming an RX queue.
 
-None of these mechanisms currently performs direct placement from the NIC into
-an arbitrary verbs receive SGE. AF_XDP zero-copy ends at UMEM; socket receive
-and protocol placement still copy. `zerocopy_calls` and `zerocopy_bytes` count
-kernel zero-copy requests, not proven copy-free application payloads.
+None of these mechanisms performs direct placement into an arbitrary verbs
+receive SGE. AF_XDP zero-copy ends at UMEM. The separate provider-owned host
+receive API can return TCP ZCRX arena segments without a payload copy because
+the application accepts the address chosen by the kernel/NIC and explicitly
+returns it. `zerocopy_calls` and `zerocopy_bytes` count kernel zero-copy
+requests, not proven copy-free application payloads.
 
 DMA-BUF registration
 --------------------
@@ -90,6 +92,52 @@ mode lets the NIC DMA into UMEM, after which UIB parses the packet and copies
 the payload into the selected posted receive SGE. TCP receive similarly copies
 through its framing buffer. Consequently UIB_MR_CAP_DEVICE_RX and
 UIB_MR_CAP_DEVICE_TX are not advertised by any current transport.
+
+Provider-owned host RX loans
+----------------------------
+
+uib_post_recv_loan() posts capacity rather than a caller-selected address. A
+receive completion is converted with uib_wc_take_rx_loan(). UIB_RX_LOAN_COPIED
+has one contiguous `data` range. UIB_RX_LOAN_DIRECT has one or more `segments`;
+`data` is also set when there is exactly one segment. The application must call
+uib_release_rx_loan(), or use uib_repost_rx_loan() to recycle the same fallback
+registration without allocation, pinning, or MR-table work.
+
+The tcp-devmem backend optionally registers a TCP io_uring ZCRX arena. Set
+UIB_HOST_ZC_IFACE to a header/data-split interface, UIB_HOST_ZC_QUEUE to the
+flow-steered RX queue, and UIB_HOST_ZC=auto or required. The kernel currently
+requires NIC header/data split, RSS separation, flow steering, and sufficient
+privilege to bind the queue. `auto` preserves the copied TCP fallback;
+`required` rejects the context if the queue cannot be registered.
+
+When a ZCRX completion contains complete length-prefixed UIB frames, their
+payloads are loaned directly. Coalesced frames share a reference-counted arena
+buffer, and fragmented RoCEv2/UET SENDs become an iovec loan. If TCP splits a
+UIB frame across ZCRX completions, UIB copies that frame into the loan's
+preallocated fallback because a single contiguous frame header must be parsed
+before QP demultiplexing. Standard verbs receives remain copied: their ABI
+requires data at the already posted SGE, while the kernel chooses a ZCRX arena
+address before UIB parses the packet.
+
+`make host-zc-benchmark` prints actual nanoseconds per ordinary receive
+post/completion and recycled loan. `tests/host_zc_e2e_test` transfers 8 KiB
+messages through RoCEv2, UET, and dummy; `tests/protocol_test` verifies direct
+single- and multi-segment ownership and delayed recycling. On systems without
+a suitable ZCRX kernel/NIC, `tests/host_zc_test` reports the runtime probe as a
+skip while still validating the compile-time ABI and fallback behavior.
+
+One five-run local sample on Linux 6.12.100 and an AMD Ryzen 9 3950X produced:
+
+| Control path | Median ns/op | Observed ns/op range |
+|---|---:|---:|
+| Ordinary post, complete, poll | 46.96 | 43.05-64.33 |
+| Provider loan repost, complete, poll | 62.20 | 53.19-79.93 |
+| Paired loan premium | 15.60 | 2.81-23.37 |
+
+These are actual control-path values, not a claimed payload-throughput gain.
+The available kernel is older than io_uring ZCRX, so the runtime ZCRX probe
+skipped and no kernel-to-application copy-avoidance speedup is reported. A
+ZCRX-capable NIC/kernel measurement must be made on the target hardware.
 
 UIB_ZEROCOPY=auto uses a 10 KiB threshold, matching the kernel guidance that
 small sends rarely recover the completion-processing cost. `on` and `required`

@@ -47,6 +47,15 @@ when the relevant context, transport, benchmark, or test is created.
 | <code>UIB_DEVMEM_IFACE</code> | Unset; device-memory queue binding is disabled. | A local network-interface name. | Select the netdev whose RX queue receives DMA-BUF binding. | <code>UIB_DEVMEM_IFACE=eth0 UIB_TRANSPORT_MODE=tcp-devmem app</code> |
 | <code>UIB_DEVMEM_QUEUE</code> | `0` | A non-negative queue identifier. | Select the netdev RX queue used for DMA-BUF binding. | <code>UIB_DEVMEM_QUEUE=1 UIB_TRANSPORT_MODE=tcp-devmem app</code> |
 
+## Provider-owned host-memory receive
+
+| Variable | Default | Accepted values | Description | Example |
+|---|---|---|---|---|
+| <code>UIB_HOST_ZC</code> | `auto` | `auto`, `off`, or `required` | Enable TCP io_uring ZCRX when its NIC queue and kernel support are usable. | <code>UIB_HOST_ZC=required UIB_HOST_ZC_IFACE=eth0 app</code> |
+| <code>UIB_HOST_ZC_IFACE</code> | Unset; ZCRX remains inactive. | A network-interface name configured for TCP header/data split. | Select the interface whose hardware receive queue backs the ZCRX arena. | <code>UIB_HOST_ZC_IFACE=eth0 UIB_TRANSPORT_MODE=tcp-devmem app</code> |
+| <code>UIB_HOST_ZC_QUEUE</code> | `0` | A non-negative hardware receive-queue identifier. | Select the flow-steered hardware queue registered with io_uring ZCRX. | <code>UIB_HOST_ZC_QUEUE=1 UIB_HOST_ZC_IFACE=eth0 app</code> |
+| <code>UIB_VIRTME_KERNEL</code> | Unset; virtme-ng chooses its default kernel. | A kernel image path accepted by `vng --run`. | Select the kernel image used by the focused host zero-copy VM tests. | <code>UIB_VIRTME_KERNEL=/boot/vmlinuz-test make host-zc-virtme-test</code> |
+
 ## Ultra Ethernet
 
 | Variable | Default | Accepted values | Description | Example |

@@ -357,6 +357,42 @@ void uib_devmem_unbind(struct uib_devmem_binding *b);
 Remove a netdev receive\-queue DMA\-BUF binding.
 .br
 Example: \fBctx = uib_open_device("0.0.0.0", 4791); uib_devmem_unbind(b);\fP
+.SS "Provider\-owned host\-memory receive"
+.TP
+.B uib_post_recv_loan
+int uib_post_recv_loan(struct uib_qp *qp, uint64_t wr_id, size_t capacity);
+.br
+Post a provider\-owned host\-memory receive.
+.br
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &init); uib_post_recv_loan(qp, 1, 65536);\fP
+.TP
+.B uib_repost_rx_loan
+int uib_repost_rx_loan(struct uib_qp *qp, struct uib_rx_loan *loan, uint64_t wr_id);
+.br
+Repost a released completion without reallocating it.
+.br
+Example: \fBuib_post_recv_loan(qp, 1, 65536); uib_poll_cq(cq, 1, &wc); uib_wc_take_rx_loan(&wc, &loan); uib_repost_rx_loan(qp, &loan, 2);\fP
+.TP
+.B uib_wc_take_rx_loan
+int uib_wc_take_rx_loan(struct uib_wc *wc, struct uib_rx_loan *loan);
+.br
+Take ownership of a completed receive loan.
+.br
+Example: \fBuib_post_recv_loan(qp, 1, 65536); uib_poll_cq(cq, 1, &wc); uib_wc_take_rx_loan(&wc, &loan);\fP
+.TP
+.B uib_release_rx_loan
+void uib_release_rx_loan(struct uib_rx_loan *loan);
+.br
+Return a receive loan to its provider.
+.br
+Example: \fBuib_post_recv_loan(qp, 1, 65536); uib_poll_cq(cq, 1, &wc); uib_wc_take_rx_loan(&wc, &loan); uib_release_rx_loan(&loan);\fP
+.TP
+.B uib_host_zc_capabilities
+uint32_t uib_host_zc_capabilities(struct uib_context *ctx);
+.br
+Query provider\-owned receive capabilities.
+.br
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); capabilities = uib_host_zc_capabilities(ctx);\fP
 .SS "Memory regions"
 .TP
 .B uib_reg_mr
@@ -762,6 +798,13 @@ void uib_qp_emit_recv(struct uib_qp *qp, uint64_t wr_id, enum uib_wc_status stat
 Publish a receive work completion.
 .br
 Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &init); uib_qp_emit_recv(qp, wr_id, status, opcode, byte_len, src_qp, imm_data);\fP
+.TP
+.B uib_qp_emit_recv_slot
+void uib_qp_emit_recv_slot(struct uib_qp *qp, struct uib_rq_slot *slot, enum uib_wc_status status, enum uib_wc_opcode opcode, uint32_t byte_len, uint32_t src_qp, uint32_t imm_data);
+.br
+Publish a receive completion with private ownership.
+.br
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &init); uib_qp_pop_recv(qp, &slot); uib_qp_emit_recv_slot(qp, &slot, status, opcode, byte_len, src_qp, imm_data);\fP
 .TP
 .B uib_rocev2_post_send
 int uib_rocev2_post_send(struct uib_qp *qp, struct uib_send_wr *wr, struct uib_send_wr **bad);
@@ -1336,6 +1379,43 @@ Default: 0
 Accepted values: A non\-negative queue identifier.
 .br
 Example: \fBUIB_DEVMEM_QUEUE=1 UIB_TRANSPORT_MODE=tcp\-devmem app\fP
+.SS "Provider\-owned host\-memory receive"
+.TP
+.B UIB_HOST_ZC
+Enable TCP io_uring ZCRX when its NIC queue and kernel support are usable.
+.br
+Default: auto
+.br
+Accepted values: auto, off, or required
+.br
+Example: \fBUIB_HOST_ZC=required UIB_HOST_ZC_IFACE=eth0 app\fP
+.TP
+.B UIB_HOST_ZC_IFACE
+Select the interface whose hardware receive queue backs the ZCRX arena.
+.br
+Default: Unset; ZCRX remains inactive.
+.br
+Accepted values: A network\-interface name configured for TCP header/data split.
+.br
+Example: \fBUIB_HOST_ZC_IFACE=eth0 UIB_TRANSPORT_MODE=tcp\-devmem app\fP
+.TP
+.B UIB_HOST_ZC_QUEUE
+Select the flow\-steered hardware queue registered with io_uring ZCRX.
+.br
+Default: 0
+.br
+Accepted values: A non\-negative hardware receive\-queue identifier.
+.br
+Example: \fBUIB_HOST_ZC_QUEUE=1 UIB_HOST_ZC_IFACE=eth0 app\fP
+.TP
+.B UIB_VIRTME_KERNEL
+Select the kernel image used by the focused host zero\-copy VM tests.
+.br
+Default: Unset; virtme\-ng chooses its default kernel.
+.br
+Accepted values: A kernel image path accepted by vng \-\-run.
+.br
+Example: \fBUIB_VIRTME_KERNEL=/boot/vmlinuz\-test make host\-zc\-virtme\-test\fP
 .SS "Ultra Ethernet"
 .TP
 .B UIB_UET_CC

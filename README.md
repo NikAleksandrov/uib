@@ -77,6 +77,10 @@ Optional functionality is enabled when configure finds its dependencies:
   * Linux dma-buf headers enable mmap-backed system/GPU DMA-BUF registration;
   * Linux headers defining SO_ZEROCOPY and MSG_ZEROCOPY enable optional socket
     transmit zero-copy;
+  * current liburing headers defining IORING_OP_RECV_ZC enable optional TCP
+    host-memory ZCRX; runtime activation additionally needs a supporting
+    kernel, CONFIG_IO_URING_ZCRX, and a NIC queue configured for TCP
+    header/data split, RSS isolation, and flow steering;
   * zlib development files accelerate the RoCEv2 invariant CRC
     (Debian/Ubuntu: zlib1g-dev; Fedora: zlib-devel);
   * virtme-ng, a kernel image, iproute2 and rdma-core tools run the VM/RXE
@@ -91,7 +95,8 @@ Run the checked-in configure script, then build:
 
 Use --disable-provider, --disable-af-xdp, --disable-devmem,
 --disable-dmabuf or --disable-zerocopy to force a feature off. The matching
---enable-* option requires it and fails configuration when its dependency is
+--disable-host-zc also removes the ZCRX engine. The matching --enable-* option
+requires the feature and fails configuration when its dependency is
 absent. A nonstandard liburing installation can be selected with
 --with-liburing=PREFIX. The detected values are written to config.mk. Building
 directly with make remains supported and performs equivalent best-effort
@@ -144,8 +149,23 @@ UIB_ZEROCOPY=off, auto, on or required controls MSG_ZEROCOPY and AF_XDP copy
 selection. Auto uses socket zero-copy for packets at least 10 KiB. On and
 required use a 1 KiB floor so small protocol ACKs cannot stall waiting for a
 TCP zero-copy completion. Override either threshold with UIB_ZEROCOPY_THRESHOLD.
-Socket zero-copy is transmit-only. io_uring multishot receive is batched, not
-zero-copy into a verbs MR; AF_XDP native zero-copy ends at its UMEM frame.
+Socket MSG_ZEROCOPY is transmit-only. Ordinary io_uring multishot receive is
+batched, not zero-copy into a verbs MR; AF_XDP native zero-copy ends at its
+UMEM frame. Applications that can accept provider-owned receive buffers may
+use uib_post_recv_loan(), take the result from a receive completion with
+uib_wc_take_rx_loan(), process its contiguous data or iovec segments, and
+return or repost it with uib_release_rx_loan() or uib_repost_rx_loan().
+
+With tcp-devmem, UIB_HOST_ZC_IFACE and UIB_HOST_ZC_QUEUE select an io_uring
+ZCRX hardware queue. UIB_HOST_ZC=auto falls back to the copied TCP parser when
+registration is unavailable; required makes context creation fail instead.
+Arena fragments remain owned by UIB until the application releases the loan.
+Whole length-prefixed frames are passed through without a payload copy, and
+fragmented RoCEv2/UET messages are returned as iovec loans. A TCP stream
+fragment that splits a UIB frame uses the preallocated copied fallback.
+uib_host_zc_capabilities() reports what the active context actually enabled.
+Standard verbs receives keep their caller-selected SGE semantics and remain
+copied because Linux ZCRX chooses an arena buffer before UIB sees the WQE.
 
 AF_XDP transmits complete Ethernet frames and deliberately performs no route,
 ARP or neighbor-table discovery. Set `UIB_AFXDP_IFACE` to the bound interface
@@ -234,6 +254,17 @@ scaffolding and deliberately does not advertise that capability: its framed
 UIB headers cannot yet be parsed from opaque GPU memory. This avoids silently
 claiming a transfer whose bytes were never placed. See
 docs/dmabuf-zerocopy.md for the exact capability boundary.
+
+Provider-owned host-memory receive loans are separate from DMA-BUF imports.
+They make full kernel-to-application RX zero-copy possible when TCP ZCRX can
+lend complete framed payload segments. They do not pretend that an arbitrary
+pre-posted verbs address can be selected by the NIC. Run `make test` for loan
+ownership and cross-protocol transfers, and `make host-zc-benchmark` for the
+ordinary-post versus recycled-loan control-path cost.
+`make host-zc-virtme-test` runs the loan, capability, and cross-protocol tests
+inside virtme-ng. Set UIB_VIRTME_KERNEL=/path/to/bzImage to exercise a kernel
+new enough for IORING_OP_RECV_ZC; without it the target uses virtme-ng's
+default kernel and validates the automatic copied fallback.
 
 Ultra Ethernet scope
 --------------------
