@@ -195,7 +195,9 @@ and every `uib_*` or `uibv_*` declaration in the installed headers. Run
 `make docs` to regenerate both files from the kernel-doc comments above their
 definitions, or `make docs-check` to verify that checked-in documentation is
 current and that no public declaration or consumed environment variable lacks
-an annotation.
+an annotation. `make install` also installs the generated `uib(7)` manual;
+run `man 7 uib` for the overview, transparent-provider example, API reference,
+and environment-variable reference.
 
 `make benchmark-doc` regenerates that reference. It first writes an old/new
 comparison containing actual values and refuses to replace the document when

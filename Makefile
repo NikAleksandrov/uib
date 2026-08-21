@@ -1,6 +1,7 @@
 CC      ?= cc
 AR      ?= ar
 PREFIX  ?= /usr/local
+MANDIR  ?= $(PREFIX)/share/man
 
 -include config.mk
 
@@ -92,6 +93,7 @@ LIB_SHARED_REAL := libuib.so.0.1.0
 LIB_MAP      := src/libuib.map
 LIB_PROVIDER := libuibv.so
 DOC_GENERATOR := scripts/generate-docs.py
+MAN_PAGE      := man/uib.7
 
 LIB_TARGETS := $(LIB_STATIC) $(LIB_SHARED)
 ifeq ($(ENABLE_PROVIDER),1)
@@ -461,9 +463,10 @@ configure-test: configure
 
 test-all: configure-test
 
-install: $(LIB_TARGETS)
+install: $(LIB_TARGETS) $(MAN_PAGE)
 	install -d $(DESTDIR)$(PREFIX)/lib
 	install -d $(DESTDIR)$(PREFIX)/include/uib
+	install -d $(DESTDIR)$(MANDIR)/man7
 	install -m 644 $(LIB_STATIC) $(DESTDIR)$(PREFIX)/lib/
 	install -m 755 $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/
 	ln -sfn $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/$(LIB_SHARED_SONAME)
@@ -472,6 +475,7 @@ ifeq ($(ENABLE_PROVIDER),1)
 	install -m 755 $(LIB_PROVIDER) $(DESTDIR)$(PREFIX)/lib/
 endif
 	install -m 644 include/uib/*.h $(DESTDIR)$(PREFIX)/include/uib/
+	install -m 644 $(MAN_PAGE) $(DESTDIR)$(MANDIR)/man7/
 
 clean:
 	$(MAKE) -C examples clean

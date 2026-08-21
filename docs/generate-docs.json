@@ -4,5 +4,12 @@
     "environment_table_rule": "|---|---|---|---|---|",
     "api_table_header": "| Function | Declaration | Description | Example |",
     "api_table_rule": "|---|---|---|---|"
+  },
+  "man": {
+    "accepted_values_label": "Accepted values: ",
+    "default_label": "Default: ",
+    "example_label": "Example: ",
+    "parameter_label": "Parameter ",
+    "return_label": "Return value: "
   }
 }

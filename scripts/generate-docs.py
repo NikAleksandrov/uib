@@ -13,11 +13,14 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 ENV_SOURCE = ROOT / "include" / "uib" / "env.h"
 ENV_OUTPUT = ROOT / "docs" / "environment-variables.md"
 API_OUTPUT = ROOT / "docs" / "public-api.md"
+MAN_OUTPUT = ROOT / "man" / "uib.7"
 
 DOC_FORMAT_SOURCE = ROOT / "docs" / "generate-docs.json"
 DOC_FORMAT = json.loads(DOC_FORMAT_SOURCE.read_text())
 ENV_TEMPLATE = ROOT / "docs" / "environment-variables.md.in"
 API_TEMPLATE = ROOT / "docs" / "public-api.md.in"
+CONFIGURE_SOURCE = ROOT / "configure.ac"
+MAN_TEMPLATE = ROOT / "man" / "uib.7.in"
 
 
 def render_template(path, replacements):
@@ -28,6 +31,14 @@ def render_template(path, replacements):
             raise ValueError(f"{path}: expected one {marker} placeholder")
         content = content.replace(marker, value)
     return content
+
+
+def project_version():
+    match = re.search(r"AC_INIT\(\[uib\], \[([^]]+)\]", CONFIGURE_SOURCE.read_text())
+
+    if not match:
+        raise ValueError(f"{CONFIGURE_SOURCE}: cannot determine project version")
+    return match.group(1)
 
 
 def parse_fields(block):
@@ -123,6 +134,19 @@ def markdown_code(value):
 
 def markdown_text(value):
     return html.escape(value, quote=False).replace("|", "&#124;")
+
+
+def roff_text(value):
+    value = value.replace("`", "")
+    value = value.replace("\\", r"\e")
+    value = value.replace("-", r"\-")
+    if value.startswith((".", "'")):
+        value = r"\&" + value
+    return value
+
+
+def roff_bold(value):
+    return r"\fB" + roff_text(value) + r"\fP"
 
 
 def environment_inputs():
@@ -226,6 +250,66 @@ def render_api(entries, declarations):
         API_TEMPLATE, {"@API_SECTIONS@": "\n".join(lines).rstrip("\n")})
 
 
+def render_man_environment(lines, entries):
+    scopes = []
+
+    for entry in entries:
+        if entry["uib-env"] not in scopes:
+            scopes.append(entry["uib-env"])
+    for scope in scopes:
+        lines.append(f'.SS "{roff_text(scope)}"')
+        for entry in entries:
+            if entry["uib-env"] != scope:
+                continue
+            lines.extend([
+                ".TP",
+                f".B {entry['symbol']}",
+                roff_text(entry["description"]),
+                ".br",
+                DOC_FORMAT["man"]["default_label"] + roff_text(entry["default"]),
+                ".br",
+                DOC_FORMAT["man"]["accepted_values_label"] + roff_text(entry["values"]),
+                ".br",
+                DOC_FORMAT["man"]["example_label"] + roff_bold(entry["example"]),
+            ])
+
+
+def render_man_api(lines, entries, declarations):
+    areas = []
+
+    for entry in entries:
+        if entry["uib-api"] not in areas:
+            areas.append(entry["uib-api"])
+    for area in areas:
+        lines.append(f'.SS "{roff_text(area)}"')
+        for entry in entries:
+            if entry["uib-api"] != area:
+                continue
+            declaration, _path = declarations[entry["symbol"]]
+            lines.extend([
+                ".TP",
+                f".B {entry['symbol']}",
+                roff_text(declaration),
+                ".br",
+                roff_text(entry["description"]),
+                ".br",
+                DOC_FORMAT["man"]["example_label"] + roff_bold(entry["example"]),
+            ])
+
+
+def render_man(env_entries, api_entries, declarations):
+    api_lines = []
+    environment_lines = []
+
+    render_man_api(api_lines, api_entries, declarations)
+    render_man_environment(environment_lines, env_entries)
+    return render_template(MAN_TEMPLATE, {
+        "@PUBLIC_API@": "\n".join(api_lines).rstrip("\n"),
+        "@ENVIRONMENT@": "\n".join(environment_lines).rstrip("\n"),
+        "@VERSION@": project_version(),
+    })
+
+
 def update_or_check(path, content, check):
     current = path.read_text() if path.exists() else None
 
@@ -239,9 +323,10 @@ def update_or_check(path, content, check):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate UIB reference docs")
+    parser = argparse.ArgumentParser(
+        description="Generate UIB reference documentation")
     parser.add_argument("--check", action="store_true",
-                        help="fail when generated Markdown is out of date")
+                        help="fail when generated documentation is out of date")
     args = parser.parse_args()
     env_entries = parse_environment_annotations()
     api_entries = parse_api_annotations()
@@ -272,8 +357,10 @@ def main():
 
     env_doc = render_environment(env_entries)
     api_doc = render_api(api_entries, declarations)
+    man_page = render_man(env_entries, api_entries, declarations)
     ok = update_or_check(ENV_OUTPUT, env_doc, args.check)
     ok = update_or_check(API_OUTPUT, api_doc, args.check) and ok
+    ok = update_or_check(MAN_OUTPUT, man_page, args.check) and ok
     return 0 if ok else 1
 
 
