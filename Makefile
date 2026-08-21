@@ -344,6 +344,9 @@ benchmark-smoke: examples
 	UIB_BENCH_ITERATIONS=64 UIB_BENCH_SIZE=16384 UIB_BENCH_WINDOW=16 \
 		./examples/benchmark_matrix.sh /tmp/uib-benchmark-smoke
 
+ib-write-bw-test: examples
+	./tests/run_ib_write_bw_matrix.sh
+
 scaling-benchmark: examples $(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) \
 		$(SCALING_PROVIDER_BENCH) $(SCALING_PROVIDER_WR_BENCH)
 	./$(QP_LOOKUP_BENCH)
@@ -463,6 +466,7 @@ guest-test: all rxe-test-build
 	$(MAKE) dmabuf-e2e-test
 	$(MAKE) zerocopy-e2e-test
 	$(MAKE) benchmark-smoke
+	$(MAKE) ib-write-bw-test
 	$(MAKE) provider-dmabuf-test
 	$(MAKE) provider-cq-event-test
 	$(MAKE) optional-features-test
@@ -520,7 +524,7 @@ clean:
 	examples-stress-test sync-transport-test dmabuf-e2e-test \
 	zerocopy-e2e-test \
 	benchmark-all benchmark-local benchmark-report benchmark-doc \
-	benchmark-smoke \
+	benchmark-smoke ib-write-bw-test \
 	scaling-benchmark scaling-test \
 	provider-dmabuf-test provider-cq-event-test \
 	gpu-dmabuf-test external-dmabuf-test remote-benchmark-test \

@@ -10,6 +10,7 @@ window=${UIB_BENCH_WINDOW:-64}
 results=$output/results.csv
 skips=$output/skips.txt
 failures=$output/failures.txt
+ib_failures=$output/ib-write-bw-failures.txt
 allowed_cpus=$(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' /proc/self/status)
 pin_cpu=${UIB_BENCH_PIN_CPU:-$(printf '%s\n' "$allowed_cpus" | sed 's/[-,].*//')}
 
@@ -24,6 +25,9 @@ mkdir -p "$output"
 } >"$results"
 : >"$skips"
 : >"$failures"
+
+ib_status=0
+"$project_dir/examples/ib_write_bw_matrix.sh" "$output" || ib_status=$?
 
 run_one()
 {
@@ -251,5 +255,9 @@ if [ -s "$skips" ]; then
 fi
 if [ -s "$failures" ]; then
 	printf 'Failed combinations: %s\n' "$failures" >&2
+	exit 1
+fi
+if [ "$ib_status" -ne 0 ]; then
+	printf 'Failed ib_write_bw combinations: %s\n' "$ib_failures" >&2
 	exit 1
 fi

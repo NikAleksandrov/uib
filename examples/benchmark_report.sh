@@ -3,6 +3,7 @@
 set -eu
 
 output=${1:?usage: benchmark_report.sh OUTPUT_DIRECTORY}
+ib_write_bw=$output/ib-write-bw.csv
 results=$output/results.csv
 zerocopy=$output/zerocopy-comparison.csv
 dmabuf=$output/dmabuf-comparison.csv
@@ -12,7 +13,7 @@ failures=$output/failures.txt
 text_report=$output/benchmark.txt
 markdown_report=$output/benchmark.md
 
-if [ ! -r "$results" ] || [ ! -r "$zerocopy" ] ||
+if [ ! -r "$ib_write_bw" ] || [ ! -r "$results" ] || [ ! -r "$zerocopy" ] ||
    [ ! -r "$dmabuf" ] || [ ! -r "$sync_async" ]; then
 	printf 'benchmark_report: incomplete CSV input in %s\n' "$output" >&2
 	exit 1
@@ -21,6 +22,18 @@ fi
 {
 	printf 'UIB benchmark matrix\n'
 	printf '====================\n\n'
+	printf 'ib_write_bw through the transparent provider\n'
+	printf '%-7s %-14s %-6s %10s %10s %10s %9s %8s %7s %s\n' \
+		'Proto' 'Transport' 'Status' 'Peak Gb/s' 'Avg Gb/s' 'Mpps' \
+		'Wall(s)' 'CPU(s)' 'CPU%' 'Reason'
+	printf '%-7s %-14s %-6s %10s %10s %10s %9s %8s %7s %s\n' \
+		'-------' '--------------' '------' '----------' '----------' \
+		'----------' '---------' '--------' '-------' '------'
+	awk -F, 'NR > 1 {
+		printf "%-7s %-14s %-6s %10s %10s %10s %9s %8s %7s %s\n",
+			$2, $3, $1, $6, $7, $8, $9, $12, $13, $14;
+	}' "$ib_write_bw"
+	printf '\nNative UIB stress benchmark\n'
 	printf '%-7s %-5s %-7s %5s %-8s %-12s %8s %9s %8s %7s %9s %9s %9s %9s %12s\n' \
 		'Proto' 'Xport' 'Memory' 'MTU' 'Affinity' 'Mode' 'Gbit/s' 'MiB/s' 'CPU(s)' \
 		'CPU%' 'Avg(us)' 'p50(us)' 'p95(us)' 'p99(us)' 'Deferred/Req'
@@ -110,6 +123,21 @@ fi
 
 {
 	printf '# UIB benchmark matrix\n\n'
+	printf '## `ib_write_bw` through the transparent provider\n\n'
+	printf '%s' '| Protocol | Transport | Status | Peak Gbit/s | '
+	printf '%s' 'Average Gbit/s | '
+	printf '%s' 'Message rate Mpps | Wall s | User CPU s | System CPU s | '
+	printf '%s\n' 'Total CPU s | CPU % | Reason |'
+	printf '%s' '|---|---|---|---:|---:|---:|---:|---:|---:|'
+	printf '%s\n' '---:|---:|---|'
+	awk -F, 'NR > 1 {
+		format = "| %s | %s | %s | %s | %s | %s | %s | %s | " \
+			"%s | %s | %s | %s |\n";
+		printf format,
+			$2, $3, $1, $6, $7, $8, $9, $10, $11, $12, $13, $14;
+	}' "$ib_write_bw"
+
+	printf '\n## Native UIB stress benchmark\n\n'
 	printf '%s' '| Protocol | Transport | Memory | MTU | Affinity | Send mode | Gbit/s | '
 	printf '%s' 'MiB/s | CPU s | CPU % | Average us | p50 us | p95 us | '
 	printf '%s\n' 'p99 us | Deferred/requests |'
@@ -194,6 +222,7 @@ fi
 printf 'ASCII report: %s\n' "$text_report"
 printf 'GitHub Markdown report: %s\n' "$markdown_report"
 printf 'Raw CSV: %s\n' "$results"
+printf 'ib_write_bw CSV: %s\n' "$ib_write_bw"
 printf 'Zero-copy comparison CSV: %s\n' "$zerocopy"
 printf 'DMA-BUF comparison CSV: %s\n' "$dmabuf"
 printf 'Sync/async comparison CSV: %s\n' "$sync_async"

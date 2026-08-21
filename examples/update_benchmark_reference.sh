@@ -42,9 +42,8 @@ fi
 		print;
 	     }' "$output/benchmark.md"
 } >"$sync_candidate"
-mv "$sync_candidate" "$sync_document"
-printf 'Updated sync/async benchmark: %s\n' "$sync_document"
 
+# A regression exits before either checked-in reference is replaced.
 "$project_dir/examples/compare_benchmark_baseline.sh" "$document" "$output"
 
 {
@@ -61,5 +60,7 @@ printf 'Updated sync/async benchmark: %s\n' "$sync_document"
 	cat "$output/benchmark.md"
 } >"$candidate"
 
+mv "$sync_candidate" "$sync_document"
 mv "$candidate" "$document"
+printf 'Updated sync/async benchmark: %s\n' "$sync_document"
 printf 'Updated benchmark reference: %s\n' "$document"
