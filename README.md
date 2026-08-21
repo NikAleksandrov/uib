@@ -5,6 +5,49 @@ UIB is a userspace RDMA implementation with independent wire-protocol and
 packet-transport layers. It provides native UIB APIs and a transparent
 libibverbs compatibility library.
 
+Example: transparently running libibverbs software with UIB
+-----------------------------------------------------------
+
+The transparent provider can run an unmodified dynamically linked perftest
+program such as `ib_write_bw`. `LD_PRELOAD` interposes the normal libibverbs
+entry points. UIB places its synthetic `uib0` device first, so perftest's
+default device selection chooses it without a `-d` argument. The perftest TCP
+connection still exchanges QP information; benchmark WRITE traffic uses the
+selected UIB protocol and transport. Add `-d uib0` only when an explicit
+device selection is desirable.
+
+Build `libuibv.so`, then start the server on a host whose data-plane address is
+`192.0.2.1`:
+
+    ./configure
+    make
+    env LD_PRELOAD=/absolute/path/to/uib/libuibv.so \
+      UIB_PROTOCOL=rocev2 \
+      UIB_TRANSPORT_MODE=udp-io-uring \
+      UIB_UDP_MODE=socket \
+      UIB_BIND_IP=192.0.2.1 \
+      UIB_BIND_PORT=4791 \
+      ib_write_bw -i 1 -x 0 --connection=RC \
+          --size=65536 --iters=10000 --report_gbits -F
+
+Run the matching client on a second host at `192.0.2.2`; the final argument is
+the server address used by perftest's control connection:
+
+    env LD_PRELOAD=/absolute/path/to/uib/libuibv.so \
+      UIB_PROTOCOL=rocev2 \
+      UIB_TRANSPORT_MODE=udp-io-uring \
+      UIB_UDP_MODE=socket \
+      UIB_BIND_IP=192.0.2.2 \
+      UIB_BIND_PORT=4791 \
+      ib_write_bw -i 1 -x 0 --connection=RC \
+          --size=65536 --iters=10000 --report_gbits -F 192.0.2.1
+
+Both endpoints must select the same protocol and service port. Ordinary
+UIB-to-UIB runs use `UIB_UDP_MODE=socket` and therefore need no raw-socket
+capability. Use raw mode only when interoperating with a kernel RXE endpoint;
+that mode requires `CAP_NET_RAW`. UET can be selected by changing both hosts to
+`UIB_PROTOCOL=uet` and `UIB_BIND_PORT=5432`.
+
 Requirements
 ------------
 
@@ -145,6 +188,14 @@ options. The complete reference run and comparison tables are in
 [the benchmark report](docs/benchmark-results.md). See the
 [transparent verbs guide](docs/transparent-verbs.md) for running an existing,
 unmodified verbs application through UIB.
+
+The generated [environment-variable reference](docs/environment-variables.md)
+and [public API reference](docs/public-api.md) cover every supported setting
+and every `uib_*` or `uibv_*` declaration in the installed headers. Run
+`make docs` to regenerate both files from the kernel-doc comments above their
+definitions, or `make docs-check` to verify that checked-in documentation is
+current and that no public declaration or consumed environment variable lacks
+an annotation.
 
 `make benchmark-doc` regenerates that reference. It first writes an old/new
 comparison containing actual values and refuses to replace the document when
