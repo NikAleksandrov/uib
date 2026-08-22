@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "uib/uib.h"
 
@@ -157,8 +158,10 @@ static void run_invalid_batch(void)
 	setenv("UIB_UDP_GSO", "auto", 1);
 }
 
-static void run_gso_batch(void)
+static void run_gso_batch(uint16_t sender_port, uint16_t receiver_port,
+			  int zerocopy)
 {
+	struct uib_zerocopy_stats zerocopy_stats;
 	struct uib_transport_ref refs[TEST_PACKETS];
 	struct uib_transport_stats rx_stats;
 	struct uib_transport_stats tx_stats;
@@ -166,22 +169,49 @@ static void run_gso_batch(void)
 	struct uib_context *sender;
 	struct sockaddr_in destination;
 	uint8_t packets[TEST_PACKETS][TEST_PACKET_LENGTH];
+	uint8_t *zc_storage = NULL;
+	void *allocation = NULL;
+	size_t page_size = 0;
+	size_t stride = 0;
+	long system_page_size;
 	unsigned int i;
 	int rc;
 
 	setenv("UIB_UDP_GSO", "auto", 1);
-	setenv("UIB_ZEROCOPY", "off", 1);
-	sender = uib_open_device_protocol("127.0.0.1", 19614, "dummy");
-	receiver = uib_open_device_protocol("127.0.0.1", 19615, "dummy");
+	setenv("UIB_ZEROCOPY", zerocopy ? "on" : "off", 1);
+	setenv("UIB_ZEROCOPY_THRESHOLD", "1", 1);
+	if (zerocopy) {
+		system_page_size = sysconf(_SC_PAGESIZE);
+		page_size = system_page_size > 0 ?
+			(size_t)system_page_size : 4096U;
+		stride = page_size * 2;
+		rc = posix_memalign(&allocation, page_size,
+				    TEST_PACKETS * stride);
+		check("gso.zc_storage", !rc);
+		if (rc)
+			return;
+		zc_storage = allocation;
+	}
+	sender = uib_open_device_protocol("127.0.0.1", sender_port, "dummy");
+	receiver = uib_open_device_protocol("127.0.0.1", receiver_port,
+					    "dummy");
 	check("gso.contexts", sender && receiver);
 	if (!sender || !receiver)
 		goto out;
 	destination = receiver->local_addr;
 	released = 0;
 	for (i = 0; i < TEST_PACKETS; i++) {
-		memset(packets[i], (int)i, sizeof(packets[i]));
+		if (zerocopy) {
+			/* Make every test packet consume two skb fragments. */
+			refs[i].buf = zc_storage + i * stride + page_size -
+				TEST_PACKET_LENGTH / 2;
+			memset((void *)refs[i].buf, (int)i,
+			       TEST_PACKET_LENGTH);
+		} else {
+			memset(packets[i], (int)i, sizeof(packets[i]));
+			refs[i].buf = packets[i];
+		}
 		refs[i].dst = &destination;
-		refs[i].buf = packets[i];
 		refs[i].release = release_packet;
 		refs[i].opaque = &released;
 		refs[i].len = sizeof(packets[i]);
@@ -202,12 +232,28 @@ static void run_gso_batch(void)
 	} else {
 		printf("%-32s %s\n", "gso.batch_counters", "SKIP");
 	}
+	if (zerocopy) {
+		memset(&zerocopy_stats, 0, sizeof(zerocopy_stats));
+		rc = uib_zerocopy_get_stats(sender, &zerocopy_stats);
+		check("gso.zc_stats", !rc);
+		if (zerocopy_stats.capabilities & UIB_ZEROCOPY_CAP_MSG) {
+			check("gso.zc_calls", zerocopy_stats.zerocopy_calls > 0 &&
+			      !zerocopy_stats.copied_calls);
+			check("gso.zc_completions",
+			      zerocopy_stats.completions ==
+			      zerocopy_stats.zerocopy_calls);
+		} else {
+			printf("%-32s %s\n", "gso.zc_calls", "SKIP");
+			printf("%-32s %s\n", "gso.zc_completions", "SKIP");
+		}
+	}
 
 out:
 	if (sender)
 		uib_close_device(sender);
 	if (receiver)
 		uib_close_device(receiver);
+	free(allocation);
 }
 
 static void run_shutdown_drain(void)
@@ -267,7 +313,8 @@ int main(void)
 	setenv("UIB_URING_SQPOLL", "on", 1);
 	run_mode("batch", 19611, 19612, UIB_URING_RX_BATCHED, 0);
 	setenv("UIB_URING_SQPOLL", "off", 1);
-	run_gso_batch();
+	run_gso_batch(19614, 19615, 0);
+	run_gso_batch(19616, 19617, 1);
 	run_shutdown_drain();
 	run_invalid_batch();
 	printf("RESULT %s\n", failed ? "FAIL" : "PASS");
