@@ -60,8 +60,10 @@ run_one()
 	row_number=$((row_number + 1))
 	data_port=$((19500 + row_number))
 	control_port=$((18600 + row_number))
-	server_log=$(mktemp)
-	client_log=$(mktemp)
+	server_log=$output/ib-write-bw-$protocol-$transport-server.log
+	client_log=$output/ib-write-bw-$protocol-$transport-client.log
+	: >"$server_log"
+	: >"$client_log"
 
 	env LD_PRELOAD="$project_dir/libuibv.so" \
 		UIB_PROTOCOL="$protocol" \
@@ -83,8 +85,8 @@ run_one()
 			"$(tail -1 "$server_log")" >>"$failures"
 		printf 'FAIL ib_write_bw %-7s %-14s server\n' \
 			"$protocol" "$transport"
+		tail -20 "$server_log" >&2
 		server_pid=
-		rm -f "$server_log" "$client_log"
 		server_log=
 		client_log=
 		return
@@ -112,7 +114,8 @@ run_one()
 		printf 'FAIL ib_write_bw %-7s %-14s server=%s client=%s\n' \
 			"$protocol" "$transport" "$server_status" \
 			"$client_status"
-		rm -f "$server_log" "$client_log"
+		tail -20 "$server_log" >&2
+		tail -20 "$client_log" >&2
 		server_log=
 		client_log=
 		return
@@ -134,7 +137,7 @@ run_one()
 			>>"$failures"
 		printf 'FAIL ib_write_bw %-7s %-14s no result row\n' \
 			"$protocol" "$transport"
-		rm -f "$server_log" "$client_log"
+		tail -20 "$client_log" >&2
 		server_log=
 		client_log=
 		return

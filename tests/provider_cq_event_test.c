@@ -41,8 +41,10 @@ static int open_endpoint(struct endpoint *endpoint, struct ibv_device *device,
 	if (!endpoint->channel || !endpoint->pd || !endpoint->cq ||
 	    !endpoint->buffer)
 		return -ENOMEM;
-	endpoint->mr = ibv_reg_mr(endpoint->pd, endpoint->buffer, TEST_LENGTH,
-				  IBV_ACCESS_LOCAL_WRITE);
+	endpoint->mr = ibv_reg_mr_iova2(endpoint->pd, endpoint->buffer,
+					TEST_LENGTH,
+					(uint64_t)(uintptr_t)endpoint->buffer,
+					IBV_ACCESS_LOCAL_WRITE);
 	if (!endpoint->mr)
 		return -errno;
 	memset(&init, 0, sizeof(init));

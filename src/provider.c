@@ -10,6 +10,7 @@
 #include <infiniband/verbs.h>
 
 #undef ibv_reg_mr
+#undef ibv_reg_mr_iova
 #undef ibv_reg_dmabuf_mr
 #undef ibv_query_port
 
@@ -75,6 +76,10 @@ static int                 (*real_close_device)(struct ibv_context *);
 static struct ibv_pd      *(*real_alloc_pd)(struct ibv_context *);
 static int                 (*real_dealloc_pd)(struct ibv_pd *);
 static struct ibv_mr      *(*real_reg_mr)(struct ibv_pd *, void *, size_t, int);
+static struct ibv_mr      *(*real_reg_mr_iova)(struct ibv_pd *, void *, size_t,
+					       uint64_t, int);
+static struct ibv_mr      *(*real_reg_mr_iova2)(struct ibv_pd *, void *, size_t,
+						uint64_t, unsigned int);
 static struct ibv_mr      *(*real_reg_dmabuf_mr)(struct ibv_pd *, uint64_t,
 						 size_t, uint64_t, int, int);
 static int                 (*real_dereg_mr)(struct ibv_mr *);
@@ -122,6 +127,8 @@ static void uibv_init(void)
 	real_alloc_pd          = dlsym(RTLD_NEXT, "ibv_alloc_pd");
 	real_dealloc_pd        = dlsym(RTLD_NEXT, "ibv_dealloc_pd");
 	real_reg_mr            = dlsym(RTLD_NEXT, "ibv_reg_mr");
+	real_reg_mr_iova       = dlsym(RTLD_NEXT, "ibv_reg_mr_iova");
+	real_reg_mr_iova2      = dlsym(RTLD_NEXT, "ibv_reg_mr_iova2");
 	real_reg_dmabuf_mr     = dlsym(RTLD_NEXT, "ibv_reg_dmabuf_mr");
 	real_dereg_mr          = dlsym(RTLD_NEXT, "ibv_dereg_mr");
 	real_create_comp_channel = dlsym(RTLD_NEXT, "ibv_create_comp_channel");
@@ -716,31 +723,65 @@ int ibv_dealloc_pd(struct ibv_pd *pd)
 	return rc < 0 ? -rc : 0;
 }
 
+static struct ibv_mr *provider_reg_mr(struct ibv_pd *pd, void *addr,
+				      size_t length, uint64_t iova,
+				      unsigned int access)
+{
+	struct uibv_mr_wrap *wrapper;
+	struct uibv_pd_wrap *pdw;
+	struct uib_mr *core;
+
+	/* UIB host MRs currently expose their process VA as the wire IOVA. */
+	if (iova != (uint64_t)(uintptr_t)addr) {
+		errno = EOPNOTSUPP;
+		return NULL;
+	}
+	pdw = WRAP_OF(pd, struct uibv_pd_wrap, ibv);
+	core = uib_reg_mr(pdw->core, addr, length, (int)access);
+
+	if (!core)
+		return NULL;
+	wrapper = calloc(1, sizeof(*wrapper));
+	if (!wrapper) {
+		uib_dereg_mr(core);
+		return NULL;
+	}
+	wrapper->core = core;
+	wrapper->ibv.context = pd->context;
+	wrapper->ibv.pd = pd;
+	wrapper->ibv.addr = addr;
+	wrapper->ibv.length = length;
+	wrapper->ibv.handle = 0;
+	wrapper->ibv.lkey = core->lkey;
+	wrapper->ibv.rkey = core->rkey;
+	return &wrapper->ibv;
+}
+
 struct ibv_mr *ibv_reg_mr(struct ibv_pd *pd, void *addr, size_t length,
 			  int access)
 {
 	if (!ctx_is_ours(pd->context))
 		return real_reg_mr ? real_reg_mr(pd, addr, length, access) : NULL;
-	struct uibv_pd_wrap *pdw = WRAP_OF(pd, struct uibv_pd_wrap, ibv);
-	struct uib_mr *core = uib_reg_mr(pdw->core, addr, length, access);
+	return provider_reg_mr(pd, addr, length, (uint64_t)(uintptr_t)addr,
+			       (unsigned int)access);
+}
 
-	if (!core)
-		return NULL;
-	struct uibv_mr_wrap *w = calloc(1, sizeof(*w));
+struct ibv_mr *ibv_reg_mr_iova(struct ibv_pd *pd, void *addr, size_t length,
+			       uint64_t iova, int access)
+{
+	if (!ctx_is_ours(pd->context))
+		return real_reg_mr_iova ?
+			real_reg_mr_iova(pd, addr, length, iova, access) : NULL;
+	return provider_reg_mr(pd, addr, length, iova, (unsigned int)access);
+}
 
-	if (!w) {
-		uib_dereg_mr(core);
-		return NULL;
-	}
-	w->core = core;
-	w->ibv.context = pd->context;
-	w->ibv.pd      = pd;
-	w->ibv.addr    = addr;
-	w->ibv.length  = length;
-	w->ibv.handle  = 0;
-	w->ibv.lkey    = core->lkey;
-	w->ibv.rkey    = core->rkey;
-	return &w->ibv;
+struct ibv_mr *ibv_reg_mr_iova2(struct ibv_pd *pd, void *addr, size_t length,
+				uint64_t iova, unsigned int access)
+{
+	if (!ctx_is_ours(pd->context))
+		return real_reg_mr_iova2 ?
+			real_reg_mr_iova2(pd, addr, length, iova, access) : NULL;
+	return provider_reg_mr(pd, addr, length, iova, access);
 }
 
 struct ibv_mr *ibv_reg_dmabuf_mr(struct ibv_pd *pd, uint64_t offset,
