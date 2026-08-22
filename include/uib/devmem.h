@@ -28,7 +28,7 @@ struct uib_devmem_binding {
  * sandbox without such hardware.
  */
 int uib_devmem_bind_rx(const char *ifname, uint32_t queue_id, int dmabuf_fd,
-		       struct uib_devmem_binding *b);
-void uib_devmem_unbind(struct uib_devmem_binding *b);
+		       struct uib_devmem_binding *binding);
+void uib_devmem_unbind(struct uib_devmem_binding *binding);
 
 #endif

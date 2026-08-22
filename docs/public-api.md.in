@@ -3,9 +3,8 @@
 
 # Public UIB API
 
-These tables cover every `uib_*` and `uibv_*` function declared by
-the installed headers. They are generated from kernel-doc-shaped
-comments above the function definitions in `src/`. Examples include
-the prerequisite calls needed to obtain each object.
+This reference covers every `uib_*` and `uibv_*` function declared by
+the installed headers. Entries are generated from kernel-doc-shaped
+comments above the function definitions in `src/`.
 
 @API_SECTIONS@

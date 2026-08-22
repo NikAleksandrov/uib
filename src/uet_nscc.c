@@ -13,6 +13,12 @@
 #define UIB_NSCC_LINKSPEED 12500000000ULL
 #define UIB_NSCC_BASE_BDP 150000U
 
+/**
+ * uib_uet_nscc_config_default - Derive default NSCC settings for an MTU.
+ * @config: Configuration to apply or fill
+ * @mtu: Path maximum transmission unit in bytes
+ * @uib-api: Ultra Ethernet NSCC
+ */
 void uib_uet_nscc_config_default(struct uib_uet_nscc_config *config,
 				 uint32_t mtu)
 {
@@ -47,6 +53,13 @@ void uib_uet_nscc_config_default(struct uib_uet_nscc_config *config,
 		config->fi = 1;
 }
 
+/**
+ * uib_uet_nscc_init - Initialize an NSCC flow-control state machine.
+ * @nscc: NSCC congestion-control state
+ * @config: Configuration to apply or fill
+ * @now_ns: Current monotonic time in nanoseconds
+ * @uib-api: Ultra Ethernet NSCC
+ */
 void uib_uet_nscc_init(struct uib_uet_nscc *nscc,
 		       const struct uib_uet_nscc_config *config,
 		       uint64_t now_ns)
@@ -60,6 +73,14 @@ void uib_uet_nscc_init(struct uib_uet_nscc *nscc,
 	nscc->last_decrease_ns = now_ns;
 }
 
+/**
+ * uib_uet_nscc_can_send - Check whether the congestion window admits bytes.
+ * @nscc: NSCC congestion-control state
+ * @bytes: Number of bytes in the prospective transmission
+ * @uib-api: Ultra Ethernet NSCC
+ *
+ * Return: Nonzero if the congestion window admits @bytes, otherwise 0.
+ */
 int uib_uet_nscc_can_send(const struct uib_uet_nscc *nscc, size_t bytes)
 {
 	uint64_t inflight = nscc->inflight > 0 ? (uint64_t)nscc->inflight : 0;
@@ -68,6 +89,14 @@ int uib_uet_nscc_can_send(const struct uib_uet_nscc *nscc, size_t bytes)
 	return inflight + nominal <= nscc->cwnd;
 }
 
+/**
+ * uib_uet_nscc_ack_request - Decide whether a packet should request an ACK.
+ * @nscc: NSCC congestion-control state
+ * @ack_generation_trigger: Congestion-window threshold for requesting an ACK
+ * @uib-api: Ultra Ethernet NSCC
+ *
+ * Return: Nonzero if the packet should request an ACK, otherwise 0.
+ */
 int uib_uet_nscc_ack_request(const struct uib_uet_nscc *nscc,
 			     uint32_t ack_generation_trigger)
 {
@@ -77,6 +106,12 @@ int uib_uet_nscc_ack_request(const struct uib_uet_nscc *nscc,
 	       nscc->cwnd < ack_generation_trigger;
 }
 
+/**
+ * uib_uet_nscc_on_send - Account newly transmitted bytes in NSCC.
+ * @nscc: NSCC congestion-control state
+ * @bytes: Number of newly transmitted bytes
+ * @uib-api: Ultra Ethernet NSCC
+ */
 void uib_uet_nscc_on_send(struct uib_uet_nscc *nscc, size_t bytes)
 {
 	nscc->inflight += (int64_t)bytes;
@@ -254,6 +289,12 @@ static void nscc_fulfill_adjustment(struct uib_uet_nscc *nscc, uint64_t now)
 	nscc->received_bytes = 0;
 }
 
+/**
+ * uib_uet_nscc_on_ack - Apply receiver feedback to NSCC sender state.
+ * @nscc: NSCC congestion-control state
+ * @ack: Acknowledgment feedback to apply
+ * @uib-api: Ultra Ethernet NSCC
+ */
 void uib_uet_nscc_on_ack(struct uib_uet_nscc *nscc,
 			 const struct uib_uet_nscc_ack *ack)
 {
@@ -302,6 +343,12 @@ void uib_uet_nscc_on_ack(struct uib_uet_nscc *nscc,
 		nscc_fulfill_adjustment(nscc, ack->ack_time_ns);
 }
 
+/**
+ * uib_uet_nscc_on_inferred_loss - Reduce the window after inferred loss.
+ * @nscc: NSCC congestion-control state
+ * @bytes: Number of bytes inferred lost
+ * @uib-api: Ultra Ethernet NSCC
+ */
 void uib_uet_nscc_on_inferred_loss(struct uib_uet_nscc *nscc, size_t bytes)
 {
 	nscc->cwnd = nscc->cwnd > bytes ? nscc->cwnd - bytes :
@@ -311,6 +358,16 @@ void uib_uet_nscc_on_inferred_loss(struct uib_uet_nscc *nscc, size_t bytes)
 	nscc->inflight -= (int64_t)bytes;
 }
 
+/**
+ * uib_uet_nscc_on_nack - Reduce the window after an explicit NACK.
+ * @nscc: NSCC congestion-control state
+ * @bytes: Number of bytes reported by the NACK
+ * @trimmed: Nonzero if the packet was trimmed
+ * @last_hop: Nonzero if trimming occurred at the last hop
+ * @rccc_enabled: Nonzero when receiver-driven congestion control is enabled
+ * @now_ns: Current monotonic time in nanoseconds
+ * @uib-api: Ultra Ethernet NSCC
+ */
 void uib_uet_nscc_on_nack(struct uib_uet_nscc *nscc, size_t bytes,
 			  int trimmed, int last_hop, int rccc_enabled,
 			  uint64_t now_ns)

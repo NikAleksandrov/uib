@@ -8,6 +8,19 @@ environment-name definitions in `include/uib/env.h`. Environment
 values are read
 when the relevant context, transport, benchmark, or test is created.
 
+## Contents
+
+- [Library and transparent provider](#library-and-transparent-provider)
+- [UDP transports](#udp-transports)
+- [AF_XDP transport](#afxdp-transport)
+- [TCP devmem transport](#tcp-devmem-transport)
+- [Provider-owned host-memory receive](#provider-owned-host-memory-receive)
+- [Ultra Ethernet](#ultra-ethernet)
+- [Stress benchmark executable](#stress-benchmark-executable)
+- [Complete benchmark matrix](#complete-benchmark-matrix)
+- [Namespace benchmark harness](#namespace-benchmark-harness)
+- [Test and scaling harnesses](#test-and-scaling-harnesses)
+
 ## Library and transparent provider
 
 | Variable | Default | Accepted values | Description | Example |

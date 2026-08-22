@@ -309,6 +309,15 @@ static int uet_psn_before(uint32_t a, uint32_t b)
 	return (int32_t)(a - b) < 0;
 }
 
+/**
+ * uib_uet_prologue_pack - Encode an Ultra Ethernet packet prologue.
+ * @type: Ultra Ethernet packet type
+ * @next: Next-header type
+ * @flags: Prologue flags
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: The packed prologue value in network byte order.
+ */
 uint16_t uib_uet_prologue_pack(uint8_t type, uint8_t next, uint8_t flags)
 {
 	uint16_t value;
@@ -321,6 +330,13 @@ uint16_t uib_uet_prologue_pack(uint8_t type, uint8_t next, uint8_t flags)
 	return htons(value);
 }
 
+/**
+ * uib_uet_prologue_type - Decode the packet type from a UET prologue.
+ * @prologue: Ultra Ethernet packet prologue
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: The decoded prologue type.
+ */
 uint8_t uib_uet_prologue_type(const struct uib_uet_prologue *prologue)
 {
 	return (uint8_t)((ntohs(prologue->type_next_flags) >>
@@ -328,6 +344,13 @@ uint8_t uib_uet_prologue_type(const struct uib_uet_prologue *prologue)
 			 UIB_UET_PROLOGUE_TYPE_MASK);
 }
 
+/**
+ * uib_uet_prologue_next - Decode the next-header type from a UET prologue.
+ * @prologue: Ultra Ethernet packet prologue
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: The decoded next-header value.
+ */
 uint8_t uib_uet_prologue_next(const struct uib_uet_prologue *prologue)
 {
 	return (uint8_t)((ntohs(prologue->type_next_flags) >>
@@ -335,12 +358,29 @@ uint8_t uib_uet_prologue_next(const struct uib_uet_prologue *prologue)
 			 UIB_UET_PROLOGUE_NEXT_MASK);
 }
 
+/**
+ * uib_uet_prologue_flags - Decode flags from a UET prologue.
+ * @prologue: Ultra Ethernet packet prologue
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: The decoded prologue flags.
+ */
 uint8_t uib_uet_prologue_flags(const struct uib_uet_prologue *prologue)
 {
 	return (uint8_t)(ntohs(prologue->type_next_flags) &
 			 UIB_UET_PROLOGUE_FLAGS_MASK);
 }
 
+/**
+ * uib_uet_nscc_wire_pack - Encode NSCC receiver feedback for the wire.
+ * @state: Wire or congestion-control state to encode or fill
+ * @service_time_ns: Service time in nanoseconds to encode or fill
+ * @restore: Restore-window flag to encode or fill
+ * @penalty: Congestion-window penalty to encode or fill
+ * @received_bytes: Newly received byte count to encode
+ * @out_of_order: Out-of-order packet count to encode or fill
+ * @uib-api: Ultra Ethernet extensions
+ */
 void uib_uet_nscc_wire_pack(struct uib_uet_nscc_wire_state *state,
 			    uint32_t service_time_ns, uint8_t restore,
 			    uint8_t penalty, uint32_t received_bytes,
@@ -361,6 +401,16 @@ void uib_uet_nscc_wire_pack(struct uib_uet_nscc_wire_state *state,
 	state->out_of_order_count = htons(out_of_order);
 }
 
+/**
+ * uib_uet_nscc_wire_unpack - Decode NSCC receiver feedback from the wire.
+ * @state: Wire or congestion-control state to encode or fill
+ * @service_time_ns: Output for the decoded service time in nanoseconds
+ * @restore: Output for the restore-window flag
+ * @penalty: Output for the congestion-window penalty
+ * @received_units: Output for the decoded receive counter units
+ * @out_of_order: Output for the out-of-order packet count
+ * @uib-api: Ultra Ethernet extensions
+ */
 void uib_uet_nscc_wire_unpack(const struct uib_uet_nscc_wire_state *state,
 			      uint32_t *service_time_ns, uint8_t *restore,
 			      uint8_t *penalty, uint32_t *received_units,
@@ -381,6 +431,14 @@ void uib_uet_nscc_wire_unpack(const struct uib_uet_nscc_wire_state *state,
 		*out_of_order = ntohs(state->out_of_order_count);
 }
 
+/**
+ * uib_uet_ses_fragment_info - Encode SES fragment length and message offset.
+ * @payload_len: Fragment payload length in bytes
+ * @message_offset: Offset of the fragment in the complete message
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: The packed SES fragment-information field in network byte order.
+ */
 uint64_t uib_uet_ses_fragment_info(uint32_t payload_len,
 				   uint32_t message_offset)
 {
@@ -388,6 +446,14 @@ uint64_t uib_uet_ses_fragment_info(uint32_t payload_len,
 			message_offset);
 }
 
+/**
+ * uib_uet_ses_payload_len - Decode an SES request's fragment payload length.
+ * @request: Ultra Ethernet session request
+ * @packet_payload_len: Payload bytes available in the packet
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: The decoded fragment payload length in bytes.
+ */
 uint32_t uib_uet_ses_payload_len(const struct uib_uet_ses_req *request,
 				 size_t packet_payload_len)
 {
@@ -399,6 +465,13 @@ uint32_t uib_uet_ses_payload_len(const struct uib_uet_ses_req *request,
 	return (uint32_t)(fragment >> 32) & UIB_UET_SES_LENGTH_MASK;
 }
 
+/**
+ * uib_uet_ses_message_offset - Decode an SES request's message offset.
+ * @request: Ultra Ethernet session request
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: The decoded message offset in bytes.
+ */
 uint32_t uib_uet_ses_message_offset(const struct uib_uet_ses_req *request)
 {
 	if (request->flags & UIB_UET_SES_FLAG_SOM)
@@ -406,6 +479,19 @@ uint32_t uib_uet_ses_message_offset(const struct uib_uet_ses_req *request)
 	return (uint32_t)be64toh(request->header_data);
 }
 
+/**
+ * uib_uet_build_ack - Build a UET cumulative or exact ACK packet.
+ * @packet: Packet buffer
+ * @capacity: Capacity of the output buffer in bytes
+ * @cack_psn: Highest cumulatively acknowledged packet sequence number
+ * @ack_psn: Packet sequence number acknowledged exactly
+ * @spdcid: Source packet delivery context identifier
+ * @dpdcid: Destination packet delivery context identifier
+ * @next_header: Next-header type to encode
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: The encoded ACK length on success, or -EINVAL for invalid input.
+ */
 int uib_uet_build_ack(void *packet, size_t capacity, uint32_t cack_psn,
 		      uint32_t ack_psn, uint16_t spdcid, uint16_t dpdcid,
 		      uint8_t next_header)
@@ -564,6 +650,14 @@ static void uet_qp_modified(struct uib_qp *qp, int attr_mask)
 		uet_nscc_init(qp, uet);
 }
 
+/**
+ * uib_uet_session_configure - Configure a QP's UET session parameters.
+ * @qp: Queue pair
+ * @config: Configuration to apply or fill
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_uet_session_configure(struct uib_qp *qp,
 			      const struct uib_uet_session_config *config)
 {
@@ -581,6 +675,14 @@ int uib_uet_session_configure(struct uib_qp *qp,
 	return 0;
 }
 
+/**
+ * uib_uet_session_query - Read a QP's UET session parameters.
+ * @qp: Queue pair
+ * @config: Session configuration structure to fill
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_uet_session_query(struct uib_qp *qp,
 			  struct uib_uet_session_config *config)
 {
@@ -595,6 +697,14 @@ int uib_uet_session_query(struct uib_qp *qp,
 	return 0;
 }
 
+/**
+ * uib_uet_optimized_configure - Select a QP's optimized-header policy.
+ * @qp: Queue pair
+ * @mode: Mode to apply or fill
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_uet_optimized_configure(struct uib_qp *qp,
 				enum uib_uet_optimized_mode mode)
 {
@@ -614,6 +724,15 @@ int uib_uet_optimized_configure(struct uib_qp *qp,
 	return 0;
 }
 
+/**
+ * uib_uet_optimized_query - Read optimized-header counters and policy.
+ * @qp: Queue pair
+ * @mode: Output for the optimized-header policy
+ * @stats: Statistics structure to fill
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_uet_optimized_query(struct uib_qp *qp,
 			    enum uib_uet_optimized_mode *mode,
 			    struct uib_uet_optimized_stats *stats)
@@ -633,6 +752,14 @@ int uib_uet_optimized_query(struct uib_qp *qp,
 	return 0;
 }
 
+/**
+ * uib_uet_multipath_configure - Configure a QP's entropy paths and policy.
+ * @qp: Queue pair
+ * @config: Configuration to apply or fill
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_uet_multipath_configure(struct uib_qp *qp,
 				const struct uib_uet_multipath_config *config)
 {
@@ -658,6 +785,15 @@ int uib_uet_multipath_configure(struct uib_qp *qp,
 	return 0;
 }
 
+/**
+ * uib_uet_multipath_query - Read a QP's multipath state and counters.
+ * @qp: Queue pair
+ * @config: Multipath configuration structure to fill
+ * @stats: Statistics structure to fill
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_uet_multipath_query(struct uib_qp *qp,
 			    struct uib_uet_multipath_config *config,
 			    struct uib_uet_multipath_stats *stats)
@@ -677,6 +813,13 @@ int uib_uet_multipath_query(struct uib_qp *qp,
 	return 0;
 }
 
+/**
+ * uib_uet_atomic_datatype_size - Return a UET atomic datatype's byte size.
+ * @datatype: Ultra Ethernet atomic datatype code
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: The datatype width in bytes, or 0 if @datatype is unsupported.
+ */
 size_t uib_uet_atomic_datatype_size(uint8_t datatype)
 {
 	switch (datatype) {
@@ -702,6 +845,15 @@ static int uet_atomic_has_two_operands(uint8_t opcode)
 	return opcode >= UIB_UET_AMO_CSWAP && opcode <= UIB_UET_AMO_MSWAP;
 }
 
+/**
+ * uib_uet_post_atomic - Post an extended Ultra Ethernet atomic operation.
+ * @qp: Queue pair
+ * @wr: First work request in the chain
+ * @bad: Output pointer for the first unposted work request
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_uet_post_atomic(struct uib_qp *qp, struct uib_uet_atomic_wr *wr,
 			struct uib_uet_atomic_wr **bad)
 {
@@ -759,6 +911,14 @@ int uib_uet_post_atomic(struct uib_qp *qp, struct uib_uet_atomic_wr *wr,
 	return 0;
 }
 
+/**
+ * uib_uet_nscc_configure_qp - Configure NSCC for one UET QP.
+ * @qp: Queue pair
+ * @config: Configuration to apply or fill
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_uet_nscc_configure_qp(struct uib_qp *qp,
 			      const struct uib_uet_nscc_config *config)
 {
@@ -779,6 +939,14 @@ int uib_uet_nscc_configure_qp(struct uib_qp *qp,
 	return 0;
 }
 
+/**
+ * uib_uet_nscc_query_qp - Read NSCC state from one UET QP.
+ * @qp: Queue pair
+ * @state: NSCC state structure to fill
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_uet_nscc_query_qp(struct uib_qp *qp, struct uib_uet_nscc *state)
 {
 	struct uib_uet_qp *uet;

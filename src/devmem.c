@@ -81,6 +81,13 @@ static int genl_family_cb(const struct nlmsghdr *nlh, void *data)
 	return MNL_CB_STOP;
 }
 
+/**
+ * uib_genl_family_id - Resolve a generic-netlink family with libmnl.
+ * @name: Generic-netlink family name
+ * @uib-api: Netdev DMA-BUF helpers
+ *
+ * Return: The positive family identifier on success, or a negative error code.
+ */
 int uib_genl_family_id(const char *name)
 {
 	char buf[MNL_SOCKET_BUFFER_SIZE];
@@ -144,6 +151,16 @@ static int devmem_cb(const struct nlmsghdr *nlh, void *data)
 	return mnl_attr_parse(nlh, sizeof(*genl), devmem_attr_cb, data);
 }
 
+/**
+ * uib_devmem_bind_rx - Bind a DMA-BUF to a netdev receive queue.
+ * @ifname: Network interface name
+ * @queue_id: Receive queue identifier
+ * @dmabuf_fd: File descriptor for the DMA-BUF
+ * @binding: Binding object to initialize
+ * @uib-api: Netdev DMA-BUF helpers
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_devmem_bind_rx(const char *ifname, uint32_t queue_id, int dmabuf_fd,
 		       struct uib_devmem_binding *binding)
 {
@@ -209,6 +226,11 @@ int uib_devmem_bind_rx(const char *ifname, uint32_t queue_id, int dmabuf_fd,
 	return 0;
 }
 
+/**
+ * uib_devmem_unbind - Remove a netdev receive-queue DMA-BUF binding.
+ * @binding: Active binding to release
+ * @uib-api: Netdev DMA-BUF helpers
+ */
 void uib_devmem_unbind(struct uib_devmem_binding *binding)
 {
 	if (binding && binding->nl) {

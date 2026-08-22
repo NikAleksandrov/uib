@@ -3,248 +3,3153 @@
 
 # Public UIB API
 
-These tables cover every `uib_*` and `uibv_*` function declared by
-the installed headers. They are generated from kernel-doc-shaped
-comments above the function definitions in `src/`. Examples include
-the prerequisite calls needed to obtain each object.
+This reference covers every `uib_*` and `uibv_*` function declared by
+the installed headers. Entries are generated from kernel-doc-shaped
+comments above the function definitions in `src/`.
 
-## AF_XDP frame helpers
+## Contents
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_afxdp_parse_mac`](../include/uib/afxdp_frame.h) | <code>int uib_afxdp_parse_mac(const char *text, uint8_t mac[6]);</code> | Parse a colon-separated Ethernet MAC address. | <code>uib_afxdp_parse_mac(text, mac);</code> |
-| [`uib_inet_csum`](../include/uib/afxdp_frame.h) | <code>uint16_t uib_inet_csum(const void *data, size_t len);</code> | Calculate an Internet checksum over a byte range. | <code>uib_inet_csum(data, len);</code> |
-| [`uib_frame_build`](../include/uib/afxdp_frame.h) | <code>int uib_frame_build(uint8_t *out, size_t cap, const struct uib_frame_hdr *hi, const void *payload, size_t paylen);</code> | Build an Ethernet, IPv4, and UDP frame. | <code>uib_frame_build(out, cap, hi, payload, paylen);</code> |
-| [`uib_frame_parse`](../include/uib/afxdp_frame.h) | <code>int uib_frame_parse(const uint8_t *frame, size_t len, uint16_t want_dport, struct sockaddr_in *src, const uint8_t **payload, size_t *paylen);</code> | Validate a received frame and locate its UDP payload. | <code>uib_frame_parse(frame, len, want_dport, src, payload, paylen);</code> |
-
-## RoCEv2 wire helpers
-
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_crc32`](../include/uib/bth.h) | <code>uint32_t uib_crc32(uint32_t crc, const void *buf, size_t len);</code> | Extend an RDMA CRC-32 value with a byte range. | <code>uib_crc32(crc, buf, len);</code> |
-| [`uib_icrc`](../include/uib/bth.h) | <code>uint32_t uib_icrc(const void *packet, size_t len);</code> | Calculate the invariant CRC of an RDMA packet. | <code>uib_icrc(packet, len);</code> |
-| [`uib_rocev2_icrc_ipv4`](../include/uib/bth.h) | <code>uint32_t uib_rocev2_icrc_ipv4(uint32_t src_ip, uint32_t dst_ip, uint16_t src_port, uint16_t dst_port, uint16_t ip_id, const void *rdma, size_t rdma_len);</code> | Calculate a RoCEv2 IPv4 invariant CRC. | <code>uib_rocev2_icrc_ipv4(src_ip, dst_ip, src_port, dst_port, ip_id, rdma, rdma_len);</code> |
-| [`uib_bth_pack`](../include/uib/bth.h) | <code>void uib_bth_pack(struct uib_bth *bth, uint8_t opcode, uint16_t pkey, uint32_t dqpn, uint32_t psn, int ack_request);</code> | Encode a Base Transport Header. | <code>uib_bth_pack(bth, opcode, pkey, dqpn, psn, ack_request);</code> |
-| [`uib_bth_unpack`](../include/uib/bth.h) | <code>void uib_bth_unpack(const struct uib_bth *bth, uint8_t *opcode, uint32_t *dqpn, uint32_t *psn, int *ack_request);</code> | Decode a Base Transport Header. | <code>uib_bth_unpack(bth, opcode, dqpn, psn, ack_request);</code> |
-| [`uib_bth_set_pad`](../include/uib/bth.h) | <code>void uib_bth_set_pad(struct uib_bth *bth, uint8_t pad);</code> | Set the BTH payload padding count. | <code>uib_bth_set_pad(bth, pad);</code> |
-| [`uib_bth_pad`](../include/uib/bth.h) | <code>uint8_t uib_bth_pad(const struct uib_bth *bth);</code> | Read the BTH payload padding count. | <code>uib_bth_pad(bth);</code> |
-| [`uib_reth_pack`](../include/uib/bth.h) | <code>void uib_reth_pack(struct uib_reth *r, uint64_t va, uint32_t rkey, uint32_t len);</code> | Encode an RDMA Extended Transport Header. | <code>uib_reth_pack(r, va, rkey, len);</code> |
-| [`uib_reth_unpack`](../include/uib/bth.h) | <code>void uib_reth_unpack(const struct uib_reth *r, uint64_t *va, uint32_t *rkey, uint32_t *len);</code> | Decode an RDMA Extended Transport Header. | <code>uib_reth_unpack(r, va, rkey, len);</code> |
-| [`uib_deth_pack`](../include/uib/bth.h) | <code>void uib_deth_pack(struct uib_deth *d, uint32_t qkey, uint32_t sqp);</code> | Encode a Datagram Extended Transport Header. | <code>uib_deth_pack(d, qkey, sqp);</code> |
-| [`uib_deth_unpack`](../include/uib/bth.h) | <code>void uib_deth_unpack(const struct uib_deth *d, uint32_t *qkey, uint32_t *sqp);</code> | Decode a Datagram Extended Transport Header. | <code>uib_deth_unpack(d, qkey, sqp);</code> |
-| [`uib_aeth_pack`](../include/uib/bth.h) | <code>void uib_aeth_pack(struct uib_aeth *a, uint8_t syndrome, uint32_t msn);</code> | Encode an ACK Extended Transport Header. | <code>uib_aeth_pack(a, syndrome, msn);</code> |
-| [`uib_aeth_unpack`](../include/uib/bth.h) | <code>void uib_aeth_unpack(const struct uib_aeth *a, uint8_t *syndrome, uint32_t *msn);</code> | Decode an ACK Extended Transport Header. | <code>uib_aeth_unpack(a, syndrome, msn);</code> |
+- [Contexts and QP dispatch](#contexts-and-qp-dispatch)
+- [Protocol selection](#protocol-selection)
+- [Native verbs compatibility API](#native-verbs-compatibility-api)
+- [Protection domains](#protection-domains)
+- [Memory regions](#memory-regions)
+- [Completion queues and events](#completion-queues-and-events)
+- [Queue pairs and data transfer](#queue-pairs-and-data-transfer)
+- [Packet transports](#packet-transports)
+- [Zero-copy helpers](#zero-copy-helpers)
+- [Provider-owned host-memory receive](#provider-owned-host-memory-receive)
+- [Netdev DMA-BUF helpers](#netdev-dma-buf-helpers)
+- [Packet sequence indexes](#packet-sequence-indexes)
+- [RoCEv2 wire helpers](#rocev2-wire-helpers)
+- [Ultra Ethernet extensions](#ultra-ethernet-extensions)
+- [Ultra Ethernet NSCC](#ultra-ethernet-nscc)
+- [AF_XDP frame helpers](#afxdp-frame-helpers)
 
 ## Contexts and QP dispatch
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_open_device`](../include/uib/context.h) | <code>struct uib_context *uib_open_device(const char *bind_ip, uint16_t bind_port);</code> | Open a context using the environment-selected protocol. | <code>ctx = uib_open_device("192.0.2.1", 4791);</code> |
-| [`uib_open_device_protocol`](../include/uib/context.h) | <code>struct uib_context *uib_open_device_protocol(const char *bind_ip, uint16_t bind_port, const char *protocol);</code> | Open a context using an explicit wire protocol. | <code>ctx = uib_open_device_protocol("192.0.2.1", 5432, "uet");</code> |
-| [`uib_close_device`](../include/uib/context.h) | <code>int uib_close_device(struct uib_context *ctx);</code> | Stop transport workers and release a context. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_close_device(ctx);</code> |
-| [`uib_register_qp`](../include/uib/context.h) | <code>uint32_t uib_register_qp(struct uib_context *ctx, struct uib_qp *qp);</code> | Assign a QPN and publish a QP in its context. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_register_qp(ctx, qp);</code> |
-| [`uib_qp_retry_schedule`](../include/uib/context.h) | <code>void uib_qp_retry_schedule(struct uib_qp *qp, uint64_t deadline_ns);</code> | Add or update a QP retransmission deadline. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_qp_retry_schedule(qp, deadline_ns);</code> |
-| [`uib_qp_retry_cancel`](../include/uib/context.h) | <code>void uib_qp_retry_cancel(struct uib_qp *qp);</code> | Remove a QP from the retransmission heap. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_qp_retry_cancel(qp);</code> |
-| [`uib_retry_pop_due`](../include/uib/context.h) | <code>struct uib_qp *uib_retry_pop_due(struct uib_context *ctx, uint64_t now_ns);</code> | Remove and return the next due retransmission QP. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_retry_pop_due(ctx, now_ns);</code> |
-| [`uib_unregister_qp`](../include/uib/context.h) | <code>void uib_unregister_qp(struct uib_context *ctx, struct uib_qp *qp);</code> | Remove a QP from context lookup structures. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_unregister_qp(ctx, qp);</code> |
-| [`uib_lookup_qp`](../include/uib/context.h) | <code>struct uib_qp *uib_lookup_qp(struct uib_context *ctx, uint32_t qpn);</code> | Find a QP by QPN with internal synchronization. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_lookup_qp(ctx, qpn);</code> |
-| [`uib_lookup_qp_rcu`](../include/uib/context.h) | <code>struct uib_qp *uib_lookup_qp_rcu(struct uib_context *ctx, uint32_t qpn);</code> | Find a QP while the caller holds an RCU read lock. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); rcu_read_lock(); qp = uib_lookup_qp_rcu(ctx, qpn); rcu_read_unlock();</code> |
+### [`uib_open_device`](../include/uib/context.h)
 
-## Completion queues and events
+```c
+struct uib_context *uib_open_device(const char *bind_ip, uint16_t bind_port);
+```
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_create_comp_channel`](../include/uib/cq.h) | <code>struct uib_comp_channel *uib_create_comp_channel(struct uib_context *ctx);</code> | Create a pollable completion-event channel. | <code>ctx = uib_open_device("0.0.0.0", 4791); channel = uib_create_comp_channel(ctx);</code> |
-| [`uib_destroy_comp_channel`](../include/uib/cq.h) | <code>int uib_destroy_comp_channel(struct uib_comp_channel *channel);</code> | Release a completion-event channel. | <code>channel = uib_create_comp_channel(ctx); uib_destroy_comp_channel(channel);</code> |
-| [`uib_comp_channel_fd`](../include/uib/cq.h) | <code>int uib_comp_channel_fd(const struct uib_comp_channel *channel);</code> | Return the fd used to poll a completion channel. | <code>channel = uib_create_comp_channel(ctx); fd = uib_comp_channel_fd(channel); poll(&amp;pfd, 1, -1);</code> |
-| [`uib_create_cq_channel`](../include/uib/cq.h) | <code>struct uib_cq *uib_create_cq_channel(struct uib_context *ctx, int cqe, struct uib_comp_channel *channel, void *event_context);</code> | Create a CQ attached to an event channel. | <code>channel = uib_create_comp_channel(ctx); cq = uib_create_cq_channel(ctx, 256, channel, cookie);</code> |
-| [`uib_create_cq`](../include/uib/cq.h) | <code>struct uib_cq *uib_create_cq(struct uib_context *ctx, int cqe);</code> | Create a completion queue without an event channel. | <code>ctx = uib_open_device("0.0.0.0", 4791); cq = uib_create_cq(ctx, 256);</code> |
-| [`uib_destroy_cq`](../include/uib/cq.h) | <code>int uib_destroy_cq(struct uib_cq *cq);</code> | Release an unused completion queue. | <code>cq = uib_create_cq(ctx, 256); uib_destroy_cq(cq);</code> |
-| [`uib_cq_push`](../include/uib/cq.h) | <code>int uib_cq_push(struct uib_cq *cq, const struct uib_wc *wc);</code> | Publish one completion to a CQ. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_cq_push(cq, wc);</code> |
-| [`uib_poll_cq`](../include/uib/cq.h) | <code>int uib_poll_cq(struct uib_cq *cq, int n, struct uib_wc *out);</code> | Poll completed work requests from a CQ. | <code>cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_post_send(qp, &amp;send, &amp;bad); count = uib_poll_cq(cq, 16, wc);</code> |
-| [`uib_req_notify_cq`](../include/uib/cq.h) | <code>int uib_req_notify_cq(struct uib_cq *cq, int solicited_only);</code> | Arm one-shot notification for the next completion. | <code>channel = uib_create_comp_channel(ctx); cq = uib_create_cq_channel(ctx, 256, channel, cookie); uib_req_notify_cq(cq, 0);</code> |
-| [`uib_get_cq_event`](../include/uib/cq.h) | <code>int uib_get_cq_event(struct uib_comp_channel *channel, struct uib_cq **cq, void **event_context);</code> | Consume the next completion-channel event. | <code>uib_req_notify_cq(cq, 0); poll(&amp;pfd, 1, -1); uib_get_cq_event(channel, &amp;event_cq, &amp;cookie);</code> |
-| [`uib_ack_cq_events`](../include/uib/cq.h) | <code>void uib_ack_cq_events(struct uib_cq *cq, unsigned int events);</code> | Acknowledge CQ events. | <code>uib_get_cq_event(channel, &amp;event_cq, &amp;cookie); uib_ack_cq_events(event_cq, 1);</code> |
+Description:
 
-## Netdev DMA-BUF helpers
+Open a context using the environment-selected protocol.
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_genl_family_id`](../include/uib/devmem.h) | <code>int uib_genl_family_id(const char *name);</code> | Resolve a generic-netlink family with libmnl. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_genl_family_id(name);</code> |
-| [`uib_devmem_bind_rx`](../include/uib/devmem.h) | <code>int uib_devmem_bind_rx(const char *ifname, uint32_t queue_id, int dmabuf_fd, struct uib_devmem_binding *b);</code> | Bind a DMA-BUF to a netdev receive queue. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_devmem_bind_rx(ifname, queue_id, dmabuf_fd, b);</code> |
-| [`uib_devmem_unbind`](../include/uib/devmem.h) | <code>void uib_devmem_unbind(struct uib_devmem_binding *b);</code> | Remove a netdev receive-queue DMA-BUF binding. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_devmem_unbind(b);</code> |
+Parameters:
 
-## Provider-owned host-memory receive
+- `bind_ip` — Local IPv4 address in presentation format
+- `bind_port` — Local transport port in host byte order
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_post_recv_loan`](../include/uib/host_zc.h) | <code>int uib_post_recv_loan(struct uib_qp *qp, uint64_t wr_id, size_t capacity);</code> | Post a provider-owned host-memory receive. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_post_recv_loan(qp, 1, 65536);</code> |
-| [`uib_repost_rx_loan`](../include/uib/host_zc.h) | <code>int uib_repost_rx_loan(struct uib_qp *qp, struct uib_rx_loan *loan, uint64_t wr_id);</code> | Repost a released completion without reallocating it. | <code>uib_post_recv_loan(qp, 1, 65536); uib_poll_cq(cq, 1, &amp;wc); uib_wc_take_rx_loan(&amp;wc, &amp;loan); uib_repost_rx_loan(qp, &amp;loan, 2);</code> |
-| [`uib_wc_take_rx_loan`](../include/uib/host_zc.h) | <code>int uib_wc_take_rx_loan(struct uib_wc *wc, struct uib_rx_loan *loan);</code> | Take ownership of a completed receive loan. | <code>uib_post_recv_loan(qp, 1, 65536); uib_poll_cq(cq, 1, &amp;wc); uib_wc_take_rx_loan(&amp;wc, &amp;loan);</code> |
-| [`uib_release_rx_loan`](../include/uib/host_zc.h) | <code>void uib_release_rx_loan(struct uib_rx_loan *loan);</code> | Return a receive loan to its provider. | <code>uib_post_recv_loan(qp, 1, 65536); uib_poll_cq(cq, 1, &amp;wc); uib_wc_take_rx_loan(&amp;wc, &amp;loan); uib_release_rx_loan(&amp;loan);</code> |
-| [`uib_host_zc_capabilities`](../include/uib/host_zc.h) | <code>uint32_t uib_host_zc_capabilities(struct uib_context *ctx);</code> | Query provider-owned receive capabilities. | <code>ctx = uib_open_device("0.0.0.0", 4791); capabilities = uib_host_zc_capabilities(ctx);</code> |
+Return value:
 
-## Memory regions
+A pointer to the new object on success, or NULL on failure.
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_mr_put`](../include/uib/mr.h) | <code>void uib_mr_put(struct uib_mr *mr);</code> | Release an MR reference returned by a lookup. | <code>mr = uib_pd_lookup_lkey(pd, lkey); if (mr) uib_mr_put(mr);</code> |
-| [`uib_reg_mr`](../include/uib/mr.h) | <code>struct uib_mr *uib_reg_mr(struct uib_pd *pd, void *addr, size_t length, int access);</code> | Register ordinary process memory for RDMA access. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buffer, length, access);</code> |
-| [`uib_pd_attach_mr`](../include/uib/pd.h) | <code>int uib_pd_attach_mr(struct uib_pd *pd, struct uib_mr *mr);</code> | Publish an MR in a protection domain. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); uib_pd_attach_mr(pd, mr);</code> |
-| [`uib_reg_mr_dmabuf`](../include/uib/mr.h) | <code>struct uib_mr *uib_reg_mr_dmabuf(struct uib_pd *pd, int dmabuf_fd, size_t offset, size_t length, int access);</code> | Import a CPU-mappable DMA-BUF with a synthetic IOVA. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr_dmabuf(pd, fd, offset, length, access);</code> |
-| [`uib_reg_mr_dmabuf_ex`](../include/uib/mr.h) | <code>struct uib_mr *uib_reg_mr_dmabuf_ex(struct uib_pd *pd, int dmabuf_fd, size_t offset, size_t length, int access, uint32_t flags);</code> | Import a DMA-BUF with explicit registration flags. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr_dmabuf_ex(pd, fd, offset, length, access, flags);</code> |
-| [`uib_reg_mr_dmabuf_iova`](../include/uib/mr.h) | <code>struct uib_mr *uib_reg_mr_dmabuf_iova(struct uib_pd *pd, int dmabuf_fd, size_t offset, size_t length, uint64_t iova, int access, uint32_t flags);</code> | Import a DMA-BUF at a caller-selected IOVA. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr_dmabuf_iova(pd, fd, offset, length, iova, access, flags);</code> |
-| [`uib_dereg_mr`](../include/uib/mr.h) | <code>int uib_dereg_mr(struct uib_mr *mr);</code> | Unpublish an MR and wait for lookup users before release. | <code>pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buffer, length, access); uib_dereg_mr(mr);</code> |
-| [`uib_mr_check_local`](../include/uib/mr.h) | <code>int uib_mr_check_local(struct uib_pd *pd, uint32_t lkey, const void *addr, size_t len, int access);</code> | Validate a local key, range, and access mask. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); uib_mr_check_local(pd, lkey, addr, len, access);</code> |
-| [`uib_mr_lookup_local`](../include/uib/mr.h) | <code>struct uib_mr *uib_mr_lookup_local(struct uib_pd *pd, uint32_t lkey, const void *addr, size_t len, int access);</code> | Find and reference a validated local MR. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); mr = uib_mr_lookup_local(pd, lkey, addr, len, access); if (mr) uib_mr_put(mr);</code> |
-| [`uib_mr_check_remote`](../include/uib/mr.h) | <code>struct uib_mr *uib_mr_check_remote(struct uib_pd *pd, uint32_t rkey, uint64_t va, size_t len, int access);</code> | Find and reference a validated remote MR by rkey. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); mr = uib_mr_check_remote(pd, rkey, va, len, access); if (mr) uib_mr_put(mr);</code> |
-| [`uib_mr_check_remote_address`](../include/uib/mr.h) | <code>struct uib_mr *uib_mr_check_remote_address(struct uib_pd *pd, uint64_t va, size_t len, int access);</code> | Find and reference a remote MR by address. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); mr = uib_mr_check_remote_address(pd, va, len, access); if (mr) uib_mr_put(mr);</code> |
-| [`uib_mr_place`](../include/uib/mr.h) | <code>int uib_mr_place(struct uib_mr *mr, uint64_t va, const void *src, size_t len);</code> | Copy received bytes into a registered memory range. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); uib_mr_place(mr, va, src, len);</code> |
-| [`uib_mr_read`](../include/uib/mr.h) | <code>int uib_mr_read(struct uib_mr *mr, uint64_t va, void *dst, size_t len);</code> | Copy bytes out of a registered memory range. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); uib_mr_read(mr, va, dst, len);</code> |
-| [`uib_mr_cpu_begin`](../include/uib/mr.h) | <code>int uib_mr_cpu_begin(struct uib_mr *mr, uint32_t access);</code> | Begin synchronized CPU access to a DMA-BUF MR. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); uib_mr_cpu_begin(mr, access);</code> |
-| [`uib_mr_cpu_end`](../include/uib/mr.h) | <code>int uib_mr_cpu_end(struct uib_mr *mr, uint32_t access);</code> | End synchronized CPU access to a DMA-BUF MR. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); uib_mr_cpu_end(mr, access);</code> |
+### [`uib_open_device_protocol`](../include/uib/context.h)
 
-## Protection domains
+```c
+struct uib_context *uib_open_device_protocol(const char *bind_ip,
+					     uint16_t bind_port,
+					     const char *protocol);
+```
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_alloc_pd`](../include/uib/pd.h) | <code>struct uib_pd *uib_alloc_pd(struct uib_context *ctx);</code> | Allocate a protection domain from an open context. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx);</code> |
-| [`uib_dealloc_pd`](../include/uib/pd.h) | <code>int uib_dealloc_pd(struct uib_pd *pd);</code> | Release an unused protection domain. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); uib_dealloc_pd(pd);</code> |
-| [`uib_pd_detach_mr`](../include/uib/pd.h) | <code>int uib_pd_detach_mr(struct uib_pd *pd, struct uib_mr *mr);</code> | Remove an MR from a protection domain. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); uib_pd_detach_mr(pd, mr);</code> |
-| [`uib_pd_lookup_lkey`](../include/uib/pd.h) | <code>struct uib_mr *uib_pd_lookup_lkey(struct uib_pd *pd, uint32_t lkey);</code> | Find and reference a protection-domain MR by local key. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_pd_lookup_lkey(pd, lkey); if (mr) uib_mr_put(mr);</code> |
-| [`uib_pd_lookup_rkey`](../include/uib/pd.h) | <code>struct uib_mr *uib_pd_lookup_rkey(struct uib_pd *pd, uint32_t rkey);</code> | Find and reference a protection-domain MR by remote key. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_pd_lookup_rkey(pd, rkey); if (mr) uib_mr_put(mr);</code> |
-| [`uib_pd_lookup_key`](../include/uib/pd.h) | <code>struct uib_mr *uib_pd_lookup_key(struct uib_pd *pd, uint32_t key);</code> | Find and reference a protection-domain MR by either key. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_pd_lookup_key(pd, key); if (mr) uib_mr_put(mr);</code> |
-| [`uib_pd_lookup_address`](../include/uib/pd.h) | <code>struct uib_mr *uib_pd_lookup_address(struct uib_pd *pd, uint64_t va, size_t len, int access);</code> | Find and reference an MR containing an IOVA range. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_pd_lookup_address(pd, va, len, access); if (mr) uib_mr_put(mr);</code> |
+Description:
+
+Open a context using an explicit wire protocol.
+
+Parameters:
+
+- `bind_ip` — Local IPv4 address in presentation format
+- `bind_port` — Local transport port in host byte order
+- `protocol` — Wire protocol name
+
+Return value:
+
+A pointer to the new object on success, or NULL on failure.
+
+### [`uib_close_device`](../include/uib/context.h)
+
+```c
+int uib_close_device(struct uib_context *ctx);
+```
+
+Description:
+
+Stop transport workers and release a context.
+
+Parameters:
+
+- `ctx` — UIB device context
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_register_qp`](../include/uib/context.h)
+
+```c
+uint32_t uib_register_qp(struct uib_context *ctx, struct uib_qp *qp);
+```
+
+Description:
+
+Assign a QPN and publish a QP in its context.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `qp` — Queue pair
+
+Return value:
+
+The assigned nonzero QP number on success, or 0 on failure.
+
+### [`uib_qp_retry_schedule`](../include/uib/context.h)
+
+```c
+void uib_qp_retry_schedule(struct uib_qp *qp, uint64_t deadline_ns);
+```
+
+Description:
+
+Add or update a QP retransmission deadline.
+
+Parameters:
+
+- `qp` — Queue pair
+- `deadline_ns` — Absolute retry deadline in nanoseconds
+
+### [`uib_qp_retry_cancel`](../include/uib/context.h)
+
+```c
+void uib_qp_retry_cancel(struct uib_qp *qp);
+```
+
+Description:
+
+Remove a QP from the retransmission heap.
+
+Parameters:
+
+- `qp` — Queue pair
+
+### [`uib_retry_pop_due`](../include/uib/context.h)
+
+```c
+struct uib_qp *uib_retry_pop_due(struct uib_context *ctx, uint64_t now_ns);
+```
+
+Description:
+
+Remove and return the next due retransmission QP.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `now_ns` — Current monotonic time in nanoseconds
+
+Return value:
+
+The next QP whose retry deadline has passed, or NULL if none is due.
+
+### [`uib_unregister_qp`](../include/uib/context.h)
+
+```c
+void     uib_unregister_qp(struct uib_context *ctx, struct uib_qp *qp);
+```
+
+Description:
+
+Remove a QP from context lookup structures.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `qp` — Queue pair
+
+### [`uib_lookup_qp`](../include/uib/context.h)
+
+```c
+struct uib_qp *uib_lookup_qp(struct uib_context *ctx, uint32_t qpn);
+```
+
+Description:
+
+Find a QP by QPN with internal synchronization.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `qpn` — Queue pair number
+
+Return value:
+
+The matching QP, or NULL if @qpn is not registered.
+
+### [`uib_lookup_qp_rcu`](../include/uib/context.h)
+
+```c
+struct uib_qp *uib_lookup_qp_rcu(struct uib_context *ctx, uint32_t qpn);
+```
+
+Description:
+
+Find a QP while the caller holds an RCU read lock.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `qpn` — Queue pair number
+
+Return value:
+
+The matching QP, or NULL if @qpn is not registered.
 
 ## Protocol selection
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_protocol_find`](../include/uib/protocol.h) | <code>const struct uib_protocol_ops *uib_protocol_find(const char *name);</code> | Find registered protocol operations by name. | <code>uib_protocol_find(name);</code> |
-| [`uib_protocol_from_env`](../include/uib/protocol.h) | <code>const struct uib_protocol_ops *uib_protocol_from_env(void);</code> | Select protocol operations from UIB_PROTOCOL. | <code>uib_protocol_from_env();</code> |
-| [`uib_protocol_default_port`](../include/uib/protocol.h) | <code>uint16_t uib_protocol_default_port(const char *name);</code> | Return a protocol's standard service port. | <code>uib_protocol_default_port(name);</code> |
+### [`uib_protocol_find`](../include/uib/protocol.h)
 
-## Ultra Ethernet extensions
+```c
+const struct uib_protocol_ops *uib_protocol_find(const char *name);
+```
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_uet_prologue_pack`](../include/uib/uet.h) | <code>uint16_t uib_uet_prologue_pack(uint8_t type, uint8_t next, uint8_t flags);</code> | Encode an Ultra Ethernet packet prologue. | <code>uib_uet_prologue_pack(type, next, flags);</code> |
-| [`uib_uet_prologue_type`](../include/uib/uet.h) | <code>uint8_t uib_uet_prologue_type(const struct uib_uet_prologue *prologue);</code> | Decode the packet type from a UET prologue. | <code>uib_uet_prologue_type(prologue);</code> |
-| [`uib_uet_prologue_next`](../include/uib/uet.h) | <code>uint8_t uib_uet_prologue_next(const struct uib_uet_prologue *prologue);</code> | Decode the next-header type from a UET prologue. | <code>uib_uet_prologue_next(prologue);</code> |
-| [`uib_uet_prologue_flags`](../include/uib/uet.h) | <code>uint8_t uib_uet_prologue_flags(const struct uib_uet_prologue *prologue);</code> | Decode flags from a UET prologue. | <code>uib_uet_prologue_flags(prologue);</code> |
-| [`uib_uet_nscc_wire_pack`](../include/uib/uet.h) | <code>void uib_uet_nscc_wire_pack(struct uib_uet_nscc_wire_state *state, uint32_t service_time_ns, uint8_t restore, uint8_t penalty, uint32_t received_bytes, uint16_t out_of_order);</code> | Encode NSCC receiver feedback for the wire. | <code>uib_uet_nscc_wire_pack(state, service_time_ns, restore, penalty, received_bytes, out_of_order);</code> |
-| [`uib_uet_nscc_wire_unpack`](../include/uib/uet.h) | <code>void uib_uet_nscc_wire_unpack(const struct uib_uet_nscc_wire_state *state, uint32_t *service_time_ns, uint8_t *restore, uint8_t *penalty, uint32_t *received_units, uint16_t *out_of_order);</code> | Decode NSCC receiver feedback from the wire. | <code>uib_uet_nscc_wire_unpack(state, service_time_ns, restore, penalty, received_units, out_of_order);</code> |
-| [`uib_uet_ses_fragment_info`](../include/uib/uet.h) | <code>uint64_t uib_uet_ses_fragment_info(uint32_t payload_len, uint32_t message_offset);</code> | Encode SES fragment length and message offset. | <code>uib_uet_ses_fragment_info(payload_len, message_offset);</code> |
-| [`uib_uet_ses_payload_len`](../include/uib/uet.h) | <code>uint32_t uib_uet_ses_payload_len(const struct uib_uet_ses_req *request, size_t packet_payload_len);</code> | Decode an SES request's fragment payload length. | <code>uib_uet_ses_payload_len(request, packet_payload_len);</code> |
-| [`uib_uet_ses_message_offset`](../include/uib/uet.h) | <code>uint32_t uib_uet_ses_message_offset(const struct uib_uet_ses_req *request);</code> | Decode an SES request's message offset. | <code>uib_uet_ses_message_offset(request);</code> |
-| [`uib_uet_build_ack`](../include/uib/uet.h) | <code>int uib_uet_build_ack(void *packet, size_t capacity, uint32_t cack_psn, uint32_t ack_psn, uint16_t spdcid, uint16_t dpdcid, uint8_t next_header);</code> | Build a UET cumulative or exact ACK packet. | <code>uib_uet_build_ack(packet, capacity, cack_psn, ack_psn, spdcid, dpdcid, next_header);</code> |
-| [`uib_psn_index_init`](../include/uib/psn_index.h) | <code>int uib_psn_index_init(struct uib_psn_index *index, uint32_t initial_size);</code> | Allocate an empty PSN hash index. | <code>uib_psn_index_init(index, initial_size);</code> |
-| [`uib_uet_session_configure`](../include/uib/uet.h) | <code>int uib_uet_session_configure(struct uib_qp *qp, const struct uib_uet_session_config *config);</code> | Configure a QP's UET session parameters. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_session_configure(qp, config);</code> |
-| [`uib_uet_session_query`](../include/uib/uet.h) | <code>int uib_uet_session_query(struct uib_qp *qp, struct uib_uet_session_config *config);</code> | Read a QP's UET session parameters. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_session_query(qp, config);</code> |
-| [`uib_uet_optimized_configure`](../include/uib/uet.h) | <code>int uib_uet_optimized_configure(struct uib_qp *qp, enum uib_uet_optimized_mode mode);</code> | Select a QP's optimized-header policy. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_optimized_configure(qp, mode);</code> |
-| [`uib_uet_optimized_query`](../include/uib/uet.h) | <code>int uib_uet_optimized_query(struct uib_qp *qp, enum uib_uet_optimized_mode *mode, struct uib_uet_optimized_stats *stats);</code> | Read optimized-header counters and policy. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_optimized_query(qp, mode, stats);</code> |
-| [`uib_uet_multipath_configure`](../include/uib/uet.h) | <code>int uib_uet_multipath_configure(struct uib_qp *qp, const struct uib_uet_multipath_config *config);</code> | Configure a QP's entropy paths and policy. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_multipath_configure(qp, config);</code> |
-| [`uib_uet_multipath_query`](../include/uib/uet.h) | <code>int uib_uet_multipath_query(struct uib_qp *qp, struct uib_uet_multipath_config *config, struct uib_uet_multipath_stats *stats);</code> | Read a QP's multipath state and counters. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_multipath_query(qp, config, stats);</code> |
-| [`uib_uet_atomic_datatype_size`](../include/uib/uet.h) | <code>size_t uib_uet_atomic_datatype_size(uint8_t datatype);</code> | Return a UET atomic datatype's byte size. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_atomic_datatype_size(datatype);</code> |
-| [`uib_uet_post_atomic`](../include/uib/uet.h) | <code>int uib_uet_post_atomic(struct uib_qp *qp, struct uib_uet_atomic_wr *wr, struct uib_uet_atomic_wr **bad);</code> | Post an extended Ultra Ethernet atomic operation. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_post_atomic(qp, wr, bad);</code> |
-| [`uib_uet_nscc_configure_qp`](../include/uib/uet_nscc.h) | <code>int uib_uet_nscc_configure_qp(struct uib_qp *qp, const struct uib_uet_nscc_config *config);</code> | Configure NSCC for one UET QP. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_nscc_configure_qp(qp, config);</code> |
-| [`uib_uet_nscc_query_qp`](../include/uib/uet_nscc.h) | <code>int uib_uet_nscc_query_qp(struct uib_qp *qp, struct uib_uet_nscc *state);</code> | Read NSCC state from one UET QP. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_nscc_query_qp(qp, state);</code> |
+Description:
 
-## Packet sequence indexes
+Find registered protocol operations by name.
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_psn_index_destroy`](../include/uib/psn_index.h) | <code>void uib_psn_index_destroy(struct uib_psn_index *index);</code> | Release a PSN hash index. | <code>uib_psn_index_destroy(index);</code> |
-| [`uib_psn_index_insert`](../include/uib/psn_index.h) | <code>int uib_psn_index_insert(struct uib_psn_index *index, uint32_t psn, void *value);</code> | Associate an outstanding packet with a PSN. | <code>uib_psn_index_insert(index, psn, value);</code> |
-| [`uib_psn_index_lookup`](../include/uib/psn_index.h) | <code>void *uib_psn_index_lookup(const struct uib_psn_index *index, uint32_t psn);</code> | Find an outstanding packet by PSN. | <code>uib_psn_index_lookup(index, psn);</code> |
-| [`uib_psn_index_remove`](../include/uib/psn_index.h) | <code>int uib_psn_index_remove(struct uib_psn_index *index, uint32_t psn, void *value);</code> | Remove and return an outstanding packet by PSN. | <code>uib_psn_index_remove(index, psn, value);</code> |
+Parameters:
 
-## Queue pairs and data transfer
+- `name` — Wire protocol name
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_create_qp`](../include/uib/qp.h) | <code>struct uib_qp *uib_create_qp(struct uib_pd *pd, const struct uib_qp_init_attr *attr);</code> | Create a queue pair from PD, CQ, and depth attributes. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); init.send_cq = cq; init.recv_cq = cq; qp = uib_create_qp(pd, &amp;init);</code> |
-| [`uib_rocev2_qp_fini`](../include/uib/qp.h) | <code>void uib_rocev2_qp_fini(struct uib_qp *qp);</code> | Release RoCEv2-specific QP state. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_rocev2_qp_fini(qp);</code> |
-| [`uib_destroy_qp`](../include/uib/qp.h) | <code>int uib_destroy_qp(struct uib_qp *qp);</code> | Destroy a QP and protocol-specific outstanding state. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_destroy_qp(qp);</code> |
-| [`uib_modify_qp`](../include/uib/qp.h) | <code>int uib_modify_qp(struct uib_qp *qp, const struct uib_qp_attr *attr, int attr_mask);</code> | Change QP state, peer, PSNs, access, or path MTU. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); attr.qp_state = UIB_QPS_INIT; uib_modify_qp(qp, &amp;attr, UIB_QP_STATE);</code> |
-| [`uib_qp_gather`](../include/uib/qp.h) | <code>int uib_qp_gather(struct uib_pd *pd, const struct uib_sge *sgl, int n, uint8_t *out, size_t cap);</code> | Gather an SGE list into a contiguous packet buffer. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_qp_gather(pd, sgl, n, out, cap);</code> |
-| [`uib_qp_scatter`](../include/uib/qp.h) | <code>int uib_qp_scatter(struct uib_pd *pd, struct uib_sge *sgl, int n, uint32_t msg_offset, const uint8_t *in, size_t in_len, size_t *consumed_out);</code> | Scatter received bytes into an SGE list. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_qp_scatter(pd, sgl, n, msg_offset, in, in_len, consumed_out);</code> |
-| [`uib_qp_emit_send`](../include/uib/qp.h) | <code>void uib_qp_emit_send(struct uib_qp *qp, uint64_t wr_id, enum uib_wr_opcode wr_op, int signaled, enum uib_wc_status status, uint32_t byte_len);</code> | Publish a send work completion. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_qp_emit_send(qp, wr_id, wr_op, signaled, status, byte_len);</code> |
-| [`uib_qp_emit_recv`](../include/uib/qp.h) | <code>void uib_qp_emit_recv(struct uib_qp *qp, uint64_t wr_id, enum uib_wc_status status, enum uib_wc_opcode opcode, uint32_t byte_len, uint32_t src_qp, uint32_t imm_data);</code> | Publish a receive work completion. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_qp_emit_recv(qp, wr_id, status, opcode, byte_len, src_qp, imm_data);</code> |
-| [`uib_qp_emit_recv_slot`](../include/uib/qp.h) | <code>void uib_qp_emit_recv_slot(struct uib_qp *qp, struct uib_rq_slot *slot, enum uib_wc_status status, enum uib_wc_opcode opcode, uint32_t byte_len, uint32_t src_qp, uint32_t imm_data);</code> | Publish a receive completion with private ownership. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_qp_pop_recv(qp, &amp;slot); uib_qp_emit_recv_slot(qp, &amp;slot, status, opcode, byte_len, src_qp, imm_data);</code> |
-| [`uib_rocev2_post_send`](../include/uib/qp.h) | <code>int uib_rocev2_post_send(struct uib_qp *qp, struct uib_send_wr *wr, struct uib_send_wr **bad);</code> | Execute a RoCEv2 send work-request chain. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_rocev2_post_send(qp, wr, bad);</code> |
-| [`uib_post_send`](../include/uib/qp.h) | <code>int uib_post_send(struct uib_qp *qp, struct uib_send_wr *wr, struct uib_send_wr **bad);</code> | Post SEND, WRITE, READ, or atomic work requests. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_modify_qp(qp, &amp;attr, mask); uib_post_send(qp, &amp;send, &amp;bad_send);</code> |
-| [`uib_post_recv`](../include/uib/qp.h) | <code>int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr, struct uib_recv_wr **bad);</code> | Post one or more receive work requests. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); recv.sg_list = &amp;sge; recv.num_sge = 1; uib_post_recv(qp, &amp;recv, &amp;bad_recv);</code> |
-| [`uib_qp_pop_recv`](../include/uib/qp.h) | <code>int uib_qp_pop_recv(struct uib_qp *qp, struct uib_rq_slot *out);</code> | Consume the oldest posted receive request. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_qp_pop_recv(qp, out);</code> |
-| [`uib_qp_release_recv`](../include/uib/qp.h) | <code>void uib_qp_release_recv(struct uib_rq_slot *slot);</code> | Release storage retained by a popped receive slot. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_qp_pop_recv(qp, &amp;slot); uib_qp_release_recv(&amp;slot);</code> |
-| [`uib_rocev2_handle_packet`](../include/uib/qp.h) | <code>int uib_rocev2_handle_packet(struct uib_qp *qp, const struct sockaddr_in *src, const void *packet, size_t len);</code> | Process one RoCEv2 packet for a QP. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_rocev2_handle_packet(qp, src, packet, len);</code> |
-| [`uib_qp_handle_packet`](../include/uib/qp.h) | <code>int uib_qp_handle_packet(struct uib_qp *qp, const struct sockaddr_in *src, const void *pkt, size_t len);</code> | Dispatch a received protocol packet to a QP. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_qp_handle_packet(qp, src, pkt, len);</code> |
-| [`uib_rocev2_retransmit_tick`](../include/uib/qp.h) | <code>void uib_rocev2_retransmit_tick(struct uib_qp *qp, uint64_t now_ns);</code> | Retransmit expired RoCEv2 requests. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_rocev2_retransmit_tick(qp, now_ns);</code> |
-| [`uib_qp_retransmit_tick`](../include/uib/qp.h) | <code>void uib_qp_retransmit_tick(struct uib_qp *qp, uint64_t now_ns);</code> | Run protocol retransmission work for a QP. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_qp_retransmit_tick(qp, now_ns);</code> |
+Return value:
 
-## Packet transports
+The matching protocol operations, the RoCEv2 operations for an empty name, or NULL for an unknown name.
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_transport_deliver`](../include/uib/transport.h) | <code>void uib_transport_deliver(struct uib_context *ctx, const struct sockaddr_in *src, const void *buf, size_t len);</code> | Route a received packet to its destination QP. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_transport_deliver(ctx, src, buf, len);</code> |
-| [`uib_transport_retransmit_walk`](../include/uib/transport.h) | <code>void uib_transport_retransmit_walk(struct uib_context *ctx);</code> | Process every expired retry deadline. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_transport_retransmit_walk(ctx);</code> |
-| [`uib_transport_mode_from_env`](../include/uib/transport.h) | <code>enum uib_transport_mode uib_transport_mode_from_env(void);</code> | Select transport mode from the environment. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_transport_mode_from_env();</code> |
-| [`uib_transport_init`](../include/uib/transport.h) | <code>int uib_transport_init(struct uib_context *ctx);</code> | Open the selected transport for a context. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_transport_init(ctx);</code> |
-| [`uib_transport_fini`](../include/uib/transport.h) | <code>void uib_transport_fini(struct uib_context *ctx);</code> | Stop and release a context's transport. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_transport_fini(ctx);</code> |
-| [`uib_transport_send`](../include/uib/transport.h) | <code>int uib_transport_send(struct uib_context *ctx, const struct sockaddr_in *dst, const void *buf, size_t len);</code> | Send a packet over the selected transport. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_transport_send(ctx, dst, buf, len);</code> |
-| [`uib_transport_send_entropy`](../include/uib/transport.h) | <code>int uib_transport_send_entropy(struct uib_context *ctx, const struct sockaddr_in *dst, const void *buf, size_t len, uint16_t entropy);</code> | Send a packet with path-selection entropy. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_transport_send_entropy(ctx, dst, buf, len, entropy);</code> |
-| [`uib_transport_send_ref`](../include/uib/transport.h) | <code>int uib_transport_send_ref(struct uib_context *ctx, const struct sockaddr_in *dst, const void *buf, size_t len, uib_transport_release_fn release, void *opaque);</code> | Send while retaining a caller-owned buffer. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_transport_send_ref(ctx, dst, buf, len, release, opaque);</code> |
-| [`uib_transport_send_ref_batch`](../include/uib/transport.h) | <code>int uib_transport_send_ref_batch(struct uib_context *ctx, const struct uib_transport_ref *refs, size_t count);</code> | Send retained buffers as one transport batch. | <code>ctx = uib_open_device("0.0.0.0", 4791); refs[0].buf = buf; refs[0].release = release; uib_transport_send_ref_batch(ctx, refs, 1);</code> |
-| [`uib_transport_get_stats`](../include/uib/transport.h) | <code>int uib_transport_get_stats(struct uib_context *ctx, struct uib_transport_stats *stats);</code> | Read transport, batching, and packet counters. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_transport_get_stats(ctx, stats);</code> |
+### [`uib_protocol_from_env`](../include/uib/protocol.h)
 
-## Ultra Ethernet NSCC
+```c
+const struct uib_protocol_ops *uib_protocol_from_env(void);
+```
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_uet_nscc_config_default`](../include/uib/uet_nscc.h) | <code>void uib_uet_nscc_config_default(struct uib_uet_nscc_config *config, uint32_t mtu);</code> | Derive default NSCC settings for an MTU. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_nscc_config_default(config, mtu);</code> |
-| [`uib_uet_nscc_init`](../include/uib/uet_nscc.h) | <code>void uib_uet_nscc_init(struct uib_uet_nscc *nscc, const struct uib_uet_nscc_config *config, uint64_t now_ns);</code> | Initialize an NSCC flow-control state machine. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_nscc_init(nscc, config, now_ns);</code> |
-| [`uib_uet_nscc_can_send`](../include/uib/uet_nscc.h) | <code>int uib_uet_nscc_can_send(const struct uib_uet_nscc *nscc, size_t bytes);</code> | Check whether the congestion window admits bytes. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_nscc_can_send(nscc, bytes);</code> |
-| [`uib_uet_nscc_ack_request`](../include/uib/uet_nscc.h) | <code>int uib_uet_nscc_ack_request(const struct uib_uet_nscc *nscc, uint32_t ack_generation_trigger);</code> | Decide whether a packet should request an ACK. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_nscc_ack_request(nscc, ack_generation_trigger);</code> |
-| [`uib_uet_nscc_on_send`](../include/uib/uet_nscc.h) | <code>void uib_uet_nscc_on_send(struct uib_uet_nscc *nscc, size_t bytes);</code> | Account newly transmitted bytes in NSCC. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_nscc_on_send(nscc, bytes);</code> |
-| [`uib_uet_nscc_on_ack`](../include/uib/uet_nscc.h) | <code>void uib_uet_nscc_on_ack(struct uib_uet_nscc *nscc, const struct uib_uet_nscc_ack *ack);</code> | Apply receiver feedback to NSCC sender state. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_nscc_on_ack(nscc, ack);</code> |
-| [`uib_uet_nscc_on_inferred_loss`](../include/uib/uet_nscc.h) | <code>void uib_uet_nscc_on_inferred_loss(struct uib_uet_nscc *nscc, size_t bytes);</code> | Reduce the window after inferred loss. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_nscc_on_inferred_loss(nscc, bytes);</code> |
-| [`uib_uet_nscc_on_nack`](../include/uib/uet_nscc.h) | <code>void uib_uet_nscc_on_nack(struct uib_uet_nscc *nscc, size_t bytes, int trimmed, int last_hop, int rccc_enabled, uint64_t now_ns);</code> | Reduce the window after an explicit NACK. | <code>ctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); cq = uib_create_cq(ctx, 256); qp = uib_create_qp(pd, &amp;init); uib_uet_nscc_on_nack(nscc, bytes, trimmed, last_hop, rccc_enabled, now_ns);</code> |
+Description:
+
+Select protocol operations from UIB_PROTOCOL.
+
+Return value:
+
+The selected protocol operations, or NULL if UIB_PROTOCOL is invalid.
+
+### [`uib_protocol_default_port`](../include/uib/protocol.h)
+
+```c
+uint16_t uib_protocol_default_port(const char *name);
+```
+
+Description:
+
+Return a protocol's standard service port.
+
+Parameters:
+
+- `name` — Wire protocol name
+
+Return value:
+
+The protocol's standard port in host byte order, or 0 if @name is unknown.
 
 ## Native verbs compatibility API
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uibv_get_device_list`](../include/uib/verbs.h) | <code>struct uibv_device **uibv_get_device_list(int *num);</code> | Enumerate UIB devices for local IPv4 interfaces. | <code>list = uibv_get_device_list(&amp;count);</code> |
-| [`uibv_free_device_list`](../include/uib/verbs.h) | <code>void uibv_free_device_list(struct uibv_device **list);</code> | Release a UIB device enumeration result. | <code>list = uibv_get_device_list(&amp;count); uibv_free_device_list(list);</code> |
-| [`uibv_get_device_name`](../include/uib/verbs.h) | <code>const char *uibv_get_device_name(struct uibv_device *dev);</code> | Return an enumerated UIB device's name. | <code>list = uibv_get_device_list(&amp;count); name = uibv_get_device_name(list[0]);</code> |
-| [`uibv_open_device`](../include/uib/verbs.h) | <code>struct uib_context *uibv_open_device(struct uibv_device *dev);</code> | Open an enumerated UIB device. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]);</code> |
-| [`uibv_close_device`](../include/uib/verbs.h) | <code>int uibv_close_device(struct uib_context *ctx);</code> | Close a UIB device context. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); uibv_close_device(ctx);</code> |
-| [`uibv_alloc_pd`](../include/uib/verbs.h) | <code>struct uib_pd *uibv_alloc_pd(struct uib_context *ctx);</code> | Allocate a protection domain through the verbs facade. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); pd = uibv_alloc_pd(ctx);</code> |
-| [`uibv_dealloc_pd`](../include/uib/verbs.h) | <code>int uibv_dealloc_pd(struct uib_pd *pd);</code> | Release a verbs-facade protection domain. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); pd = uibv_alloc_pd(ctx); uibv_dealloc_pd(pd);</code> |
-| [`uibv_reg_mr`](../include/uib/verbs.h) | <code>struct uib_mr *uibv_reg_mr(struct uib_pd *pd, void *addr, size_t len, int access);</code> | Register process memory through the verbs facade. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); pd = uibv_alloc_pd(ctx); mr = uibv_reg_mr(pd, buffer, length, access);</code> |
-| [`uibv_reg_dmabuf_mr`](../include/uib/verbs.h) | <code>struct uib_mr *uibv_reg_dmabuf_mr(struct uib_pd *pd, uint64_t offset, size_t len, uint64_t iova, int fd, int access);</code> | Register a DMA-BUF through the verbs facade. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); pd = uibv_alloc_pd(ctx); mr = uibv_reg_dmabuf_mr(pd, offset, length, iova, fd, access);</code> |
-| [`uibv_dereg_mr`](../include/uib/verbs.h) | <code>int uibv_dereg_mr(struct uib_mr *mr);</code> | Deregister a verbs-facade memory region. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); pd = uibv_alloc_pd(ctx); mr = uibv_reg_mr(pd, buffer, length, access); uibv_dereg_mr(mr);</code> |
-| [`uibv_create_cq`](../include/uib/verbs.h) | <code>struct uib_cq *uibv_create_cq(struct uib_context *ctx, int cqe);</code> | Create a verbs-facade completion queue. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); cq = uibv_create_cq(ctx, 256);</code> |
-| [`uibv_create_comp_channel`](../include/uib/verbs.h) | <code>struct uib_comp_channel *uibv_create_comp_channel(struct uib_context *ctx);</code> | Create a verbs-facade completion channel. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); channel = uibv_create_comp_channel(ctx);</code> |
-| [`uibv_destroy_comp_channel`](../include/uib/verbs.h) | <code>int uibv_destroy_comp_channel(struct uib_comp_channel *channel);</code> | Release a verbs-facade completion channel. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); channel = uibv_create_comp_channel(ctx); uibv_destroy_comp_channel(channel);</code> |
-| [`uibv_get_cq_event`](../include/uib/verbs.h) | <code>int uibv_get_cq_event(struct uib_comp_channel *channel, struct uib_cq **cq, void **event_context);</code> | Consume a verbs-facade completion event. | <code>channel = uibv_create_comp_channel(ctx); uibv_req_notify_cq(cq, 0); uibv_get_cq_event(channel, &amp;event_cq, &amp;cookie);</code> |
-| [`uibv_ack_cq_events`](../include/uib/verbs.h) | <code>void uibv_ack_cq_events(struct uib_cq *cq, unsigned int events);</code> | Acknowledge CQ events. | <code>uibv_get_cq_event(channel, &amp;event_cq, &amp;cookie); uibv_ack_cq_events(event_cq, 1);</code> |
-| [`uibv_req_notify_cq`](../include/uib/verbs.h) | <code>int uibv_req_notify_cq(struct uib_cq *cq, int solicited_only);</code> | Arm one-shot verbs-facade CQ notification. | <code>channel = uibv_create_comp_channel(ctx); uibv_req_notify_cq(cq, 0);</code> |
-| [`uibv_destroy_cq`](../include/uib/verbs.h) | <code>int uibv_destroy_cq(struct uib_cq *cq);</code> | Release a verbs-facade completion queue. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); cq = uibv_create_cq(ctx, 256); uibv_destroy_cq(cq);</code> |
-| [`uibv_poll_cq`](../include/uib/verbs.h) | <code>int uibv_poll_cq(struct uib_cq *cq, int n, struct uib_wc *wc);</code> | Poll verbs-facade work completions. | <code>cq = uibv_create_cq(ctx, 256); qp = uibv_create_qp(pd, &amp;init); uibv_post_send(qp, &amp;send, &amp;bad); count = uibv_poll_cq(cq, 16, wc);</code> |
-| [`uibv_create_qp`](../include/uib/verbs.h) | <code>struct uib_qp *uibv_create_qp(struct uib_pd *pd, struct uib_qp_init_attr *attr);</code> | Create a verbs-facade queue pair. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); pd = uibv_alloc_pd(ctx); cq = uibv_create_cq(ctx, 256); qp = uibv_create_qp(pd, &amp;init);</code> |
-| [`uibv_modify_qp`](../include/uib/verbs.h) | <code>int uibv_modify_qp(struct uib_qp *qp, struct uib_qp_attr *attr, int mask);</code> | Change verbs-facade QP state and attributes. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); pd = uibv_alloc_pd(ctx); cq = uibv_create_cq(ctx, 256); qp = uibv_create_qp(pd, &amp;init); uibv_modify_qp(qp, &amp;attr, mask);</code> |
-| [`uibv_destroy_qp`](../include/uib/verbs.h) | <code>int uibv_destroy_qp(struct uib_qp *qp);</code> | Release a verbs-facade queue pair. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); pd = uibv_alloc_pd(ctx); cq = uibv_create_cq(ctx, 256); qp = uibv_create_qp(pd, &amp;init); uibv_destroy_qp(qp);</code> |
-| [`uibv_post_send`](../include/uib/verbs.h) | <code>int uibv_post_send(struct uib_qp *qp, struct uib_send_wr *wr, struct uib_send_wr **bad);</code> | Post a verbs-facade send work-request chain. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); pd = uibv_alloc_pd(ctx); cq = uibv_create_cq(ctx, 256); qp = uibv_create_qp(pd, &amp;init); uibv_modify_qp(qp, &amp;attr, mask); uibv_post_send(qp, &amp;send, &amp;bad_send);</code> |
-| [`uibv_post_recv`](../include/uib/verbs.h) | <code>int uibv_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr, struct uib_recv_wr **bad);</code> | Post a verbs-facade receive work-request chain. | <code>list = uibv_get_device_list(&amp;count); ctx = uibv_open_device(list[0]); pd = uibv_alloc_pd(ctx); cq = uibv_create_cq(ctx, 256); qp = uibv_create_qp(pd, &amp;init); uibv_post_recv(qp, &amp;recv, &amp;bad_recv);</code> |
+### [`uibv_get_device_list`](../include/uib/verbs.h)
+
+```c
+struct uibv_device **uibv_get_device_list(int *num);
+```
+
+Description:
+
+Enumerate UIB devices for local IPv4 interfaces.
+
+Parameters:
+
+- `num` — Output for the number of returned devices
+
+Return value:
+
+A NULL-terminated device array on success, or NULL on failure.
+
+### [`uibv_free_device_list`](../include/uib/verbs.h)
+
+```c
+void                 uibv_free_device_list(struct uibv_device **list);
+```
+
+Description:
+
+Release a UIB device enumeration result.
+
+Parameters:
+
+- `list` — Device list returned by uibv_get_device_list()
+
+### [`uibv_get_device_name`](../include/uib/verbs.h)
+
+```c
+const char          *uibv_get_device_name(struct uibv_device *dev);
+```
+
+Description:
+
+Return an enumerated UIB device's name.
+
+Parameters:
+
+- `dev` — UIB device
+
+Return value:
+
+The device name, or NULL if @dev is NULL.
+
+### [`uibv_open_device`](../include/uib/verbs.h)
+
+```c
+struct uib_context *uibv_open_device(struct uibv_device *dev);
+```
+
+Description:
+
+Open an enumerated UIB device.
+
+Parameters:
+
+- `dev` — UIB device
+
+Return value:
+
+A pointer to the new object on success, or NULL on failure.
+
+### [`uibv_close_device`](../include/uib/verbs.h)
+
+```c
+int                 uibv_close_device(struct uib_context *ctx);
+```
+
+Description:
+
+Close a UIB device context.
+
+Parameters:
+
+- `ctx` — UIB device context
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uibv_alloc_pd`](../include/uib/verbs.h)
+
+```c
+struct uib_pd *uibv_alloc_pd(struct uib_context *ctx);
+```
+
+Description:
+
+Allocate a protection domain through the verbs facade.
+
+Parameters:
+
+- `ctx` — UIB device context
+
+Return value:
+
+A pointer to the new object on success, or NULL on failure.
+
+### [`uibv_dealloc_pd`](../include/uib/verbs.h)
+
+```c
+int            uibv_dealloc_pd(struct uib_pd *pd);
+```
+
+Description:
+
+Release a verbs-facade protection domain.
+
+Parameters:
+
+- `pd` — Protection domain
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uibv_reg_mr`](../include/uib/verbs.h)
+
+```c
+struct uib_mr *uibv_reg_mr(struct uib_pd *pd, void *addr, size_t len,
+			   int access);
+```
+
+Description:
+
+Register process memory through the verbs facade.
+
+Parameters:
+
+- `pd` — Protection domain
+- `addr` — Start address of the memory range
+- `len` — Length of the byte range
+- `access` — Access permissions required or granted
+
+Return value:
+
+A registered memory region on success, or NULL on failure.
+
+### [`uibv_reg_dmabuf_mr`](../include/uib/verbs.h)
+
+```c
+struct uib_mr *uibv_reg_dmabuf_mr(struct uib_pd *pd, uint64_t offset,
+				  size_t len, uint64_t iova, int fd,
+				  int access);
+```
+
+Description:
+
+Register a DMA-BUF through the verbs facade.
+
+Parameters:
+
+- `pd` — Protection domain
+- `offset` — Byte offset into the DMA-BUF
+- `len` — Length of the byte range
+- `iova` — I/O virtual address assigned to the memory region
+- `fd` — DMA-BUF file descriptor
+- `access` — Access permissions required or granted
+
+Return value:
+
+A registered memory region on success, or NULL on failure.
+
+### [`uibv_dereg_mr`](../include/uib/verbs.h)
+
+```c
+int            uibv_dereg_mr(struct uib_mr *mr);
+```
+
+Description:
+
+Deregister a verbs-facade memory region.
+
+Parameters:
+
+- `mr` — Memory region
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uibv_create_cq`](../include/uib/verbs.h)
+
+```c
+struct uib_cq *uibv_create_cq(struct uib_context *ctx, int cqe);
+```
+
+Description:
+
+Create a verbs-facade completion queue.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `cqe` — Requested completion queue capacity
+
+Return value:
+
+A pointer to the new object on success, or NULL on failure.
+
+### [`uibv_create_comp_channel`](../include/uib/verbs.h)
+
+```c
+struct uib_comp_channel *uibv_create_comp_channel(struct uib_context *ctx);
+```
+
+Description:
+
+Create a verbs-facade completion channel.
+
+Parameters:
+
+- `ctx` — UIB device context
+
+Return value:
+
+A pointer to the new object on success, or NULL on failure.
+
+### [`uibv_destroy_comp_channel`](../include/uib/verbs.h)
+
+```c
+int uibv_destroy_comp_channel(struct uib_comp_channel *channel);
+```
+
+Description:
+
+Release a verbs-facade completion channel.
+
+Parameters:
+
+- `channel` — Completion-event channel
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uibv_get_cq_event`](../include/uib/verbs.h)
+
+```c
+int uibv_get_cq_event(struct uib_comp_channel *channel, struct uib_cq **cq,
+			      void **event_context);
+```
+
+Description:
+
+Consume a verbs-facade completion event.
+
+Parameters:
+
+- `channel` — Completion-event channel
+- `cq` — Output for the completion queue that raised the event
+- `event_context` — Output for the completion queue's caller context
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uibv_ack_cq_events`](../include/uib/verbs.h)
+
+```c
+void uibv_ack_cq_events(struct uib_cq *cq, unsigned int events);
+```
+
+Description:
+
+Acknowledge CQ events.
+
+Parameters:
+
+- `cq` — Completion queue
+- `events` — Number of completion events to acknowledge
+
+### [`uibv_req_notify_cq`](../include/uib/verbs.h)
+
+```c
+int uibv_req_notify_cq(struct uib_cq *cq, int solicited_only);
+```
+
+Description:
+
+Arm one-shot verbs-facade CQ notification.
+
+Parameters:
+
+- `cq` — Completion queue
+- `solicited_only` — Nonzero to notify only for solicited completions
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uibv_destroy_cq`](../include/uib/verbs.h)
+
+```c
+int            uibv_destroy_cq(struct uib_cq *cq);
+```
+
+Description:
+
+Release a verbs-facade completion queue.
+
+Parameters:
+
+- `cq` — Completion queue
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uibv_poll_cq`](../include/uib/verbs.h)
+
+```c
+int            uibv_poll_cq(struct uib_cq *cq, int n, struct uib_wc *wc);
+```
+
+Description:
+
+Poll verbs-facade work completions.
+
+Parameters:
+
+- `cq` — Completion queue
+- `n` — Maximum number of completions to return
+- `wc` — Output array for completed work requests
+
+Return value:
+
+The number of completions written to @wc, or a negative error code.
+
+### [`uibv_create_qp`](../include/uib/verbs.h)
+
+```c
+struct uib_qp *uibv_create_qp(struct uib_pd *pd, struct uib_qp_init_attr *attr);
+```
+
+Description:
+
+Create a verbs-facade queue pair.
+
+Parameters:
+
+- `pd` — Protection domain
+- `attr` — Queue pair attributes
+
+Return value:
+
+A pointer to the new object on success, or NULL on failure.
+
+### [`uibv_modify_qp`](../include/uib/verbs.h)
+
+```c
+int            uibv_modify_qp(struct uib_qp *qp,
+			      struct uib_qp_attr *attr, int mask);
+```
+
+Description:
+
+Change verbs-facade QP state and attributes.
+
+Parameters:
+
+- `qp` — Queue pair
+- `attr` — Queue pair attributes
+- `mask` — Bitmask selecting attributes to modify
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uibv_destroy_qp`](../include/uib/verbs.h)
+
+```c
+int            uibv_destroy_qp(struct uib_qp *qp);
+```
+
+Description:
+
+Release a verbs-facade queue pair.
+
+Parameters:
+
+- `qp` — Queue pair
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uibv_post_send`](../include/uib/verbs.h)
+
+```c
+int            uibv_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
+			      struct uib_send_wr **bad);
+```
+
+Description:
+
+Post a verbs-facade send work-request chain.
+
+Parameters:
+
+- `qp` — Queue pair
+- `wr` — First work request in the chain
+- `bad` — Output pointer for the first unposted work request
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uibv_post_recv`](../include/uib/verbs.h)
+
+```c
+int            uibv_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
+			      struct uib_recv_wr **bad);
+```
+
+Description:
+
+Post a verbs-facade receive work-request chain.
+
+Parameters:
+
+- `qp` — Queue pair
+- `wr` — First work request in the chain
+- `bad` — Output pointer for the first unposted work request
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+## Protection domains
+
+### [`uib_alloc_pd`](../include/uib/pd.h)
+
+```c
+struct uib_pd *uib_alloc_pd(struct uib_context *ctx);
+```
+
+Description:
+
+Allocate a protection domain from an open context.
+
+Parameters:
+
+- `ctx` — UIB device context
+
+Return value:
+
+A pointer to the new object on success, or NULL on failure.
+
+### [`uib_dealloc_pd`](../include/uib/pd.h)
+
+```c
+int uib_dealloc_pd(struct uib_pd *pd);
+```
+
+Description:
+
+Release an unused protection domain.
+
+Parameters:
+
+- `pd` — Protection domain
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_pd_detach_mr`](../include/uib/pd.h)
+
+```c
+int uib_pd_detach_mr(struct uib_pd *pd, struct uib_mr *mr);
+```
+
+Description:
+
+Remove an MR from a protection domain.
+
+Parameters:
+
+- `pd` — Protection domain
+- `mr` — Memory region
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_pd_lookup_lkey`](../include/uib/pd.h)
+
+```c
+struct uib_mr *uib_pd_lookup_lkey(struct uib_pd *pd, uint32_t lkey);
+```
+
+Description:
+
+Find and reference a protection-domain MR by local key.
+
+Parameters:
+
+- `pd` — Protection domain
+- `lkey` — Local memory region key
+
+Return value:
+
+A referenced matching MR, or NULL if no match is found.
+
+### [`uib_pd_lookup_rkey`](../include/uib/pd.h)
+
+```c
+struct uib_mr *uib_pd_lookup_rkey(struct uib_pd *pd, uint32_t rkey);
+```
+
+Description:
+
+Find and reference an MR by remote key.
+
+Parameters:
+
+- `pd` — Protection domain
+- `rkey` — Remote memory region key
+
+Return value:
+
+A referenced matching MR, or NULL if no match is found.
+
+### [`uib_pd_lookup_key`](../include/uib/pd.h)
+
+```c
+struct uib_mr *uib_pd_lookup_key(struct uib_pd *pd, uint32_t key);
+```
+
+Description:
+
+Find and reference a protection-domain MR by either key.
+
+Parameters:
+
+- `pd` — Protection domain
+- `key` — Memory region key
+
+Return value:
+
+A referenced matching MR, or NULL if no match is found.
+
+### [`uib_pd_lookup_address`](../include/uib/pd.h)
+
+```c
+struct uib_mr *uib_pd_lookup_address(struct uib_pd *pd, uint64_t va,
+				      size_t len, int access);
+```
+
+Description:
+
+Find and reference an MR containing an IOVA range.
+
+Parameters:
+
+- `pd` — Protection domain
+- `va` — I/O virtual address
+- `len` — Length of the byte range
+- `access` — Access permissions required or granted
+
+Return value:
+
+A referenced matching MR, or NULL if no match is found.
+
+## Memory regions
+
+### [`uib_mr_put`](../include/uib/mr.h)
+
+```c
+void uib_mr_put(struct uib_mr *mr);
+```
+
+Description:
+
+Release an MR reference returned by a lookup.
+
+Parameters:
+
+- `mr` — Memory region
+
+### [`uib_reg_mr`](../include/uib/mr.h)
+
+```c
+struct uib_mr *uib_reg_mr(struct uib_pd *pd, void *addr, size_t length,
+			  int access);
+```
+
+Description:
+
+Register ordinary process memory for RDMA access.
+
+Parameters:
+
+- `pd` — Protection domain
+- `addr` — Start address of the memory range
+- `length` — Length of the memory range
+- `access` — Access permissions required or granted
+
+Return value:
+
+A registered memory region on success, or NULL on failure.
+
+### [`uib_reg_mr_dmabuf`](../include/uib/mr.h)
+
+```c
+struct uib_mr *uib_reg_mr_dmabuf(struct uib_pd *pd, int dmabuf_fd,
+				 size_t offset, size_t length, int access);
+```
+
+Description:
+
+Import a CPU-mappable DMA-BUF with a synthetic IOVA.
+
+Parameters:
+
+- `pd` — Protection domain
+- `dmabuf_fd` — File descriptor for the DMA-BUF
+- `offset` — Byte offset into the DMA-BUF
+- `length` — Length of the memory range
+- `access` — Access permissions required or granted
+
+Return value:
+
+A registered memory region on success, or NULL on failure.
+
+### [`uib_reg_mr_dmabuf_ex`](../include/uib/mr.h)
+
+```c
+struct uib_mr *uib_reg_mr_dmabuf_ex(struct uib_pd *pd, int dmabuf_fd,
+				    size_t offset, size_t length, int access,
+				    uint32_t flags);
+```
+
+Description:
+
+Import a DMA-BUF with explicit registration flags.
+
+Parameters:
+
+- `pd` — Protection domain
+- `dmabuf_fd` — File descriptor for the DMA-BUF
+- `offset` — Byte offset into the DMA-BUF
+- `length` — Length of the memory range
+- `access` — Access permissions required or granted
+- `flags` — DMA-BUF registration flags
+
+Return value:
+
+A registered memory region on success, or NULL on failure.
+
+### [`uib_reg_mr_dmabuf_iova`](../include/uib/mr.h)
+
+```c
+struct uib_mr *uib_reg_mr_dmabuf_iova(struct uib_pd *pd, int dmabuf_fd,
+				      size_t offset, size_t length,
+				      uint64_t iova, int access,
+				      uint32_t flags);
+```
+
+Description:
+
+Import a DMA-BUF at a caller-selected IOVA.
+
+Parameters:
+
+- `pd` — Protection domain
+- `dmabuf_fd` — File descriptor for the DMA-BUF
+- `offset` — Byte offset into the DMA-BUF
+- `length` — Length of the memory range
+- `iova` — I/O virtual address assigned to the memory region
+- `access` — Access permissions required or granted
+- `flags` — DMA-BUF registration flags
+
+Return value:
+
+A registered memory region on success, or NULL on failure.
+
+### [`uib_dereg_mr`](../include/uib/mr.h)
+
+```c
+int uib_dereg_mr(struct uib_mr *mr);
+```
+
+Description:
+
+Unpublish an MR and wait for lookup users before release.
+
+Parameters:
+
+- `mr` — Memory region
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_mr_check_local`](../include/uib/mr.h)
+
+```c
+int uib_mr_check_local(struct uib_pd *pd, uint32_t lkey,
+		       const void *addr, size_t len, int access);
+```
+
+Description:
+
+Validate a local key, range, and access mask.
+
+Parameters:
+
+- `pd` — Protection domain
+- `lkey` — Local memory region key
+- `addr` — Start address of the memory range
+- `len` — Length of the byte range
+- `access` — Access permissions required or granted
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_mr_lookup_local`](../include/uib/mr.h)
+
+```c
+struct uib_mr *uib_mr_lookup_local(struct uib_pd *pd, uint32_t lkey,
+				   const void *addr, size_t len, int access);
+```
+
+Description:
+
+Find and reference a validated local MR.
+
+Parameters:
+
+- `pd` — Protection domain
+- `lkey` — Local memory region key
+- `addr` — Start address of the memory range
+- `len` — Length of the byte range
+- `access` — Access permissions required or granted
+
+Return value:
+
+A referenced matching MR, or NULL if validation fails.
+
+### [`uib_mr_check_remote`](../include/uib/mr.h)
+
+```c
+struct uib_mr *uib_mr_check_remote(struct uib_pd *pd, uint32_t rkey,
+				   uint64_t va, size_t len, int access);
+```
+
+Description:
+
+Find and reference a validated remote MR by rkey.
+
+Parameters:
+
+- `pd` — Protection domain
+- `rkey` — Remote memory region key
+- `va` — I/O virtual address
+- `len` — Length of the byte range
+- `access` — Access permissions required or granted
+
+Return value:
+
+A referenced matching MR, or NULL if validation fails.
+
+### [`uib_mr_check_remote_address`](../include/uib/mr.h)
+
+```c
+struct uib_mr *uib_mr_check_remote_address(struct uib_pd *pd, uint64_t va,
+					   size_t len, int access);
+```
+
+Description:
+
+Find and reference a remote MR by address.
+
+Parameters:
+
+- `pd` — Protection domain
+- `va` — I/O virtual address
+- `len` — Length of the byte range
+- `access` — Access permissions required or granted
+
+Return value:
+
+A referenced matching MR, or NULL if validation fails.
+
+### [`uib_mr_place`](../include/uib/mr.h)
+
+```c
+int uib_mr_place(struct uib_mr *mr, uint64_t va, const void *src, size_t len);
+```
+
+Description:
+
+Copy received bytes into a registered memory range.
+
+Parameters:
+
+- `mr` — Memory region
+- `va` — I/O virtual address
+- `src` — Source byte buffer
+- `len` — Length of the byte range
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_mr_read`](../include/uib/mr.h)
+
+```c
+int uib_mr_read(struct uib_mr *mr, uint64_t va, void *dst, size_t len);
+```
+
+Description:
+
+Copy bytes out of a registered memory range.
+
+Parameters:
+
+- `mr` — Memory region
+- `va` — I/O virtual address
+- `dst` — Destination byte buffer
+- `len` — Length of the byte range
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_mr_cpu_begin`](../include/uib/mr.h)
+
+```c
+int uib_mr_cpu_begin(struct uib_mr *mr, uint32_t access);
+```
+
+Description:
+
+Begin synchronized CPU access to a DMA-BUF MR.
+
+Parameters:
+
+- `mr` — Memory region
+- `access` — CPU read and write access mask
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_mr_cpu_end`](../include/uib/mr.h)
+
+```c
+int uib_mr_cpu_end(struct uib_mr *mr, uint32_t access);
+```
+
+Description:
+
+End synchronized CPU access to a DMA-BUF MR.
+
+Parameters:
+
+- `mr` — Memory region
+- `access` — CPU read and write access mask
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_pd_attach_mr`](../include/uib/pd.h)
+
+```c
+int uib_pd_attach_mr(struct uib_pd *pd, struct uib_mr *mr);
+```
+
+Description:
+
+Publish an MR in a protection domain.
+
+Parameters:
+
+- `pd` — Protection domain
+- `mr` — Memory region
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+## Completion queues and events
+
+### [`uib_create_comp_channel`](../include/uib/cq.h)
+
+```c
+struct uib_comp_channel *uib_create_comp_channel(struct uib_context *ctx);
+```
+
+Description:
+
+Create a pollable completion-event channel.
+
+Parameters:
+
+- `ctx` — UIB device context
+
+Return value:
+
+A pointer to the new object on success, or NULL on failure.
+
+### [`uib_destroy_comp_channel`](../include/uib/cq.h)
+
+```c
+int uib_destroy_comp_channel(struct uib_comp_channel *channel);
+```
+
+Description:
+
+Release a completion-event channel.
+
+Parameters:
+
+- `channel` — Completion-event channel
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_comp_channel_fd`](../include/uib/cq.h)
+
+```c
+int uib_comp_channel_fd(const struct uib_comp_channel *channel);
+```
+
+Description:
+
+Return the fd used to poll a completion channel.
+
+Parameters:
+
+- `channel` — Completion-event channel
+
+Return value:
+
+The channel's pollable file descriptor, or -1 if @channel is NULL.
+
+### [`uib_create_cq_channel`](../include/uib/cq.h)
+
+```c
+struct uib_cq *uib_create_cq_channel(struct uib_context *ctx, int cqe,
+				     struct uib_comp_channel *channel,
+				     void *event_context);
+```
+
+Description:
+
+Create a CQ attached to an event channel.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `cqe` — Requested completion queue capacity
+- `channel` — Completion-event channel
+- `event_context` — Caller-defined completion-event context
+
+Return value:
+
+A pointer to the new object on success, or NULL on failure.
+
+### [`uib_create_cq`](../include/uib/cq.h)
+
+```c
+struct uib_cq *uib_create_cq(struct uib_context *ctx, int cqe);
+```
+
+Description:
+
+Create a completion queue without an event channel.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `cqe` — Requested completion queue capacity
+
+Return value:
+
+A pointer to the new object on success, or NULL on failure.
+
+### [`uib_destroy_cq`](../include/uib/cq.h)
+
+```c
+int uib_destroy_cq(struct uib_cq *cq);
+```
+
+Description:
+
+Release an unused completion queue.
+
+Parameters:
+
+- `cq` — Completion queue
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_cq_push`](../include/uib/cq.h)
+
+```c
+int uib_cq_push(struct uib_cq *cq, const struct uib_wc *wc);
+```
+
+Description:
+
+Publish one completion to a CQ.
+
+Parameters:
+
+- `cq` — Completion queue
+- `wc` — Work completion to enqueue
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_poll_cq`](../include/uib/cq.h)
+
+```c
+int uib_poll_cq(struct uib_cq *cq, int n, struct uib_wc *out);
+```
+
+Description:
+
+Poll completed work requests from a CQ.
+
+Parameters:
+
+- `cq` — Completion queue
+- `n` — Maximum number of completions to return
+- `out` — Output array for completed work requests
+
+Return value:
+
+The number of completions written to @out, or a negative error code.
+
+### [`uib_req_notify_cq`](../include/uib/cq.h)
+
+```c
+int uib_req_notify_cq(struct uib_cq *cq, int solicited_only);
+```
+
+Description:
+
+Arm one-shot notification for the next completion.
+
+Parameters:
+
+- `cq` — Completion queue
+- `solicited_only` — Nonzero to notify only for solicited completions
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_get_cq_event`](../include/uib/cq.h)
+
+```c
+int uib_get_cq_event(struct uib_comp_channel *channel, struct uib_cq **cq,
+			     void **event_context);
+```
+
+Description:
+
+Consume the next completion-channel event.
+
+Parameters:
+
+- `channel` — Completion-event channel
+- `cq` — Output for the completion queue that raised the event
+- `event_context` — Output for the completion queue's caller context
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_ack_cq_events`](../include/uib/cq.h)
+
+```c
+void uib_ack_cq_events(struct uib_cq *cq, unsigned int events);
+```
+
+Description:
+
+Acknowledge CQ events.
+
+Parameters:
+
+- `cq` — Completion queue
+- `events` — Number of completion events to acknowledge
+
+## Queue pairs and data transfer
+
+### [`uib_create_qp`](../include/uib/qp.h)
+
+```c
+struct uib_qp *uib_create_qp(struct uib_pd *pd,
+			     const struct uib_qp_init_attr *attr);
+```
+
+Description:
+
+Create a queue pair from PD, CQ, and depth attributes.
+
+Parameters:
+
+- `pd` — Protection domain
+- `attr` — Queue pair attributes
+
+Return value:
+
+A pointer to the new object on success, or NULL on failure.
+
+### [`uib_rocev2_qp_fini`](../include/uib/qp.h)
+
+```c
+void uib_rocev2_qp_fini(struct uib_qp *qp);
+```
+
+Description:
+
+Release RoCEv2-specific QP state.
+
+Parameters:
+
+- `qp` — Queue pair
+
+### [`uib_destroy_qp`](../include/uib/qp.h)
+
+```c
+int uib_destroy_qp(struct uib_qp *qp);
+```
+
+Description:
+
+Destroy a QP and protocol-specific outstanding state.
+
+Parameters:
+
+- `qp` — Queue pair
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_modify_qp`](../include/uib/qp.h)
+
+```c
+int uib_modify_qp(struct uib_qp *qp, const struct uib_qp_attr *attr,
+		  int attr_mask);
+```
+
+Description:
+
+Change QP state, peer, PSNs, access, or path MTU.
+
+Parameters:
+
+- `qp` — Queue pair
+- `attr` — Queue pair attributes
+- `attr_mask` — Bitmask selecting attributes to modify
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_qp_gather`](../include/uib/qp.h)
+
+```c
+int uib_qp_gather(struct uib_pd *pd, const struct uib_sge *sgl, int n,
+		  uint8_t *out, size_t cap);
+```
+
+Description:
+
+Gather an SGE list into a contiguous packet buffer.
+
+Parameters:
+
+- `pd` — Protection domain
+- `sgl` — Scatter-gather list
+- `n` — Number of scatter-gather entries
+- `out` — Contiguous output buffer
+- `cap` — Capacity of the output buffer in bytes
+
+Return value:
+
+The total number of gathered bytes on success, or a negative error code.
+
+### [`uib_qp_scatter`](../include/uib/qp.h)
+
+```c
+int uib_qp_scatter(struct uib_pd *pd, struct uib_sge *sgl, int n,
+		   uint32_t msg_offset, const uint8_t *in, size_t in_len,
+		   size_t *consumed_out);
+```
+
+Description:
+
+Scatter received bytes into an SGE list.
+
+Parameters:
+
+- `pd` — Protection domain
+- `sgl` — Scatter-gather list
+- `n` — Number of scatter-gather entries
+- `msg_offset` — Offset in the scatter list at which to begin
+- `in` — Contiguous input buffer
+- `in_len` — Number of bytes available in the input buffer
+- `consumed_out` — Output for the number of input bytes consumed
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_qp_emit_send`](../include/uib/qp.h)
+
+```c
+void uib_qp_emit_send(struct uib_qp *qp, uint64_t wr_id,
+		      enum uib_wr_opcode wr_op, int signaled,
+		      enum uib_wc_status status, uint32_t byte_len);
+```
+
+Description:
+
+Publish a send work completion.
+
+Parameters:
+
+- `qp` — Queue pair
+- `wr_id` — Caller-defined work request identifier
+- `wr_op` — Work request operation code
+- `signaled` — Nonzero to request a completion
+- `status` — Completion status
+- `byte_len` — Number of bytes completed
+
+### [`uib_qp_emit_recv`](../include/uib/qp.h)
+
+```c
+void uib_qp_emit_recv(struct uib_qp *qp, uint64_t wr_id,
+		      enum uib_wc_status status, enum uib_wc_opcode opcode,
+		      uint32_t byte_len, uint32_t src_qp, uint32_t imm_data);
+```
+
+Description:
+
+Publish a receive work completion.
+
+Parameters:
+
+- `qp` — Queue pair
+- `wr_id` — Caller-defined work request identifier
+- `status` — Completion status
+- `opcode` — Completion operation code
+- `byte_len` — Number of bytes completed
+- `src_qp` — Source queue pair number
+- `imm_data` — Immediate data in network byte order
+
+### [`uib_qp_emit_recv_slot`](../include/uib/qp.h)
+
+```c
+void uib_qp_emit_recv_slot(struct uib_qp *qp, struct uib_rq_slot *slot,
+			   enum uib_wc_status status,
+			   enum uib_wc_opcode opcode, uint32_t byte_len,
+			   uint32_t src_qp, uint32_t imm_data);
+```
+
+Description:
+
+Publish a receive completion with private ownership.
+
+Parameters:
+
+- `qp` — Queue pair
+- `slot` — Receive queue slot
+- `status` — Completion status
+- `opcode` — Completion operation code
+- `byte_len` — Number of bytes completed
+- `src_qp` — Source queue pair number
+- `imm_data` — Immediate data in network byte order
+
+### [`uib_rocev2_post_send`](../include/uib/qp.h)
+
+```c
+int uib_rocev2_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
+			 struct uib_send_wr **bad);
+```
+
+Description:
+
+Execute a RoCEv2 send work-request chain.
+
+Parameters:
+
+- `qp` — Queue pair
+- `wr` — First work request in the chain
+- `bad` — Output pointer for the first unposted work request
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_post_send`](../include/uib/qp.h)
+
+```c
+int uib_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
+		  struct uib_send_wr **bad);
+```
+
+Description:
+
+Post SEND, WRITE, READ, or atomic work requests.
+
+Parameters:
+
+- `qp` — Queue pair
+- `wr` — First work request in the chain
+- `bad` — Output pointer for the first unposted work request
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_post_recv`](../include/uib/qp.h)
+
+```c
+int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
+		  struct uib_recv_wr **bad);
+```
+
+Description:
+
+Post one or more receive work requests.
+
+Parameters:
+
+- `qp` — Queue pair
+- `wr` — First work request in the chain
+- `bad` — Output pointer for the first unposted work request
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_qp_pop_recv`](../include/uib/qp.h)
+
+```c
+int uib_qp_pop_recv(struct uib_qp *qp, struct uib_rq_slot *out);
+```
+
+Description:
+
+Consume the oldest posted receive request.
+
+Parameters:
+
+- `qp` — Queue pair
+- `out` — Receive slot structure to fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_qp_release_recv`](../include/uib/qp.h)
+
+```c
+void uib_qp_release_recv(struct uib_rq_slot *slot);
+```
+
+Description:
+
+Release storage retained by a popped receive slot.
+
+Parameters:
+
+- `slot` — Receive queue slot
+
+### [`uib_rocev2_handle_packet`](../include/uib/qp.h)
+
+```c
+int uib_rocev2_handle_packet(struct uib_qp *qp,
+			    const struct sockaddr_in *src,
+			    const void *packet, size_t len);
+```
+
+Description:
+
+Process one RoCEv2 packet for a QP.
+
+Parameters:
+
+- `qp` — Queue pair
+- `src` — Source transport address
+- `packet` — Packet buffer
+- `len` — Length of the byte range
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_qp_handle_packet`](../include/uib/qp.h)
+
+```c
+int uib_qp_handle_packet(struct uib_qp *qp, const struct sockaddr_in *src,
+			 const void *pkt, size_t len);
+```
+
+Description:
+
+Dispatch a received protocol packet to a QP.
+
+Parameters:
+
+- `qp` — Queue pair
+- `src` — Source transport address
+- `pkt` — Received protocol packet
+- `len` — Length of the byte range
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_rocev2_retransmit_tick`](../include/uib/qp.h)
+
+```c
+void uib_rocev2_retransmit_tick(struct uib_qp *qp, uint64_t now_ns);
+```
+
+Description:
+
+Retransmit expired RoCEv2 requests.
+
+Parameters:
+
+- `qp` — Queue pair
+- `now_ns` — Current monotonic time in nanoseconds
+
+### [`uib_qp_retransmit_tick`](../include/uib/qp.h)
+
+```c
+void uib_qp_retransmit_tick(struct uib_qp *qp, uint64_t now_ns);
+```
+
+Description:
+
+Run protocol retransmission work for a QP.
+
+Parameters:
+
+- `qp` — Queue pair
+- `now_ns` — Current monotonic time in nanoseconds
+
+## Packet transports
+
+### [`uib_transport_deliver`](../include/uib/transport.h)
+
+```c
+void uib_transport_deliver(struct uib_context *ctx,
+			   const struct sockaddr_in *src, const void *buf,
+			   size_t len);
+```
+
+Description:
+
+Route a received packet to its destination QP.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `src` — Source transport address
+- `buf` — Received protocol packet
+- `len` — Length of the byte range
+
+### [`uib_transport_retransmit_walk`](../include/uib/transport.h)
+
+```c
+void uib_transport_retransmit_walk(struct uib_context *ctx);
+```
+
+Description:
+
+Process every expired retry deadline.
+
+Parameters:
+
+- `ctx` — UIB device context
+
+### [`uib_transport_mode_from_env`](../include/uib/transport.h)
+
+```c
+enum uib_transport_mode uib_transport_mode_from_env(void);
+```
+
+Description:
+
+Select transport mode from the environment.
+
+Return value:
+
+The selected transport mode; invalid values fall back to UIB_MODE_UDP_IO_URING.
+
+### [`uib_transport_init`](../include/uib/transport.h)
+
+```c
+int uib_transport_init(struct uib_context *ctx);
+```
+
+Description:
+
+Open the selected transport for a context.
+
+Parameters:
+
+- `ctx` — UIB device context
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_transport_fini`](../include/uib/transport.h)
+
+```c
+void uib_transport_fini(struct uib_context *ctx);
+```
+
+Description:
+
+Stop and release a context's transport.
+
+Parameters:
+
+- `ctx` — UIB device context
+
+### [`uib_transport_send`](../include/uib/transport.h)
+
+```c
+int uib_transport_send(struct uib_context *ctx, const struct sockaddr_in *dst,
+		       const void *buf, size_t len);
+```
+
+Description:
+
+Send a packet over the selected transport.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `dst` — Destination transport address
+- `buf` — Protocol packet to send
+- `len` — Length of the byte range
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_transport_send_entropy`](../include/uib/transport.h)
+
+```c
+int uib_transport_send_entropy(struct uib_context *ctx,
+			       const struct sockaddr_in *dst,
+			       const void *buf, size_t len, uint16_t entropy);
+```
+
+Description:
+
+Send a packet with path-selection entropy.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `dst` — Destination transport address
+- `buf` — Protocol packet to send
+- `len` — Length of the byte range
+- `entropy` — Transport entropy value
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_transport_send_ref`](../include/uib/transport.h)
+
+```c
+int uib_transport_send_ref(struct uib_context *ctx,
+			   const struct sockaddr_in *dst, const void *buf,
+			   size_t len, uib_transport_release_fn release,
+			   void *opaque);
+```
+
+Description:
+
+Send while retaining a caller-owned buffer.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `dst` — Destination transport address
+- `buf` — Referenced protocol packet to send
+- `len` — Length of the byte range
+- `release` — Callback invoked when the transport releases the buffer
+- `opaque` — Caller-defined release callback argument
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_transport_send_ref_batch`](../include/uib/transport.h)
+
+```c
+int uib_transport_send_ref_batch(struct uib_context *ctx,
+				 const struct uib_transport_ref *refs,
+				 size_t count);
+```
+
+Description:
+
+Send retained buffers as one transport batch.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `refs` — Array of referenced send requests
+- `count` — Number of array entries
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_transport_get_stats`](../include/uib/transport.h)
+
+```c
+int uib_transport_get_stats(struct uib_context *ctx,
+			    struct uib_transport_stats *stats);
+```
+
+Description:
+
+Read transport, batching, and packet counters.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `stats` — Statistics structure to fill
+
+Return value:
+
+0 on success or a negative error code on failure.
 
 ## Zero-copy helpers
 
-| Function | Declaration | Description | Example |
-|---|---|---|---|
-| [`uib_zerocopy_init`](../include/uib/zerocopy.h) | <code>void uib_zerocopy_init(struct uib_context *ctx);</code> | Initialize a context's zero-copy policy and counters. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_zerocopy_init(ctx);</code> |
-| [`uib_zerocopy_enable_socket`](../include/uib/zerocopy.h) | <code>int uib_zerocopy_enable_socket(struct uib_context *ctx, int fd);</code> | Enable MSG_ZEROCOPY on a socket when selected. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_zerocopy_enable_socket(ctx, fd);</code> |
-| [`uib_zerocopy_account_copy`](../include/uib/zerocopy.h) | <code>void uib_zerocopy_account_copy(struct uib_context *ctx, size_t length);</code> | Account bytes transferred through a copy path. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_zerocopy_account_copy(ctx, length);</code> |
-| [`uib_zerocopy_account_direct`](../include/uib/zerocopy.h) | <code>void uib_zerocopy_account_direct(struct uib_context *ctx, size_t length, uint32_t capability);</code> | Account a requested zero-copy transfer. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_zerocopy_account_direct(ctx, length, capability);</code> |
-| [`uib_zerocopy_sendmsg`](../include/uib/zerocopy.h) | <code>ssize_t uib_zerocopy_sendmsg(struct uib_context *ctx, int fd, const struct msghdr *message, int flags, int socket_enabled, uint32_t *sequence);</code> | Send a message with the configured zero-copy policy. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_zerocopy_sendmsg(ctx, fd, message, flags, socket_enabled, sequence);</code> |
-| [`uib_zerocopy_get_stats`](../include/uib/zerocopy.h) | <code>int uib_zerocopy_get_stats(const struct uib_context *ctx, struct uib_zerocopy_stats *stats);</code> | Read copied, direct, and deferred-copy counters. | <code>ctx = uib_open_device("0.0.0.0", 4791); uib_zerocopy_get_stats(ctx, stats);</code> |
+### [`uib_zerocopy_init`](../include/uib/zerocopy.h)
+
+```c
+void uib_zerocopy_init(struct uib_context *ctx);
+```
+
+Description:
+
+Initialize a context's zero-copy policy and counters.
+
+Parameters:
+
+- `ctx` — UIB device context
+
+### [`uib_zerocopy_enable_socket`](../include/uib/zerocopy.h)
+
+```c
+int uib_zerocopy_enable_socket(struct uib_context *ctx, int fd);
+```
+
+Description:
+
+Enable MSG_ZEROCOPY on a socket when selected.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `fd` — Socket file descriptor
+
+Return value:
+
+1 if zero-copy was enabled, 0 if it is disabled or optional and unavailable, or a negative error code when required.
+
+### [`uib_zerocopy_account_copy`](../include/uib/zerocopy.h)
+
+```c
+void uib_zerocopy_account_copy(struct uib_context *ctx, size_t length);
+```
+
+Description:
+
+Account bytes transferred through a copy path.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `length` — Number of bytes copied
+
+### [`uib_zerocopy_account_direct`](../include/uib/zerocopy.h)
+
+```c
+void uib_zerocopy_account_direct(struct uib_context *ctx, size_t length,
+				 uint32_t capability);
+```
+
+Description:
+
+Account a requested zero-copy transfer.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `length` — Number of bytes sent without an immediate copy
+- `capability` — Zero-copy capability used by the direct path
+
+### [`uib_zerocopy_sendmsg`](../include/uib/zerocopy.h)
+
+```c
+ssize_t uib_zerocopy_sendmsg(struct uib_context *ctx, int fd,
+			     const struct msghdr *message, int flags,
+			     int socket_enabled, uint32_t *sequence);
+```
+
+Description:
+
+Send a message with the configured zero-copy policy.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `fd` — Socket file descriptor
+- `message` — Message header passed to sendmsg()
+- `flags` — Flags passed to sendmsg()
+- `socket_enabled` — Nonzero if SO_ZEROCOPY is enabled on the socket
+- `sequence` — In/out zero-copy completion sequence counter
+
+Return value:
+
+The number of bytes sent on success, or a negative error code on failure.
+
+### [`uib_zerocopy_get_stats`](../include/uib/zerocopy.h)
+
+```c
+int uib_zerocopy_get_stats(const struct uib_context *ctx,
+			   struct uib_zerocopy_stats *stats);
+```
+
+Description:
+
+Read copied, direct, and deferred-copy counters.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `stats` — Statistics structure to fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+## Provider-owned host-memory receive
+
+### [`uib_post_recv_loan`](../include/uib/host_zc.h)
+
+```c
+int uib_post_recv_loan(struct uib_qp *qp, uint64_t wr_id, size_t capacity);
+```
+
+Description:
+
+Post a provider-owned host-memory receive.
+
+Parameters:
+
+- `qp` — Queue pair
+- `wr_id` — Caller-defined work request identifier
+- `capacity` — Minimum receive-buffer capacity in bytes
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_repost_rx_loan`](../include/uib/host_zc.h)
+
+```c
+int uib_repost_rx_loan(struct uib_qp *qp, struct uib_rx_loan *loan,
+		       uint64_t wr_id);
+```
+
+Description:
+
+Repost a released completion without reallocating it.
+
+Parameters:
+
+- `qp` — Queue pair
+- `loan` — Released receive-buffer loan to post again
+- `wr_id` — Caller-defined work request identifier
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_wc_take_rx_loan`](../include/uib/host_zc.h)
+
+```c
+int uib_wc_take_rx_loan(struct uib_wc *wc, struct uib_rx_loan *loan);
+```
+
+Description:
+
+Take ownership of a completed receive loan.
+
+Parameters:
+
+- `wc` — Work completion to consume or fill
+- `loan` — Output for the loan detached from the completion
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_release_rx_loan`](../include/uib/host_zc.h)
+
+```c
+void uib_release_rx_loan(struct uib_rx_loan *loan);
+```
+
+Description:
+
+Return a receive loan to its provider.
+
+Parameters:
+
+- `loan` — Receive-buffer loan
+
+### [`uib_host_zc_capabilities`](../include/uib/host_zc.h)
+
+```c
+uint32_t uib_host_zc_capabilities(struct uib_context *ctx);
+```
+
+Description:
+
+Query provider-owned receive capabilities.
+
+Parameters:
+
+- `ctx` — UIB device context
+
+Return value:
+
+A bitmask of enum uib_host_zc_capability values, or 0 for an invalid context.
+
+## Netdev DMA-BUF helpers
+
+### [`uib_genl_family_id`](../include/uib/devmem.h)
+
+```c
+int uib_genl_family_id(const char *name);
+```
+
+Description:
+
+Resolve a generic-netlink family with libmnl.
+
+Parameters:
+
+- `name` — Generic-netlink family name
+
+Return value:
+
+The positive family identifier on success, or a negative error code.
+
+### [`uib_devmem_bind_rx`](../include/uib/devmem.h)
+
+```c
+int uib_devmem_bind_rx(const char *ifname, uint32_t queue_id, int dmabuf_fd,
+		       struct uib_devmem_binding *binding);
+```
+
+Description:
+
+Bind a DMA-BUF to a netdev receive queue.
+
+Parameters:
+
+- `ifname` — Network interface name
+- `queue_id` — Receive queue identifier
+- `dmabuf_fd` — File descriptor for the DMA-BUF
+- `binding` — Binding object to initialize
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_devmem_unbind`](../include/uib/devmem.h)
+
+```c
+void uib_devmem_unbind(struct uib_devmem_binding *binding);
+```
+
+Description:
+
+Remove a netdev receive-queue DMA-BUF binding.
+
+Parameters:
+
+- `binding` — Active binding to release
+
+## Packet sequence indexes
+
+### [`uib_psn_index_init`](../include/uib/psn_index.h)
+
+```c
+int uib_psn_index_init(struct uib_psn_index *index, uint32_t initial_size);
+```
+
+Description:
+
+Allocate an empty PSN hash index.
+
+Parameters:
+
+- `index` — Packet sequence index
+- `initial_size` — Initial number of hash table slots
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_psn_index_destroy`](../include/uib/psn_index.h)
+
+```c
+void uib_psn_index_destroy(struct uib_psn_index *index);
+```
+
+Description:
+
+Release a PSN hash index.
+
+Parameters:
+
+- `index` — Packet sequence index
+
+### [`uib_psn_index_insert`](../include/uib/psn_index.h)
+
+```c
+int uib_psn_index_insert(struct uib_psn_index *index, uint32_t psn,
+			 void *value);
+```
+
+Description:
+
+Associate an outstanding packet with a PSN.
+
+Parameters:
+
+- `index` — Packet sequence index
+- `psn` — Packet sequence number
+- `value` — Caller value associated with the packet sequence number
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_psn_index_lookup`](../include/uib/psn_index.h)
+
+```c
+void *uib_psn_index_lookup(const struct uib_psn_index *index, uint32_t psn);
+```
+
+Description:
+
+Find an outstanding packet by PSN.
+
+Parameters:
+
+- `index` — Packet sequence index
+- `psn` — Packet sequence number
+
+Return value:
+
+The value associated with @psn, or NULL if it is not present.
+
+### [`uib_psn_index_remove`](../include/uib/psn_index.h)
+
+```c
+int uib_psn_index_remove(struct uib_psn_index *index, uint32_t psn,
+			 void *value);
+```
+
+Description:
+
+Remove and return an outstanding packet by PSN.
+
+Parameters:
+
+- `index` — Packet sequence index
+- `psn` — Packet sequence number
+- `value` — Caller value associated with the packet sequence number
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+## RoCEv2 wire helpers
+
+### [`uib_crc32`](../include/uib/bth.h)
+
+```c
+uint32_t uib_crc32(uint32_t crc, const void *buf, size_t len);
+```
+
+Description:
+
+Extend an RDMA CRC-32 value with a byte range.
+
+Parameters:
+
+- `crc` — Initial CRC state
+- `buf` — Input bytes used to extend the CRC
+- `len` — Length of the byte range
+
+Return value:
+
+The updated CRC-32 state.
+
+### [`uib_icrc`](../include/uib/bth.h)
+
+```c
+uint32_t uib_icrc(const void *packet, size_t len);
+```
+
+Description:
+
+Calculate the invariant CRC of an RDMA packet.
+
+Parameters:
+
+- `packet` — Packet buffer
+- `len` — Length of the byte range
+
+Return value:
+
+The invariant CRC in host byte order.
+
+### [`uib_rocev2_icrc_ipv4`](../include/uib/bth.h)
+
+```c
+uint32_t uib_rocev2_icrc_ipv4(uint32_t src_ip, uint32_t dst_ip,
+			      uint16_t src_port, uint16_t dst_port,
+			      uint16_t ip_id, const void *rdma,
+			      size_t rdma_len);
+```
+
+Description:
+
+Calculate a RoCEv2 IPv4 invariant CRC.
+
+Parameters:
+
+- `src_ip` — Source IPv4 address in network byte order
+- `dst_ip` — Destination IPv4 address in network byte order
+- `src_port` — Source UDP port in network byte order
+- `dst_port` — Destination UDP port in network byte order
+- `ip_id` — IPv4 identification value in host byte order
+- `rdma` — RDMA transport headers and payload
+- `rdma_len` — RDMA data length excluding the invariant CRC
+
+Return value:
+
+The RoCEv2 invariant CRC state in host byte order.
+
+### [`uib_bth_pack`](../include/uib/bth.h)
+
+```c
+void uib_bth_pack(struct uib_bth *bth, uint8_t opcode, uint16_t pkey,
+		  uint32_t dqpn, uint32_t psn, int ack_request);
+```
+
+Description:
+
+Encode a Base Transport Header.
+
+Parameters:
+
+- `bth` — Base Transport Header to encode or decode
+- `opcode` — Operation code to encode or fill
+- `pkey` — Partition key in host byte order
+- `dqpn` — Destination queue pair number
+- `psn` — Packet sequence number
+- `ack_request` — Nonzero to request an acknowledgment
+
+### [`uib_bth_unpack`](../include/uib/bth.h)
+
+```c
+void uib_bth_unpack(const struct uib_bth *bth, uint8_t *opcode,
+		    uint32_t *dqpn, uint32_t *psn, int *ack_request);
+```
+
+Description:
+
+Decode a Base Transport Header.
+
+Parameters:
+
+- `bth` — Base Transport Header to encode or decode
+- `opcode` — Output for the decoded operation code
+- `dqpn` — Output for the destination queue pair number
+- `psn` — Output for the packet sequence number
+- `ack_request` — Output for the acknowledgment-request flag
+
+### [`uib_bth_set_pad`](../include/uib/bth.h)
+
+```c
+void uib_bth_set_pad(struct uib_bth *bth, uint8_t pad);
+```
+
+Description:
+
+Set the BTH payload padding count.
+
+Parameters:
+
+- `bth` — Base Transport Header to encode or decode
+- `pad` — Payload padding count in bytes
+
+### [`uib_bth_pad`](../include/uib/bth.h)
+
+```c
+uint8_t uib_bth_pad(const struct uib_bth *bth);
+```
+
+Description:
+
+Read the BTH payload padding count.
+
+Parameters:
+
+- `bth` — Base Transport Header to encode or decode
+
+Return value:
+
+The BTH payload padding count in bytes.
+
+### [`uib_reth_pack`](../include/uib/bth.h)
+
+```c
+void uib_reth_pack(struct uib_reth *r, uint64_t va, uint32_t rkey,
+		   uint32_t len);
+```
+
+Description:
+
+Encode an RDMA Extended Transport Header.
+
+Parameters:
+
+- `r` — RDMA Extended Transport Header to encode or decode
+- `va` — I/O virtual address
+- `rkey` — Remote memory region key
+- `len` — Length of the byte range
+
+### [`uib_reth_unpack`](../include/uib/bth.h)
+
+```c
+void uib_reth_unpack(const struct uib_reth *r, uint64_t *va,
+		     uint32_t *rkey, uint32_t *len);
+```
+
+Description:
+
+Decode an RDMA Extended Transport Header.
+
+Parameters:
+
+- `r` — RDMA Extended Transport Header to encode or decode
+- `va` — Output for the I/O virtual address
+- `rkey` — Output for the remote key
+- `len` — Output for the transfer length
+
+### [`uib_deth_pack`](../include/uib/bth.h)
+
+```c
+void uib_deth_pack(struct uib_deth *d, uint32_t qkey, uint32_t sqp);
+```
+
+Description:
+
+Encode a Datagram Extended Transport Header.
+
+Parameters:
+
+- `d` — Datagram Extended Transport Header to encode or decode
+- `qkey` — Datagram queue key
+- `sqp` — Source queue pair number
+
+### [`uib_deth_unpack`](../include/uib/bth.h)
+
+```c
+void uib_deth_unpack(const struct uib_deth *d, uint32_t *qkey, uint32_t *sqp);
+```
+
+Description:
+
+Decode a Datagram Extended Transport Header.
+
+Parameters:
+
+- `d` — Datagram Extended Transport Header to encode or decode
+- `qkey` — Output for the datagram queue key
+- `sqp` — Output for the source queue pair number
+
+### [`uib_aeth_pack`](../include/uib/bth.h)
+
+```c
+void uib_aeth_pack(struct uib_aeth *a, uint8_t syndrome, uint32_t msn);
+```
+
+Description:
+
+Encode an ACK Extended Transport Header.
+
+Parameters:
+
+- `a` — ACK Extended Transport Header to encode or decode
+- `syndrome` — Acknowledgment syndrome
+- `msn` — Message sequence number
+
+### [`uib_aeth_unpack`](../include/uib/bth.h)
+
+```c
+void uib_aeth_unpack(const struct uib_aeth *a, uint8_t *syndrome,
+		     uint32_t *msn);
+```
+
+Description:
+
+Decode an ACK Extended Transport Header.
+
+Parameters:
+
+- `a` — ACK Extended Transport Header to encode or decode
+- `syndrome` — Output for the acknowledgment syndrome
+- `msn` — Output for the message sequence number
+
+## Ultra Ethernet extensions
+
+### [`uib_uet_prologue_pack`](../include/uib/uet.h)
+
+```c
+uint16_t uib_uet_prologue_pack(uint8_t type, uint8_t next, uint8_t flags);
+```
+
+Description:
+
+Encode an Ultra Ethernet packet prologue.
+
+Parameters:
+
+- `type` — Ultra Ethernet packet type
+- `next` — Next-header type
+- `flags` — Prologue flags
+
+Return value:
+
+The packed prologue value in network byte order.
+
+### [`uib_uet_prologue_type`](../include/uib/uet.h)
+
+```c
+uint8_t uib_uet_prologue_type(const struct uib_uet_prologue *prologue);
+```
+
+Description:
+
+Decode the packet type from a UET prologue.
+
+Parameters:
+
+- `prologue` — Ultra Ethernet packet prologue
+
+Return value:
+
+The decoded prologue type.
+
+### [`uib_uet_prologue_next`](../include/uib/uet.h)
+
+```c
+uint8_t uib_uet_prologue_next(const struct uib_uet_prologue *prologue);
+```
+
+Description:
+
+Decode the next-header type from a UET prologue.
+
+Parameters:
+
+- `prologue` — Ultra Ethernet packet prologue
+
+Return value:
+
+The decoded next-header value.
+
+### [`uib_uet_prologue_flags`](../include/uib/uet.h)
+
+```c
+uint8_t uib_uet_prologue_flags(const struct uib_uet_prologue *prologue);
+```
+
+Description:
+
+Decode flags from a UET prologue.
+
+Parameters:
+
+- `prologue` — Ultra Ethernet packet prologue
+
+Return value:
+
+The decoded prologue flags.
+
+### [`uib_uet_nscc_wire_pack`](../include/uib/uet.h)
+
+```c
+void uib_uet_nscc_wire_pack(struct uib_uet_nscc_wire_state *state,
+			    uint32_t service_time_ns, uint8_t restore,
+			    uint8_t penalty, uint32_t received_bytes,
+			    uint16_t out_of_order);
+```
+
+Description:
+
+Encode NSCC receiver feedback for the wire.
+
+Parameters:
+
+- `state` — Wire or congestion-control state to encode or fill
+- `service_time_ns` — Service time in nanoseconds to encode or fill
+- `restore` — Restore-window flag to encode or fill
+- `penalty` — Congestion-window penalty to encode or fill
+- `received_bytes` — Newly received byte count to encode
+- `out_of_order` — Out-of-order packet count to encode or fill
+
+### [`uib_uet_nscc_wire_unpack`](../include/uib/uet.h)
+
+```c
+void uib_uet_nscc_wire_unpack(const struct uib_uet_nscc_wire_state *state,
+			      uint32_t *service_time_ns, uint8_t *restore,
+			      uint8_t *penalty, uint32_t *received_units,
+			      uint16_t *out_of_order);
+```
+
+Description:
+
+Decode NSCC receiver feedback from the wire.
+
+Parameters:
+
+- `state` — Wire or congestion-control state to encode or fill
+- `service_time_ns` — Output for the decoded service time in nanoseconds
+- `restore` — Output for the restore-window flag
+- `penalty` — Output for the congestion-window penalty
+- `received_units` — Output for the decoded receive counter units
+- `out_of_order` — Output for the out-of-order packet count
+
+### [`uib_uet_ses_fragment_info`](../include/uib/uet.h)
+
+```c
+uint64_t uib_uet_ses_fragment_info(uint32_t payload_len,
+				   uint32_t message_offset);
+```
+
+Description:
+
+Encode SES fragment length and message offset.
+
+Parameters:
+
+- `payload_len` — Fragment payload length in bytes
+- `message_offset` — Offset of the fragment in the complete message
+
+Return value:
+
+The packed SES fragment-information field in network byte order.
+
+### [`uib_uet_ses_payload_len`](../include/uib/uet.h)
+
+```c
+uint32_t uib_uet_ses_payload_len(const struct uib_uet_ses_req *request,
+				 size_t packet_payload_len);
+```
+
+Description:
+
+Decode an SES request's fragment payload length.
+
+Parameters:
+
+- `request` — Ultra Ethernet session request
+- `packet_payload_len` — Payload bytes available in the packet
+
+Return value:
+
+The decoded fragment payload length in bytes.
+
+### [`uib_uet_ses_message_offset`](../include/uib/uet.h)
+
+```c
+uint32_t uib_uet_ses_message_offset(const struct uib_uet_ses_req *request);
+```
+
+Description:
+
+Decode an SES request's message offset.
+
+Parameters:
+
+- `request` — Ultra Ethernet session request
+
+Return value:
+
+The decoded message offset in bytes.
+
+### [`uib_uet_build_ack`](../include/uib/uet.h)
+
+```c
+int uib_uet_build_ack(void *packet, size_t capacity, uint32_t cack_psn,
+		      uint32_t ack_psn, uint16_t spdcid, uint16_t dpdcid,
+		      uint8_t next_header);
+```
+
+Description:
+
+Build a UET cumulative or exact ACK packet.
+
+Parameters:
+
+- `packet` — Packet buffer
+- `capacity` — Capacity of the output buffer in bytes
+- `cack_psn` — Highest cumulatively acknowledged packet sequence number
+- `ack_psn` — Packet sequence number acknowledged exactly
+- `spdcid` — Source packet delivery context identifier
+- `dpdcid` — Destination packet delivery context identifier
+- `next_header` — Next-header type to encode
+
+Return value:
+
+The encoded ACK length on success, or -EINVAL for invalid input.
+
+### [`uib_uet_session_configure`](../include/uib/uet.h)
+
+```c
+int uib_uet_session_configure(struct uib_qp *qp,
+			      const struct uib_uet_session_config *config);
+```
+
+Description:
+
+Configure a QP's UET session parameters.
+
+Parameters:
+
+- `qp` — Queue pair
+- `config` — Configuration to apply or fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_session_query`](../include/uib/uet.h)
+
+```c
+int uib_uet_session_query(struct uib_qp *qp,
+			  struct uib_uet_session_config *config);
+```
+
+Description:
+
+Read a QP's UET session parameters.
+
+Parameters:
+
+- `qp` — Queue pair
+- `config` — Session configuration structure to fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_optimized_configure`](../include/uib/uet.h)
+
+```c
+int uib_uet_optimized_configure(struct uib_qp *qp,
+				enum uib_uet_optimized_mode mode);
+```
+
+Description:
+
+Select a QP's optimized-header policy.
+
+Parameters:
+
+- `qp` — Queue pair
+- `mode` — Mode to apply or fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_optimized_query`](../include/uib/uet.h)
+
+```c
+int uib_uet_optimized_query(struct uib_qp *qp,
+			    enum uib_uet_optimized_mode *mode,
+			    struct uib_uet_optimized_stats *stats);
+```
+
+Description:
+
+Read optimized-header counters and policy.
+
+Parameters:
+
+- `qp` — Queue pair
+- `mode` — Output for the optimized-header policy
+- `stats` — Statistics structure to fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_multipath_configure`](../include/uib/uet.h)
+
+```c
+int uib_uet_multipath_configure(struct uib_qp *qp,
+				const struct uib_uet_multipath_config *config);
+```
+
+Description:
+
+Configure a QP's entropy paths and policy.
+
+Parameters:
+
+- `qp` — Queue pair
+- `config` — Configuration to apply or fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_multipath_query`](../include/uib/uet.h)
+
+```c
+int uib_uet_multipath_query(struct uib_qp *qp,
+			    struct uib_uet_multipath_config *config,
+			    struct uib_uet_multipath_stats *stats);
+```
+
+Description:
+
+Read a QP's multipath state and counters.
+
+Parameters:
+
+- `qp` — Queue pair
+- `config` — Multipath configuration structure to fill
+- `stats` — Statistics structure to fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_atomic_datatype_size`](../include/uib/uet.h)
+
+```c
+size_t uib_uet_atomic_datatype_size(uint8_t datatype);
+```
+
+Description:
+
+Return a UET atomic datatype's byte size.
+
+Parameters:
+
+- `datatype` — Ultra Ethernet atomic datatype code
+
+Return value:
+
+The datatype width in bytes, or 0 if @datatype is unsupported.
+
+### [`uib_uet_post_atomic`](../include/uib/uet.h)
+
+```c
+int uib_uet_post_atomic(struct uib_qp *qp, struct uib_uet_atomic_wr *wr,
+			struct uib_uet_atomic_wr **bad);
+```
+
+Description:
+
+Post an extended Ultra Ethernet atomic operation.
+
+Parameters:
+
+- `qp` — Queue pair
+- `wr` — First work request in the chain
+- `bad` — Output pointer for the first unposted work request
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_nscc_configure_qp`](../include/uib/uet_nscc.h)
+
+```c
+int uib_uet_nscc_configure_qp(struct uib_qp *qp,
+			      const struct uib_uet_nscc_config *config);
+```
+
+Description:
+
+Configure NSCC for one UET QP.
+
+Parameters:
+
+- `qp` — Queue pair
+- `config` — Configuration to apply or fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_nscc_query_qp`](../include/uib/uet_nscc.h)
+
+```c
+int uib_uet_nscc_query_qp(struct uib_qp *qp, struct uib_uet_nscc *state);
+```
+
+Description:
+
+Read NSCC state from one UET QP.
+
+Parameters:
+
+- `qp` — Queue pair
+- `state` — NSCC state structure to fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+## Ultra Ethernet NSCC
+
+### [`uib_uet_nscc_config_default`](../include/uib/uet_nscc.h)
+
+```c
+void uib_uet_nscc_config_default(struct uib_uet_nscc_config *config,
+				 uint32_t mtu);
+```
+
+Description:
+
+Derive default NSCC settings for an MTU.
+
+Parameters:
+
+- `config` — Configuration to apply or fill
+- `mtu` — Path maximum transmission unit in bytes
+
+### [`uib_uet_nscc_init`](../include/uib/uet_nscc.h)
+
+```c
+void uib_uet_nscc_init(struct uib_uet_nscc *nscc,
+		       const struct uib_uet_nscc_config *config,
+		       uint64_t now_ns);
+```
+
+Description:
+
+Initialize an NSCC flow-control state machine.
+
+Parameters:
+
+- `nscc` — NSCC congestion-control state
+- `config` — Configuration to apply or fill
+- `now_ns` — Current monotonic time in nanoseconds
+
+### [`uib_uet_nscc_can_send`](../include/uib/uet_nscc.h)
+
+```c
+int uib_uet_nscc_can_send(const struct uib_uet_nscc *nscc, size_t bytes);
+```
+
+Description:
+
+Check whether the congestion window admits bytes.
+
+Parameters:
+
+- `nscc` — NSCC congestion-control state
+- `bytes` — Number of bytes in the prospective transmission
+
+Return value:
+
+Nonzero if the congestion window admits @bytes, otherwise 0.
+
+### [`uib_uet_nscc_ack_request`](../include/uib/uet_nscc.h)
+
+```c
+int uib_uet_nscc_ack_request(const struct uib_uet_nscc *nscc,
+			     uint32_t ack_generation_trigger);
+```
+
+Description:
+
+Decide whether a packet should request an ACK.
+
+Parameters:
+
+- `nscc` — NSCC congestion-control state
+- `ack_generation_trigger` — Congestion-window threshold for requesting an ACK
+
+Return value:
+
+Nonzero if the packet should request an ACK, otherwise 0.
+
+### [`uib_uet_nscc_on_send`](../include/uib/uet_nscc.h)
+
+```c
+void uib_uet_nscc_on_send(struct uib_uet_nscc *nscc, size_t bytes);
+```
+
+Description:
+
+Account newly transmitted bytes in NSCC.
+
+Parameters:
+
+- `nscc` — NSCC congestion-control state
+- `bytes` — Number of newly transmitted bytes
+
+### [`uib_uet_nscc_on_ack`](../include/uib/uet_nscc.h)
+
+```c
+void uib_uet_nscc_on_ack(struct uib_uet_nscc *nscc,
+			 const struct uib_uet_nscc_ack *ack);
+```
+
+Description:
+
+Apply receiver feedback to NSCC sender state.
+
+Parameters:
+
+- `nscc` — NSCC congestion-control state
+- `ack` — Acknowledgment feedback to apply
+
+### [`uib_uet_nscc_on_inferred_loss`](../include/uib/uet_nscc.h)
+
+```c
+void uib_uet_nscc_on_inferred_loss(struct uib_uet_nscc *nscc, size_t bytes);
+```
+
+Description:
+
+Reduce the window after inferred loss.
+
+Parameters:
+
+- `nscc` — NSCC congestion-control state
+- `bytes` — Number of bytes inferred lost
+
+### [`uib_uet_nscc_on_nack`](../include/uib/uet_nscc.h)
+
+```c
+void uib_uet_nscc_on_nack(struct uib_uet_nscc *nscc, size_t bytes,
+			  int trimmed, int last_hop, int rccc_enabled,
+			  uint64_t now_ns);
+```
+
+Description:
+
+Reduce the window after an explicit NACK.
+
+Parameters:
+
+- `nscc` — NSCC congestion-control state
+- `bytes` — Number of bytes reported by the NACK
+- `trimmed` — Nonzero if the packet was trimmed
+- `last_hop` — Nonzero if trimming occurred at the last hop
+- `rccc_enabled` — Nonzero when receiver-driven congestion control is enabled
+- `now_ns` — Current monotonic time in nanoseconds
+
+## AF_XDP frame helpers
+
+### [`uib_afxdp_parse_mac`](../include/uib/afxdp_frame.h)
+
+```c
+int uib_afxdp_parse_mac(const char *text, uint8_t mac[6]);
+```
+
+Description:
+
+Parse a colon-separated Ethernet MAC address.
+
+Parameters:
+
+- `text` — Ethernet address in colon-separated notation
+- `mac` — Output buffer for the six address octets
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_inet_csum`](../include/uib/afxdp_frame.h)
+
+```c
+uint16_t uib_inet_csum(const void *data, size_t len);
+```
+
+Description:
+
+Calculate an Internet checksum over a byte range.
+
+Parameters:
+
+- `data` — Input byte range
+- `len` — Length of the byte range
+
+Return value:
+
+The 16-bit Internet checksum in host byte order.
+
+### [`uib_frame_build`](../include/uib/afxdp_frame.h)
+
+```c
+int uib_frame_build(uint8_t *out, size_t cap, const struct uib_frame_hdr *hi,
+		    const void *payload, size_t paylen);
+```
+
+Description:
+
+Build an Ethernet, IPv4, and UDP frame.
+
+Parameters:
+
+- `out` — Output frame buffer
+- `cap` — Capacity of the output buffer in bytes
+- `hi` — Ethernet, IPv4, and UDP header fields
+- `payload` — Payload bytes appended after the UDP header
+- `paylen` — Length of the payload in bytes
+
+Return value:
+
+The total frame length on success, or -1 if @out is too small.
+
+### [`uib_frame_parse`](../include/uib/afxdp_frame.h)
+
+```c
+int uib_frame_parse(const uint8_t *frame, size_t len, uint16_t want_dport,
+		    struct sockaddr_in *src, const uint8_t **payload,
+		    size_t *paylen);
+```
+
+Description:
+
+Validate a received frame and locate its UDP payload.
+
+Parameters:
+
+- `frame` — Received Ethernet frame
+- `len` — Length of the byte range
+- `want_dport` — Required UDP destination port in network byte order
+- `src` — Output for the source IPv4 address and UDP port
+- `payload` — Output pointer to the UDP payload
+- `paylen` — Output for the UDP payload length
+
+Return value:
+
+0 for a matching IPv4/UDP frame, or -1 if the frame is rejected.

@@ -23,6 +23,14 @@ struct uib_direct_delivery {
 
 static _Thread_local struct uib_direct_delivery *direct_delivery;
 
+/**
+ * uib_transport_deliver - Route a received packet to its destination QP.
+ * @ctx: UIB device context
+ * @src: Source transport address
+ * @buf: Received protocol packet
+ * @len: Length of the byte range
+ * @uib-api: Packet transports
+ */
 void uib_transport_deliver(struct uib_context *ctx,
 			   const struct sockaddr_in *src, const void *buf,
 			   size_t len)
@@ -106,6 +114,11 @@ int uib_transport_claim_direct(const void *data, size_t len,
 	return 0;
 }
 
+/**
+ * uib_transport_retransmit_walk - Process every expired retry deadline.
+ * @ctx: UIB device context
+ * @uib-api: Packet transports
+ */
 void uib_transport_retransmit_walk(struct uib_context *ctx)
 {
 	uint64_t now = uib_now_ns();
@@ -132,6 +145,13 @@ static const char *mode_name(enum uib_transport_mode m)
 	return "?";
 }
 
+/**
+ * uib_transport_mode_from_env - Select transport mode from the environment.
+ * @uib-api: Packet transports
+ *
+ * Return: The selected transport mode; invalid values fall back to
+ * UIB_MODE_UDP_IO_URING.
+ */
 enum uib_transport_mode uib_transport_mode_from_env(void)
 {
 	const char *s = getenv(UIB_ENV_TRANSPORT_MODE);
@@ -164,6 +184,13 @@ static const struct uib_transport_ops *ops_for_mode(enum uib_transport_mode m)
 	return NULL;
 }
 
+/**
+ * uib_transport_init - Open the selected transport for a context.
+ * @ctx: UIB device context
+ * @uib-api: Packet transports
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_transport_init(struct uib_context *ctx)
 {
 	const struct uib_transport_ops *ops = ops_for_mode(ctx->mode);
@@ -180,18 +207,44 @@ int uib_transport_init(struct uib_context *ctx)
 	return ops->init(ctx);
 }
 
+/**
+ * uib_transport_fini - Stop and release a context's transport.
+ * @ctx: UIB device context
+ * @uib-api: Packet transports
+ */
 void uib_transport_fini(struct uib_context *ctx)
 {
 	if (ctx && ctx->tops && ctx->tops->fini)
 		ctx->tops->fini(ctx);
 }
 
+/**
+ * uib_transport_send - Send a packet over the selected transport.
+ * @ctx: UIB device context
+ * @dst: Destination transport address
+ * @buf: Protocol packet to send
+ * @len: Length of the byte range
+ * @uib-api: Packet transports
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_transport_send(struct uib_context *ctx, const struct sockaddr_in *dst,
 		       const void *buf, size_t len)
 {
 	return ctx->tops->send(ctx, dst, buf, len);
 }
 
+/**
+ * uib_transport_send_entropy - Send a packet with path-selection entropy.
+ * @ctx: UIB device context
+ * @dst: Destination transport address
+ * @buf: Protocol packet to send
+ * @len: Length of the byte range
+ * @entropy: Transport entropy value
+ * @uib-api: Packet transports
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_transport_send_entropy(struct uib_context *ctx,
 			       const struct sockaddr_in *dst,
 			       const void *buf, size_t len, uint16_t entropy)
@@ -201,6 +254,18 @@ int uib_transport_send_entropy(struct uib_context *ctx,
 	return ctx->tops->send(ctx, dst, buf, len);
 }
 
+/**
+ * uib_transport_send_ref - Send while retaining a caller-owned buffer.
+ * @ctx: UIB device context
+ * @dst: Destination transport address
+ * @buf: Referenced protocol packet to send
+ * @len: Length of the byte range
+ * @release: Callback invoked when the transport releases the buffer
+ * @opaque: Caller-defined release callback argument
+ * @uib-api: Packet transports
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_transport_send_ref(struct uib_context *ctx,
 			   const struct sockaddr_in *dst, const void *buf,
 			   size_t len, uib_transport_release_fn release,
@@ -215,6 +280,15 @@ int uib_transport_send_ref(struct uib_context *ctx,
 	return rc;
 }
 
+/**
+ * uib_transport_send_ref_batch - Send retained buffers as one transport batch.
+ * @ctx: UIB device context
+ * @refs: Array of referenced send requests
+ * @count: Number of array entries
+ * @uib-api: Packet transports
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_transport_send_ref_batch(struct uib_context *ctx,
 				 const struct uib_transport_ref *refs,
 				 size_t count)
@@ -244,6 +318,14 @@ int uib_transport_send_ref_batch(struct uib_context *ctx,
 	return 0;
 }
 
+/**
+ * uib_transport_get_stats - Read transport, batching, and packet counters.
+ * @ctx: UIB device context
+ * @stats: Statistics structure to fill
+ * @uib-api: Packet transports
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_transport_get_stats(struct uib_context *ctx,
 			    struct uib_transport_stats *stats)
 {

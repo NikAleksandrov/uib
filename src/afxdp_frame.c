@@ -9,6 +9,14 @@
 
 #include "uib/afxdp_frame.h"
 
+/**
+ * uib_afxdp_parse_mac - Parse a colon-separated Ethernet MAC address.
+ * @text: Ethernet address in colon-separated notation
+ * @mac: Output buffer for the six address octets
+ * @uib-api: AF_XDP frame helpers
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_afxdp_parse_mac(const char *text, uint8_t mac[6])
 {
 	unsigned int byte[6];
@@ -28,6 +36,14 @@ int uib_afxdp_parse_mac(const char *text, uint8_t mac[6])
 	return 0;
 }
 
+/**
+ * uib_inet_csum - Calculate an Internet checksum over a byte range.
+ * @data: Input byte range
+ * @len: Length of the byte range
+ * @uib-api: AF_XDP frame helpers
+ *
+ * Return: The 16-bit Internet checksum in host byte order.
+ */
 uint16_t uib_inet_csum(const void *data, size_t len)
 {
 	const uint8_t *p = data;
@@ -43,6 +59,17 @@ uint16_t uib_inet_csum(const void *data, size_t len)
 	return (uint16_t)~sum;
 }
 
+/**
+ * uib_frame_build - Build an Ethernet, IPv4, and UDP frame.
+ * @out: Output frame buffer
+ * @cap: Capacity of the output buffer in bytes
+ * @hi: Ethernet, IPv4, and UDP header fields
+ * @payload: Payload bytes appended after the UDP header
+ * @paylen: Length of the payload in bytes
+ * @uib-api: AF_XDP frame helpers
+ *
+ * Return: The total frame length on success, or -1 if @out is too small.
+ */
 int uib_frame_build(uint8_t *out, size_t cap, const struct uib_frame_hdr *hi,
 		    const void *payload, size_t paylen)
 {
@@ -85,6 +112,18 @@ int uib_frame_build(uint8_t *out, size_t cap, const struct uib_frame_hdr *hi,
 	return (int)total;
 }
 
+/**
+ * uib_frame_parse - Validate a received frame and locate its UDP payload.
+ * @frame: Received Ethernet frame
+ * @len: Length of the byte range
+ * @want_dport: Required UDP destination port in network byte order
+ * @src: Output for the source IPv4 address and UDP port
+ * @payload: Output pointer to the UDP payload
+ * @paylen: Output for the UDP payload length
+ * @uib-api: AF_XDP frame helpers
+ *
+ * Return: 0 for a matching IPv4/UDP frame, or -1 if the frame is rejected.
+ */
 int uib_frame_parse(const uint8_t *frame, size_t len, uint16_t want_dport,
 		    struct sockaddr_in *src, const uint8_t **payload,
 		    size_t *paylen)

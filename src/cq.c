@@ -13,6 +13,13 @@
 #include "uib/cq.h"
 #include "uib/context.h"
 
+/**
+ * uib_create_comp_channel - Create a pollable completion-event channel.
+ * @ctx: UIB device context
+ * @uib-api: Completion queues and events
+ *
+ * Return: A pointer to the new object on success, or NULL on failure.
+ */
 struct uib_comp_channel *uib_create_comp_channel(struct uib_context *ctx)
 {
 	struct uib_comp_channel *channel;
@@ -34,6 +41,13 @@ struct uib_comp_channel *uib_create_comp_channel(struct uib_context *ctx)
 	return channel;
 }
 
+/**
+ * uib_destroy_comp_channel - Release a completion-event channel.
+ * @channel: Completion-event channel
+ * @uib-api: Completion queues and events
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_destroy_comp_channel(struct uib_comp_channel *channel)
 {
 	if (!channel)
@@ -50,11 +64,28 @@ int uib_destroy_comp_channel(struct uib_comp_channel *channel)
 	return 0;
 }
 
+/**
+ * uib_comp_channel_fd - Return the fd used to poll a completion channel.
+ * @channel: Completion-event channel
+ * @uib-api: Completion queues and events
+ *
+ * Return: The channel's pollable file descriptor, or -1 if @channel is NULL.
+ */
 int uib_comp_channel_fd(const struct uib_comp_channel *channel)
 {
 	return channel ? channel->fd : -1;
 }
 
+/**
+ * uib_create_cq_channel - Create a CQ attached to an event channel.
+ * @ctx: UIB device context
+ * @cqe: Requested completion queue capacity
+ * @channel: Completion-event channel
+ * @event_context: Caller-defined completion-event context
+ * @uib-api: Completion queues and events
+ *
+ * Return: A pointer to the new object on success, or NULL on failure.
+ */
 struct uib_cq *uib_create_cq_channel(struct uib_context *ctx, int cqe,
 				     struct uib_comp_channel *channel,
 				     void *event_context)
@@ -101,11 +132,26 @@ struct uib_cq *uib_create_cq_channel(struct uib_context *ctx, int cqe,
 	return cq;
 }
 
+/**
+ * uib_create_cq - Create a completion queue without an event channel.
+ * @ctx: UIB device context
+ * @cqe: Requested completion queue capacity
+ * @uib-api: Completion queues and events
+ *
+ * Return: A pointer to the new object on success, or NULL on failure.
+ */
 struct uib_cq *uib_create_cq(struct uib_context *ctx, int cqe)
 {
 	return uib_create_cq_channel(ctx, cqe, NULL, NULL);
 }
 
+/**
+ * uib_destroy_cq - Release an unused completion queue.
+ * @cq: Completion queue
+ * @uib-api: Completion queues and events
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_destroy_cq(struct uib_cq *cq)
 {
 	struct uib_comp_channel *channel;
@@ -155,6 +201,14 @@ static int channel_push(struct uib_comp_channel *channel,
 	return -saved;
 }
 
+/**
+ * uib_cq_push - Publish one completion to a CQ.
+ * @cq: Completion queue
+ * @wc: Work completion to enqueue
+ * @uib-api: Completion queues and events
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_cq_push(struct uib_cq *cq, const struct uib_wc *wc)
 {
 	struct uib_cq_event *event = NULL;
@@ -200,6 +254,15 @@ int uib_cq_push(struct uib_cq *cq, const struct uib_wc *wc)
 	return 0;
 }
 
+/**
+ * uib_poll_cq - Poll completed work requests from a CQ.
+ * @cq: Completion queue
+ * @n: Maximum number of completions to return
+ * @out: Output array for completed work requests
+ * @uib-api: Completion queues and events
+ *
+ * Return: The number of completions written to @out, or a negative error code.
+ */
 int uib_poll_cq(struct uib_cq *cq, int n, struct uib_wc *out)
 {
 	struct uib_cq_slot *slot;
@@ -238,6 +301,14 @@ int uib_poll_cq(struct uib_cq *cq, int n, struct uib_wc *out)
 	return got;
 }
 
+/**
+ * uib_req_notify_cq - Arm one-shot notification for the next completion.
+ * @cq: Completion queue
+ * @solicited_only: Nonzero to notify only for solicited completions
+ * @uib-api: Completion queues and events
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_req_notify_cq(struct uib_cq *cq, int solicited_only)
 {
 	struct uib_cq_event *event;
@@ -261,6 +332,15 @@ int uib_req_notify_cq(struct uib_cq *cq, int solicited_only)
 	return 0;
 }
 
+/**
+ * uib_get_cq_event - Consume the next completion-channel event.
+ * @channel: Completion-event channel
+ * @cq: Output for the completion queue that raised the event
+ * @event_context: Output for the completion queue's caller context
+ * @uib-api: Completion queues and events
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_get_cq_event(struct uib_comp_channel *channel, struct uib_cq **cq,
 			     void **event_context)
 {
@@ -294,6 +374,12 @@ int uib_get_cq_event(struct uib_comp_channel *channel, struct uib_cq **cq,
 	return 0;
 }
 
+/**
+ * uib_ack_cq_events - Acknowledge CQ events.
+ * @cq: Completion queue
+ * @events: Number of completion events to acknowledge
+ * @uib-api: Completion queues and events
+ */
 void uib_ack_cq_events(struct uib_cq *cq, unsigned int events)
 {
 	if (!cq || !events)

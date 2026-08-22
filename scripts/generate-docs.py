@@ -48,20 +48,37 @@ def parse_fields(block):
     for raw in block.splitlines():
         line = re.sub(r"^\s*\* ?", "", raw).rstrip()
         tagged = re.match(r"@(\w[\w-]*):\s*(.*)", line)
-        section = re.match(r"(Example):\s*(.*)", line)
+        section = re.match(r"(Example|Return):\s*(.*)", line)
         if tagged:
             current = tagged.group(1)
             fields[current] = tagged.group(2)
         elif section:
             current = section.group(1).lower()
             fields[current] = section.group(2)
-        elif current == "example" and line:
+        elif current in ("example", "return") and line:
             if fields[current]:
                 fields[current] += " "
             fields[current] += line.strip()
         elif not line:
             current = None
     return fields
+
+
+def parse_parameters(arguments, source):
+    parameters = []
+
+    if arguments.strip() == "void":
+        return parameters
+    for argument in arguments.split(","):
+        argument = argument.strip()
+        array = re.search(r"([a-zA-Z_]\w*)\s*\[[^]]*\]\s*$", argument)
+        scalar = re.search(r"([a-zA-Z_]\w*)\s*$", argument)
+        match = array or scalar
+
+        if not match:
+            raise ValueError(f"{source}: cannot parse parameter: {argument}")
+        parameters.append(match.group(1))
+    return parameters
 
 
 def parse_environment_annotations():
@@ -92,8 +109,9 @@ def parse_environment_annotations():
 def parse_api_annotations():
     entries = []
     pattern = re.compile(
-        r"/\*\*(.*?)\*/\s*[^;{}]*?\b(uibv?_[a-z0-9_]+)\s*"
-        r"\([^;{}]*\)\s*\{", re.S)
+        r"/\*\*(.*?)\*/\n(?=[A-Za-z_])[^;{}]*?"
+        r"\b(uibv?_[a-z0-9_]+)\s*"
+        r"\(([^;{}]*)\)\s*\{", re.S)
 
     for path in sorted((ROOT / "src").glob("*.c")):
         text = path.read_text()
@@ -108,6 +126,8 @@ def parse_api_annotations():
             fields = parse_fields(block)
             fields["description"] = heading.group(1).strip()
             fields["symbol"] = symbol
+            fields["definition-parameters"] = parse_parameters(
+                match.group(3), path)
             entries.append(fields)
     return entries
 
@@ -134,6 +154,32 @@ def markdown_code(value):
 
 def markdown_text(value):
     return html.escape(value, quote=False).replace("|", "&#124;")
+
+
+def markdown_anchor(value):
+    value = re.sub(r"[^a-z0-9 -]", "", value.lower())
+    return re.sub(r"[ -]+", "-", value).strip("-")
+
+
+def append_contents(lines, sections):
+    lines.extend([
+        DOC_FORMAT["markdown"]["contents_heading"],
+        "",
+    ])
+    for section in sections:
+        lines.append(f"- [{section}](#{markdown_anchor(section)})")
+    lines.append("")
+
+
+def ordered_api_areas(entries):
+    discovered = []
+
+    for entry in entries:
+        if entry["uib-api"] not in discovered:
+            discovered.append(entry["uib-api"])
+    ordered = [area for area in DOC_FORMAT.get("api_area_order", ()) if area in discovered]
+    ordered.extend(area for area in discovered if area not in ordered)
+    return ordered
 
 
 def roff_text(value):
@@ -180,20 +226,61 @@ def header_apis():
 
             if end < 0:
                 continue
-            declaration = " ".join(text[start:end + 1].split())
+            display_declaration = text[start:end + 1].strip()
+            declaration = " ".join(display_declaration.split())
             if declaration.startswith("#define"):
                 continue
-            declarations[name] = (declaration, path.relative_to(ROOT))
+            arguments = declaration[declaration.find("(") + 1:
+                                    declaration.rfind(")")]
+            parameters = parse_parameters(arguments, path)
+            return_type = declaration[:declaration.find(name)].strip()
+            declarations[name] = (declaration, path.relative_to(ROOT),
+                                  parameters, display_declaration, return_type)
     return declarations
 
 
+def require_api_parameters(entries, declarations):
+    metadata = {"uib-api", "return", "description", "symbol",
+                "definition-parameters"}
+
+    for entry in entries:
+        symbol = entry["symbol"]
+        parameters = declarations[symbol][2]
+        return_type = declarations[symbol][4]
+        definition_parameters = entry["definition-parameters"]
+        missing = [name for name in parameters if not entry.get(name)]
+        extra = sorted(set(entry) - metadata - set(parameters))
+
+        if definition_parameters != parameters:
+            raise ValueError(
+                f"public API: {symbol}: declaration parameters " +
+                f"{parameters} do not match definition parameters " +
+                f"{definition_parameters}")
+
+        if missing:
+            raise ValueError(
+                f"public API: {symbol}: undocumented parameters: " +
+                ", ".join(missing))
+        if extra:
+            raise ValueError(
+                f"public API: {symbol}: unknown parameter tags: " +
+                ", ".join(extra))
+        if return_type != "void" and not entry.get("return"):
+            raise ValueError(
+                f"public API: {symbol}: missing return value documentation")
+        if return_type == "void" and entry.get("return"):
+            raise ValueError(
+                f"public API: {symbol}: void function has return documentation")
+
+
 def render_environment(entries):
-    lines = []
     scopes = []
 
     for entry in entries:
         if entry["uib-env"] not in scopes:
             scopes.append(entry["uib-env"])
+    lines = []
+    append_contents(lines, scopes)
     for scope in scopes:
         lines.extend([
             f"## {scope}",
@@ -219,33 +306,48 @@ def render_environment(entries):
 
 
 def render_api(entries, declarations):
+    areas = ordered_api_areas(entries)
     lines = []
-    areas = []
-
-    for entry in entries:
-        if entry["uib-api"] not in areas:
-            areas.append(entry["uib-api"])
+    append_contents(lines, areas)
     for area in areas:
         lines.extend([
             f"## {area}",
             "",
-            DOC_FORMAT["markdown"]["api_table_header"],
-            DOC_FORMAT["markdown"]["api_table_rule"],
         ])
         for entry in entries:
             if entry["uib-api"] != area:
                 continue
-            declaration, path = declarations[entry["symbol"]]
-            function = f"[`{entry['symbol']}`](../{path})"
-            lines.append(
-                "| " + " | ".join((
-                    function,
-                    markdown_code(declaration),
-                    markdown_text(entry["description"]),
-                    markdown_code(entry["example"]),
-                )) + " |"
-            )
-        lines.append("")
+            _declaration, path, parameters, display, return_type = declarations[
+                entry["symbol"]]
+            lines.extend([
+                f"### [`{entry['symbol']}`](../{path})",
+                "",
+                "```c",
+                display,
+                "```",
+                "",
+                DOC_FORMAT["markdown"]["description_heading"],
+                "",
+                markdown_text(entry["description"]),
+                "",
+            ])
+            if parameters:
+                lines.extend([
+                    DOC_FORMAT["markdown"]["parameters_heading"],
+                    "",
+                ])
+                for parameter in parameters:
+                    lines.append(
+                        f"- `{parameter}` — " +
+                        markdown_text(entry[parameter]))
+                lines.append("")
+            if return_type != "void":
+                lines.extend([
+                    DOC_FORMAT["markdown"]["return_heading"],
+                    "",
+                    markdown_text(entry["return"]),
+                    "",
+                ])
     return render_template(
         API_TEMPLATE, {"@API_SECTIONS@": "\n".join(lines).rstrip("\n")})
 
@@ -285,16 +387,26 @@ def render_man_api(lines, entries, declarations):
         for entry in entries:
             if entry["uib-api"] != area:
                 continue
-            declaration, _path = declarations[entry["symbol"]]
+            declaration, _path, parameters, _display, return_type = declarations[
+                entry["symbol"]]
             lines.extend([
                 ".TP",
                 f".B {entry['symbol']}",
                 roff_text(declaration),
                 ".br",
                 roff_text(entry["description"]),
-                ".br",
-                DOC_FORMAT["man"]["example_label"] + roff_bold(entry["example"]),
             ])
+            for parameter in parameters:
+                lines.extend([
+                    ".br",
+                    DOC_FORMAT["man"]["parameter_label"] + roff_bold(parameter) + ": " +
+                    roff_text(entry[parameter]),
+                ])
+            if return_type != "void":
+                lines.extend([
+                    ".br",
+                    DOC_FORMAT["man"]["return_label"] + roff_text(entry["return"]),
+                ])
 
 
 def render_man(env_entries, api_entries, declarations):
@@ -335,7 +447,7 @@ def main():
     require_fields(env_entries,
                    ("uib-env", "description", "default", "values", "example"),
                    ENV_SOURCE)
-    require_fields(api_entries, ("uib-api", "description", "example"),
+    require_fields(api_entries, ("uib-api", "description"),
                    ROOT / "src")
 
     documented_env = {entry["symbol"] for entry in env_entries}
@@ -354,6 +466,7 @@ def main():
     if stale_api:
         raise ValueError("annotations without public declarations: " +
                          ", ".join(sorted(stale_api)))
+    require_api_parameters(api_entries, declarations)
 
     env_doc = render_environment(env_entries)
     api_doc = render_api(api_entries, declarations)

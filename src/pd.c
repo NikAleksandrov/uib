@@ -261,6 +261,13 @@ static struct uib_mr *addr_lookup(struct uib_mr *mr, uint64_t va,
 	return addr_lookup(mr->addr_right, va, len, access);
 }
 
+/**
+ * uib_alloc_pd - Allocate a protection domain from an open context.
+ * @ctx: UIB device context
+ * @uib-api: Protection domains
+ *
+ * Return: A pointer to the new object on success, or NULL on failure.
+ */
 struct uib_pd *uib_alloc_pd(struct uib_context *ctx)
 {
 	struct uib_pd *pd;
@@ -286,6 +293,13 @@ struct uib_pd *uib_alloc_pd(struct uib_context *ctx)
 	return pd;
 }
 
+/**
+ * uib_dealloc_pd - Release an unused protection domain.
+ * @pd: Protection domain
+ * @uib-api: Protection domains
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_dealloc_pd(struct uib_pd *pd)
 {
 	if (!pd)
@@ -302,6 +316,14 @@ int uib_dealloc_pd(struct uib_pd *pd)
 	return 0;
 }
 
+/**
+ * uib_pd_attach_mr - Publish an MR in a protection domain.
+ * @pd: Protection domain
+ * @mr: Memory region
+ * @uib-api: Memory regions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_pd_attach_mr(struct uib_pd *pd, struct uib_mr *mr)
 {
 	struct uib_mr_table *old_table;
@@ -331,6 +353,14 @@ int uib_pd_attach_mr(struct uib_pd *pd, struct uib_mr *mr)
 	return 0;
 }
 
+/**
+ * uib_pd_detach_mr - Remove an MR from a protection domain.
+ * @pd: Protection domain
+ * @mr: Memory region
+ * @uib-api: Protection domains
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_pd_detach_mr(struct uib_pd *pd, struct uib_mr *mr)
 {
 	struct uib_mr_table *old_table;
@@ -353,6 +383,14 @@ int uib_pd_detach_mr(struct uib_pd *pd, struct uib_mr *mr)
 	return 0;
 }
 
+/**
+ * uib_pd_lookup_lkey - Find and reference a protection-domain MR by local key.
+ * @pd: Protection domain
+ * @lkey: Local memory region key
+ * @uib-api: Protection domains
+ *
+ * Return: A referenced matching MR, or NULL if no match is found.
+ */
 struct uib_mr *uib_pd_lookup_lkey(struct uib_pd *pd, uint32_t lkey)
 {
 	struct uib_mr *mr;
@@ -363,6 +401,14 @@ struct uib_mr *uib_pd_lookup_lkey(struct uib_pd *pd, uint32_t lkey)
 	return mr;
 }
 
+/**
+ * uib_pd_lookup_rkey - Find and reference an MR by remote key.
+ * @pd: Protection domain
+ * @rkey: Remote memory region key
+ * @uib-api: Protection domains
+ *
+ * Return: A referenced matching MR, or NULL if no match is found.
+ */
 struct uib_mr *uib_pd_lookup_rkey(struct uib_pd *pd, uint32_t rkey)
 {
 	struct uib_mr *mr;
@@ -373,6 +419,14 @@ struct uib_mr *uib_pd_lookup_rkey(struct uib_pd *pd, uint32_t rkey)
 	return mr;
 }
 
+/**
+ * uib_pd_lookup_key - Find and reference a protection-domain MR by either key.
+ * @pd: Protection domain
+ * @key: Memory region key
+ * @uib-api: Protection domains
+ *
+ * Return: A referenced matching MR, or NULL if no match is found.
+ */
 struct uib_mr *uib_pd_lookup_key(struct uib_pd *pd, uint32_t key)
 {
 	struct uib_mr *mr;
@@ -383,6 +437,16 @@ struct uib_mr *uib_pd_lookup_key(struct uib_pd *pd, uint32_t key)
 	return mr;
 }
 
+/**
+ * uib_pd_lookup_address - Find and reference an MR containing an IOVA range.
+ * @pd: Protection domain
+ * @va: I/O virtual address
+ * @len: Length of the byte range
+ * @access: Access permissions required or granted
+ * @uib-api: Protection domains
+ *
+ * Return: A referenced matching MR, or NULL if no match is found.
+ */
 struct uib_mr *uib_pd_lookup_address(struct uib_pd *pd, uint64_t va,
 				      size_t len, int access)
 {

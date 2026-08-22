@@ -2,9 +2,29 @@
   "markdown": {
     "environment_table_header": "| Variable | Default | Accepted values | Description | Example |",
     "environment_table_rule": "|---|---|---|---|---|",
-    "api_table_header": "| Function | Declaration | Description | Example |",
-    "api_table_rule": "|---|---|---|---|"
+    "contents_heading": "## Contents",
+    "description_heading": "Description:",
+    "parameters_heading": "Parameters:",
+    "return_heading": "Return value:"
   },
+  "api_area_order": [
+    "Contexts and QP dispatch",
+    "Protocol selection",
+    "Native verbs compatibility API",
+    "Protection domains",
+    "Memory regions",
+    "Completion queues and events",
+    "Queue pairs and data transfer",
+    "Packet transports",
+    "Zero-copy helpers",
+    "Provider-owned host-memory receive",
+    "Netdev DMA-BUF helpers",
+    "Packet sequence indexes",
+    "RoCEv2 wire helpers",
+    "Ultra Ethernet extensions",
+    "Ultra Ethernet NSCC",
+    "AF_XDP frame helpers"
+  ],
   "man": {
     "accepted_values_label": "Accepted values: ",
     "default_label": "Default: ",

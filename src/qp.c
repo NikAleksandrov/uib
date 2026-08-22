@@ -130,6 +130,14 @@ error:
 	return NULL;
 }
 
+/**
+ * uib_create_qp - Create a queue pair from PD, CQ, and depth attributes.
+ * @pd: Protection domain
+ * @attr: Queue pair attributes
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: A pointer to the new object on success, or NULL on failure.
+ */
 struct uib_qp *uib_create_qp(struct uib_pd *pd,
 			     const struct uib_qp_init_attr *attr)
 {
@@ -254,6 +262,13 @@ void uib_rocev2_qp_fini(struct uib_qp *qp)
 	uib_psn_index_destroy(&qp->out_index);
 }
 
+/**
+ * uib_destroy_qp - Destroy a QP and protocol-specific outstanding state.
+ * @qp: Queue pair
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_destroy_qp(struct uib_qp *qp)
 {
 	struct uib_context *ctx;
@@ -305,6 +320,15 @@ int uib_destroy_qp(struct uib_qp *qp)
 	return 0;
 }
 
+/**
+ * uib_modify_qp - Change QP state, peer, PSNs, access, or path MTU.
+ * @qp: Queue pair
+ * @attr: Queue pair attributes
+ * @attr_mask: Bitmask selecting attributes to modify
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_modify_qp(struct uib_qp *qp, const struct uib_qp_attr *attr,
 		  int attr_mask)
 {
@@ -366,6 +390,18 @@ static int gather_total(struct uib_pd *pd, const struct uib_sge *sgl, int n,
 	return (int)off;
 }
 
+/**
+ * uib_qp_gather - Gather an SGE list into a contiguous packet buffer.
+ * @pd: Protection domain
+ * @sgl: Scatter-gather list
+ * @n: Number of scatter-gather entries
+ * @out: Contiguous output buffer
+ * @cap: Capacity of the output buffer in bytes
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: The total number of gathered bytes on success, or a negative error
+ * code.
+ */
 int uib_qp_gather(struct uib_pd *pd, const struct uib_sge *sgl, int n,
 		  uint8_t *out, size_t cap)
 {
@@ -446,6 +482,19 @@ static int scatter_recv_fragment(struct uib_qp *qp,
 	return 0;
 }
 
+/**
+ * uib_qp_scatter - Scatter received bytes into an SGE list.
+ * @pd: Protection domain
+ * @sgl: Scatter-gather list
+ * @n: Number of scatter-gather entries
+ * @msg_offset: Offset in the scatter list at which to begin
+ * @in: Contiguous input buffer
+ * @in_len: Number of bytes available in the input buffer
+ * @consumed_out: Output for the number of input bytes consumed
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_qp_scatter(struct uib_pd *pd, struct uib_sge *sgl, int n,
 		   uint32_t msg_offset, const uint8_t *in, size_t in_len,
 		   size_t *consumed_out)
@@ -506,6 +555,16 @@ static void emit_send_wc(struct uib_qp *qp, uint64_t wr_id,
 	uib_cq_push(qp->send_cq, &wc);
 }
 
+/**
+ * uib_qp_emit_send - Publish a send work completion.
+ * @qp: Queue pair
+ * @wr_id: Caller-defined work request identifier
+ * @wr_op: Work request operation code
+ * @signaled: Nonzero to request a completion
+ * @status: Completion status
+ * @byte_len: Number of bytes completed
+ * @uib-api: Queue pairs and data transfer
+ */
 void uib_qp_emit_send(struct uib_qp *qp, uint64_t wr_id,
 		      enum uib_wr_opcode wr_op, int signaled,
 		      enum uib_wc_status status, uint32_t byte_len)
@@ -533,6 +592,17 @@ static int emit_recv_wc(struct uib_qp *qp, uint64_t wr_id,
 	return uib_cq_push(qp->recv_cq, &wc);
 }
 
+/**
+ * uib_qp_emit_recv - Publish a receive work completion.
+ * @qp: Queue pair
+ * @wr_id: Caller-defined work request identifier
+ * @status: Completion status
+ * @opcode: Completion operation code
+ * @byte_len: Number of bytes completed
+ * @src_qp: Source queue pair number
+ * @imm_data: Immediate data in network byte order
+ * @uib-api: Queue pairs and data transfer
+ */
 void uib_qp_emit_recv(struct uib_qp *qp, uint64_t wr_id,
 		      enum uib_wc_status status, enum uib_wc_opcode opcode,
 		      uint32_t byte_len, uint32_t src_qp, uint32_t imm_data)
@@ -541,6 +611,17 @@ void uib_qp_emit_recv(struct uib_qp *qp, uint64_t wr_id,
 		     NULL);
 }
 
+/**
+ * uib_qp_emit_recv_slot - Publish a receive completion with private ownership.
+ * @qp: Queue pair
+ * @slot: Receive queue slot
+ * @status: Completion status
+ * @opcode: Completion operation code
+ * @byte_len: Number of bytes completed
+ * @src_qp: Source queue pair number
+ * @imm_data: Immediate data in network byte order
+ * @uib-api: Queue pairs and data transfer
+ */
 void uib_qp_emit_recv_slot(struct uib_qp *qp, struct uib_rq_slot *slot,
 			   enum uib_wc_status status,
 			   enum uib_wc_opcode opcode, uint32_t byte_len,
@@ -1071,6 +1152,15 @@ int uib_rocev2_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 	return 0;
 }
 
+/**
+ * uib_post_send - Post SEND, WRITE, READ, or atomic work requests.
+ * @qp: Queue pair
+ * @wr: First work request in the chain
+ * @bad: Output pointer for the first unposted work request
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 		  struct uib_send_wr **bad)
 {
@@ -1143,6 +1233,15 @@ static int post_recv_internal(struct uib_qp *qp, struct uib_recv_wr *wr,
 	return 0;
 }
 
+/**
+ * uib_post_recv - Post one or more receive work requests.
+ * @qp: Queue pair
+ * @wr: First work request in the chain
+ * @bad: Output pointer for the first unposted work request
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
 		  struct uib_recv_wr **bad)
 {
@@ -1176,11 +1275,24 @@ static int pop_recv_slot(struct uib_qp *qp, struct uib_rq_slot *out)
 	return 0;
 }
 
+/**
+ * uib_qp_pop_recv - Consume the oldest posted receive request.
+ * @qp: Queue pair
+ * @out: Receive slot structure to fill
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_qp_pop_recv(struct uib_qp *qp, struct uib_rq_slot *out)
 {
 	return pop_recv_slot(qp, out);
 }
 
+/**
+ * uib_qp_release_recv - Release storage retained by a popped receive slot.
+ * @slot: Receive queue slot
+ * @uib-api: Queue pairs and data transfer
+ */
 void uib_qp_release_recv(struct uib_rq_slot *slot)
 {
 	if (!slot)
@@ -1379,9 +1491,9 @@ static void detach_outstanding(struct uib_qp *qp,
 
 int uib_rocev2_handle_packet(struct uib_qp *qp,
 			    const struct sockaddr_in *src,
-			    const void *pkt, size_t len)
+			    const void *packet, size_t len)
 {
-	const uint8_t *p = pkt;
+	const uint8_t *p = packet;
 
 	if (verify_icrc(p, len) < 0)
 		return -EBADMSG;
@@ -1784,13 +1896,23 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 	}
 }
 
+/**
+ * uib_qp_handle_packet - Dispatch a received protocol packet to a QP.
+ * @qp: Queue pair
+ * @src: Source transport address
+ * @pkt: Received protocol packet
+ * @len: Length of the byte range
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_qp_handle_packet(struct uib_qp *qp, const struct sockaddr_in *src,
-			 const void *packet, size_t len)
+			 const void *pkt, size_t len)
 {
 	if (!qp || !qp->ctx->pops || !qp->ctx->pops->handle_packet)
 		return -EOPNOTSUPP;
 
-	return qp->ctx->pops->handle_packet(qp, src, packet, len);
+	return qp->ctx->pops->handle_packet(qp, src, pkt, len);
 }
 
 static void rocev2_retransmit_list(struct uib_qp *qp,
@@ -1822,13 +1944,13 @@ static void rocev2_retransmit_list(struct uib_qp *qp,
 	}
 }
 
-void uib_rocev2_retransmit_tick(struct uib_qp *qp, uint64_t now)
+void uib_rocev2_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 {
 	uint64_t next_deadline = UINT64_MAX;
 
 	pthread_mutex_lock(&qp->lock);
-	rocev2_retransmit_list(qp, qp->out_head, now, &next_deadline);
-	rocev2_retransmit_list(qp, qp->read_head, now, &next_deadline);
+	rocev2_retransmit_list(qp, qp->out_head, now_ns, &next_deadline);
+	rocev2_retransmit_list(qp, qp->read_head, now_ns, &next_deadline);
 	if (next_deadline != UINT64_MAX)
 		uib_qp_retry_schedule(qp, next_deadline);
 	else
@@ -1836,8 +1958,14 @@ void uib_rocev2_retransmit_tick(struct uib_qp *qp, uint64_t now)
 	pthread_mutex_unlock(&qp->lock);
 }
 
-void uib_qp_retransmit_tick(struct uib_qp *qp, uint64_t now)
+/**
+ * uib_qp_retransmit_tick - Run protocol retransmission work for a QP.
+ * @qp: Queue pair
+ * @now_ns: Current monotonic time in nanoseconds
+ * @uib-api: Queue pairs and data transfer
+ */
+void uib_qp_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 {
 	if (qp && qp->ctx->pops && qp->ctx->pops->retransmit_tick)
-		qp->ctx->pops->retransmit_tick(qp, now);
+		qp->ctx->pops->retransmit_tick(qp, now_ns);
 }

@@ -48,6 +48,11 @@ static void mr_lifetime_destroy(struct uib_mr *mr)
 	pthread_mutex_destroy(&mr->ref_lock);
 }
 
+/**
+ * uib_mr_put - Release an MR reference returned by a lookup.
+ * @mr: Memory region
+ * @uib-api: Memory regions
+ */
 void uib_mr_put(struct uib_mr *mr)
 {
 	uint32_t refs;
@@ -131,6 +136,16 @@ static int dmabuf_map(struct uib_mr *mr)
 #endif
 }
 
+/**
+ * uib_reg_mr - Register ordinary process memory for RDMA access.
+ * @pd: Protection domain
+ * @addr: Start address of the memory range
+ * @length: Length of the memory range
+ * @access: Access permissions required or granted
+ * @uib-api: Memory regions
+ *
+ * Return: A registered memory region on success, or NULL on failure.
+ */
 struct uib_mr *uib_reg_mr(struct uib_pd *pd, void *addr, size_t length,
 			  int access)
 {
@@ -172,6 +187,17 @@ struct uib_mr *uib_reg_mr(struct uib_pd *pd, void *addr, size_t length,
 	return mr;
 }
 
+/**
+ * uib_reg_mr_dmabuf - Import a CPU-mappable DMA-BUF with a synthetic IOVA.
+ * @pd: Protection domain
+ * @dmabuf_fd: File descriptor for the DMA-BUF
+ * @offset: Byte offset into the DMA-BUF
+ * @length: Length of the memory range
+ * @access: Access permissions required or granted
+ * @uib-api: Memory regions
+ *
+ * Return: A registered memory region on success, or NULL on failure.
+ */
 struct uib_mr *uib_reg_mr_dmabuf(struct uib_pd *pd, int dmabuf_fd,
 				 size_t offset, size_t length, int access)
 {
@@ -297,6 +323,18 @@ err_free:
 	return NULL;
 }
 
+/**
+ * uib_reg_mr_dmabuf_ex - Import a DMA-BUF with explicit registration flags.
+ * @pd: Protection domain
+ * @dmabuf_fd: File descriptor for the DMA-BUF
+ * @offset: Byte offset into the DMA-BUF
+ * @length: Length of the memory range
+ * @access: Access permissions required or granted
+ * @flags: DMA-BUF registration flags
+ * @uib-api: Memory regions
+ *
+ * Return: A registered memory region on success, or NULL on failure.
+ */
 struct uib_mr *uib_reg_mr_dmabuf_ex(struct uib_pd *pd, int dmabuf_fd,
 				    size_t offset, size_t length, int access,
 				    uint32_t flags)
@@ -305,6 +343,19 @@ struct uib_mr *uib_reg_mr_dmabuf_ex(struct uib_pd *pd, int dmabuf_fd,
 			      flags);
 }
 
+/**
+ * uib_reg_mr_dmabuf_iova - Import a DMA-BUF at a caller-selected IOVA.
+ * @pd: Protection domain
+ * @dmabuf_fd: File descriptor for the DMA-BUF
+ * @offset: Byte offset into the DMA-BUF
+ * @length: Length of the memory range
+ * @iova: I/O virtual address assigned to the memory region
+ * @access: Access permissions required or granted
+ * @flags: DMA-BUF registration flags
+ * @uib-api: Memory regions
+ *
+ * Return: A registered memory region on success, or NULL on failure.
+ */
 struct uib_mr *uib_reg_mr_dmabuf_iova(struct uib_pd *pd, int dmabuf_fd,
 				      size_t offset, size_t length,
 				      uint64_t iova, int access,
@@ -314,6 +365,13 @@ struct uib_mr *uib_reg_mr_dmabuf_iova(struct uib_pd *pd, int dmabuf_fd,
 			      flags);
 }
 
+/**
+ * uib_dereg_mr - Unpublish an MR and wait for lookup users before release.
+ * @mr: Memory region
+ * @uib-api: Memory regions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_dereg_mr(struct uib_mr *mr)
 {
 	int rc;
@@ -341,6 +399,17 @@ int uib_dereg_mr(struct uib_mr *mr)
 	return 0;
 }
 
+/**
+ * uib_mr_check_local - Validate a local key, range, and access mask.
+ * @pd: Protection domain
+ * @lkey: Local memory region key
+ * @addr: Start address of the memory range
+ * @len: Length of the byte range
+ * @access: Access permissions required or granted
+ * @uib-api: Memory regions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_mr_check_local(struct uib_pd *pd, uint32_t lkey,
 		       const void *addr, size_t len, int access)
 {
@@ -359,6 +428,17 @@ int uib_mr_check_local(struct uib_pd *pd, uint32_t lkey,
 	return rc;
 }
 
+/**
+ * uib_mr_lookup_local - Find and reference a validated local MR.
+ * @pd: Protection domain
+ * @lkey: Local memory region key
+ * @addr: Start address of the memory range
+ * @len: Length of the byte range
+ * @access: Access permissions required or granted
+ * @uib-api: Memory regions
+ *
+ * Return: A referenced matching MR, or NULL if validation fails.
+ */
 struct uib_mr *uib_mr_lookup_local(struct uib_pd *pd, uint32_t lkey,
 				   const void *addr, size_t len, int access)
 {
@@ -381,6 +461,17 @@ struct uib_mr *uib_mr_lookup_local(struct uib_pd *pd, uint32_t lkey,
 	return mr;
 }
 
+/**
+ * uib_mr_check_remote - Find and reference a validated remote MR by rkey.
+ * @pd: Protection domain
+ * @rkey: Remote memory region key
+ * @va: I/O virtual address
+ * @len: Length of the byte range
+ * @access: Access permissions required or granted
+ * @uib-api: Memory regions
+ *
+ * Return: A referenced matching MR, or NULL if validation fails.
+ */
 struct uib_mr *uib_mr_check_remote(struct uib_pd *pd, uint32_t rkey,
 				   uint64_t va, size_t len, int access)
 {
@@ -403,12 +494,32 @@ struct uib_mr *uib_mr_check_remote(struct uib_pd *pd, uint32_t rkey,
 	return mr;
 }
 
+/**
+ * uib_mr_check_remote_address - Find and reference a remote MR by address.
+ * @pd: Protection domain
+ * @va: I/O virtual address
+ * @len: Length of the byte range
+ * @access: Access permissions required or granted
+ * @uib-api: Memory regions
+ *
+ * Return: A referenced matching MR, or NULL if validation fails.
+ */
 struct uib_mr *uib_mr_check_remote_address(struct uib_pd *pd, uint64_t va,
 					   size_t len, int access)
 {
 	return uib_pd_lookup_address(pd, va, len, access);
 }
 
+/**
+ * uib_mr_place - Copy received bytes into a registered memory range.
+ * @mr: Memory region
+ * @va: I/O virtual address
+ * @src: Source byte buffer
+ * @len: Length of the byte range
+ * @uib-api: Memory regions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_mr_place(struct uib_mr *mr, uint64_t va, const void *src, size_t len)
 {
 	uint64_t base;
@@ -435,6 +546,16 @@ int uib_mr_place(struct uib_mr *mr, uint64_t va, const void *src, size_t len)
 	return dmabuf_sync(mr, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE);
 }
 
+/**
+ * uib_mr_read - Copy bytes out of a registered memory range.
+ * @mr: Memory region
+ * @va: I/O virtual address
+ * @dst: Destination byte buffer
+ * @len: Length of the byte range
+ * @uib-api: Memory regions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_mr_read(struct uib_mr *mr, uint64_t va, void *dst, size_t len)
 {
 	const void *source;
@@ -470,6 +591,14 @@ static uint64_t cpu_sync_flags(uint32_t access)
 	return flags;
 }
 
+/**
+ * uib_mr_cpu_begin - Begin synchronized CPU access to a DMA-BUF MR.
+ * @mr: Memory region
+ * @access: CPU read and write access mask
+ * @uib-api: Memory regions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_mr_cpu_begin(struct uib_mr *mr, uint32_t access)
 {
 	if (!mr || !access ||
@@ -481,6 +610,14 @@ int uib_mr_cpu_begin(struct uib_mr *mr, uint32_t access)
 	return dmabuf_sync(mr, DMA_BUF_SYNC_START | cpu_sync_flags(access));
 }
 
+/**
+ * uib_mr_cpu_end - End synchronized CPU access to a DMA-BUF MR.
+ * @mr: Memory region
+ * @access: CPU read and write access mask
+ * @uib-api: Memory regions
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_mr_cpu_end(struct uib_mr *mr, uint32_t access)
 {
 	if (!mr || !access ||

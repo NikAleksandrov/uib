@@ -13,6 +13,14 @@ static const struct uib_protocol_ops *const protocols[] = {
 	&uib_uet_protocol_ops,
 };
 
+/**
+ * uib_protocol_find - Find registered protocol operations by name.
+ * @name: Wire protocol name
+ * @uib-api: Protocol selection
+ *
+ * Return: The matching protocol operations, the RoCEv2 operations for an empty
+ * name, or NULL for an unknown name.
+ */
 const struct uib_protocol_ops *uib_protocol_find(const char *name)
 {
 	size_t i;
@@ -28,11 +36,26 @@ const struct uib_protocol_ops *uib_protocol_find(const char *name)
 	return NULL;
 }
 
+/**
+ * uib_protocol_from_env - Select protocol operations from UIB_PROTOCOL.
+ * @uib-api: Protocol selection
+ *
+ * Return: The selected protocol operations, or NULL if UIB_PROTOCOL is
+ * invalid.
+ */
 const struct uib_protocol_ops *uib_protocol_from_env(void)
 {
 	return uib_protocol_find(getenv(UIB_ENV_PROTOCOL));
 }
 
+/**
+ * uib_protocol_default_port - Return a protocol's standard service port.
+ * @name: Wire protocol name
+ * @uib-api: Protocol selection
+ *
+ * Return: The protocol's standard port in host byte order, or 0 if @name is
+ * unknown.
+ */
 uint16_t uib_protocol_default_port(const char *name)
 {
 	const struct uib_protocol_ops *ops = uib_protocol_find(name);

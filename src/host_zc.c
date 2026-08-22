@@ -114,6 +114,15 @@ int uib_host_loan_place(struct uib_rq_slot *slot, uint32_t offset,
 			    data, length);
 }
 
+/**
+ * uib_post_recv_loan - Post a provider-owned host-memory receive.
+ * @qp: Queue pair
+ * @wr_id: Caller-defined work request identifier
+ * @capacity: Minimum receive-buffer capacity in bytes
+ * @uib-api: Provider-owned host-memory receive
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_post_recv_loan(struct uib_qp *qp, uint64_t wr_id, size_t capacity)
 {
 	struct uib_host_loan *host;
@@ -180,6 +189,15 @@ int uib_post_recv_loan(struct uib_qp *qp, uint64_t wr_id, size_t capacity)
 	return rc;
 }
 
+/**
+ * uib_repost_rx_loan - Repost a released completion without reallocating it.
+ * @qp: Queue pair
+ * @loan: Released receive-buffer loan to post again
+ * @wr_id: Caller-defined work request identifier
+ * @uib-api: Provider-owned host-memory receive
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_repost_rx_loan(struct uib_qp *qp, struct uib_rx_loan *loan,
 		       uint64_t wr_id)
 {
@@ -212,6 +230,14 @@ int uib_repost_rx_loan(struct uib_qp *qp, struct uib_rx_loan *loan,
 	return rc;
 }
 
+/**
+ * uib_wc_take_rx_loan - Take ownership of a completed receive loan.
+ * @wc: Work completion to consume or fill
+ * @loan: Output for the loan detached from the completion
+ * @uib-api: Provider-owned host-memory receive
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_wc_take_rx_loan(struct uib_wc *wc, struct uib_rx_loan *loan)
 {
 	struct uib_host_loan *host;
@@ -235,6 +261,11 @@ int uib_wc_take_rx_loan(struct uib_wc *wc, struct uib_rx_loan *loan)
 	return 0;
 }
 
+/**
+ * uib_release_rx_loan - Return a receive loan to its provider.
+ * @loan: Receive-buffer loan
+ * @uib-api: Provider-owned host-memory receive
+ */
 void uib_release_rx_loan(struct uib_rx_loan *loan)
 {
 	if (!loan || !loan->private_data)
@@ -243,6 +274,14 @@ void uib_release_rx_loan(struct uib_rx_loan *loan)
 	memset(loan, 0, sizeof(*loan));
 }
 
+/**
+ * uib_host_zc_capabilities - Query provider-owned receive capabilities.
+ * @ctx: UIB device context
+ * @uib-api: Provider-owned host-memory receive
+ *
+ * Return: A bitmask of enum uib_host_zc_capability values, or 0 for an invalid
+ * context.
+ */
 uint32_t uib_host_zc_capabilities(struct uib_context *ctx)
 {
 	uint32_t capabilities;

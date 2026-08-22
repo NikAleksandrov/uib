@@ -14,6 +14,14 @@
 #include "uib/transport.h"
 #include "uib/protocol.h"
 
+/**
+ * uib_open_device - Open a context using the environment-selected protocol.
+ * @bind_ip: Local IPv4 address in presentation format
+ * @bind_port: Local transport port in host byte order
+ * @uib-api: Contexts and QP dispatch
+ *
+ * Return: A pointer to the new object on success, or NULL on failure.
+ */
 struct uib_context *uib_open_device(const char *bind_ip, uint16_t bind_port)
 {
 	const char *protocol = getenv(UIB_ENV_PROTOCOL);
@@ -21,6 +29,15 @@ struct uib_context *uib_open_device(const char *bind_ip, uint16_t bind_port)
 	return uib_open_device_protocol(bind_ip, bind_port, protocol);
 }
 
+/**
+ * uib_open_device_protocol - Open a context using an explicit wire protocol.
+ * @bind_ip: Local IPv4 address in presentation format
+ * @bind_port: Local transport port in host byte order
+ * @protocol: Wire protocol name
+ * @uib-api: Contexts and QP dispatch
+ *
+ * Return: A pointer to the new object on success, or NULL on failure.
+ */
 struct uib_context *uib_open_device_protocol(const char *bind_ip,
 					     uint16_t bind_port,
 					     const char *protocol)
@@ -79,6 +96,13 @@ err_table:
 	return NULL;
 }
 
+/**
+ * uib_close_device - Stop transport workers and release a context.
+ * @ctx: UIB device context
+ * @uib-api: Contexts and QP dispatch
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_close_device(struct uib_context *ctx)
 {
 	if (!ctx)
@@ -95,6 +119,14 @@ int uib_close_device(struct uib_context *ctx)
 	return 0;
 }
 
+/**
+ * uib_register_qp - Assign a QPN and publish a QP in its context.
+ * @ctx: UIB device context
+ * @qp: Queue pair
+ * @uib-api: Contexts and QP dispatch
+ *
+ * Return: The assigned nonzero QP number on success, or 0 on failure.
+ */
 uint32_t uib_register_qp(struct uib_context *ctx, struct uib_qp *qp)
 {
 	struct uib_qp **new_retry;
@@ -224,6 +256,12 @@ static void retry_heap_remove_locked(struct uib_context *ctx,
 		retry_heap_down(ctx, index);
 }
 
+/**
+ * uib_qp_retry_schedule - Add or update a QP retransmission deadline.
+ * @qp: Queue pair
+ * @deadline_ns: Absolute retry deadline in nanoseconds
+ * @uib-api: Contexts and QP dispatch
+ */
 void uib_qp_retry_schedule(struct uib_qp *qp, uint64_t deadline_ns)
 {
 	struct uib_context *ctx;
@@ -253,6 +291,11 @@ void uib_qp_retry_schedule(struct uib_qp *qp, uint64_t deadline_ns)
 	pthread_mutex_unlock(&ctx->qp_lock);
 }
 
+/**
+ * uib_qp_retry_cancel - Remove a QP from the retransmission heap.
+ * @qp: Queue pair
+ * @uib-api: Contexts and QP dispatch
+ */
 void uib_qp_retry_cancel(struct uib_qp *qp)
 {
 	struct uib_context *ctx;
@@ -265,6 +308,14 @@ void uib_qp_retry_cancel(struct uib_qp *qp)
 	pthread_mutex_unlock(&ctx->qp_lock);
 }
 
+/**
+ * uib_retry_pop_due - Remove and return the next due retransmission QP.
+ * @ctx: UIB device context
+ * @now_ns: Current monotonic time in nanoseconds
+ * @uib-api: Contexts and QP dispatch
+ *
+ * Return: The next QP whose retry deadline has passed, or NULL if none is due.
+ */
 struct uib_qp *uib_retry_pop_due(struct uib_context *ctx, uint64_t now_ns)
 {
 	struct uib_qp *qp = NULL;
@@ -279,6 +330,12 @@ struct uib_qp *uib_retry_pop_due(struct uib_context *ctx, uint64_t now_ns)
 	return qp;
 }
 
+/**
+ * uib_unregister_qp - Remove a QP from context lookup structures.
+ * @ctx: UIB device context
+ * @qp: Queue pair
+ * @uib-api: Contexts and QP dispatch
+ */
 void uib_unregister_qp(struct uib_context *ctx, struct uib_qp *qp)
 {
 	int removed;
@@ -301,6 +358,14 @@ void uib_unregister_qp(struct uib_context *ctx, struct uib_qp *qp)
 	pthread_mutex_unlock(&ctx->qp_lock);
 }
 
+/**
+ * uib_lookup_qp - Find a QP by QPN with internal synchronization.
+ * @ctx: UIB device context
+ * @qpn: Queue pair number
+ * @uib-api: Contexts and QP dispatch
+ *
+ * Return: The matching QP, or NULL if @qpn is not registered.
+ */
 struct uib_qp *uib_lookup_qp(struct uib_context *ctx, uint32_t qpn)
 {
 	struct uib_qp *qp;
@@ -311,6 +376,14 @@ struct uib_qp *uib_lookup_qp(struct uib_context *ctx, uint32_t qpn)
 	return qp;
 }
 
+/**
+ * uib_lookup_qp_rcu - Find a QP while the caller holds an RCU read lock.
+ * @ctx: UIB device context
+ * @qpn: Queue pair number
+ * @uib-api: Contexts and QP dispatch
+ *
+ * Return: The matching QP, or NULL if @qpn is not registered.
+ */
 struct uib_qp *uib_lookup_qp_rcu(struct uib_context *ctx, uint32_t qpn)
 {
 	if (qpn == 0 ||

@@ -46,6 +46,11 @@ static enum uib_zerocopy_mode mode_from_env(void)
 	return UIB_ZEROCOPY_AUTO;
 }
 
+/**
+ * uib_zerocopy_init - Initialize a context's zero-copy policy and counters.
+ * @ctx: UIB device context
+ * @uib-api: Zero-copy helpers
+ */
 void uib_zerocopy_init(struct uib_context *ctx)
 {
 	const char *threshold = getenv(UIB_ENV_ZEROCOPY_THRESHOLD);
@@ -67,6 +72,15 @@ void uib_zerocopy_init(struct uib_context *ctx)
 		ctx->zerocopy.threshold = (size_t)parsed;
 }
 
+/**
+ * uib_zerocopy_enable_socket - Enable MSG_ZEROCOPY on a socket when selected.
+ * @ctx: UIB device context
+ * @fd: Socket file descriptor
+ * @uib-api: Zero-copy helpers
+ *
+ * Return: 1 if zero-copy was enabled, 0 if it is disabled or optional and
+ * unavailable, or a negative error code when required.
+ */
 int uib_zerocopy_enable_socket(struct uib_context *ctx, int fd)
 {
 #ifdef UIB_HAVE_ZEROCOPY
@@ -139,6 +153,12 @@ static int wait_for_completion(struct uib_context *ctx, int fd,
 }
 #endif
 
+/**
+ * uib_zerocopy_account_copy - Account bytes transferred through a copy path.
+ * @ctx: UIB device context
+ * @length: Number of bytes copied
+ * @uib-api: Zero-copy helpers
+ */
 void uib_zerocopy_account_copy(struct uib_context *ctx, size_t length)
 {
 	__atomic_fetch_add(&ctx->zerocopy.copied_calls, 1, __ATOMIC_RELAXED);
@@ -146,6 +166,13 @@ void uib_zerocopy_account_copy(struct uib_context *ctx, size_t length)
 			   __ATOMIC_RELAXED);
 }
 
+/**
+ * uib_zerocopy_account_direct - Account a requested zero-copy transfer.
+ * @ctx: UIB device context
+ * @length: Number of bytes sent without an immediate copy
+ * @capability: Zero-copy capability used by the direct path
+ * @uib-api: Zero-copy helpers
+ */
 void uib_zerocopy_account_direct(struct uib_context *ctx, size_t length,
 				 uint32_t capability)
 {
@@ -157,6 +184,19 @@ void uib_zerocopy_account_direct(struct uib_context *ctx, size_t length,
 			   __ATOMIC_RELAXED);
 }
 
+/**
+ * uib_zerocopy_sendmsg - Send a message with the configured zero-copy policy.
+ * @ctx: UIB device context
+ * @fd: Socket file descriptor
+ * @message: Message header passed to sendmsg()
+ * @flags: Flags passed to sendmsg()
+ * @socket_enabled: Nonzero if SO_ZEROCOPY is enabled on the socket
+ * @sequence: In/out zero-copy completion sequence counter
+ * @uib-api: Zero-copy helpers
+ *
+ * Return: The number of bytes sent on success, or a negative error code on
+ * failure.
+ */
 ssize_t uib_zerocopy_sendmsg(struct uib_context *ctx, int fd,
 			     const struct msghdr *message, int flags,
 			     int socket_enabled, uint32_t *sequence)
@@ -206,6 +246,14 @@ ssize_t uib_zerocopy_sendmsg(struct uib_context *ctx, int fd,
 	return sent < 0 ? -errno : sent;
 }
 
+/**
+ * uib_zerocopy_get_stats - Read copied, direct, and deferred-copy counters.
+ * @ctx: UIB device context
+ * @stats: Statistics structure to fill
+ * @uib-api: Zero-copy helpers
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_zerocopy_get_stats(const struct uib_context *ctx,
 			   struct uib_zerocopy_stats *stats)
 {

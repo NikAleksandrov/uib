@@ -65,6 +65,14 @@ static int index_reserve(struct uib_psn_index *index, uint32_t additional)
 	return 0;
 }
 
+/**
+ * uib_psn_index_init - Allocate an empty PSN hash index.
+ * @index: Packet sequence index
+ * @initial_size: Initial number of hash table slots
+ * @uib-api: Packet sequence indexes
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_psn_index_init(struct uib_psn_index *index, uint32_t initial_size)
 {
 	uint32_t size = UIB_PSN_INDEX_INITIAL_SIZE;
@@ -84,6 +92,11 @@ int uib_psn_index_init(struct uib_psn_index *index, uint32_t initial_size)
 	return 0;
 }
 
+/**
+ * uib_psn_index_destroy - Release a PSN hash index.
+ * @index: Packet sequence index
+ * @uib-api: Packet sequence indexes
+ */
 void uib_psn_index_destroy(struct uib_psn_index *index)
 {
 	if (!index)
@@ -94,6 +107,15 @@ void uib_psn_index_destroy(struct uib_psn_index *index)
 	index->count = 0;
 }
 
+/**
+ * uib_psn_index_insert - Associate an outstanding packet with a PSN.
+ * @index: Packet sequence index
+ * @psn: Packet sequence number
+ * @value: Caller value associated with the packet sequence number
+ * @uib-api: Packet sequence indexes
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_psn_index_insert(struct uib_psn_index *index, uint32_t psn,
 			 void *value)
 {
@@ -110,6 +132,14 @@ int uib_psn_index_insert(struct uib_psn_index *index, uint32_t psn,
 	return rc;
 }
 
+/**
+ * uib_psn_index_lookup - Find an outstanding packet by PSN.
+ * @index: Packet sequence index
+ * @psn: Packet sequence number
+ * @uib-api: Packet sequence indexes
+ *
+ * Return: The value associated with @psn, or NULL if it is not present.
+ */
 void *uib_psn_index_lookup(const struct uib_psn_index *index, uint32_t psn)
 {
 	uint32_t slot;
@@ -128,6 +158,15 @@ void *uib_psn_index_lookup(const struct uib_psn_index *index, uint32_t psn)
 	return NULL;
 }
 
+/**
+ * uib_psn_index_remove - Remove and return an outstanding packet by PSN.
+ * @index: Packet sequence index
+ * @psn: Packet sequence number
+ * @value: Caller value associated with the packet sequence number
+ * @uib-api: Packet sequence indexes
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
 int uib_psn_index_remove(struct uib_psn_index *index, uint32_t psn,
 			 void *value)
 {
