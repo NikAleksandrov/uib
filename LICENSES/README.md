@@ -10,6 +10,7 @@ a mixed-license aggregate containing the following identified exceptions:
 | Project files not listed below | `Apache-2.0` |
 | `src/bth.c` | `Apache-2.0 AND Linux-OpenIB` |
 | `lowbias32` mixer in `src/pd.c` | `Apache-2.0 AND Unlicense` |
+| `src/cq.c`, `src/ptr_ring.h` | `Apache-2.0 AND BSD-2-Clause-Views` |
 | Generated `configure` | GNU Autoconf embedded permission notice |
 
 `AND` means that both licenses apply to their respective portions of the

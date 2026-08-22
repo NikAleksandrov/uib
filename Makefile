@@ -173,6 +173,7 @@ PROVIDER_DMABUF_TEST := tests/provider_dmabuf_test
 EXTERNAL_DMABUF_TEST := tests/external_dmabuf_test
 CQ_EVENT_TEST := tests/cq_event_test
 URING_ASYNC_TEST := tests/uring_async_test
+PTR_RING_TEST := tests/ptr_ring_test
 PROVIDER_CQ_EVENT_TEST := tests/provider_cq_event_test
 REORDER_TEST := tests/reorder_test
 TRANSPORT_TEST := tests/transport_test
@@ -197,7 +198,7 @@ DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d \
 DEPS += $(ZEROCOPY_TEST).d $(PROVIDER_DMABUF_TEST).d \
 	$(EXTERNAL_DMABUF_TEST).d
 
-DEPS += $(CQ_EVENT_TEST).d $(URING_ASYNC_TEST).d
+DEPS += $(CQ_EVENT_TEST).d $(URING_ASYNC_TEST).d $(PTR_RING_TEST).d
 DEPS += $(PROVIDER_CQ_EVENT_TEST).d
 DEPS += $(REORDER_TEST).d
 DEPS += $(TRANSPORT_TEST).d
@@ -252,6 +253,9 @@ $(CQ_EVENT_TEST): tests/cq_event_test.c $(LIB_SHARED)
 
 $(URING_ASYNC_TEST): tests/uring_async_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+$(PTR_RING_TEST): tests/ptr_ring_test.c src/ptr_ring.h
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -pthread
 
 $(TRANSPORT_TEST): tests/transport_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
@@ -463,7 +467,7 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 
 test: shared-abi-test license-check $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
 	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
-	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(REORDER_TEST) \
+	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PTR_RING_TEST) $(REORDER_TEST) \
 	$(TRANSPORT_TEST) $(QP_SCALE_TEST) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
 	$(HOST_ZC_E2E_TEST)
 	./$(BTH_TEST)
@@ -475,6 +479,7 @@ test: shared-abi-test license-check $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(B
 	./$(ZEROCOPY_TEST)
 	./$(CQ_EVENT_TEST)
 	./$(URING_ASYNC_TEST)
+	./$(PTR_RING_TEST)
 	./$(REORDER_TEST)
 	./$(TRANSPORT_TEST)
 	./$(QP_SCALE_TEST)
@@ -551,6 +556,7 @@ clean:
 		$(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 		$(PROVIDER_DMABUF_TEST) $(EXTERNAL_DMABUF_TEST) \
 		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST) \
+		$(PTR_RING_TEST) \
 		$(REORDER_TEST) $(TRANSPORT_TEST) $(QP_SCALE_TEST) \
 		$(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) $(PROVIDER_DISPATCH_BENCH) \
 		$(PROVIDER_WR_BENCH) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \

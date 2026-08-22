@@ -15,11 +15,16 @@ check_header()
 
 check_header src/bth.c '/* SPDX-License-Identifier: Apache-2.0 AND Linux-OpenIB */'
 check_header src/pd.c '/* SPDX-License-Identifier: Apache-2.0 AND Unlicense */'
+check_header src/cq.c '/* SPDX-License-Identifier: Apache-2.0 AND BSD-2-Clause-Views */'
+check_header src/ptr_ring.h '/* SPDX-License-Identifier: Apache-2.0 AND BSD-2-Clause-Views */'
 
 test -f LICENSES/Linux-OpenIB.txt
 test -f LICENSES/Unlicense.txt
+test -f LICENSES/BSD-2-Clause-Views-Dmitry-Vyukov.txt
 test -f LICENSES/README.md
 grep -Fq 'src/bth.c' LICENSES/README.md
 grep -Fq 'src/pd.c' LICENSES/README.md
+grep -Fq 'src/cq.c' LICENSES/README.md
+grep -Fq 'src/ptr_ring.h' LICENSES/README.md
 
 echo 'license metadata: ok'

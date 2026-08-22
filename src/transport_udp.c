@@ -18,6 +18,7 @@
 #include "uib/env.h"
 #include "uib/protocol.h"
 #include "uib/afxdp_frame.h"
+#include "ptr_ring.h"
 
 #define UIB_URING_DEPTH              256
 #define UIB_URING_BATCH_DEFAULT      64
@@ -31,6 +32,9 @@
 #define UIB_URING_TX_POOL_LIMIT      4096
 #define UIB_URING_COPY_POOL_LIMIT    1024
 #define UIB_URING_GSO_POOL_LIMIT     256
+#define UIB_URING_TX_POOL_WARM       1024
+#define UIB_URING_COPY_POOL_WARM     256
+#define UIB_URING_GSO_POOL_WARM      UIB_URING_GSO_POOL_LIMIT
 #define UIB_UDP_GSO_MAX_SEGMENTS     64
 #define UIB_UDP_GSO_CAPACITY         65520
 /* Stay below the common Linux MAX_SKB_FRAGS limit of 17. */
@@ -108,13 +112,13 @@ struct uib_udp_tx {
 
 struct uib_udp_backend {
 	struct uib_udp_tx       *tx_inflight;
-	struct uib_udp_tx       *tx_tail;
-	struct uib_udp_tx       *tx_head;
-	struct uib_udp_tx       *tx_ref_pool;
-	struct uib_udp_tx       *tx_copy_pool;
-	struct uib_udp_tx       *tx_gso_pool;
+	struct uib_udp_tx       *tx_retry_head;
 	struct io_uring_buf_ring *buffer_ring;
 	struct uib_udp_rx_slot  *rx_slots;
+	struct uib_ptr_ring      tx_queue;
+	struct uib_ptr_ring      tx_ref_pool;
+	struct uib_ptr_ring      tx_copy_pool;
+	struct uib_ptr_ring      tx_gso_pool;
 	struct io_uring          ring;
 	struct uib_udp_op        multishot_op;
 	struct uib_udp_op        timer_op;
@@ -125,15 +129,10 @@ struct uib_udp_backend {
 	struct sockaddr_in       local_addr;
 	pthread_cond_t           init_cond;
 	pthread_mutex_t          init_lock;
-	pthread_mutex_t          tx_lock;
 	pthread_t                worker;
 	void                    *rx_buffers;
 	size_t                   rx_buffer_len;
 	size_t                   page_size;
-	size_t                   tx_count;
-	size_t                   tx_ref_pool_count;
-	size_t                   tx_copy_pool_count;
-	size_t                   tx_gso_pool_count;
 	unsigned int             rx_batch;
 	unsigned int             tx_batch;
 	unsigned int             sqpoll_idle;
@@ -148,6 +147,7 @@ struct uib_udp_backend {
 	int                      worker_run;
 	int                      stop_requested;
 	int                      accepting;
+	int                      worker_waiting;
 	int                      init_done;
 	int                      init_rc;
 	int                      raw_mode;
@@ -540,20 +540,23 @@ static void reset_tx(struct uib_udp_tx *tx)
 	tx->message.msg_iovlen = 1;
 }
 
-static struct uib_udp_tx *alloc_ref_tx_locked(struct uib_udp_backend *be)
+static struct uib_udp_tx *new_ref_tx(void)
 {
 	struct uib_udp_tx *tx;
 
-	tx = be->tx_ref_pool;
-	if (tx) {
-		be->tx_ref_pool = tx->queue_next;
-		be->tx_ref_pool_count--;
-	}
-	if (!tx) {
-		tx = malloc(sizeof(*tx));
-		if (tx)
-			init_tx(tx);
-	}
+	tx = malloc(sizeof(*tx));
+	if (tx)
+		init_tx(tx);
+	return tx;
+}
+
+static struct uib_udp_tx *alloc_ref_tx(struct uib_udp_backend *be)
+{
+	struct uib_udp_tx *tx;
+
+	tx = uib_ptr_ring_pop(&be->tx_ref_pool);
+	if (!tx)
+		tx = new_ref_tx();
 	if (tx) {
 		tx->pool = UIB_UDP_TX_REF_POOL;
 		tx->storage_capacity = 0;
@@ -562,13 +565,13 @@ static struct uib_udp_tx *alloc_ref_tx_locked(struct uib_udp_backend *be)
 	return tx;
 }
 
-static struct uib_udp_tx *alloc_ref_tx(struct uib_udp_backend *be)
+static struct uib_udp_tx *new_copy_tx(size_t capacity)
 {
 	struct uib_udp_tx *tx;
 
-	pthread_mutex_lock(&be->tx_lock);
-	tx = alloc_ref_tx_locked(be);
-	pthread_mutex_unlock(&be->tx_lock);
+	tx = malloc(sizeof(*tx) + capacity);
+	if (tx)
+		init_tx(tx);
 	return tx;
 }
 
@@ -581,21 +584,12 @@ static struct uib_udp_tx *alloc_copy_tx(struct uib_udp_backend *be,
 	tx = NULL;
 	capacity = storage_len <= UIB_UDP_COPY_CAPACITY ?
 		UIB_UDP_COPY_CAPACITY : storage_len;
-	if (capacity == UIB_UDP_COPY_CAPACITY) {
-		if (be->tx_batch && pthread_equal(pthread_self(), be->worker)) {
-			tx = be->tx_copy_pool;
-			if (tx) {
-				be->tx_copy_pool = tx->queue_next;
-				be->tx_copy_pool_count--;
-			}
-		}
-	}
-	if (!tx) {
-		tx = malloc(sizeof(*tx) + capacity);
-		if (!tx)
-			return NULL;
-		init_tx(tx);
-	}
+	if (capacity == UIB_UDP_COPY_CAPACITY)
+		tx = uib_ptr_ring_pop(&be->tx_copy_pool);
+	if (!tx)
+		tx = new_copy_tx(capacity);
+	if (!tx)
+		return NULL;
 	tx->pool = capacity == UIB_UDP_COPY_CAPACITY ?
 		UIB_UDP_TX_COPY_POOL : UIB_UDP_TX_UNPOOLED;
 	tx->storage_capacity = capacity;
@@ -603,25 +597,22 @@ static struct uib_udp_tx *alloc_copy_tx(struct uib_udp_backend *be,
 	return tx;
 }
 
-static struct uib_udp_tx *alloc_gso_tx_locked(struct uib_udp_backend *be)
+static struct uib_udp_tx *new_gso_tx(void)
 {
 	struct uib_udp_tx *tx;
 	size_t allocation;
 
-	tx = be->tx_gso_pool;
-	if (tx) {
-		be->tx_gso_pool = tx->queue_next;
-		be->tx_gso_pool_count--;
-	} else {
-		allocation = sizeof(*tx) +
-			UIB_UDP_GSO_MAX_SEGMENTS * sizeof(*tx->iov_list) +
-			UIB_UDP_GSO_MAX_SEGMENTS * sizeof(*tx->release_list);
-		tx = malloc(allocation);
-		if (tx)
-			init_tx(tx);
-	}
-	if (!tx)
-		return NULL;
+	allocation = sizeof(*tx) +
+		UIB_UDP_GSO_MAX_SEGMENTS * sizeof(*tx->iov_list) +
+		UIB_UDP_GSO_MAX_SEGMENTS * sizeof(*tx->release_list);
+	tx = malloc(allocation);
+	if (tx)
+		init_tx(tx);
+	return tx;
+}
+
+static void prepare_gso_tx(struct uib_udp_tx *tx)
+{
 	tx->pool = UIB_UDP_TX_GSO_POOL;
 	tx->storage_capacity = 0;
 	reset_tx(tx);
@@ -629,6 +620,18 @@ static struct uib_udp_tx *alloc_gso_tx_locked(struct uib_udp_backend *be)
 	tx->iov_capacity = UIB_UDP_GSO_MAX_SEGMENTS;
 	tx->release_list = (struct uib_udp_release *)
 		(tx->iov_list + UIB_UDP_GSO_MAX_SEGMENTS);
+}
+
+static struct uib_udp_tx *alloc_gso_tx(struct uib_udp_backend *be)
+{
+	struct uib_udp_tx *tx;
+
+	tx = uib_ptr_ring_pop(&be->tx_gso_pool);
+	if (!tx)
+		tx = new_gso_tx();
+	if (!tx)
+		return NULL;
+	prepare_gso_tx(tx);
 	return tx;
 }
 
@@ -741,33 +744,49 @@ static void free_tx(struct uib_udp_backend *be, struct uib_udp_tx *tx)
 	if (tx->pool == UIB_UDP_TX_REF_POOL) {
 		tx->release = NULL;
 		tx->release_opaque = NULL;
-		pthread_mutex_lock(&be->tx_lock);
-		if (be->tx_ref_pool_count < UIB_URING_TX_POOL_LIMIT) {
-			tx->queue_next = be->tx_ref_pool;
-			be->tx_ref_pool = tx;
-			be->tx_ref_pool_count++;
+		if (!uib_ptr_ring_push(&be->tx_ref_pool, tx))
 			tx = NULL;
-		}
-		pthread_mutex_unlock(&be->tx_lock);
 	} else if (tx->pool == UIB_UDP_TX_COPY_POOL) {
-		if (be->tx_batch &&
-		    be->tx_copy_pool_count < UIB_URING_COPY_POOL_LIMIT) {
-			tx->queue_next = be->tx_copy_pool;
-			be->tx_copy_pool = tx;
-			be->tx_copy_pool_count++;
+		if (!uib_ptr_ring_push(&be->tx_copy_pool, tx))
 			tx = NULL;
-		}
 	} else if (tx->pool == UIB_UDP_TX_GSO_POOL) {
-		pthread_mutex_lock(&be->tx_lock);
-		if (be->tx_gso_pool_count < UIB_URING_GSO_POOL_LIMIT) {
-			tx->queue_next = be->tx_gso_pool;
-			be->tx_gso_pool = tx;
-			be->tx_gso_pool_count++;
+		if (!uib_ptr_ring_push(&be->tx_gso_pool, tx))
 			tx = NULL;
-		}
-		pthread_mutex_unlock(&be->tx_lock);
 	}
 	free(tx);
+}
+
+static void requeue_tx_list(struct uib_udp_backend *be,
+			    struct uib_udp_tx *head)
+{
+	struct uib_udp_tx *tail;
+
+	if (!head)
+		return;
+	tail = head;
+	while (tail->queue_next)
+		tail = tail->queue_next;
+	tail->queue_next = be->tx_retry_head;
+	be->tx_retry_head = head;
+}
+
+static void requeue_tx(struct uib_udp_backend *be, struct uib_udp_tx *tx)
+{
+	tx->queue_next = NULL;
+	requeue_tx_list(be, tx);
+}
+
+static struct uib_udp_tx *next_queued_tx(struct uib_udp_backend *be)
+{
+	struct uib_udp_tx *tx;
+
+	tx = be->tx_retry_head;
+	if (tx) {
+		be->tx_retry_head = tx->queue_next;
+		tx->queue_next = NULL;
+		return tx;
+	}
+	return uib_ptr_ring_pop(&be->tx_queue);
 }
 
 static unsigned int dequeue_tx_batch(struct uib_udp_backend *be,
@@ -781,44 +800,32 @@ static unsigned int dequeue_tx_batch(struct uib_udp_backend *be,
 	unsigned int packet_limit;
 	unsigned int packets;
 
-	pthread_mutex_lock(&be->tx_lock);
-	tx = be->tx_head;
+	*head = NULL;
 	tail = NULL;
 	count = 0;
 	packets = 0;
-	while (tx && count < limit) {
+	while (count < limit) {
+		tx = next_queued_tx(be);
+		if (!tx)
+			break;
 		packet_len = tx->gso_size ? tx->gso_size : tx->length;
 		packet_limit = packet_len > UIB_URING_TX_LARGE_PACKET ?
 			UIB_URING_TX_LARGE_BATCH : UIB_URING_TX_BATCH_DEFAULT;
 		if (!be->tx_batch_set && count &&
-		    packets + tx->packets > packet_limit)
+		    packets + tx->packets > packet_limit) {
+			requeue_tx(be, tx);
 			break;
+		}
+		tx->queue_next = NULL;
+		if (tail)
+			tail->queue_next = tx;
+		else
+			*head = tx;
 		tail = tx;
-		tx = tx->queue_next;
 		packets += tail->packets;
 		count++;
 	}
-	*head = be->tx_head;
-	be->tx_head = tx;
-	if (!tx)
-		be->tx_tail = NULL;
-	if (tail) {
-		tail->queue_next = NULL;
-		be->tx_count -= count;
-	}
-	pthread_mutex_unlock(&be->tx_lock);
 	return count;
-}
-
-static void requeue_tx(struct uib_udp_backend *be, struct uib_udp_tx *tx)
-{
-	pthread_mutex_lock(&be->tx_lock);
-	tx->queue_next = be->tx_head;
-	be->tx_head = tx;
-	if (!be->tx_tail)
-		be->tx_tail = tx;
-	be->tx_count++;
-	pthread_mutex_unlock(&be->tx_lock);
 }
 
 static void submit_tx(struct uib_context *ctx)
@@ -847,12 +854,8 @@ static void submit_tx(struct uib_context *ctx)
 		}
 		sqe = get_sqe(be);
 		if (!sqe) {
-			requeue_tx(be, tx);
-			while (next) {
-				tx = next;
-				next = tx->queue_next;
-				requeue_tx(be, tx);
-			}
+			tx->queue_next = next;
+			requeue_tx_list(be, tx);
 			break;
 		}
 #ifdef UIB_HAVE_ZEROCOPY
@@ -874,12 +877,13 @@ static void submit_tx(struct uib_context *ctx)
 
 static int tx_drained(struct uib_udp_backend *be)
 {
-	int drained;
+	return !uib_ptr_ring_count(&be->tx_queue) && !be->tx_retry_head &&
+		!be->tx_inflight;
+}
 
-	pthread_mutex_lock(&be->tx_lock);
-	drained = !be->tx_head && !be->tx_inflight;
-	pthread_mutex_unlock(&be->tx_lock);
-	return drained;
+static int tx_queued(struct uib_udp_backend *be)
+{
+	return uib_ptr_ring_count(&be->tx_queue) || be->tx_retry_head;
 }
 
 static int fallback_gso_send(struct uib_context *ctx,
@@ -1177,14 +1181,15 @@ static void free_all_tx(struct uib_udp_backend *be)
 		tx = next;
 	}
 	be->tx_inflight = NULL;
-	tx = be->tx_head;
+	tx = be->tx_retry_head;
 	while (tx) {
 		next = tx->queue_next;
 		free_tx(be, tx);
 		tx = next;
 	}
-	be->tx_head = NULL;
-	be->tx_tail = NULL;
+	be->tx_retry_head = NULL;
+	while ((tx = uib_ptr_ring_pop(&be->tx_queue)) != NULL)
+		free_tx(be, tx);
 }
 
 static void *worker_loop(void *argument)
@@ -1244,7 +1249,17 @@ static void *worker_loop(void *argument)
 		if (!be->wake_armed)
 			arm_wake(be);
 		submit_tx(ctx);
+		__atomic_store_n(&be->worker_waiting, 1, __ATOMIC_SEQ_CST);
+		if (tx_queued(be)) {
+			__atomic_store_n(&be->worker_waiting, 0,
+					 __ATOMIC_RELEASE);
+			rc = io_uring_submit(&be->ring);
+			if (rc < 0 && rc != -EINTR)
+				break;
+			continue;
+		}
 		rc = io_uring_submit_and_wait(&be->ring, 1);
+		__atomic_store_n(&be->worker_waiting, 0, __ATOMIC_RELEASE);
 		if (rc < 0 && rc != -EINTR)
 			break;
 		count = io_uring_peek_batch_cqe(&be->ring, cqes,
@@ -1399,35 +1414,84 @@ static int setup_socket(struct uib_context *ctx, struct uib_udp_backend *be)
 
 static void cleanup_backend(struct uib_udp_backend *be)
 {
-	struct uib_udp_tx *next;
 	struct uib_udp_tx *tx;
 
 	if (be->fd >= 0)
 		close(be->fd);
 	if (be->wake_fd >= 0)
 		close(be->wake_fd);
-	tx = be->tx_ref_pool;
-	while (tx) {
-		next = tx->queue_next;
+	free_all_tx(be);
+	while ((tx = uib_ptr_ring_pop(&be->tx_ref_pool)) != NULL)
 		free(tx);
-		tx = next;
-	}
-	tx = be->tx_copy_pool;
-	while (tx) {
-		next = tx->queue_next;
+	while ((tx = uib_ptr_ring_pop(&be->tx_copy_pool)) != NULL)
 		free(tx);
-		tx = next;
-	}
-	tx = be->tx_gso_pool;
-	while (tx) {
-		next = tx->queue_next;
+	while ((tx = uib_ptr_ring_pop(&be->tx_gso_pool)) != NULL)
 		free(tx);
-		tx = next;
-	}
+	uib_ptr_ring_destroy(&be->tx_gso_pool);
+	uib_ptr_ring_destroy(&be->tx_copy_pool);
+	uib_ptr_ring_destroy(&be->tx_ref_pool);
+	uib_ptr_ring_destroy(&be->tx_queue);
 	pthread_cond_destroy(&be->init_cond);
 	pthread_mutex_destroy(&be->init_lock);
-	pthread_mutex_destroy(&be->tx_lock);
 	free(be);
+}
+
+static int init_tx_rings(struct uib_udp_backend *be)
+{
+	int rc;
+
+	rc = uib_ptr_ring_init(&be->tx_queue, UIB_URING_TX_LIMIT);
+	if (rc < 0)
+		return rc;
+	rc = uib_ptr_ring_init(&be->tx_ref_pool, UIB_URING_TX_POOL_LIMIT);
+	if (rc < 0)
+		return rc;
+	rc = uib_ptr_ring_init(&be->tx_copy_pool, UIB_URING_COPY_POOL_LIMIT);
+	if (rc < 0)
+		return rc;
+	return uib_ptr_ring_init(&be->tx_gso_pool,
+				 UIB_URING_GSO_POOL_LIMIT);
+}
+
+static void warm_tx_pools(struct uib_udp_backend *be)
+{
+	struct uib_udp_tx *tx;
+	unsigned int i;
+
+	for (i = 0; i < UIB_URING_TX_POOL_WARM; i++) {
+		tx = new_ref_tx();
+		if (!tx)
+			break;
+		tx->pool = UIB_UDP_TX_REF_POOL;
+		tx->storage_capacity = 0;
+		reset_tx(tx);
+		if (uib_ptr_ring_push(&be->tx_ref_pool, tx) < 0) {
+			free(tx);
+			break;
+		}
+	}
+	for (i = 0; i < UIB_URING_COPY_POOL_WARM; i++) {
+		tx = new_copy_tx(UIB_UDP_COPY_CAPACITY);
+		if (!tx)
+			break;
+		tx->pool = UIB_UDP_TX_COPY_POOL;
+		tx->storage_capacity = UIB_UDP_COPY_CAPACITY;
+		reset_tx(tx);
+		if (uib_ptr_ring_push(&be->tx_copy_pool, tx) < 0) {
+			free(tx);
+			break;
+		}
+	}
+	for (i = 0; i < UIB_URING_GSO_POOL_WARM; i++) {
+		tx = new_gso_tx();
+		if (!tx)
+			break;
+		prepare_gso_tx(tx);
+		if (uib_ptr_ring_push(&be->tx_gso_pool, tx) < 0) {
+			free(tx);
+			break;
+		}
+	}
 }
 
 static int udp_init_common(struct uib_context *ctx, int asynchronous)
@@ -1445,9 +1509,12 @@ static int udp_init_common(struct uib_context *ctx, int asynchronous)
 	be->wake_fd = -1;
 	page_size = sysconf(_SC_PAGESIZE);
 	be->page_size = page_size > 0 ? (size_t)page_size : 4096;
-	pthread_mutex_init(&be->tx_lock, NULL);
 	pthread_mutex_init(&be->init_lock, NULL);
 	pthread_cond_init(&be->init_cond, NULL);
+	rc = init_tx_rings(be);
+	if (rc < 0)
+		goto error;
+	warm_tx_pools(be);
 	be->rx_batch = UIB_URING_BATCH_DEFAULT;
 	if (asynchronous)
 		be->tx_batch = UIB_URING_TX_BATCH_DEFAULT;
@@ -1608,29 +1675,24 @@ static int build_raw_packet(struct uib_context *ctx,
 
 static int enqueue_tx(struct uib_udp_backend *be, struct uib_udp_tx *tx)
 {
+	uint64_t position;
 	uint64_t wake = 1;
 	int wake_worker;
+	int rc;
 
-	pthread_mutex_lock(&be->tx_lock);
 	if (!__atomic_load_n(&be->worker_run, __ATOMIC_ACQUIRE) ||
-	    !__atomic_load_n(&be->accepting, __ATOMIC_ACQUIRE)) {
-		pthread_mutex_unlock(&be->tx_lock);
+	    !__atomic_load_n(&be->accepting, __ATOMIC_ACQUIRE))
 		return -ESHUTDOWN;
+	rc = uib_ptr_ring_reserve(&be->tx_queue, 1, &position, NULL);
+	if (rc < 0) {
+		if (rc == -ENOSPC)
+			return -EAGAIN;
+		return rc;
 	}
-	if (be->tx_count >= UIB_URING_TX_LIMIT) {
-		pthread_mutex_unlock(&be->tx_lock);
-		return -EAGAIN;
-	}
-	wake_worker = !be->tx_head &&
-		!pthread_equal(pthread_self(), be->worker);
 	tx->queue_next = NULL;
-	if (be->tx_tail)
-		be->tx_tail->queue_next = tx;
-	else
-		be->tx_head = tx;
-	be->tx_tail = tx;
-	be->tx_count++;
-	pthread_mutex_unlock(&be->tx_lock);
+	uib_ptr_ring_publish(&be->tx_queue, position, tx);
+	wake_worker = __atomic_load_n(&be->worker_waiting, __ATOMIC_SEQ_CST) &&
+		!pthread_equal(pthread_self(), be->worker);
 	__atomic_fetch_add(&be->stats.tx_queued, 1, __ATOMIC_RELAXED);
 	if (wake_worker && write(be->wake_fd, &wake, sizeof(wake)) < 0 &&
 	    errno != EAGAIN)
@@ -1745,6 +1807,7 @@ static int udp_send_ref_batch(struct uib_context *ctx,
 	struct uib_udp_tx *tail;
 	struct uib_udp_tx *tx;
 	struct cmsghdr *control;
+	uint64_t position;
 	uint64_t wake;
 	size_t run;
 	size_t queued;
@@ -1773,15 +1836,10 @@ static int udp_send_ref_batch(struct uib_context *ctx,
 	queued = 0;
 	i = 0;
 	rc = 0;
-	pthread_mutex_lock(&be->tx_lock);
 	if (!__atomic_load_n(&be->worker_run, __ATOMIC_ACQUIRE) ||
 	    !__atomic_load_n(&be->accepting, __ATOMIC_ACQUIRE)) {
 		rc = -ESHUTDOWN;
-		goto unlock;
-	}
-	if (count > UIB_URING_TX_LIMIT - be->tx_count) {
-		rc = -EAGAIN;
-		goto unlock;
+		goto release;
 	}
 	for (i = 0; i < count; i += run) {
 		run = 1;
@@ -1800,10 +1858,10 @@ static int udp_send_ref_batch(struct uib_context *ctx,
 		}
 		run = limit_zerocopy_run(ctx, refs, i, run);
 		if (run > 1) {
-			tx = alloc_gso_tx_locked(be);
+			tx = alloc_gso_tx(be);
 			if (!tx) {
 				rc = -ENOMEM;
-				goto unlock;
+				goto release;
 			}
 			tx->destination = *refs[i].dst;
 			tx->length = run * refs[i].len;
@@ -1833,10 +1891,10 @@ static int udp_send_ref_batch(struct uib_context *ctx,
 			memcpy(CMSG_DATA(control), &tx->gso_size,
 			       sizeof(tx->gso_size));
 		} else {
-			tx = alloc_ref_tx_locked(be);
+			tx = alloc_ref_tx(be);
 			if (!tx) {
 				rc = -ENOMEM;
-				goto unlock;
+				goto release;
 			}
 			tx->destination = *refs[i].dst;
 			tx->data = (void *)refs[i].buf;
@@ -1861,16 +1919,27 @@ static int udp_send_ref_batch(struct uib_context *ctx,
 		tail = tx;
 		queued++;
 	}
-	wake_worker = !be->tx_head;
-	if (be->tx_tail)
-		be->tx_tail->queue_next = head;
-	else
-		be->tx_head = head;
-	be->tx_tail = tail;
-	be->tx_count += queued;
-	pthread_mutex_unlock(&be->tx_lock);
+	if (queued > UINT32_MAX) {
+		rc = -EAGAIN;
+		goto release;
+	}
+	rc = uib_ptr_ring_reserve(&be->tx_queue, (uint32_t)queued,
+				  &position, NULL);
+	if (rc < 0) {
+		if (rc == -ENOSPC || rc == -EINVAL)
+			rc = -EAGAIN;
+		goto release;
+	}
+	while (head) {
+		tx = head;
+		head = head->queue_next;
+		tx->queue_next = NULL;
+		uib_ptr_ring_publish(&be->tx_queue, position, tx);
+		position++;
+	}
+	wake_worker = __atomic_load_n(&be->worker_waiting, __ATOMIC_SEQ_CST);
 	__atomic_fetch_add(&be->stats.tx_queued, count, __ATOMIC_RELAXED);
-	if (wake_worker) {
+	if (wake_worker && !pthread_equal(pthread_self(), be->worker)) {
 		wake = 1;
 		if (write(be->wake_fd, &wake, sizeof(wake)) < 0 &&
 		    errno != EAGAIN)
@@ -1878,8 +1947,7 @@ static int udp_send_ref_batch(struct uib_context *ctx,
 	}
 	return 0;
 
-unlock:
-	pthread_mutex_unlock(&be->tx_lock);
+release:
 	while (head) {
 		tx = head;
 		head = head->queue_next;
