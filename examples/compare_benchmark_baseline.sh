@@ -27,6 +27,35 @@ BEGIN {
 	print "protocol,transport,memory,mtu,cpu_affinity,mode," \
 		"gbit_per_second,cpu_seconds,latency_avg_us";
 }
+/^### (RoCEv2|UET|Dummy): (unpinned|pinned), MTU [0-9]+$/ {
+	heading=$0;
+	protocol=heading;
+	sub(/^### /, "", protocol);
+	sub(/:.*/, "", protocol);
+	protocol=protocol == "RoCEv2" ? "rocev2" : tolower(protocol);
+	affinity=heading;
+	sub(/^### [^:]+: /, "", affinity);
+	sub(/, MTU.*/, "", affinity);
+	mtu=heading;
+	sub(/^.*, MTU /, "", mtu);
+	new_table=0;
+	next;
+}
+/^\| Transport \| Memory \| Window \| Send mode / && protocol != "" {
+	new_table=1;
+	next;
+}
+new_table && /^\|---/ { next }
+new_table && /^\|/ {
+	transport=trim($2);
+	memory=trim($3);
+	mode=trim($5);
+	mode=mode == "copy" ? "copy" : "zerocopy";
+	printf "%s,%s,%s,%s,%s,%s,%s,%s,%s\n", protocol, transport,
+		memory, mtu, affinity, mode, trim($6), trim($8), trim($10);
+	next;
+}
+new_table { new_table=0 }
 /^\| Protocol \| Transport \| Memory \| MTU \| Affinity \| Send mode / {
 	in_table=1;
 	next;
@@ -156,13 +185,29 @@ END {
 {
 	printf '## Compared with previous reference\n\n'
 	printf 'Positive percentages mean the new result improved. '
-	printf 'All old and new values are shown.\n\n'
-	printf '%s\n' '| Protocol | Transport | Mode | Rows | Old Gbit/s | New Gbit/s | Bandwidth | Old avg us | New avg us | Latency | Old CPU s | New CPU s | CPU |'
-	printf '%s\n' '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|'
-	awk -F, 'NR > 1 {
-		printf "| %s | %s | %s | %s | %.3f | %.3f | %+.1f%% | " \
+	printf 'All old and new values are shown. Aggregate results and each '
+	printf 'protocol are separated so only like-for-like modes share a table.\n\n'
+	awk -F, 'BEGIN {
+		label["all"] = "All protocols";
+		label["rocev2"] = "RoCEv2";
+		label["uet"] = "UET";
+		label["dummy"] = "Dummy";
+	}
+	NR > 1 {
+		if ($1 != previous) {
+			if (previous != "")
+				print "";
+			printf "### %s\n\n", label[$1];
+			print "| Transport | Mode | Rows | Old Gbit/s | New Gbit/s | " \
+				"Bandwidth | Old avg us | New avg us | Latency | " \
+				"Old CPU s | New CPU s | CPU |";
+			print "|---|---|---:|---:|---:|---:|---:|---:|---:|" \
+				"---:|---:|---:|";
+			previous = $1;
+		}
+		printf "| %s | %s | %s | %.3f | %.3f | %+.1f%% | " \
 			"%.1f | %.1f | %+.1f%% | %.3f | %.3f | %+.1f%% |\n",
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			$2, $3, $4, $5, $6, $7, $8, $9, $10,
 			$11, $12, $13;
 	}' "$summary"
 	printf '\nDetailed per-row values: `baseline-comparison.csv`.\n'
