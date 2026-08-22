@@ -32,6 +32,7 @@ int main(void)
 	static uint8_t hostbuf[4096];
 	uint8_t src[64];
 #ifdef UIB_HAVE_DMABUF
+	struct uib_mr *lookup;
 	uint8_t observed[64];
 	struct uib_sge sge;
 	uint8_t gathered[64];
@@ -62,9 +63,10 @@ int main(void)
 	      dmr && (dmr->capabilities & UIB_MR_CAP_CPU_MAPPED));
 	check("dmabuf.iova_set", dmr && dmr->iova != 0);
 
-	check("remote.in_range",
-	      uib_mr_check_remote(pd, dmr->rkey, dmr->iova, 100,
-				  UIB_ACCESS_REMOTE_WRITE) == dmr);
+	lookup = uib_mr_check_remote(pd, dmr->rkey, dmr->iova, 100,
+				     UIB_ACCESS_REMOTE_WRITE);
+	check("remote.in_range", lookup == dmr);
+	uib_mr_put(lookup);
 	check("remote.out_of_range",
 	      uib_mr_check_remote(pd, dmr->rkey, dmr->iova + 5000, 1,
 				  UIB_ACCESS_REMOTE_WRITE) == NULL);

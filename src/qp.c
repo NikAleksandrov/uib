@@ -286,6 +286,10 @@ int uib_destroy_qp(struct uib_qp *qp)
 	qp->read_head = qp->read_tail = NULL;
 	if (qp->frag_recv_active)
 		uib_qp_release_recv(&qp->frag_recv);
+	uib_mr_put(qp->frag_recv_mr);
+	qp->frag_recv_mr = NULL;
+	uib_mr_put(qp->frag_write_mr);
+	qp->frag_write_mr = NULL;
 	for (i = 0; i < qp->rq_size; i++) {
 		if (qp->rq[i].valid)
 			uib_qp_release_recv(&qp->rq[i]);
@@ -354,6 +358,7 @@ static int gather_total(struct uib_pd *pd, const struct uib_sge *sgl, int n,
 		if (!mr)
 			return -EACCES;
 		rc = uib_mr_read(mr, s->addr, out + off, s->length);
+		uib_mr_put(mr);
 		if (rc < 0)
 			return rc;
 		off += s->length;
@@ -400,6 +405,7 @@ static int scatter_at(struct uib_pd *pd, struct uib_sge *sgl, int n,
 			return -EACCES;
 		rc = uib_mr_place(mr, sgl[i].addr + off_in_sge,
 				  in + consumed, take);
+		uib_mr_put(mr);
 		if (rc < 0)
 			return rc;
 		consumed += take;
@@ -903,6 +909,7 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 		return -EMSGSIZE;
 	message = NULL;
 	owned_message = NULL;
+	mr = NULL;
 	if (total > 0) {
 		if (wr->num_sge == 1) {
 			mr = uib_mr_lookup_local(
@@ -914,6 +921,10 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 			if (mr->kind == UIB_MR_HOST)
 				message = (const uint8_t *)(uintptr_t)
 					wr->sg_list[0].addr;
+			else {
+				uib_mr_put(mr);
+				mr = NULL;
+			}
 		}
 		if (!message) {
 			owned_message = malloc(total);
@@ -935,6 +946,7 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 	if (is_rc && n > UIB_TX_BATCH_STACK) {
 		refs = malloc((size_t)n * sizeof(*refs));
 		if (!refs) {
+			uib_mr_put(mr);
 			free(owned_message);
 			return -ENOMEM;
 		}
@@ -1017,6 +1029,7 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 		pthread_mutex_unlock(&qp->lock);
 	if (refs != stack_refs)
 		free(refs);
+	uib_mr_put(mr);
 	free(owned_message);
 	if (!is_rc && !err)
 		emit_send_wc(qp, wr->wr_id, wr->opcode,
@@ -1304,7 +1317,7 @@ static void send_read_response(struct uib_qp *qp, const struct sockaddr_in *dst,
 		pkt_len = UIB_BTH_BYTES + (has_aeth ? UIB_AETH_BYTES : 0) +
 			chunk + pad + UIB_ICRC_BYTES;
 		if (pkt_len > sizeof(packet))
-			return;
+			goto out;
 		p = pkt;
 
 		uib_bth_pack((struct uib_bth *)p, op, UIB_DEFAULT_PKEY,
@@ -1318,7 +1331,7 @@ static void send_read_response(struct uib_qp *qp, const struct sockaddr_in *dst,
 		}
 		if (uib_mr_read(mr, va + off, p, chunk) < 0) {
 			send_ack(qp, dst, start_psn, UIB_AETH_NAK_REM_ACC);
-			return;
+			goto out;
 		}
 		p += chunk;
 		if (pad) {
@@ -1332,6 +1345,8 @@ static void send_read_response(struct uib_qp *qp, const struct sockaddr_in *dst,
 
 		uib_transport_send(qp->ctx, dst, pkt, pkt_len);
 	}
+out:
+	uib_mr_put(mr);
 }
 
 static struct uib_outstanding *find_read_by_psn(struct uib_qp *qp, uint32_t psn)
@@ -1445,6 +1460,7 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 				send_ack(qp, src, psn, UIB_AETH_RNR);
 			return -ENOENT;
 		}
+		uib_mr_put(qp->frag_recv_mr);
 		qp->frag_recv_mr = NULL;
 		if (slot.num_sge == 1)
 			qp->frag_recv_mr = uib_mr_lookup_local(
@@ -1502,6 +1518,7 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 				      UIB_WC_SUCCESS, UIB_WC_RECV, total,
 				      qp->dest_qp_num, 0);
 		uib_qp_release_recv(&qp->frag_recv);
+		uib_mr_put(qp->frag_recv_mr);
 		qp->frag_recv_mr = NULL;
 		qp->frag_recv_active = 0;
 		qp->frag_recv_offset = 0;
@@ -1560,6 +1577,7 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 			return -EACCES;
 		}
 		if (uib_mr_place(mr, va, body, rlen) < 0) {
+			uib_mr_put(mr);
 			if (is_rc)
 				send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
 			return -EIO;
@@ -1569,6 +1587,7 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		qp->rq_psn = psn + 1;
 		if (is_rc)
 			send_ack(qp, src, psn, UIB_AETH_ACK);
+		uib_mr_put(mr);
 		return 0;
 	}
 	case UIB_OP_RDMA_WRITE_FIRST: {
@@ -1593,10 +1612,12 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		size_t take = body_len > rlen ? rlen : body_len;
 
 		if (uib_mr_place(mr, va, body, take) < 0) {
+			uib_mr_put(mr);
 			if (is_rc)
 				send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
 			return -EIO;
 		}
+		uib_mr_put(qp->frag_write_mr);
 		qp->frag_write_va     = va;
 		qp->frag_write_total  = rlen;
 		qp->frag_write_offset = (uint32_t)take;
@@ -1644,6 +1665,8 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 			return -EIO;
 		qp->frag_write_offset += (uint32_t)take;
 		qp->frag_write_active = 0;
+		uib_mr_put(qp->frag_write_mr);
+		qp->frag_write_mr = NULL;
 		qp->last_rx_psn = psn;
 		qp->rq_psn = psn + 1;
 		if (is_rc)

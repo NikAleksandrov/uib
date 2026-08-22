@@ -2,8 +2,9 @@
 #ifndef UIB_MR_H
 #define UIB_MR_H
 
-#include <stdint.h>
+#include <pthread.h>
 #include <stddef.h>
+#include <stdint.h>
 
 struct uib_pd;
 
@@ -54,6 +55,9 @@ struct uib_mr {
 	uint32_t        dmabuf_flags;
 	int             dmabuf_sync;
 	void           *backend_mr;
+	pthread_mutex_t ref_lock;
+	pthread_cond_t  ref_cond;
+	uint32_t        refs;
 
 	struct uib_mr  *addr_parent;
 	struct uib_mr  *addr_right;
@@ -74,6 +78,9 @@ struct uib_mr *uib_reg_mr_dmabuf_iova(struct uib_pd *pd, int dmabuf_fd,
 				      uint64_t iova, int access,
 				      uint32_t flags);
 int uib_dereg_mr(struct uib_mr *mr);
+
+/* Lookups return a referenced MR. Release it with uib_mr_put(). */
+void uib_mr_put(struct uib_mr *mr);
 
 int uib_mr_check_local(struct uib_pd *pd, uint32_t lkey,
 		       const void *addr, size_t len, int access);

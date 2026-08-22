@@ -26,6 +26,49 @@
 static uint32_t key_next = 0x10;
 static uint64_t iova_next = 0x100000000000ULL;
 
+static int mr_lifetime_init(struct uib_mr *mr)
+{
+	int rc;
+
+	rc = pthread_mutex_init(&mr->ref_lock, NULL);
+	if (rc)
+		return -rc;
+	rc = pthread_cond_init(&mr->ref_cond, NULL);
+	if (rc) {
+		pthread_mutex_destroy(&mr->ref_lock);
+		return -rc;
+	}
+	mr->refs = 1;
+	return 0;
+}
+
+static void mr_lifetime_destroy(struct uib_mr *mr)
+{
+	pthread_cond_destroy(&mr->ref_cond);
+	pthread_mutex_destroy(&mr->ref_lock);
+}
+
+void uib_mr_put(struct uib_mr *mr)
+{
+	uint32_t refs;
+
+	if (!mr)
+		return;
+	pthread_mutex_lock(&mr->ref_lock);
+	refs = __atomic_sub_fetch(&mr->refs, 1, __ATOMIC_RELEASE);
+	if (refs == 1)
+		pthread_cond_signal(&mr->ref_cond);
+	pthread_mutex_unlock(&mr->ref_lock);
+}
+
+static void mr_wait_unused(struct uib_mr *mr)
+{
+	pthread_mutex_lock(&mr->ref_lock);
+	while (__atomic_load_n(&mr->refs, __ATOMIC_ACQUIRE) != 1)
+		pthread_cond_wait(&mr->ref_cond, &mr->ref_lock);
+	pthread_mutex_unlock(&mr->ref_lock);
+}
+
 static int dmabuf_sync(struct uib_mr *mr, uint64_t flags)
 {
 #ifdef UIB_HAVE_DMABUF
@@ -92,6 +135,7 @@ struct uib_mr *uib_reg_mr(struct uib_pd *pd, void *addr, size_t length,
 			  int access)
 {
 	struct uib_mr *mr;
+	int rc;
 
 	if (!pd || !addr || !length ||
 	    (uint64_t)(uintptr_t)addr > UINT64_MAX - length) {
@@ -101,6 +145,12 @@ struct uib_mr *uib_reg_mr(struct uib_pd *pd, void *addr, size_t length,
 	mr = calloc(1, sizeof(*mr));
 	if (!mr) {
 		errno = ENOMEM;
+		return NULL;
+	}
+	rc = mr_lifetime_init(mr);
+	if (rc < 0) {
+		free(mr);
+		errno = -rc;
 		return NULL;
 	}
 	mr->pd     = pd;
@@ -114,6 +164,7 @@ struct uib_mr *uib_reg_mr(struct uib_pd *pd, void *addr, size_t length,
 	if (uib_pd_attach_mr(pd, mr) < 0) {
 		if (mr->pinned)
 			munlock(addr, length);
+		mr_lifetime_destroy(mr);
 		free(mr);
 		errno = ENOMEM;
 		return NULL;
@@ -166,6 +217,12 @@ static struct uib_mr *reg_mr_dmabuf(struct uib_pd *pd, int dmabuf_fd,
 	mr = calloc(1, sizeof(*mr));
 	if (!mr) {
 		errno = ENOMEM;
+		return NULL;
+	}
+	rc = mr_lifetime_init(mr);
+	if (rc < 0) {
+		free(mr);
+		errno = -rc;
 		return NULL;
 	}
 	mr->pd            = pd;
@@ -234,6 +291,7 @@ err_backend:
 err_fd:
 	close(mr->dmabuf_fd);
 err_free:
+	mr_lifetime_destroy(mr);
 	free(mr);
 	errno = -rc;
 	return NULL;
@@ -265,6 +323,7 @@ int uib_dereg_mr(struct uib_mr *mr)
 	rc = uib_pd_detach_mr(mr->pd, mr);
 	if (rc < 0)
 		return rc;
+	mr_wait_unused(mr);
 	if (mr->kind == UIB_MR_DMABUF) {
 		struct uib_pd *pd = mr->pd;
 
@@ -277,6 +336,7 @@ int uib_dereg_mr(struct uib_mr *mr)
 	} else if (mr->pinned) {
 		munlock(mr->addr, mr->length);
 	}
+	mr_lifetime_destroy(mr);
 	free(mr);
 	return 0;
 }
@@ -285,14 +345,18 @@ int uib_mr_check_local(struct uib_pd *pd, uint32_t lkey,
 		       const void *addr, size_t len, int access)
 {
 	struct uib_mr *mr = uib_pd_lookup_lkey(pd, lkey);
+	int rc = 0;
 
-	if (!mr || mr->lkey != lkey)
+	if (!mr)
 		return -EACCES;
-	if (!uib_mr_contains(mr, (uint64_t)(uintptr_t)addr, len))
-		return -ERANGE;
-	if (access && (mr->access & access) != access)
-		return -EPERM;
-	return 0;
+	if (mr->lkey != lkey)
+		rc = -EACCES;
+	else if (!uib_mr_contains(mr, (uint64_t)(uintptr_t)addr, len))
+		rc = -ERANGE;
+	else if (access && (mr->access & access) != access)
+		rc = -EPERM;
+	uib_mr_put(mr);
+	return rc;
 }
 
 struct uib_mr *uib_mr_lookup_local(struct uib_pd *pd, uint32_t lkey,
@@ -300,12 +364,20 @@ struct uib_mr *uib_mr_lookup_local(struct uib_pd *pd, uint32_t lkey,
 {
 	struct uib_mr *mr = uib_pd_lookup_lkey(pd, lkey);
 
-	if (!mr || mr->lkey != lkey)
+	if (!mr)
 		return NULL;
-	if (!uib_mr_contains(mr, (uint64_t)(uintptr_t)addr, len))
+	if (mr->lkey != lkey) {
+		uib_mr_put(mr);
 		return NULL;
-	if (access && (mr->access & access) != access)
+	}
+	if (!uib_mr_contains(mr, (uint64_t)(uintptr_t)addr, len)) {
+		uib_mr_put(mr);
 		return NULL;
+	}
+	if (access && (mr->access & access) != access) {
+		uib_mr_put(mr);
+		return NULL;
+	}
 	return mr;
 }
 
@@ -314,12 +386,20 @@ struct uib_mr *uib_mr_check_remote(struct uib_pd *pd, uint32_t rkey,
 {
 	struct uib_mr *mr = uib_pd_lookup_rkey(pd, rkey);
 
-	if (!mr || mr->rkey != rkey)
+	if (!mr)
 		return NULL;
-	if (!uib_mr_contains(mr, va, len))
+	if (mr->rkey != rkey) {
+		uib_mr_put(mr);
 		return NULL;
-	if ((mr->access & access) != access)
+	}
+	if (!uib_mr_contains(mr, va, len)) {
+		uib_mr_put(mr);
 		return NULL;
+	}
+	if ((mr->access & access) != access) {
+		uib_mr_put(mr);
+		return NULL;
+	}
 	return mr;
 }
 

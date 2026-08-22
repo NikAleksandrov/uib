@@ -103,6 +103,8 @@ static int run_key_case(struct uib_pd *pd, struct uib_mr **mrs,
 		else
 			mr = linear_key_lookup(mrs, BENCH_MRS, mrs[slot]->lkey);
 		checksum += mr ? mr->lkey : 0;
+		if (indexed)
+			uib_mr_put(mr);
 	}
 	wall_end = clock_ns(CLOCK_MONOTONIC);
 	cpu_end = clock_ns(CLOCK_PROCESS_CPUTIME_ID);
@@ -137,6 +139,8 @@ static int run_addr_case(struct uib_pd *pd, struct uib_mr **mrs,
 		else
 			mr = linear_addr_lookup(mrs, BENCH_MRS, va);
 		checksum += mr ? mr->lkey : 0;
+		if (indexed)
+			uib_mr_put(mr);
 	}
 	wall_end = clock_ns(CLOCK_MONOTONIC);
 	cpu_end = clock_ns(CLOCK_PROCESS_CPUTIME_ID);
@@ -184,10 +188,14 @@ int main(void)
 		keys[i] = mrs[i]->lkey;
 	}
 	for (i = 1; i < BENCH_MRS; i += 2) {
+		struct uib_mr *stale;
+
 		uib_dereg_mr(mrs[i]);
 		mrs[i] = uib_reg_mr(pd, memory + i * MR_STRIDE, MR_STRIDE,
 				    UIB_ACCESS_REMOTE_READ);
-		if (!mrs[i] || uib_pd_lookup_lkey(pd, keys[i])) {
+		stale = uib_pd_lookup_lkey(pd, keys[i]);
+		if (!mrs[i] || stale) {
+			uib_mr_put(stale);
 			rc = -EIO;
 			goto out;
 		}

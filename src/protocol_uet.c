@@ -1369,6 +1369,7 @@ static int uet_handle_write(struct uib_qp *qp,
 	uint64_t address = be64toh(ses->buffer_offset) + offset;
 	uint32_t rkey = (uint32_t)be64toh(ses->match_bits);
 	struct uib_mr *mr;
+	int rc;
 
 	if (uib_uet_ses_payload_len(ses, data_len) != data_len ||
 	    offset > ntohl(ses->request_len) ||
@@ -1381,7 +1382,9 @@ static int uet_handle_write(struct uib_qp *qp,
 				    UIB_ACCESS_REMOTE_WRITE);
 	if (!mr)
 		return -EACCES;
-	return uib_mr_place(mr, address, data, data_len);
+	rc = uib_mr_place(mr, address, data, data_len);
+	uib_mr_put(mr);
+	return rc;
 }
 
 static uint8_t uet_validate_session(struct uib_qp *qp,
@@ -1420,6 +1423,7 @@ static int uet_handle_read(struct uib_qp *qp,
 	uint32_t rkey = (uint32_t)be64toh(ses->match_bits);
 	uint32_t length = ntohl(ses->request_len);
 	struct uib_mr *mr;
+	int rc;
 
 	mr = address_only ?
 		uib_mr_check_remote_address(qp->pd, address, length,
@@ -1429,9 +1433,13 @@ static int uet_handle_read(struct uib_qp *qp,
 	if (!mr)
 		return -EACCES;
 	*owned_data = malloc(length ? length : 1);
-	if (!*owned_data)
+	if (!*owned_data) {
+		uib_mr_put(mr);
 		return -ENOMEM;
-	if (uib_mr_read(mr, address, *owned_data, length) < 0) {
+	}
+	rc = uib_mr_read(mr, address, *owned_data, length);
+	uib_mr_put(mr);
+	if (rc < 0) {
 		free(*owned_data);
 		*owned_data = NULL;
 		return -EOPNOTSUPP;
@@ -1618,12 +1626,15 @@ static int uet_handle_atomic(struct uib_qp *qp,
 	is_signed = !(atomic->datatype & 1);
 	rc = uet_atomic_apply(atomic->opcode, is_signed, width, 0,
 			      operand, swap, &updated);
-	if (rc < 0)
+	if (rc < 0) {
+		uib_mr_put(mr);
 		return rc;
+	}
 	pthread_mutex_lock(&qp->lock);
 	rc = uib_mr_read(mr, address, &old, width);
 	if (rc < 0) {
 		pthread_mutex_unlock(&qp->lock);
+		uib_mr_put(mr);
 		return rc;
 	}
 	rc = uet_atomic_apply(atomic->opcode, is_signed, width, old,
@@ -1631,6 +1642,7 @@ static int uet_handle_atomic(struct uib_qp *qp,
 	if (!rc && atomic->opcode != UIB_UET_AMO_READ)
 		rc = uib_mr_place(mr, address, &updated, width);
 	pthread_mutex_unlock(&qp->lock);
+	uib_mr_put(mr);
 	if (rc < 0)
 		return rc;
 	fetching = (ses->opcode & UIB_UET_SES_OPCODE_MASK) ==
@@ -2282,6 +2294,7 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 			return -EMSGSIZE;
 		total_len += wr->sg_list[i].length;
 	}
+	mr = NULL;
 	if (wr->opcode != UIB_WR_RDMA_READ && !fetching_atomic) {
 		if (wr->num_sge == 1) {
 			mr = uib_mr_lookup_local(qp->pd, wr->sg_list[0].lkey,
@@ -2292,6 +2305,10 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 			if (mr->kind == UIB_MR_HOST)
 				message = (const uint8_t *)(uintptr_t)
 					wr->sg_list[0].addr;
+			else {
+				uib_mr_put(mr);
+				mr = NULL;
+			}
 		}
 		if (!message) {
 			owned_message = malloc(total_len ? total_len : 1);
@@ -2317,12 +2334,14 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 		chunk_max = qp->path_mtu - sizeof(struct uib_uet_pds_ack) -
 			sizeof(struct uib_uet_ses_rsp);
 	if (!chunk_max) {
+		uib_mr_put(mr);
 		free(owned_message);
 		return -EMSGSIZE;
 	}
 	packets = wr->opcode == UIB_WR_RDMA_READ || fetching_atomic ? 1 :
 		(total_len ? (total_len + chunk_max - 1) / chunk_max : 1);
 	if (packets > UIB_UET_PDC_MPR) {
+		uib_mr_put(mr);
 		free(owned_message);
 		return -EMSGSIZE;
 	}
@@ -2340,6 +2359,7 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 	}
 	track = uet_alloc_track(qp, wr, total_len, packets);
 	if (!track) {
+		uib_mr_put(mr);
 		free(owned_message);
 		return -ENOMEM;
 	}
@@ -2365,7 +2385,8 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 		break;
 	default:
 		uet_free_track(track);
-			free(owned_message);
+		uib_mr_put(mr);
+		free(owned_message);
 		return -EOPNOTSUPP;
 	}
 	if (!dst.sin_port)
@@ -2580,6 +2601,7 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 	pthread_mutex_unlock(&qp->lock);
 	if (rc < 0)
 		goto fail_track;
+	uib_mr_put(mr);
 	free(owned_message);
 	return 0;
 
@@ -2587,6 +2609,7 @@ fail_track:
 	pthread_mutex_lock(&qp->lock);
 	uet_remove_track_locked(qp, track, UIB_WC_LOC_PROT_ERR);
 	pthread_mutex_unlock(&qp->lock);
+	uib_mr_put(mr);
 	free(owned_message);
 	return rc;
 }

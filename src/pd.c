@@ -18,6 +18,11 @@
 
 static uint32_t pd_handle_next = 1;
 
+static void mr_get(struct uib_mr *mr)
+{
+	__atomic_add_fetch(&mr->refs, 1, __ATOMIC_RELAXED);
+}
+
 struct uib_mr_table {
 	struct uib_mr **lkey;
 	struct uib_mr **rkey;
@@ -232,6 +237,8 @@ static struct uib_mr *key_lookup(struct uib_pd *pd, uint32_t key, int remote)
 		mr = hash_lookup(table->rkey, table->size, key, 1);
 	else
 		mr = hash_lookup(table->lkey, table->size, key, 0);
+	if (mr)
+		mr_get(mr);
 	rcu_read_unlock();
 	return mr;
 }
@@ -385,6 +392,8 @@ struct uib_mr *uib_pd_lookup_address(struct uib_pd *pd, uint64_t va,
 		return NULL;
 	pthread_mutex_lock(&pd->mr_lock);
 	mr = addr_lookup(pd->mr_addr_root, va, len, access);
+	if (mr)
+		mr_get(mr);
 	pthread_mutex_unlock(&pd->mr_lock);
 	return mr;
 }

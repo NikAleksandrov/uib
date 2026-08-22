@@ -52,6 +52,7 @@ UIB_0.1 {
 		uib_mr_cpu_end;
 		uib_mr_lookup_local;
 		uib_mr_place;
+		uib_mr_put;
 		uib_mr_read;
 		uib_open_device;
 		uib_open_device_protocol;

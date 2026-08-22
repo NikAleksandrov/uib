@@ -395,6 +395,13 @@ Query provider\-owned receive capabilities.
 Example: \fBctx = uib_open_device("0.0.0.0", 4791); capabilities = uib_host_zc_capabilities(ctx);\fP
 .SS "Memory regions"
 .TP
+.B uib_mr_put
+void uib_mr_put(struct uib_mr *mr);
+.br
+Release an MR reference returned by a lookup.
+.br
+Example: \fBmr = uib_pd_lookup_lkey(pd, lkey); if (mr) uib_mr_put(mr);\fP
+.TP
 .B uib_reg_mr
 struct uib_mr *uib_reg_mr(struct uib_pd *pd, void *addr, size_t length, int access);
 .br
@@ -433,7 +440,7 @@ Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr =
 .B uib_dereg_mr
 int uib_dereg_mr(struct uib_mr *mr);
 .br
-Deregister an MR and release its imported resources.
+Unpublish an MR and wait for lookup users before release.
 .br
 Example: \fBpd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buffer, length, access); uib_dereg_mr(mr);\fP
 .TP
@@ -447,23 +454,23 @@ Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr =
 .B uib_mr_lookup_local
 struct uib_mr *uib_mr_lookup_local(struct uib_pd *pd, uint32_t lkey, const void *addr, size_t len, int access);
 .br
-Find a local MR and validate its range and access.
+Find and reference a validated local MR.
 .br
-Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); uib_mr_lookup_local(pd, lkey, addr, len, access);\fP
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); mr = uib_mr_lookup_local(pd, lkey, addr, len, access); if (mr) uib_mr_put(mr);\fP
 .TP
 .B uib_mr_check_remote
 struct uib_mr *uib_mr_check_remote(struct uib_pd *pd, uint32_t rkey, uint64_t va, size_t len, int access);
 .br
-Find a remote MR by rkey and validate access.
+Find and reference a validated remote MR by rkey.
 .br
-Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); uib_mr_check_remote(pd, rkey, va, len, access);\fP
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); mr = uib_mr_check_remote(pd, rkey, va, len, access); if (mr) uib_mr_put(mr);\fP
 .TP
 .B uib_mr_check_remote_address
 struct uib_mr *uib_mr_check_remote_address(struct uib_pd *pd, uint64_t va, size_t len, int access);
 .br
-Find a remote MR by address and access.
+Find and reference a remote MR by address.
 .br
-Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); uib_mr_check_remote_address(pd, va, len, access);\fP
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_reg_mr(pd, buf, len, access); mr = uib_mr_check_remote_address(pd, va, len, access); if (mr) uib_mr_put(mr);\fP
 .TP
 .B uib_mr_place
 int uib_mr_place(struct uib_mr *mr, uint64_t va, const void *src, size_t len);
@@ -518,30 +525,30 @@ Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); uib_
 .B uib_pd_lookup_lkey
 struct uib_mr *uib_pd_lookup_lkey(struct uib_pd *pd, uint32_t lkey);
 .br
-Find a protection\-domain MR by local key.
+Find and reference a protection\-domain MR by local key.
 .br
-Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); uib_pd_lookup_lkey(pd, lkey);\fP
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_pd_lookup_lkey(pd, lkey); if (mr) uib_mr_put(mr);\fP
 .TP
 .B uib_pd_lookup_rkey
 struct uib_mr *uib_pd_lookup_rkey(struct uib_pd *pd, uint32_t rkey);
 .br
-Find a protection\-domain MR by remote key.
+Find and reference a protection\-domain MR by remote key.
 .br
-Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); uib_pd_lookup_rkey(pd, rkey);\fP
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_pd_lookup_rkey(pd, rkey); if (mr) uib_mr_put(mr);\fP
 .TP
 .B uib_pd_lookup_key
 struct uib_mr *uib_pd_lookup_key(struct uib_pd *pd, uint32_t key);
 .br
-Find a protection\-domain MR by either key.
+Find and reference a protection\-domain MR by either key.
 .br
-Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); uib_pd_lookup_key(pd, key);\fP
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_pd_lookup_key(pd, key); if (mr) uib_mr_put(mr);\fP
 .TP
 .B uib_pd_lookup_address
 struct uib_mr *uib_pd_lookup_address(struct uib_pd *pd, uint64_t va, size_t len, int access);
 .br
-Find an MR containing an accessible IOVA range.
+Find and reference an MR containing an IOVA range.
 .br
-Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); uib_pd_lookup_address(pd, va, len, access);\fP
+Example: \fBctx = uib_open_device("0.0.0.0", 4791); pd = uib_alloc_pd(ctx); mr = uib_pd_lookup_address(pd, va, len, access); if (mr) uib_mr_put(mr);\fP
 .SS "Protocol selection"
 .TP
 .B uib_protocol_find

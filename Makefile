@@ -180,6 +180,7 @@ TRANSPORT_TEST := tests/transport_test
 QP_SCALE_TEST := tests/qp_scale_test
 QP_LOOKUP_BENCH := tests/qp_lookup_bench
 MR_SCALE_TEST := tests/mr_scale_test
+MR_LIFETIME_TEST := tests/mr_lifetime_test
 PROVIDER_DISPATCH_BENCH := tests/provider_dispatch_bench
 PROVIDER_WR_BENCH := tests/provider_wr_bench
 PSN_INDEX_TEST := tests/psn_index_test
@@ -205,6 +206,7 @@ DEPS += $(TRANSPORT_TEST).d
 DEPS += $(QP_SCALE_TEST).d
 DEPS += $(QP_LOOKUP_BENCH).d
 DEPS += $(MR_SCALE_TEST).d
+DEPS += $(MR_LIFETIME_TEST).d
 DEPS += $(PROVIDER_DISPATCH_BENCH).d
 DEPS += $(PROVIDER_WR_BENCH).d
 DEPS += $(PSN_INDEX_TEST).d
@@ -267,6 +269,9 @@ $(QP_LOOKUP_BENCH): tests/qp_lookup_bench.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
 $(MR_SCALE_TEST): tests/mr_scale_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+$(MR_LIFETIME_TEST): tests/mr_lifetime_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
 $(PROVIDER_DISPATCH_BENCH): tests/provider_dispatch_bench.c $(LIB_PROVIDER)
@@ -469,7 +474,7 @@ test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_
 	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PTR_RING_TEST) $(REORDER_TEST) \
 	$(TRANSPORT_TEST) $(QP_SCALE_TEST) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
-	$(HOST_ZC_E2E_TEST)
+	$(HOST_ZC_E2E_TEST) $(MR_LIFETIME_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
 	./$(DMABUF_TEST)
@@ -486,6 +491,7 @@ test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_
 	./$(PSN_INDEX_TEST)
 	./$(HOST_ZC_TEST)
 	./$(HOST_ZC_E2E_TEST)
+	./$(MR_LIFETIME_TEST)
 	./tests/run_tcp_shutdown.sh
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	UIB_TRANSPORT_MODE=udp-sync ./$(TEST_BIN)
@@ -559,7 +565,8 @@ clean:
 		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST) \
 		$(PTR_RING_TEST) \
 		$(REORDER_TEST) $(TRANSPORT_TEST) $(QP_SCALE_TEST) \
-		$(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) $(PROVIDER_DISPATCH_BENCH) \
+		$(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) $(MR_LIFETIME_TEST) \
+		$(PROVIDER_DISPATCH_BENCH) \
 		$(PROVIDER_WR_BENCH) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
 		$(HOST_ZC_E2E_TEST) $(HOST_ZC_BENCH)
 
