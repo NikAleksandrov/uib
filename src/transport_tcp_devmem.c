@@ -362,7 +362,10 @@ static int peer_readable(struct uib_context *ctx, struct tcp_peer *p)
 		p->rx = buffer;
 		p->rx_cap = capacity;
 	}
-	n = recv(p->fd, p->rx + p->rx_len, p->rx_cap - p->rx_len, 0);
+	n = recv(p->fd, p->rx + p->rx_len, p->rx_cap - p->rx_len,
+		 MSG_DONTWAIT);
+	if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+		return 0;
 	if (n <= 0)
 		return -1;
 	p->rx_len += (size_t)n;
@@ -740,8 +743,15 @@ static void tcp_fini(struct uib_context *ctx)
 
 	if (!be)
 		return;
-	if (__atomic_exchange_n(&be->worker_run, 0, __ATOMIC_ACQ_REL))
+	if (__atomic_exchange_n(&be->worker_run, 0, __ATOMIC_ACQ_REL)) {
+		pthread_mutex_lock(&be->lock);
+		for (i = 0; i < UIB_TCP_MAX_PEERS; i++) {
+			if (be->peers[i].used && be->peers[i].fd >= 0)
+				shutdown(be->peers[i].fd, SHUT_RDWR);
+		}
+		pthread_mutex_unlock(&be->lock);
 		pthread_join(be->worker, NULL);
+	}
 
 	for (i = 0; i < UIB_TCP_MAX_PEERS; i++) {
 		if (be->peers[i].used) {

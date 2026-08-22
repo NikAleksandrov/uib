@@ -465,7 +465,7 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 	UIB_PROTOCOL=uet UIB_UET_OPTIMIZED=medium ./$(TEST_BIN)
 	UIB_PROTOCOL=uet UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 
-test: shared-abi-test license-check $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
+test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
 	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PTR_RING_TEST) $(REORDER_TEST) \
 	$(TRANSPORT_TEST) $(QP_SCALE_TEST) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
@@ -486,6 +486,7 @@ test: shared-abi-test license-check $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(B
 	./$(PSN_INDEX_TEST)
 	./$(HOST_ZC_TEST)
 	./$(HOST_ZC_E2E_TEST)
+	./tests/run_tcp_shutdown.sh
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	UIB_TRANSPORT_MODE=udp-sync ./$(TEST_BIN)
 	UIB_TRANSPORT_MODE=udp-io-uring ./$(TEST_BIN)
