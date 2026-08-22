@@ -12,7 +12,22 @@ client_interface=uibc$$
 server_log=/tmp/uib-namespace-server-$$.log
 client_log=/tmp/uib-namespace-client-$$.log
 allowed_cpus=$(sed -n 's/^Cpus_allowed_list:[[:space:]]*//p' /proc/self/status)
-pin_cpu=${UIB_BENCH_PIN_CPU:-$(printf '%s\n' "$allowed_cpus" | sed 's/[-,].*//')}
+first_allowed_cpu=$(printf '%s\n' "$allowed_cpus" | sed 's/[-,].*//')
+pin_cpu=${UIB_BENCH_PIN_CPU:-$first_allowed_cpu}
+client_pin_cpu=$pin_cpu
+if [ -z "${UIB_BENCH_PIN_CPU:-}" ]; then
+	client_pin_cpu=$(printf '%s\n' "$allowed_cpus" | awk -F, '
+		{
+			split($1, range, "-")
+			if (range[2] > range[1])
+				print range[1] + 1
+			else if (NF > 1) {
+				split($2, range, "-")
+				print range[1]
+			} else
+				print range[1]
+		}')
+fi
 control_port=19390
 data_port=19300
 
@@ -94,7 +109,11 @@ run_endpoint()
 	affinity=$5
 
 	if [ "$affinity" = pinned ]; then
-		ip netns exec "$namespace" taskset -c "$pin_cpu" env \
+		endpoint_cpu=$pin_cpu
+		if [ "$role" = client ]; then
+			endpoint_cpu=$client_pin_cpu
+		fi
+		ip netns exec "$namespace" taskset -c "$endpoint_cpu" env \
 			UIB_BENCH_ROLE="$role" \
 			UIB_BENCH_BIND="$bind_address" \
 			UIB_BENCH_PEER="$peer_address" \

@@ -1619,9 +1619,9 @@ Accepted values: A space\-separated list of positive byte counts.
 Example: \fBUIB_BENCH_MTUS='1500 4096' make benchmark\-all\fP
 .TP
 .B UIB_BENCH_PIN_CPU
-Select the CPU used for pinned\-process benchmark rows.
+Select the pinned CPU; an explicit value pins both namespace peers to it.
 .br
-Default: The first CPU allowed by the current cpuset.
+Default: First allowed CPU; namespace peers use first two when available.
 .br
 Accepted values: A CPU identifier accepted by taskset \-c.
 .br

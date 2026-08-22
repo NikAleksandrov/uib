@@ -113,8 +113,10 @@ when the gate rejects an update.
 
 Every combination is run both normally and with the process pinned to the first
 CPU in the current cpuset. Set `UIB_BENCH_PIN_CPU` to choose another allowed
-CPU. The reports include actual values and percentage changes for each
-comparison, rather than percentages alone. Each combination is measured with
+CPU. Namespace tests use the first two allowed CPUs for the two endpoints by
+default; an explicit override pins both to the selected CPU. The reports
+include actual values and percentage changes for each comparison, rather than
+percentages alone. Each combination is measured with
 1500-, 4096-, and 8192-byte protocol path MTUs, and MTU is part of every
 comparison key. RoCEv2's standard 4096-byte maximum makes its 8192-byte rows
 explicit skips; UET and dummy exercise all three values.

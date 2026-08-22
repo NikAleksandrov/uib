@@ -577,6 +577,17 @@
  */
 #define UIB_ENV_BENCH_MTUS "UIB_BENCH_MTUS"
 
+/**
+ * DOC: UIB_BENCH_PIN_CPU
+ * @uib-env: Complete benchmark matrix
+ * @default: First allowed CPU; namespace peers use first two when available.
+ * @values: A CPU identifier accepted by `taskset -c`.
+ *
+ * Select the pinned CPU; an explicit value pins both namespace peers to it.
+ *
+ * Example:
+ * UIB_BENCH_PIN_CPU=3 make benchmark-all
+ */
 #define UIB_ENV_BENCH_PIN_CPU "UIB_BENCH_PIN_CPU"
 
 /**

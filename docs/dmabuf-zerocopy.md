@@ -177,8 +177,10 @@ It produces:
 Markdown report. Both include actual values and percentage changes. Every row
 shows its actual operation window and has unpinned and CPU-pinned variants;
 `UIB_BENCH_PIN_CPU` overrides the first CPU allowed by the current cpuset. The
-dummy UDP protocol has ordering but intentionally has no ACK-based flow
-control, so the matrix limits its burst to 16 operations. The matrix also
+namespace harness otherwise places its endpoints on the first two allowed
+CPUs; an explicit override pins both peers to that CPU. The dummy UDP protocol
+has ordering but intentionally has no ACK-based flow control, so the matrix
+limits its burst to 16 operations. The matrix also
 measures 1500-, 4096-, and 8192-byte path MTUs and keeps comparisons within the
 same MTU. RoCEv2 rows at 8192 bytes are reported as unsupported because the
 protocol's maximum path MTU is 4096 bytes. Set `UIB_BENCH_OUTPUT` to select the
