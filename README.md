@@ -119,6 +119,12 @@ See the [examples guide](examples/) for local and remote traffic commands.
 `uib(7)` references from comments beside their definitions; `make docs-check`
 verifies them.
 
+The [LLM cluster simulation guide](docs/llm-cluster-simulation.md) describes a
+planned, layered validation environment for unchanged NCCL workloads. It covers
+Kind, virtme, libvirt/OpenTofu, Kubernetes, Kubeflow, KubeRay and
+Slurm/Pyxis/Enroot, including how to exchange individual layers and promote the
+same workloads to physical GPU and RDMA clusters.
+
 Memory and zero-copy
 --------------------
 
