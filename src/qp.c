@@ -4,6 +4,8 @@
 #include <errno.h>
 #include <arpa/inet.h>
 
+#include <urcu-bp.h>
+
 #include "uib/qp.h"
 #include "uib/pd.h"
 #include "uib/mr.h"
@@ -12,6 +14,7 @@
 #include "uib/transport.h"
 #include "uib/bth.h"
 #include "host_zc_internal.h"
+#include "ptr_ring.h"
 #include "utils.h"
 
 #define UIB_PKT_MAX (UIB_PMTU + 64)
@@ -20,12 +23,9 @@
 #define UIB_TX_BATCH_STACK 64
 
 struct uib_outstanding_pool {
-	struct uib_outstanding *free[UIB_OUT_POOL_CLASSES];
-	pthread_mutex_t          lock;
-	uint32_t                 cached[UIB_OUT_POOL_CLASSES];
-	uint32_t                 refs;
-	uint32_t                 limit;
-	int                      closing;
+	struct uib_ptr_ring free[UIB_OUT_POOL_CLASSES];
+	uint32_t            refs;
+	int                 closing;
 };
 
 static size_t outstanding_pool_capacity(uint8_t pool_class)
@@ -52,52 +52,42 @@ static uint8_t outstanding_pool_class(size_t packet_len)
 
 static void outstanding_pool_put(struct uib_outstanding_pool *pool)
 {
-	if (!__atomic_sub_fetch(&pool->refs, 1, __ATOMIC_ACQ_REL)) {
-		pthread_mutex_destroy(&pool->lock);
+	if (!__atomic_sub_fetch(&pool->refs, 1, __ATOMIC_ACQ_REL))
 		free(pool);
-	}
 }
 
 static void outstanding_pool_push(struct uib_outstanding *out)
 {
 	struct uib_outstanding_pool *pool = out->pool;
 	uint8_t pool_class = out->pool_class;
+	int cached;
 
-	pthread_mutex_lock(&pool->lock);
-	if (!pool->closing && pool->cached[pool_class] < pool->limit) {
-		out->next = pool->free[pool_class];
-		pool->free[pool_class] = out;
-		pool->cached[pool_class]++;
-		pthread_mutex_unlock(&pool->lock);
+	rcu_read_lock();
+	cached = !__atomic_load_n(&pool->closing, __ATOMIC_ACQUIRE) &&
+		 !uib_ptr_ring_push(&pool->free[pool_class], out);
+	rcu_read_unlock();
+	if (cached)
 		return;
-	}
-	pthread_mutex_unlock(&pool->lock);
 	free(out);
 	outstanding_pool_put(pool);
 }
 
 static void outstanding_pool_destroy(struct uib_outstanding_pool *pool)
 {
-	struct uib_outstanding *next;
 	struct uib_outstanding *out;
 	uint8_t pool_class;
 
 	if (!pool)
 		return;
-	pthread_mutex_lock(&pool->lock);
-	pool->closing = 1;
+	__atomic_store_n(&pool->closing, 1, __ATOMIC_RELEASE);
+	synchronize_rcu();
 	for (pool_class = 0; pool_class < UIB_OUT_POOL_CLASSES; pool_class++) {
-		out = pool->free[pool_class];
-		pool->free[pool_class] = NULL;
-		pool->cached[pool_class] = 0;
-		while (out) {
-			next = out->next;
+		while ((out = uib_ptr_ring_pop(&pool->free[pool_class])) != NULL) {
 			free(out);
 			outstanding_pool_put(pool);
-			out = next;
 		}
+		uib_ptr_ring_destroy(&pool->free[pool_class]);
 	}
-	pthread_mutex_unlock(&pool->lock);
 	outstanding_pool_put(pool);
 }
 
@@ -105,15 +95,14 @@ static struct uib_outstanding_pool *
 outstanding_pool_create(uint32_t max_send_wr)
 {
 	struct uib_outstanding_pool *pool;
+	uint32_t ring_capacity;
+	uint8_t pool_class;
 	uint32_t limit;
+	int rc;
 
 	pool = calloc(1, sizeof(*pool));
 	if (!pool)
 		return NULL;
-	if (pthread_mutex_init(&pool->lock, NULL)) {
-		free(pool);
-		return NULL;
-	}
 	limit = max_send_wr > UIB_OUT_POOL_MAX / 16 ? UIB_OUT_POOL_MAX :
 		max_send_wr * 16;
 	if (!max_send_wr)
@@ -122,9 +111,23 @@ outstanding_pool_create(uint32_t max_send_wr)
 		limit = 64;
 	if (limit > UIB_OUT_POOL_MAX)
 		limit = UIB_OUT_POOL_MAX;
-	pool->limit = limit;
+	ring_capacity = 64;
+	while (ring_capacity < limit)
+		ring_capacity <<= 1;
+	limit = ring_capacity;
+	for (pool_class = 0; pool_class < UIB_OUT_POOL_CLASSES; pool_class++) {
+		rc = uib_ptr_ring_init(&pool->free[pool_class], limit);
+		if (rc < 0)
+			goto error;
+	}
 	pool->refs = 1;
 	return pool;
+
+error:
+	while (pool_class)
+		uib_ptr_ring_destroy(&pool->free[--pool_class]);
+	free(pool);
+	return NULL;
 }
 
 struct uib_qp *uib_create_qp(struct uib_pd *pd,
@@ -211,13 +214,9 @@ static struct uib_outstanding *alloc_outstanding(struct uib_qp *qp,
 	pool_class = outstanding_pool_class(packet_len);
 	if (pool_class == UIB_OUT_POOL_CLASSES)
 		return NULL;
-	pthread_mutex_lock(&pool->lock);
-	out = pool->free[pool_class];
-	if (out) {
-		pool->free[pool_class] = out->next;
-		pool->cached[pool_class]--;
-	}
-	pthread_mutex_unlock(&pool->lock);
+	if (__atomic_load_n(&pool->closing, __ATOMIC_ACQUIRE))
+		return NULL;
+	out = uib_ptr_ring_pop(&pool->free[pool_class]);
 	if (!out) {
 		out = malloc(sizeof(*out) +
 			     outstanding_pool_capacity(pool_class));
