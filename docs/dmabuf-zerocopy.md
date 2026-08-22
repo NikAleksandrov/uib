@@ -106,8 +106,8 @@ registration without allocation, pinning, or MR-table work.
 The tcp-devmem backend optionally registers a TCP io_uring ZCRX arena. Set
 UIB_HOST_ZC_IFACE to a header/data-split interface, UIB_HOST_ZC_QUEUE to the
 flow-steered RX queue, and UIB_HOST_ZC=auto or required. The kernel currently
-requires NIC header/data split, RSS separation, flow steering, and sufficient
-privilege to bind the queue. `auto` preserves the copied TCP fallback;
+requires NIC header/data split, RSS separation, flow steering, and
+`CAP_NET_ADMIN` to bind the queue. `auto` preserves the copied TCP fallback;
 `required` rejects the context if the queue cannot be registered.
 
 When a ZCRX completion contains complete length-prefixed UIB frames, their
@@ -118,6 +118,11 @@ preallocated fallback because a single contiguous frame header must be parsed
 before QP demultiplexing. Standard verbs receives remain copied: their ABI
 requires data at the already posted SGE, while the kernel chooses a ZCRX arena
 address before UIB parses the packet.
+
+Each loan preallocates between 4 and 1024 segment entries, sized at one entry
+per 256 bytes of capacity. A receive fragmented more finely than that limit
+switches to the same preallocated copied fallback instead of allocating on the
+receive fast path.
 
 `make host-zc-benchmark` prints actual nanoseconds per ordinary receive
 post/completion and recycled loan. `tests/host_zc_e2e_test` transfers 8 KiB
@@ -130,14 +135,20 @@ One five-run local sample on Linux 6.12.100 and an AMD Ryzen 9 3950X produced:
 
 | Control path | Median ns/op | Observed ns/op range |
 |---|---:|---:|
-| Ordinary post, complete, poll | 46.96 | 43.05-64.33 |
-| Provider loan repost, complete, poll | 62.20 | 53.19-79.93 |
-| Paired loan premium | 15.60 | 2.81-23.37 |
+| Ordinary post, complete, poll | 47.00 | 40.67-55.08 |
+| Provider loan repost, complete, poll | 56.35 | 53.61-63.96 |
+| Paired loan premium | 6.83 | 1.28-23.29 |
 
 These are actual control-path values, not a claimed payload-throughput gain.
 The available kernel is older than io_uring ZCRX, so the runtime ZCRX probe
 skipped and no kernel-to-application copy-avoidance speedup is reported. A
 ZCRX-capable NIC/kernel measurement must be made on the target hardware.
+
+A paired five-run provider receive-WR translation comparison against commit
+60fd4c01bd0a measured a 291.785 ns median with the host-loan implementation
+and 287.509 ns without it (1.49% slower). Ordinary verbs therefore remain near
+the previous fast path, while only applications opting into provider loans pay
+the ownership cost shown above.
 
 UIB_ZEROCOPY=auto uses a 10 KiB threshold, matching the kernel guidance that
 small sends rarely recover the completion-processing cost. `on` and `required`

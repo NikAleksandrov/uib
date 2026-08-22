@@ -159,6 +159,8 @@ return or repost it with uib_release_rx_loan() or uib_repost_rx_loan().
 With tcp-devmem, UIB_HOST_ZC_IFACE and UIB_HOST_ZC_QUEUE select an io_uring
 ZCRX hardware queue. UIB_HOST_ZC=auto falls back to the copied TCP parser when
 registration is unavailable; required makes context creation fail instead.
+Queue registration requires `CAP_NET_ADMIN` in addition to a ZCRX-capable
+kernel, NIC header/data split, RSS separation, and flow steering.
 Arena fragments remain owned by UIB until the application releases the loan.
 Whole length-prefixed frames are passed through without a payload copy, and
 fragmented RoCEv2/UET messages are returned as iovec loans. A TCP stream

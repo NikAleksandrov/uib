@@ -26,6 +26,7 @@ struct uib_context *uib_open_device_protocol(const char *bind_ip,
 					     const char *protocol)
 {
 	struct uib_context *ctx = calloc(1, sizeof(*ctx));
+	int rc;
 
 	if (!ctx)
 		return NULL;
@@ -51,10 +52,14 @@ struct uib_context *uib_open_device_protocol(const char *bind_ip,
 	if (!ctx->qp_table || !ctx->qp_free_ids || !ctx->retry_heap)
 		goto err_table;
 	ctx->qp_next_id = 1;
-	if (ctx->pops->init && ctx->pops->init(ctx) < 0)
-		goto err_table;
+	if (ctx->pops->init) {
+		rc = ctx->pops->init(ctx);
+		if (rc < 0)
+			goto err_errno;
+	}
 
-	if (uib_transport_init(ctx) < 0)
+	rc = uib_transport_init(ctx);
+	if (rc < 0)
 		goto err_protocol;
 
 	return ctx;
@@ -62,6 +67,8 @@ struct uib_context *uib_open_device_protocol(const char *bind_ip,
 err_protocol:
 	if (ctx->pops->fini)
 		ctx->pops->fini(ctx);
+err_errno:
+	errno = -rc;
 err_table:
 	free(ctx->retry_heap);
 	free(ctx->qp_free_ids);

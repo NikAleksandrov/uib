@@ -410,12 +410,10 @@ static void tcp_zcrx_receive(void *opaque, uint64_t user_data,
 		if (buffer)
 			uib_zcrx_release(buffer);
 		if (!more) {
+			pthread_mutex_lock(&be->lock);
 			peer->zcrx_started = 0;
-			if (peer->closing) {
-				pthread_mutex_lock(&be->lock);
-				peer_reset(peer);
-				pthread_mutex_unlock(&be->lock);
-			}
+			peer_drop(be, peer);
+			pthread_mutex_unlock(&be->lock);
 		}
 		return;
 	}
@@ -603,6 +601,7 @@ static int tcp_init(struct uib_context *ctx)
 	const char *zcrx_mode;
 	const char *zcrx_iface;
 	const char *zcrx_queue;
+	socklen_t local_length;
 	int zcrx_required;
 	int one;
 	int rc;
@@ -639,9 +638,9 @@ static int tcp_init(struct uib_context *ctx)
 		goto err;
 	}
 
-	socklen_t sl = sizeof(be->local);
-
-	getsockname(be->listen_fd, (struct sockaddr *)&be->local, &sl);
+	local_length = sizeof(be->local);
+	getsockname(be->listen_fd, (struct sockaddr *)&be->local,
+		    &local_length);
 	ctx->local_addr = be->local;
 
 	if (listen(be->listen_fd, UIB_TCP_BACKLOG) < 0) {
@@ -710,9 +709,10 @@ static int tcp_init(struct uib_context *ctx)
 	}
 
 	__atomic_store_n(&be->worker_run, 1, __ATOMIC_RELEASE);
-	if (pthread_create(&be->worker, NULL, worker_loop, ctx) != 0) {
+	rc = pthread_create(&be->worker, NULL, worker_loop, ctx);
+	if (rc) {
 		__atomic_store_n(&be->worker_run, 0, __ATOMIC_RELEASE);
-		rc = -errno;
+		rc = -rc;
 		goto err;
 	}
 	return 0;

@@ -46,7 +46,7 @@ int main(void)
 	setenv("UIB_TRANSPORT_MODE", "tcp-devmem", 1);
 	setenv("UIB_HOST_ZC", "invalid", 1);
 	context = uib_open_device_protocol("127.0.0.1", 20409, "dummy");
-	check("zcrx.invalid_mode", context == NULL);
+	check("zcrx.invalid_mode", context == NULL && errno == EINVAL);
 	setenv("UIB_HOST_ZC", "auto", 1);
 	setenv("UIB_HOST_ZC_IFACE", "lo", 1);
 	context = uib_open_device_protocol("127.0.0.1", 20410, "dummy");
