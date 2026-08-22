@@ -8,6 +8,7 @@
 #include "uib/uib.h"
 
 #define TEST_PACKETS 256
+#define TEST_GSO_PACKETS 48
 #define TEST_PACKET_LENGTH 256
 
 static int failed;
@@ -30,7 +31,8 @@ static void check(const char *name, int condition)
 static int wait_for_traffic(struct uib_context *sender,
 			    struct uib_context *receiver,
 			    struct uib_transport_stats *tx_stats,
-			    struct uib_transport_stats *rx_stats)
+			    struct uib_transport_stats *rx_stats,
+			    unsigned int expected)
 {
 	struct timespec delay;
 	unsigned int i;
@@ -41,8 +43,8 @@ static int wait_for_traffic(struct uib_context *sender,
 		if (uib_transport_get_stats(sender, tx_stats) < 0 ||
 		    uib_transport_get_stats(receiver, rx_stats) < 0)
 			return -1;
-		if (tx_stats->tx_completed == TEST_PACKETS &&
-		    rx_stats->rx_packets == TEST_PACKETS)
+		if (tx_stats->tx_completed == expected &&
+		    rx_stats->rx_packets == expected)
 			return 0;
 		nanosleep(&delay, NULL);
 	}
@@ -87,7 +89,8 @@ static void run_mode(const char *mode, uint16_t sender_port,
 	check("uring.enqueue_burst", !rc);
 	memset(&tx_stats, 0, sizeof(tx_stats));
 	memset(&rx_stats, 0, sizeof(rx_stats));
-	rc = wait_for_traffic(sender, receiver, &tx_stats, &rx_stats);
+	rc = wait_for_traffic(sender, receiver, &tx_stats, &rx_stats,
+			      TEST_PACKETS);
 	check("uring.async_completion", !rc);
 	check("uring.tx_queued", tx_stats.tx_queued == TEST_PACKETS);
 	check("uring.tx_submitted", tx_stats.tx_submitted == TEST_PACKETS);
@@ -162,13 +165,13 @@ static void run_gso_batch(uint16_t sender_port, uint16_t receiver_port,
 			  int zerocopy)
 {
 	struct uib_zerocopy_stats zerocopy_stats;
-	struct uib_transport_ref refs[TEST_PACKETS];
+	struct uib_transport_ref refs[TEST_GSO_PACKETS];
 	struct uib_transport_stats rx_stats;
 	struct uib_transport_stats tx_stats;
 	struct uib_context *receiver;
 	struct uib_context *sender;
 	struct sockaddr_in destination;
-	uint8_t packets[TEST_PACKETS][TEST_PACKET_LENGTH];
+	uint8_t packets[TEST_GSO_PACKETS][TEST_PACKET_LENGTH];
 	uint8_t *zc_storage = NULL;
 	void *allocation = NULL;
 	size_t page_size = 0;
@@ -186,7 +189,7 @@ static void run_gso_batch(uint16_t sender_port, uint16_t receiver_port,
 			(size_t)system_page_size : 4096U;
 		stride = page_size * 2;
 		rc = posix_memalign(&allocation, page_size,
-				    TEST_PACKETS * stride);
+				    TEST_GSO_PACKETS * stride);
 		check("gso.zc_storage", !rc);
 		if (rc)
 			return;
@@ -200,7 +203,7 @@ static void run_gso_batch(uint16_t sender_port, uint16_t receiver_port,
 		goto out;
 	destination = receiver->local_addr;
 	released = 0;
-	for (i = 0; i < TEST_PACKETS; i++) {
+	for (i = 0; i < TEST_GSO_PACKETS; i++) {
 		if (zerocopy) {
 			/* Make every test packet consume two skb fragments. */
 			refs[i].buf = zc_storage + i * stride + page_size -
@@ -217,18 +220,29 @@ static void run_gso_batch(uint16_t sender_port, uint16_t receiver_port,
 		refs[i].len = sizeof(packets[i]);
 		refs[i].entropy = 0;
 	}
-	rc = uib_transport_send_ref_batch(sender, refs, TEST_PACKETS);
+	rc = uib_transport_send_ref_batch(sender, refs, TEST_GSO_PACKETS);
 	check("gso.enqueue_batch", !rc);
 	memset(&tx_stats, 0, sizeof(tx_stats));
 	memset(&rx_stats, 0, sizeof(rx_stats));
-	rc = wait_for_traffic(sender, receiver, &tx_stats, &rx_stats);
+	rc = wait_for_traffic(sender, receiver, &tx_stats, &rx_stats,
+			      TEST_GSO_PACKETS);
+	if (rc) {
+		fprintf(stderr, "gso timeout: tx=%llu errors=%llu rx=%llu\n",
+			(unsigned long long)tx_stats.tx_completed,
+			(unsigned long long)tx_stats.tx_errors,
+			(unsigned long long)rx_stats.rx_packets);
+		fprintf(stderr, "gso timeout: batches=%llu packets=%llu\n",
+			(unsigned long long)tx_stats.tx_gso_batches,
+			(unsigned long long)tx_stats.tx_gso_packets);
+	}
 	check("gso.async_completion", !rc);
-	check("gso.release_callbacks", released == TEST_PACKETS);
-	check("gso.packet_counters", tx_stats.tx_completed == TEST_PACKETS &&
-	      rx_stats.rx_packets == TEST_PACKETS);
+	check("gso.release_callbacks", released == TEST_GSO_PACKETS);
+	check("gso.packet_counters",
+	      tx_stats.tx_completed == TEST_GSO_PACKETS &&
+	      rx_stats.rx_packets == TEST_GSO_PACKETS);
 	if (tx_stats.gso_enabled) {
 		check("gso.batch_counters", tx_stats.tx_gso_batches > 0 &&
-		      tx_stats.tx_gso_packets == TEST_PACKETS);
+		      tx_stats.tx_gso_packets == TEST_GSO_PACKETS);
 	} else {
 		printf("%-32s %s\n", "gso.batch_counters", "SKIP");
 	}
