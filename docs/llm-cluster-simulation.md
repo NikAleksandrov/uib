@@ -399,15 +399,18 @@ faults:
 
 Current NCCL can open a verbs library explicitly and resolve versioned symbols
 with `dlvsym()`. UIB therefore needs more than an ordinary unversioned
-`LD_PRELOAD` library.
+`LD_PRELOAD` library. UIB now provides the versioned loader ABI and its
+automated `provider-nccl-abi-test`; unchanged collective validation remains a
+separate gate.
 
-The first implementation phase must:
+The compatibility sequence is:
 
-1. export core calls with `IBVERBS_1.1` symbol versions;
-2. version `ibv_reg_mr_iova2()` and `ibv_reg_dmabuf_mr()` appropriately;
-3. implement missing mandatory calls:
+1. export core calls with `IBVERBS_1.1` symbol versions (implemented);
+2. version `ibv_reg_mr_iova2()` and `ibv_reg_dmabuf_mr()` appropriately
+   (implemented);
+3. implement the mandatory calls
    `ibv_get_async_event()`, `ibv_ack_async_event()`, `ibv_fork_init()`, and
-   `ibv_event_type_str()`;
+   `ibv_event_type_str()` (implemented);
 4. deliberately support or reject optional ECE and port-speed calls;
 5. test verbs operations reached through `struct ibv_context_ops`;
 6. test current NCCL's exact symbol contract automatically;
@@ -1050,8 +1053,9 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 ## Limitations
 
 - The described cluster harness is planned and not yet implemented.
-- Current UIB needs versioned NCCL ABI work and missing async/fork/event calls
-  before transparent NCCL use can be claimed.
+- UIB's versioned NCCL loader ABI is covered by an automated contract test,
+  but unchanged NCCL collective execution and fallback detection are not yet
+  part of the repository test suite.
 - Kind and CPU-only virtme/libvirt profiles do not validate real GPU
   collectives or performance.
 - Host-staged NCCL and GPU-direct NCCL are materially different and are never

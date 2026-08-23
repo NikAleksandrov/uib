@@ -5,7 +5,9 @@
 #include <errno.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <unistd.h>
 #include <arpa/inet.h>
+#include <sys/eventfd.h>
 
 #include <infiniband/verbs.h>
 
@@ -73,6 +75,9 @@ static void                (*real_free_device_list)(struct ibv_device **);
 static const char         *(*real_get_device_name)(struct ibv_device *);
 static struct ibv_context *(*real_open_device)(struct ibv_device *);
 static int                 (*real_close_device)(struct ibv_context *);
+static int                 (*real_get_async_event)(struct ibv_context *,
+						   struct ibv_async_event *);
+static void                (*real_ack_async_event)(struct ibv_async_event *);
 static struct ibv_pd      *(*real_alloc_pd)(struct ibv_context *);
 static int                 (*real_dealloc_pd)(struct ibv_pd *);
 static struct ibv_mr      *(*real_reg_mr)(struct ibv_pd *, void *, size_t, int);
@@ -110,6 +115,7 @@ static int                 (*real_query_gid)(struct ibv_context *, uint8_t, int,
 					      union ibv_gid *);
 static int                 (*real_query_pkey)(struct ibv_context *, uint8_t,
 					      int, __be16 *);
+static int                 (*real_fork_init)(void);
 
 static int ctx_is_ours(struct ibv_context *ctx)
 {
@@ -124,6 +130,8 @@ static void uibv_init(void)
 	real_get_device_name   = dlsym(RTLD_NEXT, "ibv_get_device_name");
 	real_open_device       = dlsym(RTLD_NEXT, "ibv_open_device");
 	real_close_device      = dlsym(RTLD_NEXT, "ibv_close_device");
+	real_get_async_event   = dlsym(RTLD_NEXT, "ibv_get_async_event");
+	real_ack_async_event   = dlsym(RTLD_NEXT, "ibv_ack_async_event");
 	real_alloc_pd          = dlsym(RTLD_NEXT, "ibv_alloc_pd");
 	real_dealloc_pd        = dlsym(RTLD_NEXT, "ibv_dealloc_pd");
 	real_reg_mr            = dlsym(RTLD_NEXT, "ibv_reg_mr");
@@ -146,6 +154,7 @@ static void uibv_init(void)
 	real_query_port        = dlsym(RTLD_NEXT, "ibv_query_port");
 	real_query_gid         = dlsym(RTLD_NEXT, "ibv_query_gid");
 	real_query_pkey        = dlsym(RTLD_NEXT, "ibv_query_pkey");
+	real_fork_init         = dlsym(RTLD_NEXT, "ibv_fork_init");
 }
 
 static uint32_t mtu_to_bytes(enum ibv_mtu mtu)
@@ -587,7 +596,12 @@ struct ibv_context *ibv_open_device(struct ibv_device *dev)
 	w->core              = core;
 	w->ibv.device        = dev;
 	w->ibv.cmd_fd        = -1;
-	w->ibv.async_fd      = -1;
+	w->ibv.async_fd      = eventfd(0, EFD_CLOEXEC);
+	if (w->ibv.async_fd < 0) {
+		free(w);
+		uib_close_device(core);
+		return NULL;
+	}
 	w->ibv.num_comp_vectors = 1;
 	pthread_mutex_init(&w->ibv.mutex, NULL);
 	w->ibv.ops.post_send       = provider_post_send;
@@ -605,10 +619,109 @@ int ibv_close_device(struct ibv_context *ctx)
 
 	struct uibv_ctx_wrap *w = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
 
+	close(w->ibv.async_fd);
 	uib_close_device(w->core);
 	pthread_mutex_destroy(&w->ibv.mutex);
 	free(w);
 	return 0;
+}
+
+int ibv_get_async_event(struct ibv_context *ctx,
+			struct ibv_async_event *event)
+{
+	uint64_t value;
+	ssize_t ret;
+
+	if (!ctx_is_ours(ctx))
+		return real_get_async_event ? real_get_async_event(ctx, event) : -1;
+	if (!event) {
+		errno = EINVAL;
+		return -1;
+	}
+	do {
+		ret = read(ctx->async_fd, &value, sizeof(value));
+	} while (ret < 0 && errno == EINTR);
+	if (ret < 0)
+		return -1;
+	errno = EIO;
+	return -1;
+}
+
+void ibv_ack_async_event(struct ibv_async_event *event)
+{
+	struct ibv_cq *cq;
+	struct ibv_qp *qp;
+
+	if (!event)
+		return;
+	switch (event->event_type) {
+	case IBV_EVENT_CQ_ERR:
+		cq = event->element.cq;
+		if (!cq || !ctx_is_ours(cq->context))
+			break;
+		pthread_mutex_lock(&cq->mutex);
+		cq->async_events_completed++;
+		pthread_cond_signal(&cq->cond);
+		pthread_mutex_unlock(&cq->mutex);
+		return;
+	case IBV_EVENT_QP_FATAL:
+	case IBV_EVENT_QP_REQ_ERR:
+	case IBV_EVENT_QP_ACCESS_ERR:
+	case IBV_EVENT_COMM_EST:
+	case IBV_EVENT_SQ_DRAINED:
+	case IBV_EVENT_PATH_MIG:
+	case IBV_EVENT_PATH_MIG_ERR:
+	case IBV_EVENT_QP_LAST_WQE_REACHED:
+		qp = event->element.qp;
+		if (!qp || !ctx_is_ours(qp->context))
+			break;
+		pthread_mutex_lock(&qp->mutex);
+		qp->events_completed++;
+		pthread_cond_signal(&qp->cond);
+		pthread_mutex_unlock(&qp->mutex);
+		return;
+	default:
+		break;
+	}
+	if (real_ack_async_event)
+		real_ack_async_event(event);
+}
+
+int ibv_fork_init(void)
+{
+	return real_fork_init ? real_fork_init() : 0;
+}
+
+const char *ibv_event_type_str(enum ibv_event_type event)
+{
+	static const char *const names[] = {
+		[IBV_EVENT_CQ_ERR] = "CQ error",
+		[IBV_EVENT_QP_FATAL] = "local work queue catastrophic error",
+		[IBV_EVENT_QP_REQ_ERR] = "invalid request local work queue error",
+		[IBV_EVENT_QP_ACCESS_ERR] =
+			"local access violation work queue error",
+		[IBV_EVENT_COMM_EST] = "communication established",
+		[IBV_EVENT_SQ_DRAINED] = "send queue drained",
+		[IBV_EVENT_PATH_MIG] = "path migrated",
+		[IBV_EVENT_PATH_MIG_ERR] = "path migration request error",
+		[IBV_EVENT_DEVICE_FATAL] = "local catastrophic error",
+		[IBV_EVENT_PORT_ACTIVE] = "port active",
+		[IBV_EVENT_PORT_ERR] = "port error",
+		[IBV_EVENT_LID_CHANGE] = "LID change",
+		[IBV_EVENT_PKEY_CHANGE] = "P_Key change",
+		[IBV_EVENT_SM_CHANGE] = "SM change",
+		[IBV_EVENT_SRQ_ERR] = "SRQ catastrophic error",
+		[IBV_EVENT_SRQ_LIMIT_REACHED] = "SRQ limit reached",
+		[IBV_EVENT_QP_LAST_WQE_REACHED] = "last WQE reached",
+		[IBV_EVENT_CLIENT_REREGISTER] = "client reregistration",
+		[IBV_EVENT_GID_CHANGE] = "GID table change",
+		[IBV_EVENT_WQ_FATAL] = "WQ fatal",
+	};
+
+	if ((unsigned int)event < sizeof(names) / sizeof(names[0]) &&
+	    names[event])
+		return names[event];
+	return "unknown";
 }
 
 struct ibv_comp_channel *ibv_create_comp_channel(struct ibv_context *ctx)

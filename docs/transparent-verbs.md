@@ -15,6 +15,7 @@ library forwards supported calls to the system libibverbs implementation.
 - [Terminology](#terminology)
 - [How transparent loading works](#how-transparent-loading-works)
 - [Build and verify the provider](#build-and-verify-the-provider)
+- [Loading UIB from NCCL](#loading-uib-from-nccl)
 - [Minimal UIB-to-UIB example](#minimal-uib-to-uib-example)
 - [Settings needed for transparent operation](#settings-needed-for-transparent-operation)
 - [Application behavior and compatibility](#application-behavior-and-compatibility)
@@ -98,6 +99,48 @@ env LD_PRELOAD="$(realpath ./libuibv.so)" ibv_devices
 The last command should list `uib0`. Use an absolute `LD_PRELOAD` path in
 services, containers, remote shells, and scripts; their working directory may
 not be the source tree.
+
+## Loading UIB from NCCL
+
+Current NCCL releases can open a verbs library directly instead of relying
+only on `LD_PRELOAD`. Set `NCCL_IBVERBS_LIB` to the absolute path of
+`libuibv.so` in every NCCL process:
+
+```sh
+env \
+    NCCL_IBVERBS_LIB=/absolute/path/to/uib/libuibv.so \
+    NCCL_NET=IB \
+    NCCL_IB_DISABLE=0 \
+    NCCL_IB_HCA='=uib0' \
+    UIB_BIND_IP=198.51.100.1 \
+    UIB_PROTOCOL=rocev2 \
+    UIB_TRANSPORT_MODE=udp-io-uring \
+    application arguments
+```
+
+NCCL resolves the ordinary verbs entry points at symbol version
+`IBVERBS_1.1`, `ibv_reg_mr_iova2()` at `IBVERBS_1.8`, and
+`ibv_reg_dmabuf_mr()` at `IBVERBS_1.12`. UIB exports that contract and
+provides a pollable, blocking asynchronous-event descriptor for every `uib0`
+context. UIB does not currently produce device or port transition events, so
+the descriptor normally remains idle.
+
+The optional `ibv_query_ece()`, `ibv_set_ece()`, and
+`ibv_query_port_speed()` helpers are not exported yet. NCCL treats their
+absence as a disabled optional capability; UIB does not provide success stubs
+that could falsely advertise ECE or extended port-speed support.
+
+Check the loader contract without installing NCCL:
+
+```sh
+make provider-nccl-abi-test
+```
+
+This test uses `dlopen()` and `dlvsym()` in the same way as NCCL. It proves
+that the required ABI can be loaded; it does not by itself prove NCCL
+collective correctness, GPU-memory support, or freedom from socket fallback.
+Those properties require an unchanged NCCL workload and explicit NCCL log and
+traffic validation.
 
 ## Minimal UIB-to-UIB example
 
@@ -301,6 +344,13 @@ Device discovery and contexts:
 - `ibv_get_device_name()`
 - `ibv_open_device()`
 - `ibv_close_device()`
+- `ibv_fork_init()`
+- `ibv_event_type_str()`
+
+Asynchronous device events:
+
+- `ibv_get_async_event()`
+- `ibv_ack_async_event()`
 
 Device and QP queries:
 

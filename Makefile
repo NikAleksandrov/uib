@@ -108,6 +108,7 @@ OBJS := $(SRCS:.c=.o)
 
 PROV_SRCS := src/provider.c
 PROV_OBJS := $(PROV_SRCS:.c=.o)
+PROV_MAP := src/libuibv.map
 DEPS := $(OBJS:.o=.d) $(PROV_OBJS:.o=.d)
 
 LIB_STATIC   := libuib.a
@@ -154,8 +155,9 @@ $(LIB_SHARED_SONAME): $(LIB_SHARED_REAL)
 $(LIB_SHARED_REAL): $(OBJS) $(LIB_MAP)
 	$(CC) -shared -Wl,-soname,$(LIB_SHARED_SONAME) -Wl,--version-script=$(LIB_MAP) -o $@ $(OBJS) $(LDFLAGS) $(LDLIBS)
 
-$(LIB_PROVIDER): $(PROV_OBJS) $(LIB_SHARED)
-	$(CC) -shared -o $@ $(PROV_OBJS) -L. -Wl,-rpath,'$$ORIGIN' -luib -ldl $(LDFLAGS) $(LDLIBS)
+$(LIB_PROVIDER): $(PROV_OBJS) $(LIB_SHARED) $(PROV_MAP)
+	$(CC) -shared -o $@ $(PROV_OBJS) -L. -Wl,-rpath,'$$ORIGIN' \
+		-Wl,--version-script=$(PROV_MAP) -luib -ldl $(LDFLAGS) $(LDLIBS)
 
 src/%.o: src/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -170,6 +172,7 @@ UET_TEST     := tests/uet_test
 NSCC_TEST    := tests/nscc_test
 ZEROCOPY_TEST := tests/zerocopy_test
 PROVIDER_DMABUF_TEST := tests/provider_dmabuf_test
+PROVIDER_NCCL_ABI_TEST := tests/provider_nccl_abi_test
 EXTERNAL_DMABUF_TEST := tests/external_dmabuf_test
 CQ_EVENT_TEST := tests/cq_event_test
 URING_ASYNC_TEST := tests/uring_async_test
@@ -190,6 +193,7 @@ HOST_ZC_BENCH := tests/host_zc_bench
 ifeq ($(HAVE_IBVERBS),1)
 SCALING_PROVIDER_BENCH := $(PROVIDER_DISPATCH_BENCH)
 SCALING_PROVIDER_WR_BENCH := $(PROVIDER_WR_BENCH)
+NCCL_PROVIDER_TEST := $(PROVIDER_NCCL_ABI_TEST)
 endif
 
 DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d \
@@ -197,7 +201,7 @@ DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d \
 	$(NSCC_TEST).d
 
 DEPS += $(ZEROCOPY_TEST).d $(PROVIDER_DMABUF_TEST).d \
-	$(EXTERNAL_DMABUF_TEST).d
+	$(PROVIDER_NCCL_ABI_TEST).d $(EXTERNAL_DMABUF_TEST).d
 
 DEPS += $(CQ_EVENT_TEST).d $(URING_ASYNC_TEST).d $(PTR_RING_TEST).d
 DEPS += $(PROVIDER_CQ_EVENT_TEST).d
@@ -243,6 +247,9 @@ $(ZEROCOPY_TEST): tests/zerocopy_test.c $(LIB_SHARED)
 
 $(PROVIDER_DMABUF_TEST): tests/provider_dmabuf_test.c $(LIB_PROVIDER)
 	$(CC) $(CFLAGS) -o $@ $< $(IBVERBS_LIBS) -libverbs
+
+$(PROVIDER_NCCL_ABI_TEST): tests/provider_nccl_abi_test.c $(LIB_PROVIDER)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 $(PROVIDER_CQ_EVENT_TEST): tests/provider_cq_event_test.c $(LIB_PROVIDER)
 	$(CC) $(CFLAGS) -o $@ $< $(IBVERBS_LIBS) -libverbs
@@ -326,9 +333,13 @@ provider-dmabuf-test: all $(PROVIDER_DMABUF_TEST)
 provider-cq-event-test: all $(PROVIDER_CQ_EVENT_TEST)
 	UIB_BIND_PORT=19610 LD_PRELOAD=$(CURDIR)/$(LIB_PROVIDER) \
 		./$(PROVIDER_CQ_EVENT_TEST)
+
+provider-nccl-abi-test: all $(PROVIDER_NCCL_ABI_TEST)
+	UIB_BIND_PORT=19620 UIB_TRANSPORT_MODE=udp-sync UIB_ZEROCOPY=off \
+		./$(PROVIDER_NCCL_ABI_TEST)
 else
 rxe-test-build rxe-test rxe-tools-test uib-tools-test uet-tools-test \
-provider-dmabuf-test provider-cq-event-test:
+provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test:
 	@echo "SKIP $@: libibverbs development files are unavailable"
 endif
 
@@ -474,7 +485,7 @@ test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_
 	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PTR_RING_TEST) $(REORDER_TEST) \
 	$(TRANSPORT_TEST) $(QP_SCALE_TEST) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
-	$(HOST_ZC_E2E_TEST) $(MR_LIFETIME_TEST)
+	$(HOST_ZC_E2E_TEST) $(MR_LIFETIME_TEST) $(NCCL_PROVIDER_TEST)
 	./$(BTH_TEST)
 	./$(FRAME_TEST)
 	./$(DMABUF_TEST)
@@ -492,6 +503,9 @@ test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_
 	./$(HOST_ZC_TEST)
 	./$(HOST_ZC_E2E_TEST)
 	./$(MR_LIFETIME_TEST)
+	$(if $(NCCL_PROVIDER_TEST),UIB_BIND_PORT=19620 \
+		UIB_TRANSPORT_MODE=udp-sync UIB_ZEROCOPY=off \
+		./$(PROVIDER_NCCL_ABI_TEST))
 	./tests/run_tcp_shutdown.sh
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	UIB_TRANSPORT_MODE=udp-sync ./$(TEST_BIN)
@@ -519,6 +533,7 @@ guest-test: all rxe-test-build
 	$(MAKE) ib-write-bw-test
 	$(MAKE) provider-dmabuf-test
 	$(MAKE) provider-cq-event-test
+	$(MAKE) provider-nccl-abi-test
 	$(MAKE) optional-features-test
 	$(MAKE) remote-benchmark-test
 	UIB_NAMESPACE_REQUIRED=1 $(MAKE) namespace-benchmark-test
@@ -561,7 +576,8 @@ clean:
 		$(LIB_PROVIDER) $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) \
 		$(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST) \
 		$(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
-		$(PROVIDER_DMABUF_TEST) $(EXTERNAL_DMABUF_TEST) \
+		$(PROVIDER_DMABUF_TEST) $(PROVIDER_NCCL_ABI_TEST) \
+		$(EXTERNAL_DMABUF_TEST) \
 		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST) \
 		$(PTR_RING_TEST) \
 		$(REORDER_TEST) $(TRANSPORT_TEST) $(QP_SCALE_TEST) \
@@ -579,7 +595,7 @@ clean:
 	benchmark-all benchmark-local benchmark-report benchmark-doc \
 	benchmark-smoke ib-write-bw-test dummy-reorder-test \
 	scaling-benchmark scaling-test \
-	provider-dmabuf-test provider-cq-event-test \
+	provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test \
 	gpu-dmabuf-test external-dmabuf-test remote-benchmark-test \
 	namespace-benchmark-test guest-test \
 	optional-features-test virtme-test configure-test test-all \
