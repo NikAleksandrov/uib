@@ -2,6 +2,7 @@
 
 CC      ?= cc
 AR      ?= ar
+PKG_CONFIG ?= pkg-config
 PREFIX  ?= /usr/local
 MANDIR  ?= $(PREFIX)/share/man
 DOCDIR  ?= $(PREFIX)/share/doc/uib
@@ -109,14 +110,40 @@ OBJS := $(SRCS:.c=.o)
 PROV_SRCS := src/provider.c
 PROV_OBJS := $(PROV_SRCS:.c=.o)
 PROV_MAP := src/libuibv.map
-DEPS := $(OBJS:.o=.d) $(PROV_OBJS:.o=.d)
 
 LIB_STATIC   := libuib.a
+LIB_STANDALONE := libuib-standalone.a
+LIB_STANDALONE_UIB = .libuib-standalone-uib-$(STANDALONE_AFXDP).a
 LIB_SHARED   := libuib.so
 LIB_SHARED_SONAME := libuib.so.0
 LIB_SHARED_REAL := libuib.so.0.1.0
 LIB_MAP      := src/libuib.map
 LIB_PROVIDER := libuibv.so
+STANDALONE_BUILDER := scripts/build-standalone-archive.sh
+STATIC_LINK_TEST := tests/static_link_test
+
+STANDALONE_AFXDP ?= 0
+ifneq ($(filter $(STANDALONE_AFXDP),0 1),$(STANDALONE_AFXDP))
+  $(error STANDALONE_AFXDP must be 0 or 1)
+endif
+STANDALONE_CFLAGS_0 := $(filter-out -DUIB_HAVE_AFXDP,$(CFLAGS))
+STANDALONE_CFLAGS_1 := $(CFLAGS)
+STATIC_PACKAGES := liburing libmnl liburcu-bp
+ifeq ($(HAVE_ZLIB),1)
+  STATIC_PACKAGES += zlib
+endif
+ifeq ($(STANDALONE_AFXDP),1)
+  STATIC_PACKAGES += libxdp
+endif
+STATIC_LDLIBS = $(shell $(PKG_CONFIG) --libs --static \
+	$(STATIC_PACKAGES) 2>/dev/null)
+STANDALONE_OBJS_0 := $(SRCS:.c=.standalone-0.o)
+STANDALONE_OBJS_1 := $(SRCS:.c=.standalone-1.o)
+STANDALONE_OBJS = $(STANDALONE_OBJS_$(STANDALONE_AFXDP))
+STATIC_LINK_TEST_DEP := tests/static_link_test.d
+DEPS := $(OBJS:.o=.d) $(PROV_OBJS:.o=.d) \
+	$(STANDALONE_OBJS_0:.o=.d) $(STANDALONE_OBJS_1:.o=.d) \
+	$(STATIC_LINK_TEST_DEP)
 DOC_GENERATOR := scripts/generate-docs.py
 MAN_PAGE      := man/uib.7
 
@@ -126,6 +153,18 @@ ifeq ($(ENABLE_PROVIDER),1)
 endif
 
 all: $(LIB_TARGETS)
+
+static: $(LIB_STANDALONE)
+
+FORCE:
+
+static-test: $(STATIC_LINK_TEST)
+	./$(STATIC_LINK_TEST)
+	@if readelf -d $(STATIC_LINK_TEST) 2>&1 | grep -q NEEDED; then \
+		echo "static link test has dynamic dependencies" >&2; \
+		readelf -d $(STATIC_LINK_TEST) >&2; \
+		exit 1; \
+	fi
 
 docs:
 	python3 $(DOC_GENERATOR)
@@ -146,6 +185,20 @@ shared-abi-test: $(LIB_SHARED)
 $(LIB_STATIC): $(OBJS)
 	$(AR) rcs $@ $^
 
+$(LIB_STANDALONE_UIB): $(STANDALONE_OBJS)
+	$(AR) rcs $@ $^
+
+$(LIB_STANDALONE): $(LIB_STANDALONE_UIB) $(STANDALONE_BUILDER) Makefile FORCE
+	@$(PKG_CONFIG) --exists $(STATIC_PACKAGES) || { \
+		echo "static development packages required: $(STATIC_PACKAGES)" >&2; \
+		exit 1; \
+	}
+	$(STANDALONE_BUILDER) $@ $(LIB_STANDALONE_UIB) $(AR) $(CC) \
+		$(STATIC_LDLIBS)
+
+$(STATIC_LINK_TEST): tests/static_link_test.c $(LIB_STANDALONE) Makefile
+	$(CC) $(CFLAGS) -static -o $@ $< $(LIB_STANDALONE)
+
 $(LIB_SHARED): $(LIB_SHARED_SONAME)
 	ln -sfn $(LIB_SHARED_SONAME) $@
 
@@ -161,6 +214,12 @@ $(LIB_PROVIDER): $(PROV_OBJS) $(LIB_SHARED) $(PROV_MAP)
 
 src/%.o: src/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+src/%.standalone-0.o: src/%.c
+	$(CC) $(STANDALONE_CFLAGS_0) -c -o $@ $<
+
+src/%.standalone-1.o: src/%.c
+	$(CC) $(STANDALONE_CFLAGS_1) -c -o $@ $<
 
 TEST_BIN    := tests/loopback
 FRAME_TEST  := tests/afxdp_frame_test
@@ -575,10 +634,18 @@ endif
 	install -m 644 LICENSES/*.txt $(DESTDIR)$(DOCDIR)/LICENSES/
 	install -m 644 LICENSES/README.md $(DESTDIR)$(DOCDIR)/LICENSES/
 
+install-static: $(LIB_STANDALONE)
+	install -d $(DESTDIR)$(PREFIX)/lib
+	install -m 644 $(LIB_STANDALONE) $(DESTDIR)$(PREFIX)/lib/
+
 clean:
 	$(MAKE) -C examples clean
-	rm -f $(OBJS) $(PROV_OBJS) $(DEPS) $(LIB_STATIC) $(LIB_STATIC) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) \
-		$(LIB_PROVIDER) $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) \
+	rm -f $(OBJS) $(PROV_OBJS) $(STANDALONE_OBJS_0) \
+		$(STANDALONE_OBJS_1) $(DEPS) \
+		$(LIB_STATIC) $(LIB_STATIC) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) $(LIB_PROVIDER) \
+		.libuib-standalone-uib-0.a .libuib-standalone-uib-1.a \
+		$(LIB_STANDALONE) $(STATIC_LINK_TEST) \
+		$(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) \
 		$(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST) \
 		$(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
 		$(PROVIDER_DMABUF_TEST) $(PROVIDER_NCCL_ABI_TEST) \
@@ -591,7 +658,8 @@ clean:
 		$(PROVIDER_WR_BENCH) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
 		$(HOST_ZC_E2E_TEST) $(HOST_ZC_BENCH)
 
-.PHONY: shared-abi-test all license-check docs docs-check examples clean install test rxe-test-build \
+.PHONY: shared-abi-test all license-check static static-test FORCE docs docs-check examples clean install \
+	install-static test rxe-test-build \
 	rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \
 	uet-congestion-test uet-multipath-test examples-test \

@@ -22,6 +22,7 @@
 /tests/cq_event_test
 /tests/uring_async_test
 /tests/mr_lifetime_test
+/tests/static_link_test
 
 # example binaries
 /examples/direct_traffic

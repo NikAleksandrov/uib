@@ -95,6 +95,38 @@ congestion control and multipath. See the generated
 [environment-variable reference](docs/environment-variables.md) for every
 setting and example.
 
+Standalone static library
+-------------------------
+
+`libuib.a` is the conventional UIB-only archive and expects the application
+to link UIB's dependencies. For a deployable artifact with no dynamic library
+dependencies, build the combined archive and its static-link test:
+
+    make static-test
+
+This produces `libuib-standalone.a` by combining UIB with the static liburing,
+libmnl, userspace-RCU, and zlib dependency archives. An application can link
+it without additional libraries:
+
+    cc -I/path/to/uib/include -static -o app app.c \
+      /path/to/uib/libuib-standalone.a
+
+The build needs the static development form of every detected feature. Use
+the normal `--disable-FEATURE` configure options before building when a
+feature or its static library is not wanted. `make install-static` installs
+the standalone archive separately, so ordinary shared-library installations
+do not unexpectedly embed third-party code.
+
+AF_XDP is excluded from the portable standalone profile because some
+distributions do not provide a complete statically linkable
+libxdp/libbpf/libelf chain. Enable it with `STANDALONE_AFXDP=1` when that
+chain is available; `static-test` will reject an incomplete result. The
+ordinary libraries continue to use AF_XDP whenever configure detects it.
+
+The combined archive contains third-party code under its respective licenses.
+Distributors remain responsible for the corresponding license and relinking
+requirements; the regular `libuib.a` avoids embedding that code.
+
 Testing, examples and benchmarks
 --------------------------------
 
