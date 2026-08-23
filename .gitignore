@@ -4,6 +4,7 @@
 *.so
 *.so.*
 *.d
+__pycache__/
 
 # test binaries
 /tests/loopback
@@ -37,3 +38,4 @@
 
 # generated benchmark output
 /.benchmark-*/
+/simulation/.artifacts/

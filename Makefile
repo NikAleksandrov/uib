@@ -121,6 +121,8 @@ LIB_MAP      := src/libuib.map
 LIB_PROVIDER := libuibv.so
 STANDALONE_BUILDER := scripts/build-standalone-archive.sh
 STATIC_LINK_TEST := tests/static_link_test
+RUNTIME_BUNDLE_TEST := tests/run_runtime_bundle_test.sh
+RUNTIME_ARTIFACT_DIR ?= simulation/.artifacts
 
 STANDALONE_AFXDP ?= 0
 ifneq ($(filter $(STANDALONE_AFXDP),0 1),$(STANDALONE_AFXDP))
@@ -165,6 +167,14 @@ static-test: $(STATIC_LINK_TEST)
 		readelf -d $(STATIC_LINK_TEST) >&2; \
 		exit 1; \
 	fi
+
+runtime-bundle: all static
+	simulation/runtime/build-bundle.py --no-build --replace \
+		--output $(RUNTIME_ARTIFACT_DIR)/uib-runtime \
+		--archive $(RUNTIME_ARTIFACT_DIR)/uib-runtime.tar.gz
+
+runtime-bundle-test: all static
+	$(RUNTIME_BUNDLE_TEST)
 
 docs:
 	python3 $(DOC_GENERATOR)
@@ -658,8 +668,8 @@ clean:
 		$(PROVIDER_WR_BENCH) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
 		$(HOST_ZC_E2E_TEST) $(HOST_ZC_BENCH)
 
-.PHONY: shared-abi-test all license-check static static-test FORCE docs docs-check examples clean install \
-	install-static test rxe-test-build \
+.PHONY: shared-abi-test all license-check static static-test runtime-bundle runtime-bundle-test FORCE docs \
+	docs-check examples clean install install-static test rxe-test-build \
 	rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \
 	uet-congestion-test uet-multipath-test examples-test \

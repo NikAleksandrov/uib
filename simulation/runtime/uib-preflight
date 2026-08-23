@@ -1,0 +1,62 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+probe=1
+LD_LIBRARY_PATH=$root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export LD_LIBRARY_PATH
+
+if [ "${1:-}" = "--library-only" ]; then
+	probe=0
+	shift
+fi
+if [ "$#" -ne 0 ]; then
+	echo "usage: $0 [--library-only]" >&2
+	exit 2
+fi
+
+checksum_file=$root/share/uib/SHA256SUMS
+if [ ! -f "$checksum_file" ]; then
+	echo "runtime checksum file is missing" >&2
+	exit 1
+fi
+(cd "$root" && bin/sha256sum -c share/uib/SHA256SUMS)
+
+for library in libuib.so libuibv.so; do
+	if [ ! -f "$root/lib/$library" ]; then
+		echo "runtime library is missing: $library" >&2
+		exit 1
+	fi
+	if ldd "$root/lib/$library" | grep -q 'not found'; then
+		echo "runtime dependency is missing for $library" >&2
+		exit 1
+	fi
+done
+
+version_info=$("$root/bin/readelf" --version-info "$root/lib/libuibv.so")
+for version in IBVERBS_1.1 IBVERBS_1.8; do
+	if ! printf '%s\n' "$version_info" | grep -q "$version"; then
+		echo "provider symbol version is missing: $version" >&2
+		exit 1
+	fi
+done
+
+if [ "$probe" -eq 1 ]; then
+	devices=$(env LD_PRELOAD="$root/lib/libuibv.so" \
+		"$root/bin/ibv_devices")
+	printf '%s\n' "$devices"
+	if ! printf '%s\n' "$devices" | grep -q 'uib0'; then
+		echo "uib0 was not reported by ibv_devices" >&2
+		exit 1
+	fi
+	if ! device_info=$(env LD_PRELOAD="$root/lib/libuibv.so" \
+		"$root/bin/ibv_devinfo" -d uib0 2>&1); then
+		printf '%s\n' "$device_info" >&2
+		echo "uib0 could not be opened; check the bind address and" \
+			"allow io_uring syscalls in the container seccomp profile" >&2
+		exit 1
+	fi
+fi
+
+echo "UIB runtime preflight: PASS"

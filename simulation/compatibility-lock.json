@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "contracts": {
+    "ncclVerbsLoader": {
+      "mandatorySymbolVersions": [
+        "IBVERBS_1.1",
+        "IBVERBS_1.8"
+      ],
+      "minimumNccl": "2.30.0",
+      "providerDevice": "uib0"
+    },
+    "runtime": {
+      "platformLibraries": [
+        "libc",
+        "dynamic-loader"
+      ],
+      "requiresGlibcAtLeastBuildVersion": true
+    }
+  },
+  "validatedConfigurations": [
+    {
+      "id": "nccl-2.30.4-cuda-13.2-host-staged",
+      "date": "2026-08-23",
+      "uibCommit": "0b25bbffb0f67317d78de470196f4f8b1a74314a",
+      "nccl": "2.30.4-1+cuda13.2",
+      "cuda": "13.2",
+      "mpi": "Open MPI 5.0.7",
+      "ncclTests": {
+        "version": "2.17.9",
+        "commit": "2535da805b34e96d1dc08be66289be1a6d57f5ad"
+      },
+      "collective": "all-reduce",
+      "ranks": 2,
+      "messageBytes": {
+        "minimum": 8,
+        "maximum": 65536
+      },
+      "protocol": "rocev2",
+      "transport": "udp-sync",
+      "memoryMode": "host-staged",
+      "network": "IB/uib0",
+      "socketFallbackRejected": true,
+      "correctness": "passed",
+      "testTarget": "make nccl-test"
+    }
+  ],
+  "limitations": {
+    "gpuDirect": "not-validated",
+    "multiNodeNccl": "not-validated",
+    "collectives": {
+      "allReduce": "validated",
+      "allGather": "not-validated",
+      "reduceScatter": "not-validated",
+      "sendRecv": "not-validated",
+      "allToAll": "not-validated"
+    }
+  }
+}

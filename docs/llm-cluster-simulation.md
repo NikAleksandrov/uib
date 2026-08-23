@@ -25,6 +25,7 @@ configuration.
 - [Available deployment compositions](#available-deployment-compositions)
 - [NCCL compatibility comes first](#nccl-compatibility-comes-first)
 - [Transparent UIB injection](#transparent-uib-injection)
+- [Runtime artifact](#runtime-artifact)
 - [Kubernetes execution stack](#kubernetes-execution-stack)
 - [Slurm, Pyxis, and Enroot execution stack](#slurm-pyxis-and-enroot-execution-stack)
 - [Training workloads](#training-workloads)
@@ -432,8 +433,8 @@ and [NCCL environment documentation](https://docs.nvidia.com/deeplearning/nccl/u
 
 ## Transparent UIB injection
 
-The workload source remains unchanged. The adapter mounts a signed UIB runtime
-bundle at `/opt/uib` and sets the required environment:
+The workload source remains unchanged. The adapter mounts a checksummed UIB
+runtime bundle at `/opt/uib` and sets the required environment:
 
 ```text
 NCCL_IBVERBS_LIB=/opt/uib/libuibv.so
@@ -442,6 +443,7 @@ NCCL_IB_DISABLE=0
 NCCL_IB_HCA==uib0
 NCCL_DEBUG=INFO
 LD_PRELOAD=/opt/uib/libuibv.so
+LD_LIBRARY_PATH=/opt/uib/lib
 UIB_BIND_IP=<rank data-plane address>
 UIB_PROTOCOL=rocev2
 UIB_TRANSPORT_MODE=udp-io-uring
@@ -482,6 +484,138 @@ nccl:
 
 GPU-direct mode is accepted only after the requested UIB transport passes the
 GPU DMA-BUF capability gate.
+
+## Runtime artifact
+
+Every backend consumes one generated filesystem tree. It contains
+`libuibv.so`, `libuib.so`, the standalone static archive, rdma-core discovery
+tools, non-glibc dynamic dependencies, a compatibility lock, a build manifest,
+checksums, and `uib-preflight`. Build and validate it with:
+
+```text
+make runtime-bundle-test
+make runtime-bundle
+```
+
+The second command creates these ignored local artifacts:
+
+```text
+simulation/.artifacts/
+|-- uib-runtime/
+|   |-- bin/
+|   |   |-- ibv_devices
+|   |   |-- ibv_devinfo
+|   |   `-- uib-preflight
+|   |-- lib/
+|   |   |-- libuib.so
+|   |   |-- libuibv.so
+|   |   `-- libuib-standalone.a
+|   `-- share/uib/
+|       |-- compatibility-lock.json
+|       |-- runtime-manifest.json
+|       `-- SHA256SUMS
+`-- uib-runtime.tar.gz
+```
+
+The abbreviated tree omits bundled diagnostic tools, dependency libraries,
+and their versioned symlinks. `runtime-manifest.json` records the UIB commit,
+tracked-source state, compiler, libc, minimum required glibc symbol version,
+detected build capabilities, dependency source paths, sizes, and hashes. The
+compatibility lock records validated NCCL/CUDA combinations and explicitly
+labels unvalidated collectives and GPU-direct operation. On Debian-family
+builders, the artifact also records package versions and includes available
+copyright files for bundled runtime and static-library dependencies.
+
+The bundle intentionally does not carry glibc or the dynamic loader. Injecting
+a private glibc into an arbitrary application process is unsafe. Build on the
+oldest supported userspace, and run preflight in the target image or node;
+`ldd` rejects a target whose libc cannot satisfy the recorded libraries.
+
+### OCI and Kubernetes init container
+
+Build the init image from the exact generated tree. The Containerfile defaults
+to the tested Debian 13 slim digest. Override it only with another digest whose
+glibc satisfies the manifest:
+
+```text
+docker build -f simulation/runtime/Containerfile \
+  --build-arg BASE_IMAGE='registry.example/base@sha256:<digest>' \
+  -t registry.example/uib-runtime:<uib-commit> \
+  simulation/.artifacts
+```
+
+The base also needs a POSIX shell, glibc's `ldd`, `grep`, and `env`. Artifact
+signing belongs to the later publishing pipeline; local bundles are protected
+by `SHA256SUMS` but are not presented as signed releases.
+
+The init container can use the scheduler's default seccomp profile because it
+runs `uib-preflight --library-only`. A workload opening `uib0` must allow
+`io_uring_setup`, `io_uring_enter`, and `io_uring_register`; UIB's UDP worker
+uses io_uring even when synchronous transmit is selected. Use a site-managed
+`Localhost` seccomp profile containing those calls. `Unconfined` is acceptable
+for a disposable local simulation but should not be the production default.
+The full preflight was tested in the pinned image with Docker's seccomp filter
+disabled; Docker's default filter rejected `io_uring_setup` on the test host.
+
+The image stores the tree at `/uib-runtime`. A Kubernetes adapter copies it to
+an `emptyDir`; the application container only mounts the result:
+
+```yaml
+volumes:
+  - name: uib-runtime
+    emptyDir: {}
+initContainers:
+  - name: install-uib
+    image: registry.example/uib-runtime@sha256:<digest>
+    command: ["/bin/sh", "-ec"]
+    args:
+      - cp -a /uib-runtime/. /opt/uib/ &&
+        /opt/uib/bin/uib-preflight --library-only
+    volumeMounts:
+      - name: uib-runtime
+        mountPath: /opt/uib
+containers:
+  - name: workload
+    volumeMounts:
+      - name: uib-runtime
+        mountPath: /opt/uib
+        readOnly: true
+```
+
+The workload image, command, model, and framework remain identical for native
+verbs and UIB. Only this mount and the environment in
+[Transparent UIB injection](#transparent-uib-injection) change.
+
+### Slurm, Pyxis, and Enroot bundle
+
+Publish `uib-runtime.tar.gz` alongside its SHA-256 digest. Extract it once to a
+run-owned or administrator-managed path, verify it, and bind-mount it without
+altering the host libibverbs installation:
+
+```text
+tar -xzf uib-runtime.tar.gz -C /shared/uib/<uib-commit>
+/shared/uib/<uib-commit>/uib-runtime/bin/uib-preflight
+
+srun \
+  --container-image=registry.example/uib-llm@sha256:<digest> \
+  --container-mounts=/shared/uib/<uib-commit>/uib-runtime:/opt/uib:ro \
+  env NCCL_IBVERBS_LIB=/opt/uib/libuibv.so \
+      LD_PRELOAD=/opt/uib/libuibv.so \
+      LD_LIBRARY_PATH=/opt/uib/lib \
+      /opt/workload/bin/train
+```
+
+The scheduler adapter records the bundle checksum and manifest with the job.
+Kubernetes and Slurm runs are comparable only when those values match. The
+same tree may also be copied into a derived workload image when an init
+container or shared path is undesirable.
+
+### Static native consumers
+
+Applications using UIB's native API can avoid runtime libraries entirely with
+`libuib-standalone.a`. `make static-test` creates a fully static executable and
+rejects any ELF dynamic dependency. See the
+[standalone build instructions](../README.md#standalone-static-library).
 
 ## Kubernetes execution stack
 
@@ -608,6 +742,7 @@ export NCCL_NET=IB
 export NCCL_IB_DISABLE=0
 export NCCL_IB_HCA='=uib0'
 export LD_PRELOAD=/opt/uib/libuibv.so
+export LD_LIBRARY_PATH=/opt/uib/lib
 export UIB_PROTOCOL=rocev2
 export UIB_TRANSPORT_MODE=udp-io-uring
 
