@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "runId": "local-ddp-smoke",
+  "model": {
+    "source": "generated",
+    "vocabSize": 128,
+    "hiddenSize": 32,
+    "layers": 1,
+    "heads": 2
+  },
+  "dataset": {
+    "source": "generated"
+  },
+  "parallelism": {
+    "strategy": "ddp",
+    "tensor": 1,
+    "pipeline": 1
+  },
+  "training": {
+    "steps": 4,
+    "sequenceLength": 16,
+    "microBatchSize": 2,
+    "globalBatchSize": 4,
+    "learningRate": 0.001,
+    "weightDecay": 0.01,
+    "adamBeta1": 0.9,
+    "adamBeta2": 0.999,
+    "adamEpsilon": 1e-08,
+    "warmupSteps": 1,
+    "gradientClipNorm": 1.0,
+    "gradientCheckpointing": false,
+    "device": "cpu",
+    "precision": "fp32",
+    "seed": 20260823
+  },
+  "checkpoint": {
+    "directory": "/results/checkpoints",
+    "interval": 2,
+    "resume": null
+  },
+  "result": {
+    "directory": "/results"
+  }
+}

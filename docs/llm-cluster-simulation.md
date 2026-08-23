@@ -818,7 +818,227 @@ jobs.
 
 ## Training workloads
 
-Training adapters support the same workload shapes on both schedulers:
+The implemented training image deliberately has no scheduler API. Kubernetes,
+Slurm, a shell, and a future `uib-sim` adapter all launch the same executable:
+
+```text
+/opt/uib-training/bin/train --config /run/workload.json
+```
+
+The image is pinned by `simulation/training/stack.lock.json`. It uses Python
+3.12, CUDA 13.2.1, PyTorch 2.12.1, NCCL 2.30.4, Transformers 5.15.0, and
+Datasets 5.0.1. PyTorch's CUDA 13.2 wheel normally requests NCCL 2.29.7; the
+image deliberately replaces it with the UIB-validated 2.30.4 ABI so
+`NCCL_IBVERBS_LIB` is available. The build records every resolved Python
+package in `/opt/uib-training/resolved-packages.txt`, and the runtime result
+records the versions it actually loaded.
+
+Build it and run the mandatory offline CPU checks with:
+
+```text
+make training-image
+make training-smoke-test
+make training-gpu-test       # opt-in; needs NVIDIA CDI and a GPU
+make training-uib-preflight-test
+make training-uib-test       # opt-in; actual two-rank traffic through UIB
+```
+
+The smoke target runs an unmodified two-rank `torchrun` DDP job over Gloo,
+runs an uninterrupted single-rank job, stops another job at step two, resumes
+it through step four, and requires the resumed and uninterrupted model
+checksums to match. It also loads `libnccl.so.2` and requires
+`ncclGetVersion()` to report 2.30.4. Set `TRAINING_SKIP_BUILD=1` to reuse an
+existing image or `TRAINING_IMAGE=registry/image@sha256:<digest>` to test a
+published image.
+
+The opt-in GPU target selects `nvidia.com/gpu=all` through the standard CDI
+interface, initializes a real NCCL process, runs the FSDP code path, writes a
+full model/optimizer checkpoint at step two, and resumes through step four.
+Set `TRAINING_GPU_DEVICE` to another CDI device name when necessary. A
+single-GPU FSDP run uses PyTorch's `NO_SHARD` mode, so it validates CUDA, NCCL,
+FSDP wrapping, and FSDP checkpoint conversion but not multi-GPU sharding or
+network traffic.
+
+On a multi-GPU node, select the local process count explicitly. The default
+strategy is FSDP; DDP uses the same gate and checkpoint comparison:
+
+```text
+make TRAINING_GPU_PROCESSES=8 training-gpu-test
+make TRAINING_GPU_PROCESSES=8 TRAINING_GPU_STRATEGY=ddp training-gpu-test
+```
+
+The test exposes the CDI device set, maps each `LOCAL_RANK` to one CUDA device,
+sets its generated global batch to two samples per rank, and requires the
+restarted model checksum to equal the uninterrupted run. The result records
+the actual world size. This machine has one GPU, so the checked-in result class
+records single-GPU validation; multi-GPU execution must pass on a suitable
+host before that limitation is removed.
+
+The UIB preflight target rebuilds the common runtime artifact, mounts that
+exact tree read-only at `/opt/uib` in the training image, validates checksums,
+ELF dependencies, symbol versions, and the synthetic verbs library, and then
+runs the CPU workload gates. It proves that the two independently built image
+layers compose, but it does not send UIB traffic.
+
+The opt-in `training-uib-test` is the data-plane gate. It starts two instances
+of the unchanged training entry point with distinct ranks and hostnames, uses
+an isolated NVIDIA MPS daemon so the local test can share one physical GPU,
+disables NCCL P2P and shared-memory paths, mounts the runtime artifact at
+`/opt/uib`, and selects `NCCL_NET=IB`, `uib0`, and
+`NCCL_IBVERBS_LIB=/opt/uib/libuibv.so`. It requires NCCL's log to contain the
+IB plugin, `Using network IB`, and `via NET/IB/<device>`; any Socket network
+selection fails the test. It also requires the training evidence to report a
+two-rank CUDA DDP run through NCCL with UIB enabled.
+
+The local container gate uses host networking, the host PID and IPC
+namespaces, and an unconfined container seccomp profile for UIB's io_uring
+operations. These settings are confined to disposable test containers and
+are not a production deployment recommendation. Configure the executable and
+ports with `TRAINING_CONTAINER_ENGINE`, `MPIEXEC`, `TRAINING_UIB_BIND_PORT`,
+`TRAINING_MASTER_PORT`, and `TRAINING_UIB_TIMEOUT`; select the exposed CDI
+device with `TRAINING_GPU_DEVICE`. For example:
+
+```text
+make TRAINING_CONTAINER_ENGINE='sudo docker' \
+  TRAINING_GPU_DEVICE=nvidia.com/gpu=all training-uib-test
+```
+
+This is genuine two-rank UIB traffic and a useful local compatibility gate,
+but two container hostnames on one machine are not two physical nodes and do
+not qualify as L1. Promotion still requires the identical image, command, and
+environment on at least two GPU-equipped nodes.
+
+### CPU-sized data and production-sized data
+
+The default container command uses `configs/tiny-public.json`: the roughly
+5 MB `sshleifer/tiny-gpt2` model and the TinyStories validation split. Both
+are public and pinned to full repository commits. Neither weights nor dataset
+rows are in this repository or image. They are fetched when that profile is
+first run and reused from the mounted Hugging Face cache:
+
+```text
+make training-public-test
+
+# Equivalent direct run; later runs reuse this ignored host cache.
+docker run --rm \
+  -e HF_HOME=/cache/huggingface \
+  -v "$PWD/simulation/.artifacts/huggingface:/cache/huggingface" \
+  -v "$PWD/simulation/.artifacts/training-results:/results" \
+  uib-training:test
+```
+
+`configs/smoke.json` constructs a tiny GPT-2 architecture and deterministic
+token stream in memory. It is the network-independent CI profile; it does not
+pretend to validate model or dataset distribution. The public profile is the
+CPU end-to-end loading check.
+
+Large GPU tests change only `model.id`, `model.revision`, `dataset.id`,
+`dataset.revision`, and sizing fields in an external JSON file. Always use a
+full immutable revision, mount the site model cache, and keep the configuration
+with the result. For example:
+
+```json
+{
+  "model": {
+    "source": "huggingface",
+    "id": "organization/production-causal-lm",
+    "revision": "<full-model-commit>"
+  },
+  "dataset": {
+    "source": "huggingface",
+    "id": "organization/production-corpus",
+    "name": "sample-10BT",
+    "revision": "<full-dataset-commit>",
+    "split": "train",
+    "textField": "text"
+  }
+}
+```
+
+Copy the complete tiny-public configuration before replacing these objects;
+the fragment above is intentionally not a complete workload. Private or gated
+repositories use the standard `HF_TOKEN` environment without putting a token
+in configuration or results.
+
+### Configuration contract
+
+`workload.schema.json` rejects unknown fields and invalid combinations before
+opening a model. The important fields are:
+
+| Field | Meaning |
+|---|---|
+| `runId` | Safe result-directory identifier |
+| `model.source` | `generated` for offline CI or `huggingface` for a real repository |
+| `model.id`, `model.revision` | Repository and immutable commit; required together |
+| `model.vocabSize`, `hiddenSize`, `layers`, `heads` | Generated smoke-model shape |
+| `dataset.source` | `generated` or streaming `huggingface` |
+| `dataset.id`, `name`, `revision`, `split`, `textField` | External dataset selection |
+| `parallelism.strategy` | Validated `ddp`, or CUDA-gated `fsdp` |
+| `parallelism.tensor`, `pipeline` | Must remain 1 until their standard adapter passes |
+| `training.steps`, `sequenceLength` | Run length and tokens per sample |
+| `training.microBatchSize`, `globalBatchSize` | Per-rank microbatch and global batch; their ratio determines accumulation |
+| `training.learningRate`, `weightDecay` | AdamW rate and decay |
+| `training.adamBeta1`, `adamBeta2`, `adamEpsilon` | AdamW numerical parameters |
+| `training.warmupSteps`, `gradientClipNorm` | Linear warmup and optional global gradient clipping |
+| `training.gradientCheckpointing` | Trade compute for activation memory through the model's standard support |
+| `training.device`, `precision`, `seed` | Explicit `cpu`/`cuda`/`auto`, `fp32`/`bf16`, and deterministic seed |
+| `checkpoint.directory`, `interval`, `resume` | Shared output, cadence, and optional restart file |
+| `result.directory` | Shared evidence root |
+
+`globalBatchSize` must be divisible by `microBatchSize * WORLD_SIZE`. Changing
+the requested total step count is allowed when resuming; changing the model,
+data, parallelism, batch semantics, precision, learning rate, or seed changes
+the workload identity and the checkpoint is rejected. Restarts currently
+require the same `WORLD_SIZE`; each rank's Python, CPU Torch, and CUDA random
+state is recorded so an interrupted run matches an uninterrupted run.
+Both checked-in profiles select `device=cpu`; GPU profiles explicitly replace
+it with `cuda`, so merely exposing a GPU does not change the default test.
+
+### Launching the same workload
+
+Local two-rank CPU launch:
+
+```text
+docker run --rm -v "$PWD/results:/results" \
+  --entrypoint torchrun uib-training:test \
+  --standalone --nproc-per-node=2 --no-python \
+  /opt/uib-training/bin/train \
+  --config /opt/uib-training/configs/smoke.json
+```
+
+Slurm/Pyxis launches one process per allocated GPU. Its adapter supplies
+`MASTER_ADDR`, `MASTER_PORT`, `RANK`, `LOCAL_RANK`, and `WORLD_SIZE`; it does
+not rewrite the workload:
+
+```text
+srun --ntasks-per-node=8 --gpus-per-task=1 \
+  --container-image=registry/uib-training@sha256:<digest> \
+  --container-mounts=/shared/run:/run,/shared/results:/results \
+  /opt/uib-training/bin/train --config /run/workload.json
+```
+
+Kubeflow Trainer uses the same image, executable, JSON ConfigMap, cache PVC,
+checkpoint PVC, and result PVC. Its launcher supplies the equivalent rank
+environment. This makes changing Kubernetes to Slurm a launcher change rather
+than a training-code change.
+
+Native verbs and UIB also use the same image digest and command. The native
+baseline has no UIB variables. The UIB variant adds only the `/opt/uib` mount
+and the environment documented in
+[Transparent UIB injection](#transparent-uib-injection), including
+`NCCL_IBVERBS_LIB=/opt/uib/libuibv.so`. The result records whether those
+variables selected UIB; the later cluster evidence gate must additionally
+prove NCCL chose `NET/IB` and `uib0` rather than sockets.
+
+Each successful run writes `<result.directory>/<runId>/result.json` with the
+workload identity, world size, device, strategy, starting and completed steps,
+loss, model checksum, throughput, checkpoint path, resolved framework/CUDA/NCCL
+versions, and transport-selection environment. Checkpoints are written through
+a temporary file and atomically renamed.
+
+### Training adapter status
+
+The intended common workload shapes remain:
 
 - PyTorch DDP;
 - FSDP;
@@ -829,9 +1049,14 @@ Training adapters support the same workload shapes on both schedulers:
 Communication gates cover all-reduce, reduce-scatter, all-gather, send/receive,
 and all-to-all before the equivalent LLM profile is enabled.
 
-A small smoke model may reduce runtime, but it must use the same framework,
-launcher, image, checkpoint logic, and communication path as the production
-profile.
+DDP, checkpoint/restart, the generated CPU workload, the public tiny CPU
+workload, single-GPU FSDP checkpoint/restart, and two-rank CUDA DDP traffic
+through UIB are executable today. The local UIB gate shares one GPU with MPS;
+FSDP is gated to CUDA, and multi-GPU sharding remains unvalidated. DeepSpeed
+0.19.5 and Megatron-Core 0.19.0 are pinned as replaceable adapters but are not
+installed or reported as supported yet. Tensor and pipeline degrees therefore
+remain 1. This explicit gate avoids turning a package import into an invalid
+compatibility claim.
 
 Important training parameters include model and dataset revisions, sequence
 length, token budget, global and microbatch sizes, gradient accumulation,
@@ -1191,12 +1416,18 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 
 ## Limitations
 
-- The described cluster harness is planned and not yet implemented.
+- The cluster lifecycle harness, scheduler adapters, inference image,
+  DeepSpeed adapter, and Megatron-Core adapter are planned and not yet
+  implemented.
 - UIB's versioned NCCL loader ABI and a two-rank, host-staged NCCL all-reduce
   are covered by repository tests. The actual collective test is opt-in
   because it requires CUDA, NCCL, MPI, MPS, a GPU, and UTS namespace access.
 - Kind and CPU-only virtme/libvirt profiles do not validate real GPU
   collectives or performance.
+- The training image passed CPU DDP, checkpoint/restart, public tiny-model,
+  actual single-GPU NCCL initialization, single-GPU FSDP restart, and local
+  two-rank NCCL DDP through UIB. The two ranks share one GPU through MPS;
+  multi-GPU and physical multi-node training remain unvalidated.
 - Host-staged NCCL and GPU-direct NCCL are materially different and are never
   combined in one result class.
 - virtme is intended for kernel and functional validation, not accurate L2

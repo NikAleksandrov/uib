@@ -123,6 +123,13 @@ STANDALONE_BUILDER := scripts/build-standalone-archive.sh
 STATIC_LINK_TEST := tests/static_link_test
 RUNTIME_BUNDLE_TEST := tests/run_runtime_bundle_test.sh
 RUNTIME_ARTIFACT_DIR ?= simulation/.artifacts
+TRAINING_IMAGE ?= uib-training:test
+TRAINING_CONTAINER_ENGINE ?= docker
+TRAINING_GPU_DEVICE ?= nvidia.com/gpu=all
+TRAINING_GPU_PROCESSES ?= 1
+TRAINING_GPU_STRATEGY ?= fsdp
+TRAINING_IMAGE_TEST := tests/run_training_smoke_test.sh
+TRAINING_UIB_TEST := tests/run_training_uib_test.sh
 
 STANDALONE_AFXDP ?= 0
 ifneq ($(filter $(STANDALONE_AFXDP),0 1),$(STANDALONE_AFXDP))
@@ -175,6 +182,44 @@ runtime-bundle: all static
 
 runtime-bundle-test: all static
 	$(RUNTIME_BUNDLE_TEST)
+
+training-image:
+	$(TRAINING_CONTAINER_ENGINE) build --progress=plain \
+		-f simulation/training/Containerfile -t $(TRAINING_IMAGE) \
+		simulation/training
+
+training-smoke-test:
+	TRAINING_IMAGE=$(TRAINING_IMAGE) \
+	TRAINING_CONTAINER_ENGINE='$(TRAINING_CONTAINER_ENGINE)' \
+		$(TRAINING_IMAGE_TEST)
+
+training-public-test:
+	TRAINING_PUBLIC_TEST=1 TRAINING_IMAGE=$(TRAINING_IMAGE) \
+	TRAINING_CONTAINER_ENGINE='$(TRAINING_CONTAINER_ENGINE)' \
+		$(TRAINING_IMAGE_TEST)
+
+training-gpu-test:
+	TRAINING_GPU_TEST=1 \
+	TRAINING_GPU_DEVICE='$(TRAINING_GPU_DEVICE)' \
+	TRAINING_GPU_PROCESSES='$(TRAINING_GPU_PROCESSES)' \
+	TRAINING_GPU_STRATEGY='$(TRAINING_GPU_STRATEGY)' \
+	TRAINING_IMAGE=$(TRAINING_IMAGE) \
+	TRAINING_CONTAINER_ENGINE='$(TRAINING_CONTAINER_ENGINE)' \
+		$(TRAINING_IMAGE_TEST)
+
+training-uib-preflight-test: runtime-bundle
+	TRAINING_SKIP_BUILD=1 \
+	TRAINING_UIB_RUNTIME='$(CURDIR)/$(RUNTIME_ARTIFACT_DIR)/uib-runtime' \
+	TRAINING_IMAGE=$(TRAINING_IMAGE) \
+	TRAINING_CONTAINER_ENGINE='$(TRAINING_CONTAINER_ENGINE)' \
+		$(TRAINING_IMAGE_TEST)
+
+training-uib-test: runtime-bundle training-image
+	TRAINING_UIB_RUNTIME='$(CURDIR)/$(RUNTIME_ARTIFACT_DIR)/uib-runtime' \
+	TRAINING_GPU_DEVICE='$(TRAINING_GPU_DEVICE)' \
+	TRAINING_IMAGE=$(TRAINING_IMAGE) \
+	TRAINING_CONTAINER_ENGINE='$(TRAINING_CONTAINER_ENGINE)' \
+		$(TRAINING_UIB_TEST)
 
 docs:
 	python3 $(DOC_GENERATOR)
@@ -668,7 +713,10 @@ clean:
 		$(PROVIDER_WR_BENCH) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
 		$(HOST_ZC_E2E_TEST) $(HOST_ZC_BENCH)
 
-.PHONY: shared-abi-test all license-check static static-test runtime-bundle runtime-bundle-test FORCE docs \
+.PHONY: shared-abi-test all license-check static static-test runtime-bundle runtime-bundle-test \
+	training-image training-smoke-test FORCE docs \
+	training-public-test training-gpu-test training-uib-preflight-test \
+	training-uib-test \
 	docs-check examples clean install install-static test rxe-test-build \
 	rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \

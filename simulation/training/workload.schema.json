@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uib.example/schemas/training-workload-v1.json",
+  "title": "UIB scheduler-neutral training workload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "model",
+    "dataset",
+    "parallelism",
+    "training",
+    "checkpoint",
+    "result"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": { "enum": ["generated", "huggingface"] },
+        "id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 },
+        "vocabSize": { "type": "integer", "minimum": 32 },
+        "hiddenSize": { "type": "integer", "minimum": 16 },
+        "layers": { "type": "integer", "minimum": 1 },
+        "heads": { "type": "integer", "minimum": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "source": { "const": "huggingface" } } },
+          "then": { "required": ["id", "revision"] }
+        }
+      ]
+    },
+    "dataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": { "enum": ["generated", "huggingface"] },
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "revision": { "type": "string", "minLength": 1 },
+        "split": { "type": "string", "minLength": 1 },
+        "textField": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "source": { "const": "huggingface" } } },
+          "then": { "required": ["id", "revision", "split", "textField"] }
+        }
+      ]
+    },
+    "parallelism": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "tensor", "pipeline"],
+      "properties": {
+        "strategy": { "enum": ["ddp", "fsdp"] },
+        "tensor": { "const": 1 },
+        "pipeline": { "const": 1 }
+      }
+    },
+    "training": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "steps",
+        "sequenceLength",
+        "microBatchSize",
+        "globalBatchSize",
+        "learningRate",
+        "weightDecay",
+        "adamBeta1",
+        "adamBeta2",
+        "adamEpsilon",
+        "warmupSteps",
+        "gradientClipNorm",
+        "gradientCheckpointing",
+        "device",
+        "precision",
+        "seed"
+      ],
+      "properties": {
+        "steps": { "type": "integer", "minimum": 1 },
+        "sequenceLength": { "type": "integer", "minimum": 8 },
+        "microBatchSize": { "type": "integer", "minimum": 1 },
+        "globalBatchSize": { "type": "integer", "minimum": 1 },
+        "learningRate": { "type": "number", "exclusiveMinimum": 0 },
+        "weightDecay": { "type": "number", "minimum": 0 },
+        "adamBeta1": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+        "adamBeta2": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+        "adamEpsilon": { "type": "number", "exclusiveMinimum": 0 },
+        "warmupSteps": { "type": "integer", "minimum": 0 },
+        "gradientClipNorm": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "gradientCheckpointing": { "type": "boolean" },
+        "device": { "enum": ["cpu", "cuda", "auto"] },
+        "precision": { "enum": ["fp32", "bf16"] },
+        "seed": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directory", "interval"],
+      "properties": {
+        "directory": { "type": "string", "minLength": 1 },
+        "interval": { "type": "integer", "minimum": 1 },
+        "resume": { "type": ["string", "null"] }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directory"],
+      "properties": {
+        "directory": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "runId": "tiny-public-cpu",
+  "model": {
+    "source": "huggingface",
+    "id": "sshleifer/tiny-gpt2",
+    "revision": "5f91d94bd9cd7190a9f3216ff93cd1dd95f2c7be"
+  },
+  "dataset": {
+    "source": "huggingface",
+    "id": "roneneldan/TinyStories",
+    "revision": "f54c09fd23315a6f9c86f9dc80f725de7d8f9c64",
+    "split": "validation",
+    "textField": "text"
+  },
+  "parallelism": {
+    "strategy": "ddp",
+    "tensor": 1,
+    "pipeline": 1
+  },
+  "training": {
+    "steps": 4,
+    "sequenceLength": 64,
+    "microBatchSize": 2,
+    "globalBatchSize": 4,
+    "learningRate": 0.00005,
+    "weightDecay": 0.01,
+    "adamBeta1": 0.9,
+    "adamBeta2": 0.999,
+    "adamEpsilon": 1e-08,
+    "warmupSteps": 1,
+    "gradientClipNorm": 1.0,
+    "gradientCheckpointing": false,
+    "device": "cpu",
+    "precision": "fp32",
+    "seed": 20260823
+  },
+  "checkpoint": {
+    "directory": "/results/checkpoints",
+    "interval": 2,
+    "resume": null
+  },
+  "result": {
+    "directory": "/results"
+  }
+}

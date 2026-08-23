@@ -17,6 +17,28 @@
       "requiresGlibcAtLeastBuildVersion": true
     }
   },
+  "workloadStacks": {
+    "training": {
+      "lock": "simulation/training/stack.lock.json",
+      "baseImage": "docker.io/library/python@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a",
+      "python": "3.12",
+      "cuda": "13.2.1",
+      "torch": "2.12.1+cu132",
+      "nccl": "2.30.4",
+      "transformers": "5.15.0",
+      "datasets": "5.0.1",
+      "defaultProfile": "tiny-public-cpu",
+      "validatedProfiles": [
+        "generated-single-cpu",
+        "generated-two-rank-ddp-cpu",
+        "generated-checkpoint-restart-cpu",
+        "tiny-public-cpu",
+        "generated-single-gpu-nccl",
+        "generated-single-gpu-fsdp-checkpoint-restart",
+        "generated-two-rank-single-gpu-mps-uib-ddp"
+      ]
+    }
+  },
   "validatedConfigurations": [
     {
       "id": "nccl-2.30.4-cuda-13.2-host-staged",
@@ -42,11 +64,34 @@
       "socketFallbackRejected": true,
       "correctness": "passed",
       "testTarget": "make nccl-test"
+    },
+    {
+      "id": "pytorch-2.12.1-nccl-2.30.4-local-uib-training",
+      "date": "2026-08-23",
+      "uibCommit": "42ea472d63758c4d592737d994149fe426f74cc2",
+      "image": "uib-training:test",
+      "torch": "2.12.1+cu132",
+      "nccl": "2.30.4",
+      "cuda": "13.2",
+      "collective": "DDP gradient all-reduce",
+      "ranks": 2,
+      "physicalGpus": 1,
+      "gpuSharing": "NVIDIA MPS",
+      "topology": "two containers with distinct hostnames on one host",
+      "protocol": "rocev2",
+      "transport": "udp-sync",
+      "memoryMode": "host-staged",
+      "network": "IB/uib0",
+      "socketFallbackRejected": true,
+      "correctness": "four training steps and checkpoint passed",
+      "validationLevel": "local-compatibility-only",
+      "testTarget": "make training-uib-test"
     }
   ],
   "limitations": {
     "gpuDirect": "not-validated",
     "multiNodeNccl": "not-validated",
+    "multiGpuTraining": "not-validated",
     "collectives": {
       "allReduce": "validated",
       "allGather": "not-validated",

@@ -56,7 +56,9 @@ Optional features use:
   * virtme-ng, iproute2 and rdma-core tools for VM/RXE integration; and
   * perftest for `ib_write_bw` benchmarks; and
   * CUDA, NCCL 2.30 or newer, Open MPI, NVIDIA MPS and `nccl-tests` for the
-    opt-in actual NCCL collective test.
+    opt-in actual NCCL collective test; and
+  * Docker or another compatible OCI engine plus NVIDIA CDI for the opt-in
+    GPU training and two-rank UIB training tests.
 
 Configure detects optional dependencies automatically:
 
@@ -134,6 +136,11 @@ Common targets are:
 
     make test                 # native unit and traffic tests
     make nccl-test            # actual two-rank NCCL collective through UIB
+    make training-smoke-test  # pinned two-rank CPU DDP and restart workload
+    make training-public-test # dynamically cached tiny public model and data
+    make training-gpu-test    # opt-in NCCL and FSDP restart on NVIDIA CDI
+    make training-uib-preflight-test # compose training image and UIB runtime
+    make training-uib-test    # actual two-rank NCCL training traffic via UIB
     make virtme-test          # complete virtme-ng/RXE integration suite
     make test-all             # alias for the complete guest suite
     make examples-test        # native and verbs examples
@@ -150,6 +157,12 @@ in the [benchmark report](docs/benchmark-results.md); the focused mode
 comparison is in the [sync/async report](docs/sync-async-benchmark.md).
 
 See the [examples guide](examples/) for local and remote traffic commands.
+The [LLM cluster simulation guide](docs/llm-cluster-simulation.md) documents
+the pinned training image, its CPU-sized default model and dataset, external
+large-model configuration, checkpoint contract, and identical local,
+Kubernetes, and Slurm launch shapes. Model weights and datasets are downloaded
+only when a public workload is run and remain in an ignored, reusable cache;
+they are never committed or built into the image.
 `make docs` regenerates the [public API](docs/public-api.md), environment and
 `uib(7)` references from comments beside their definitions; `make docs-check`
 verifies them.
@@ -161,8 +174,16 @@ checks the collective result. See the
 [transparent verbs guide](docs/transparent-verbs.md) for prerequisites,
 configurable parameters, and real-cluster use.
 
+`make training-uib-test` applies the same proof to the unchanged PyTorch
+training entry point in the pinned OCI image. It starts two containerized NCCL
+ranks, forces gradient collectives through `uib0`, checks the workload result,
+and rejects Socket fallback. The local gate can share one physical GPU through
+NVIDIA MPS, but it still needs two communicating ranks: a one-process GPU run
+cannot validate UIB traffic. Set `TRAINING_CONTAINER_ENGINE`, for example to
+`sudo docker`, when the OCI engine requires a privilege helper.
+
 The [LLM cluster simulation guide](docs/llm-cluster-simulation.md) describes a
-planned, layered validation environment for unchanged NCCL workloads. It covers
+layered validation environment for unchanged NCCL workloads. It covers
 Kind, virtme, libvirt/OpenTofu, Kubernetes, Kubeflow, KubeRay and
 Slurm/Pyxis/Enroot, including how to exchange individual layers and promote the
 same workloads to physical GPU and RDMA clusters.
