@@ -337,9 +337,14 @@ provider-cq-event-test: all $(PROVIDER_CQ_EVENT_TEST)
 provider-nccl-abi-test: all $(PROVIDER_NCCL_ABI_TEST)
 	UIB_BIND_PORT=19620 UIB_TRANSPORT_MODE=udp-sync UIB_ZEROCOPY=off \
 		./$(PROVIDER_NCCL_ABI_TEST)
+
+nccl-test: all $(PROVIDER_CQ_EVENT_TEST) $(PROVIDER_NCCL_ABI_TEST)
+	$(MAKE) provider-cq-event-test
+	$(MAKE) provider-nccl-abi-test
+	./tests/run_nccl_test.sh
 else
 rxe-test-build rxe-test rxe-tools-test uib-tools-test uet-tools-test \
-provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test:
+provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test nccl-test:
 	@echo "SKIP $@: libibverbs development files are unavailable"
 endif
 
@@ -596,6 +601,7 @@ clean:
 	benchmark-smoke ib-write-bw-test dummy-reorder-test \
 	scaling-benchmark scaling-test \
 	provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test \
+	nccl-test \
 	gpu-dmabuf-test external-dmabuf-test remote-benchmark-test \
 	namespace-benchmark-test guest-test \
 	optional-features-test virtme-test configure-test test-all \

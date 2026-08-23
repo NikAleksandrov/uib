@@ -400,8 +400,9 @@ faults:
 Current NCCL can open a verbs library explicitly and resolve versioned symbols
 with `dlvsym()`. UIB therefore needs more than an ordinary unversioned
 `LD_PRELOAD` library. UIB now provides the versioned loader ABI and its
-automated `provider-nccl-abi-test`; unchanged collective validation remains a
-separate gate.
+automated `provider-nccl-abi-test`. The opt-in `nccl-test` additionally runs
+an unchanged, two-rank `nccl-tests` all-reduce through UIB and rejects Socket
+fallback.
 
 The compatibility sequence is:
 
@@ -411,10 +412,13 @@ The compatibility sequence is:
 3. implement the mandatory calls
    `ibv_get_async_event()`, `ibv_ack_async_event()`, `ibv_fork_init()`, and
    `ibv_event_type_str()` (implemented);
-4. deliberately support or reject optional ECE and port-speed calls;
-5. test verbs operations reached through `struct ibv_context_ops`;
-6. test current NCCL's exact symbol contract automatically;
-7. run unmodified NCCL tests and reject socket fallback.
+4. deliberately reject absent optional ECE and port-speed calls
+   (implemented);
+5. test verbs operations reached through `struct ibv_context_ops`
+   (implemented);
+6. test current NCCL's exact symbol contract automatically (implemented);
+7. run unmodified NCCL tests and reject Socket fallback (implemented for the
+   local host-staged profile).
 
 UIB async events need a real eventfd-backed queue. A stub must not leave NCCL
 polling an invalid descriptor or busy-looping.
@@ -959,7 +963,7 @@ Fields normally changed by a site profile:
 ### Promotion procedure
 
 1. Pass L0 lifecycle and configuration tests locally.
-2. Pass UIB's versioned NCCL ABI tests.
+2. Pass UIB's versioned ABI and actual host-staged NCCL collective tests.
 3. Publish immutable workload and UIB artifacts to the site's registry.
 4. Write a site overlay containing only infrastructure, scheduler, storage,
    placement, and network-discovery values.
@@ -1053,9 +1057,9 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 ## Limitations
 
 - The described cluster harness is planned and not yet implemented.
-- UIB's versioned NCCL loader ABI is covered by an automated contract test,
-  but unchanged NCCL collective execution and fallback detection are not yet
-  part of the repository test suite.
+- UIB's versioned NCCL loader ABI and a two-rank, host-staged NCCL all-reduce
+  are covered by repository tests. The actual collective test is opt-in
+  because it requires CUDA, NCCL, MPI, MPS, a GPU, and UTS namespace access.
 - Kind and CPU-only virtme/libvirt profiles do not validate real GPU
   collectives or performance.
 - Host-staged NCCL and GPU-direct NCCL are materially different and are never

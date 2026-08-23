@@ -198,7 +198,7 @@ static enum uib_wr_opcode map_wr_op_in(enum ibv_wr_opcode op)
 	case IBV_WR_RDMA_WRITE:
 		return UIB_WR_RDMA_WRITE;
 	case IBV_WR_RDMA_WRITE_WITH_IMM:
-		return UIB_WR_RDMA_WRITE;
+		return UIB_WR_RDMA_WRITE_WITH_IMM;
 	case IBV_WR_RDMA_READ:
 		return UIB_WR_RDMA_READ;
 	case IBV_WR_ATOMIC_FETCH_AND_ADD:
@@ -501,6 +501,8 @@ static int provider_poll_cq(struct ibv_cq *cq_ibv, int n, struct ibv_wc *wc)
 		wc[i].qp_num   = tmp[i].qp_num;
 		wc[i].src_qp   = tmp[i].src_qp;
 		wc[i].imm_data = tmp[i].imm_data;
+		if (tmp[i].opcode == UIB_WC_RECV_RDMA_WITH_IMM)
+			wc[i].wc_flags |= IBV_WC_WITH_IMM;
 	}
 	return got;
 }

@@ -537,6 +537,7 @@ static void emit_send_wc(struct uib_qp *qp, uint64_t wr_id,
 		wc.opcode = UIB_WC_SEND;
 		break;
 	case UIB_WR_RDMA_WRITE:
+	case UIB_WR_RDMA_WRITE_WITH_IMM:
 		wc.opcode = UIB_WC_RDMA_WRITE;
 		break;
 	case UIB_WR_RDMA_READ:
@@ -755,10 +756,17 @@ static size_t packet_length(const struct uib_qp *qp, uint8_t op,
 
 	if (is_first && (op == UIB_OP_RDMA_WRITE_FIRST ||
 			 op == UIB_OP_RDMA_WRITE_ONLY ||
+			 op == UIB_OP_RDMA_WRITE_ONLY_WITH_IMM ||
 			 op == UIB_OP_RDMA_READ_REQ))
 		length += UIB_RETH_BYTES;
 	if (is_ud)
 		length += UIB_DETH_BYTES;
+	if (op == UIB_OP_SEND_LAST_WITH_IMM ||
+	    op == UIB_OP_SEND_ONLY_WITH_IMM ||
+	    op == UIB_OP_RDMA_WRITE_LAST_WITH_IMM ||
+	    op == UIB_OP_RDMA_WRITE_ONLY_WITH_IMM ||
+	    op == UIB_OP_UD_SEND_ONLY_WITH_IMM)
+		length += sizeof(uint32_t);
 	length += (size_t)((-(int)chunk) & 3);
 	return length;
 }
@@ -801,6 +809,7 @@ static int send_one_packet(struct uib_qp *qp, struct uib_send_wr *wr,
 
 	if (is_first && (op == UIB_OP_RDMA_WRITE_FIRST ||
 			 op == UIB_OP_RDMA_WRITE_ONLY ||
+			 op == UIB_OP_RDMA_WRITE_ONLY_WITH_IMM ||
 			 op == UIB_OP_RDMA_READ_REQ)) {
 		uib_reth_pack((struct uib_reth *)p, reth_va, reth_rkey, reth_total);
 		p += UIB_RETH_BYTES;
@@ -809,6 +818,14 @@ static int send_one_packet(struct uib_qp *qp, struct uib_send_wr *wr,
 	if (is_ud) {
 		uib_deth_pack((struct uib_deth *)p, wr->ud.qkey, qp->qp_num);
 		p += UIB_DETH_BYTES;
+	}
+	if (op == UIB_OP_SEND_LAST_WITH_IMM ||
+	    op == UIB_OP_SEND_ONLY_WITH_IMM ||
+	    op == UIB_OP_RDMA_WRITE_LAST_WITH_IMM ||
+	    op == UIB_OP_RDMA_WRITE_ONLY_WITH_IMM ||
+	    op == UIB_OP_UD_SEND_ONLY_WITH_IMM) {
+		memcpy(p, &wr->imm_data, sizeof(wr->imm_data));
+		p += sizeof(wr->imm_data);
 	}
 
 	if (chunk > 0) {
@@ -928,12 +945,15 @@ static uint8_t pick_opcode(enum uib_qp_type qpt, enum uib_wr_opcode op,
 				UIB_OP_SEND_LAST;
 		return UIB_OP_SEND_MIDDLE;
 	case UIB_WR_RDMA_WRITE:
+	case UIB_WR_RDMA_WRITE_WITH_IMM:
 		if (is_only)
-			return UIB_OP_RDMA_WRITE_ONLY;
+			return with_imm ? UIB_OP_RDMA_WRITE_ONLY_WITH_IMM :
+				UIB_OP_RDMA_WRITE_ONLY;
 		if (is_first)
 			return UIB_OP_RDMA_WRITE_FIRST;
 		if (is_last)
-			return UIB_OP_RDMA_WRITE_LAST;
+			return with_imm ? UIB_OP_RDMA_WRITE_LAST_WITH_IMM :
+				UIB_OP_RDMA_WRITE_LAST;
 		return UIB_OP_RDMA_WRITE_MIDDLE;
 	case UIB_WR_RDMA_READ:
 		return UIB_OP_RDMA_READ_REQ;
@@ -974,7 +994,8 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 	int err;
 	int rc;
 
-	with_imm = wr->opcode == UIB_WR_SEND_WITH_IMM;
+	with_imm = wr->opcode == UIB_WR_SEND_WITH_IMM ||
+		wr->opcode == UIB_WR_RDMA_WRITE_WITH_IMM;
 	is_ud = qp->qp_type == UIB_QPT_UD;
 	is_rc = qp->qp_type == UIB_QPT_RC;
 	total = 0;
@@ -1540,7 +1561,16 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 	case UIB_OP_SEND_ONLY_WITH_IMM: {
 		struct uib_rq_slot slot;
 		size_t consumed = 0;
+		uint32_t imm_data = 0;
 		int rc;
+
+		if (op == UIB_OP_SEND_ONLY_WITH_IMM) {
+			if (body_len < sizeof(imm_data))
+				return -EBADMSG;
+			memcpy(&imm_data, body, sizeof(imm_data));
+			body += sizeof(imm_data);
+			body_len -= sizeof(imm_data);
+		}
 
 		if (pop_recv_slot(qp, &slot) < 0) {
 			if (is_rc)
@@ -1552,7 +1582,8 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		uib_qp_emit_recv_slot(qp, &slot,
 				      rc < 0 ? UIB_WC_LOC_PROT_ERR :
 				      UIB_WC_SUCCESS, UIB_WC_RECV,
-				      (uint32_t)consumed, qp->dest_qp_num, 0);
+				      (uint32_t)consumed, qp->dest_qp_num,
+				      imm_data);
 		uib_qp_release_recv(&slot);
 		qp->last_rx_psn = psn;
 		qp->last_rx_valid = 1;
@@ -1614,10 +1645,19 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 	}
 	case UIB_OP_SEND_LAST:
 	case UIB_OP_SEND_LAST_WITH_IMM: {
+		uint32_t imm_data = 0;
+
 		if (!qp->frag_recv_active) {
 			if (is_rc)
 				send_ack(qp, src, psn, UIB_AETH_NAK_INV_REQ);
 			return -EBADMSG;
+		}
+		if (op == UIB_OP_SEND_LAST_WITH_IMM) {
+			if (body_len < sizeof(imm_data))
+				return -EBADMSG;
+			memcpy(&imm_data, body, sizeof(imm_data));
+			body += sizeof(imm_data);
+			body_len -= sizeof(imm_data);
 		}
 		size_t consumed = 0;
 		int rc = scatter_recv_fragment(qp, &qp->frag_recv,
@@ -1628,7 +1668,7 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		uib_qp_emit_recv_slot(qp, &qp->frag_recv,
 				      rc < 0 ? UIB_WC_LOC_PROT_ERR :
 				      UIB_WC_SUCCESS, UIB_WC_RECV, total,
-				      qp->dest_qp_num, 0);
+				      qp->dest_qp_num, imm_data);
 		uib_qp_release_recv(&qp->frag_recv);
 		uib_mr_put(qp->frag_recv_mr);
 		qp->frag_recv_mr = NULL;
@@ -1641,17 +1681,25 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 				 rc < 0 ? UIB_AETH_NAK_INV_REQ : UIB_AETH_ACK);
 		return rc;
 	}
-	case UIB_OP_UD_SEND_ONLY: {
+	case UIB_OP_UD_SEND_ONLY:
+	case UIB_OP_UD_SEND_ONLY_WITH_IMM: {
 		if (body_len < UIB_DETH_BYTES)
 			return -EBADMSG;
 		const struct uib_deth *deth = (const struct uib_deth *)body;
-		uint32_t qkey, sqp;
+		uint32_t qkey, sqp, imm_data = 0;
 
 		uib_deth_unpack(deth, &qkey, &sqp);
 		if (qkey != qp->qkey)
 			return -EACCES;
 		body     += UIB_DETH_BYTES;
 		body_len -= UIB_DETH_BYTES;
+		if (op == UIB_OP_UD_SEND_ONLY_WITH_IMM) {
+			if (body_len < sizeof(imm_data))
+				return -EBADMSG;
+			memcpy(&imm_data, body, sizeof(imm_data));
+			body += sizeof(imm_data);
+			body_len -= sizeof(imm_data);
+		}
 		struct uib_rq_slot slot;
 
 		if (pop_recv_slot(qp, &slot) < 0)
@@ -1662,12 +1710,17 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		uib_qp_emit_recv_slot(qp, &slot,
 				      rc < 0 ? UIB_WC_LOC_PROT_ERR :
 				      UIB_WC_SUCCESS, UIB_WC_RECV,
-				      (uint32_t)consumed, sqp, 0);
+				      (uint32_t)consumed, sqp, imm_data);
 		uib_qp_release_recv(&slot);
 		qp->rq_psn++;
 		return rc;
 	}
-	case UIB_OP_RDMA_WRITE_ONLY: {
+	case UIB_OP_RDMA_WRITE_ONLY:
+	case UIB_OP_RDMA_WRITE_ONLY_WITH_IMM: {
+		struct uib_rq_slot slot;
+		uint32_t imm_data = 0;
+		int with_imm_op = op == UIB_OP_RDMA_WRITE_ONLY_WITH_IMM;
+
 		if (body_len < UIB_RETH_BYTES) {
 			if (is_rc)
 				send_ack(qp, src, psn, UIB_AETH_NAK_INV_REQ);
@@ -1679,17 +1732,33 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		uib_reth_unpack(reth, &va, &rkey, &rlen);
 		body     += UIB_RETH_BYTES;
 		body_len -= UIB_RETH_BYTES;
+		if (with_imm_op) {
+			if (body_len < sizeof(imm_data))
+				return -EBADMSG;
+			memcpy(&imm_data, body, sizeof(imm_data));
+			body += sizeof(imm_data);
+			body_len -= sizeof(imm_data);
+			if (pop_recv_slot(qp, &slot) < 0) {
+				if (is_rc)
+					send_ack(qp, src, psn, UIB_AETH_RNR);
+				return -ENOENT;
+			}
+		}
 		if (rlen > body_len)
 			rlen = body_len;
 		struct uib_mr *mr = uib_mr_check_remote(qp->pd, rkey, va, rlen,
 							UIB_ACCESS_REMOTE_WRITE);
 		if (!mr) {
+			if (with_imm_op)
+				uib_qp_release_recv(&slot);
 			if (is_rc)
 				send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
 			return -EACCES;
 		}
 		if (uib_mr_place(mr, va, body, rlen) < 0) {
 			uib_mr_put(mr);
+			if (with_imm_op)
+				uib_qp_release_recv(&slot);
 			if (is_rc)
 				send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
 			return -EIO;
@@ -1699,6 +1768,12 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		qp->rq_psn = psn + 1;
 		if (is_rc)
 			send_ack(qp, src, psn, UIB_AETH_ACK);
+		if (with_imm_op) {
+			uib_qp_emit_recv_slot(qp, &slot, UIB_WC_SUCCESS,
+					      UIB_WC_RECV_RDMA_WITH_IMM,
+					      rlen, qp->dest_qp_num, imm_data);
+			uib_qp_release_recv(&slot);
+		}
 		uib_mr_put(mr);
 		return 0;
 	}
@@ -1763,18 +1838,37 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 	}
 	case UIB_OP_RDMA_WRITE_LAST:
 	case UIB_OP_RDMA_WRITE_LAST_WITH_IMM: {
+		struct uib_rq_slot slot;
+		uint32_t imm_data = 0;
+		int with_imm_op = op == UIB_OP_RDMA_WRITE_LAST_WITH_IMM;
+
 		if (!qp->frag_write_active) {
 			if (is_rc)
 				send_ack(qp, src, psn, UIB_AETH_NAK_INV_REQ);
 			return -EBADMSG;
+		}
+		if (with_imm_op) {
+			if (body_len < sizeof(imm_data))
+				return -EBADMSG;
+			memcpy(&imm_data, body, sizeof(imm_data));
+			body += sizeof(imm_data);
+			body_len -= sizeof(imm_data);
+			if (pop_recv_slot(qp, &slot) < 0) {
+				if (is_rc)
+					send_ack(qp, src, psn, UIB_AETH_RNR);
+				return -ENOENT;
+			}
 		}
 		uint32_t remain = qp->frag_write_total - qp->frag_write_offset;
 		size_t take = body_len > remain ? remain : body_len;
 
 		if (uib_mr_place(qp->frag_write_mr,
 				 qp->frag_write_va + qp->frag_write_offset,
-				 body, take) < 0)
+				 body, take) < 0) {
+			if (with_imm_op)
+				uib_qp_release_recv(&slot);
 			return -EIO;
+		}
 		qp->frag_write_offset += (uint32_t)take;
 		qp->frag_write_active = 0;
 		uib_mr_put(qp->frag_write_mr);
@@ -1783,6 +1877,13 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		qp->rq_psn = psn + 1;
 		if (is_rc)
 			send_ack(qp, src, psn, UIB_AETH_ACK);
+		if (with_imm_op) {
+			uib_qp_emit_recv_slot(qp, &slot, UIB_WC_SUCCESS,
+					      UIB_WC_RECV_RDMA_WITH_IMM,
+					      qp->frag_write_total,
+					      qp->dest_qp_num, imm_data);
+			uib_qp_release_recv(&slot);
+		}
 		return 0;
 	}
 	case UIB_OP_RDMA_READ_REQ: {

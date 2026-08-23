@@ -54,7 +54,9 @@ Optional features use:
   * recent Linux DMA-BUF, `SO_DEVMEM_DMABUF`, `MSG_ZEROCOPY` and io_uring ZCRX
     headers for their corresponding memory paths;
   * virtme-ng, iproute2 and rdma-core tools for VM/RXE integration; and
-  * perftest for `ib_write_bw` benchmarks.
+  * perftest for `ib_write_bw` benchmarks; and
+  * CUDA, NCCL 2.30 or newer, Open MPI, NVIDIA MPS and `nccl-tests` for the
+    opt-in actual NCCL collective test.
 
 Configure detects optional dependencies automatically:
 
@@ -99,6 +101,7 @@ Testing, examples and benchmarks
 Common targets are:
 
     make test                 # native unit and traffic tests
+    make nccl-test            # actual two-rank NCCL collective through UIB
     make virtme-test          # complete virtme-ng/RXE integration suite
     make test-all             # alias for the complete guest suite
     make examples-test        # native and verbs examples
@@ -118,6 +121,13 @@ See the [examples guide](examples/) for local and remote traffic commands.
 `make docs` regenerates the [public API](docs/public-api.md), environment and
 `uib(7)` references from comments beside their definitions; `make docs-check`
 verifies them.
+
+`make nccl-test` needs `NCCL_TESTS_BIN` to name an unmodified
+`all_reduce_perf` binary. It starts and cleans up an isolated MPS instance,
+forces NCCL's `NET/IB` path through `libuibv.so`, rejects Socket fallback, and
+checks the collective result. See the
+[transparent verbs guide](docs/transparent-verbs.md) for prerequisites,
+configurable parameters, and real-cluster use.
 
 The [LLM cluster simulation guide](docs/llm-cluster-simulation.md) describes a
 planned, layered validation environment for unchanged NCCL workloads. It covers

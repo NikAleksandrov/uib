@@ -10,6 +10,7 @@
 #include <infiniband/verbs.h>
 
 #define TEST_LENGTH 256
+#define TEST_IMMEDIATE 0x12345678U
 
 struct endpoint {
 	struct ibv_comp_channel *channel;
@@ -44,7 +45,8 @@ static int open_endpoint(struct endpoint *endpoint, struct ibv_device *device,
 	endpoint->mr = ibv_reg_mr_iova2(endpoint->pd, endpoint->buffer,
 					TEST_LENGTH,
 					(uint64_t)(uintptr_t)endpoint->buffer,
-					IBV_ACCESS_LOCAL_WRITE);
+					IBV_ACCESS_LOCAL_WRITE |
+					IBV_ACCESS_REMOTE_WRITE);
 	if (!endpoint->mr)
 		return -errno;
 	memset(&init, 0, sizeof(init));
@@ -110,7 +112,8 @@ static int connect_endpoint(struct endpoint *local,
 	return ibv_modify_qp(local->qp, &attributes, mask);
 }
 
-static int wait_event(struct endpoint *endpoint, enum ibv_wc_opcode opcode)
+static int wait_event(struct endpoint *endpoint, uint64_t wr_id,
+		      enum ibv_wc_opcode opcode)
 {
 	struct ibv_cq *event_cq;
 	struct ibv_wc completion;
@@ -131,8 +134,15 @@ static int wait_event(struct endpoint *endpoint, enum ibv_wc_opcode opcode)
 	ibv_ack_cq_events(event_cq, 1);
 	if (ibv_poll_cq(endpoint->cq, 1, &completion) != 1)
 		return -1;
-	return completion.status == IBV_WC_SUCCESS &&
-		completion.opcode == opcode ? 0 : -1;
+	if (completion.wr_id != wr_id || completion.status != IBV_WC_SUCCESS ||
+	    completion.opcode != opcode)
+		return -1;
+	if (opcode == IBV_WC_RECV_RDMA_WITH_IMM &&
+	    (!(completion.wc_flags & IBV_WC_WITH_IMM) ||
+	     ntohl(completion.imm_data) != TEST_IMMEDIATE ||
+	     completion.byte_len != TEST_LENGTH))
+		return -1;
+	return 0;
 }
 
 int main(void)
@@ -151,7 +161,7 @@ int main(void)
 	int i;
 	int rc = 1;
 
-	setenv("UIB_PROTOCOL", "dummy", 1);
+	setenv("UIB_PROTOCOL", "rocev2", 1);
 	setenv("UIB_URING_RX_MODE", "multishot", 1);
 	devices = ibv_get_device_list(&device_count);
 	for (i = 0; devices && i < device_count; i++) {
@@ -172,6 +182,7 @@ int main(void)
 	receive_sge.length = TEST_LENGTH;
 	receive_sge.lkey = receiver.mr->lkey;
 	memset(&receive, 0, sizeof(receive));
+	receive.wr_id = 0x2001;
 	receive.sg_list = &receive_sge;
 	receive.num_sge = 1;
 	if (ibv_post_recv(receiver.qp, &receive, &bad_receive))
@@ -184,14 +195,41 @@ int main(void)
 	send_sge.length = TEST_LENGTH;
 	send_sge.lkey = sender.mr->lkey;
 	memset(&send, 0, sizeof(send));
+	send.wr_id = 0x1001;
 	send.opcode = IBV_WR_SEND;
 	send.send_flags = IBV_SEND_SIGNALED;
 	send.sg_list = &send_sge;
 	send.num_sge = 1;
 	if (ibv_post_send(sender.qp, &send, &bad_send))
 		goto out;
-	if (wait_event(&sender, IBV_WC_SEND) ||
-	    wait_event(&receiver, IBV_WC_RECV))
+	if (wait_event(&sender, 0x1001, IBV_WC_SEND) ||
+	    wait_event(&receiver, 0x2001, IBV_WC_RECV))
+		goto out;
+	if (memcmp(sender.buffer, receiver.buffer, TEST_LENGTH))
+		goto out;
+
+	memset(receiver.buffer, 0, TEST_LENGTH);
+	memset(sender.buffer, 0xa5, TEST_LENGTH);
+	memset(&receive, 0, sizeof(receive));
+	receive.wr_id = 0x2002;
+	if (ibv_post_recv(receiver.qp, &receive, &bad_receive))
+		goto out;
+	if (ibv_req_notify_cq(sender.cq, 0) ||
+	    ibv_req_notify_cq(receiver.cq, 0))
+		goto out;
+	memset(&send, 0, sizeof(send));
+	send.wr_id = 0x1002;
+	send.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+	send.send_flags = IBV_SEND_SIGNALED;
+	send.imm_data = htonl(TEST_IMMEDIATE);
+	send.sg_list = &send_sge;
+	send.num_sge = 1;
+	send.wr.rdma.remote_addr = (uintptr_t)receiver.buffer;
+	send.wr.rdma.rkey = receiver.mr->rkey;
+	if (ibv_post_send(sender.qp, &send, &bad_send))
+		goto out;
+	if (wait_event(&sender, 0x1002, IBV_WC_RDMA_WRITE) ||
+	    wait_event(&receiver, 0x2002, IBV_WC_RECV_RDMA_WITH_IMM))
 		goto out;
 	if (memcmp(sender.buffer, receiver.buffer, TEST_LENGTH))
 		goto out;

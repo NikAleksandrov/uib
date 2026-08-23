@@ -142,6 +142,66 @@ collective correctness, GPU-memory support, or freedom from socket fallback.
 Those properties require an unchanged NCCL workload and explicit NCCL log and
 traffic validation.
 
+### Running an actual NCCL collective
+
+The `nccl-test` target runs NVIDIA's unmodified `all_reduce_perf` binary with
+two MPI ranks and host-staged traffic through UIB. It is a data-path test, not
+another loader test. The runner:
+
+1. starts an isolated NVIDIA MPS daemon and cleans it up on exit;
+2. pins two ranks to GPU 0;
+3. gives each rank a temporary UTS hostname and loopback data-plane address so
+   NCCL selects its inter-node path;
+4. disables NCCL P2P and shared-memory transports;
+5. selects `libuibv.so`, `uib0`, RoCEv2, and the synchronous UDP transport;
+6. runs an all-reduce with value checking; and
+7. requires `Using network IB`, `via NET/IB/0`, and zero wrong values while
+   rejecting any Socket network selection.
+
+This local profile needs an accessible NVIDIA GPU, NCCL 2.30 or newer, CUDA,
+Open MPI, NVIDIA MPS, `unshare`, `setpriv`, and a privilege helper capable of
+creating UTS namespaces. Build a pinned `nccl-tests` release normally; UIB
+does not patch its source. For example:
+
+```sh
+git clone --branch v2.17.9 --depth 1 \
+    https://github.com/NVIDIA/nccl-tests.git
+make -C nccl-tests MPI=1 \
+    CUDA_HOME=/usr/local/cuda \
+    NCCL_HOME=/usr \
+    MPI_HOME=/usr/lib/x86_64-linux-gnu/openmpi
+```
+
+Then run:
+
+```sh
+NCCL_TESTS_BIN=$PWD/nccl-tests/build/all_reduce_perf \
+    NCCL_TEST_PRIVILEGE=sudo \
+    make nccl-test
+```
+
+Omit `NCCL_TEST_PRIVILEGE` when `sudo` is appropriate or the test already runs
+as root. The test does not install NCCL, CUDA, MPI, or `nccl-tests`
+automatically.
+
+The local test parameters can be adjusted without editing the scripts:
+
+| Variable | Default | Meaning |
+|---|---:|---|
+| `NCCL_TESTS_BIN` | searched in `PATH` | `all_reduce_perf` executable |
+| `NCCL_TEST_MAX_BYTES` | `64K` | largest all-reduce payload |
+| `NCCL_TEST_ITERATIONS` | `3` | measured iterations per size |
+| `NCCL_TEST_WARMUPS` | `1` | warm-up iterations per size |
+| `NCCL_TEST_TIMEOUT` | `90` | whole-test timeout in seconds |
+| `NCCL_TEST_BIND_PORT` | `19700` | UIB service port |
+| `MPIEXEC` | `mpirun` | MPI launcher executable |
+| `NCCL_TEST_PRIVILEGE` | `sudo` | UTS namespace privilege helper |
+
+The local profile validates host-staged correctness and UIB's verbs data
+plane. It does not claim GPU Direct RDMA performance. A real multi-node run
+should use one rank placement per physical GPU and the nodes' actual
+data-plane addresses, without the local UTS/MPS wrapper.
+
 ## Minimal UIB-to-UIB example
 
 The following example runs the unmodified `ibv_rc_pingpong` tool between two
