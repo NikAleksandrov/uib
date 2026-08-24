@@ -130,6 +130,13 @@ TRAINING_GPU_PROCESSES ?= 1
 TRAINING_GPU_STRATEGY ?= fsdp
 TRAINING_IMAGE_TEST := tests/run_training_smoke_test.sh
 TRAINING_UIB_TEST := tests/run_training_uib_test.sh
+INFERENCE_IMAGE ?= uib-inference:test
+INFERENCE_CONTAINER_ENGINE ?= $(TRAINING_CONTAINER_ENGINE)
+INFERENCE_GPU_DEVICE ?= $(TRAINING_GPU_DEVICE)
+INFERENCE_GPU_TENSOR_PARALLEL ?= 1
+INFERENCE_GPU_PIPELINE_PARALLEL ?= 1
+INFERENCE_GPU_DATA_PARALLEL ?= 1
+INFERENCE_IMAGE_TEST := tests/run_inference_smoke_test.sh
 
 STANDALONE_AFXDP ?= 0
 ifneq ($(filter $(STANDALONE_AFXDP),0 1),$(STANDALONE_AFXDP))
@@ -220,6 +227,26 @@ training-uib-test: runtime-bundle training-image
 	TRAINING_IMAGE=$(TRAINING_IMAGE) \
 	TRAINING_CONTAINER_ENGINE='$(TRAINING_CONTAINER_ENGINE)' \
 		$(TRAINING_UIB_TEST)
+
+inference-image:
+	$(INFERENCE_CONTAINER_ENGINE) build --progress=plain \
+		-f simulation/inference/Containerfile -t $(INFERENCE_IMAGE) \
+		simulation/inference
+
+inference-smoke-test:
+	INFERENCE_IMAGE=$(INFERENCE_IMAGE) \
+	INFERENCE_CONTAINER_ENGINE='$(INFERENCE_CONTAINER_ENGINE)' \
+		$(INFERENCE_IMAGE_TEST)
+
+inference-gpu-test:
+	INFERENCE_GPU_TEST=1 \
+	INFERENCE_GPU_DEVICE='$(INFERENCE_GPU_DEVICE)' \
+	INFERENCE_GPU_TENSOR_PARALLEL='$(INFERENCE_GPU_TENSOR_PARALLEL)' \
+	INFERENCE_GPU_PIPELINE_PARALLEL='$(INFERENCE_GPU_PIPELINE_PARALLEL)' \
+	INFERENCE_GPU_DATA_PARALLEL='$(INFERENCE_GPU_DATA_PARALLEL)' \
+	INFERENCE_IMAGE=$(INFERENCE_IMAGE) \
+	INFERENCE_CONTAINER_ENGINE='$(INFERENCE_CONTAINER_ENGINE)' \
+		$(INFERENCE_IMAGE_TEST)
 
 docs:
 	python3 $(DOC_GENERATOR)
@@ -717,6 +744,7 @@ clean:
 	training-image training-smoke-test FORCE docs \
 	training-public-test training-gpu-test training-uib-preflight-test \
 	training-uib-test \
+	inference-image inference-smoke-test inference-gpu-test \
 	docs-check examples clean install install-static test rxe-test-build \
 	rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \

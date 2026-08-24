@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "runId": "tiny-public-inference-cpu",
+  "backend": "transformers",
+  "model": {
+    "id": "HuggingFaceTB/SmolLM2-135M-Instruct",
+    "revision": "12fd25f77366fa6b3b4b768ec3050bf629380bac",
+    "servedName": "smollm2-135m",
+    "trustRemoteCode": false
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "dtype": "float32",
+    "quantization": null,
+    "maxModelLength": 128,
+    "tensorParallel": 1,
+    "pipelineParallel": 1,
+    "dataParallel": 1,
+    "replicas": 1,
+    "gpuMemoryUtilization": 0.5,
+    "distributedExecutor": null,
+    "seed": 20260824
+  },
+  "load": {
+    "requests": 4,
+    "concurrency": 2,
+    "requestRate": null,
+    "promptTokens": 8,
+    "outputTokens": 4,
+    "streaming": false,
+    "warmupRequests": 1,
+    "timeoutSeconds": 180,
+    "seed": 20260824
+  },
+  "result": {
+    "directory": "/results"
+  }
+}

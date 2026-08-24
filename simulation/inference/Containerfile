@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+ARG BASE_IMAGE=docker.io/vllm/vllm-openai@sha256:\
+c2f3b1b964e47809b722b5e75b61b1e7b39a50f70388cf2bf2418f16a9f31da2
+FROM ${BASE_IMAGE}
+
+ARG RAY_VERSION=2.58.0
+ARG JSONSCHEMA_VERSION=4.25.1
+
+RUN uv pip install --system \
+    "ray==${RAY_VERSION}" \
+    "jsonschema==${JSONSCHEMA_VERSION}"
+
+COPY inference.py /opt/uib-inference/inference.py
+COPY entrypoint /opt/uib-inference/bin/inference
+COPY workload.schema.json /opt/uib-inference/workload.schema.json
+COPY stack.lock.json /opt/uib-inference/stack.lock.json
+COPY configs/ /opt/uib-inference/configs/
+
+RUN chmod 0755 /opt/uib-inference/bin/inference && \
+    /usr/bin/python3 /opt/uib-inference/inference.py --print-capabilities
+
+ENV PATH="/opt/uib-inference/bin:${PATH}" \
+    TOKENIZERS_PARALLELISM=false \
+    PYTHONUNBUFFERED=1
+ENTRYPOINT ["/opt/uib-inference/bin/inference"]
+CMD ["serve", "--config", "/opt/uib-inference/configs/tiny-public.json"]

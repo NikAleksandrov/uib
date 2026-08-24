@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "baseImage": "docker.io/vllm/vllm-openai@sha256:c2f3b1b964e47809b722b5e75b61b1e7b39a50f70388cf2bf2418f16a9f31da2",
+  "baseImageManifest": "sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967",
+  "platform": "linux/amd64",
+  "python": "3.12.13",
+  "cuda": "13.0",
+  "packages": {
+    "torch": "2.13.0+cu130",
+    "vllm": "0.27.1",
+    "ray": "2.58.0",
+    "transformers": "5.15.0",
+    "nvidia-nccl-cu13": "2.30.7",
+    "jsonschema": "4.25.1"
+  },
+  "backends": {
+    "transformers": "cpu-functional-smoke",
+    "vllm": "production-gpu-serving"
+  }
+}

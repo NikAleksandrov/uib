@@ -1,0 +1,5 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+exec /usr/bin/python3 /opt/uib-inference/inference.py "$@"

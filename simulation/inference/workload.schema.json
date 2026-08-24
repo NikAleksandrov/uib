@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uib.example/schemas/inference-workload-v1.json",
+  "title": "UIB scheduler-neutral inference workload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "backend", "model", "server", "load", "result"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+    "backend": { "enum": ["transformers", "vllm"] },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "revision", "servedName"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 },
+        "servedName": { "type": "string", "minLength": 1 },
+        "trustRemoteCode": { "const": false }
+      }
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host", "port", "dtype", "quantization", "maxModelLength",
+        "tensorParallel", "pipelineParallel", "dataParallel", "replicas",
+        "gpuMemoryUtilization", "distributedExecutor", "seed"
+      ],
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "dtype": { "enum": ["auto", "float32", "float16", "bfloat16"] },
+        "quantization": { "type": ["string", "null"] },
+        "maxModelLength": { "type": "integer", "minimum": 16 },
+        "tensorParallel": { "type": "integer", "minimum": 1 },
+        "pipelineParallel": { "type": "integer", "minimum": 1 },
+        "dataParallel": { "type": "integer", "minimum": 1 },
+        "replicas": { "type": "integer", "minimum": 1 },
+        "gpuMemoryUtilization": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "distributedExecutor": { "enum": ["mp", "ray", null] },
+        "seed": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "load": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requests", "concurrency", "requestRate", "promptTokens",
+        "outputTokens", "streaming", "warmupRequests", "timeoutSeconds",
+        "seed"
+      ],
+      "properties": {
+        "requests": { "type": "integer", "minimum": 1 },
+        "concurrency": { "type": "integer", "minimum": 1 },
+        "requestRate": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "promptTokens": { "type": "integer", "minimum": 1 },
+        "outputTokens": { "type": "integer", "minimum": 1 },
+        "streaming": { "type": "boolean" },
+        "warmupRequests": { "type": "integer", "minimum": 0 },
+        "timeoutSeconds": { "type": "number", "exclusiveMinimum": 0 },
+        "seed": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directory"],
+      "properties": {
+        "directory": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

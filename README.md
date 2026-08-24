@@ -141,6 +141,8 @@ Common targets are:
     make training-gpu-test    # opt-in NCCL and FSDP restart on NVIDIA CDI
     make training-uib-preflight-test # compose training image and UIB runtime
     make training-uib-test    # actual two-rank NCCL training traffic via UIB
+    make inference-smoke-test # pinned CPU OpenAI API and local Ray task
+    make inference-gpu-test   # opt-in vLLM GPU API and standard benchmark
     make virtme-test          # complete virtme-ng/RXE integration suite
     make test-all             # alias for the complete guest suite
     make examples-test        # native and verbs examples
@@ -158,11 +160,11 @@ comparison is in the [sync/async report](docs/sync-async-benchmark.md).
 
 See the [examples guide](examples/) for local and remote traffic commands.
 The [LLM cluster simulation guide](docs/llm-cluster-simulation.md) documents
-the pinned training image, its CPU-sized default model and dataset, external
-large-model configuration, checkpoint contract, and identical local,
+the pinned training and inference images, their CPU-sized public profiles,
+external large-model configuration, evidence contracts, and identical local,
 Kubernetes, and Slurm launch shapes. Model weights and datasets are downloaded
 only when a public workload is run and remain in an ignored, reusable cache;
-they are never committed or built into the image.
+they are never committed or built into an image.
 `make docs` regenerates the [public API](docs/public-api.md), environment and
 `uib(7)` references from comments beside their definitions; `make docs-check`
 verifies them.

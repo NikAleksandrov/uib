@@ -37,6 +37,25 @@
         "generated-single-gpu-fsdp-checkpoint-restart",
         "generated-two-rank-single-gpu-mps-uib-ddp"
       ]
+    },
+    "inference": {
+      "lock": "simulation/inference/stack.lock.json",
+      "baseImage": "docker.io/vllm/vllm-openai@sha256:c2f3b1b964e47809b722b5e75b61b1e7b39a50f70388cf2bf2418f16a9f31da2",
+      "python": "3.12.13",
+      "cuda": "13.0",
+      "torch": "2.13.0+cu130",
+      "nccl": "2.30.7",
+      "vllm": "0.27.1",
+      "ray": "2.58.0",
+      "transformers": "5.15.0",
+      "defaultProfile": "tiny-public-inference-cpu",
+      "validatedProfiles": [
+        "tiny-public-transformers-cpu",
+        "tiny-public-transformers-streaming-cpu",
+        "local-ray-task-cpu",
+        "tiny-public-vllm-single-gpu",
+        "tiny-public-vllm-standard-benchmark-single-gpu"
+      ]
     }
   },
   "validatedConfigurations": [
@@ -86,12 +105,38 @@
       "correctness": "four training steps and checkpoint passed",
       "validationLevel": "local-compatibility-only",
       "testTarget": "make training-uib-test"
+    },
+    {
+      "id": "vllm-0.27.1-smollm2-single-gpu-serving",
+      "date": "2026-08-24",
+      "uibCommit": "7d6cd4c1ec0cf022872c3dc94cea0164f79d4c7b",
+      "image": "uib-inference:test",
+      "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "modelRevision": "12fd25f77366fa6b3b4b768ec3050bf629380bac",
+      "torch": "2.13.0+cu130",
+      "vllm": "0.27.1",
+      "ray": "2.58.0",
+      "nccl": "2.30.7",
+      "cuda": "13.0",
+      "physicalGpus": 1,
+      "tensorParallel": 1,
+      "pipelineParallel": 1,
+      "dataParallel": 1,
+      "api": "OpenAI-compatible completions",
+      "loadGenerator": "vllm bench serve",
+      "requests": 4,
+      "correctness": "CPU, Ray, GPU API, and standard benchmark passed",
+      "uibTraffic": "not-applicable-single-rank",
+      "validationLevel": "local-functional-only",
+      "testTarget": "make inference-gpu-test"
     }
   ],
   "limitations": {
     "gpuDirect": "not-validated",
     "multiNodeNccl": "not-validated",
     "multiGpuTraining": "not-validated",
+    "multiGpuInference": "not-validated",
+    "inferenceOverUib": "not-validated",
     "collectives": {
       "allReduce": "validated",
       "allGather": "not-validated",

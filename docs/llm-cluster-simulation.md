@@ -1065,22 +1065,119 @@ warmup, and seed.
 
 ## Inference workloads
 
-The primary inference stack is vLLM. Kubernetes uses KubeRay; Slurm starts a
-Ray head and workers inside one allocation. Direct vLLM multiprocessing is a
+The implemented inference image uses the official vLLM 0.27.1 CUDA image by
+immutable amd64 digest and adds pinned Ray 2.58.0. Its exact stack is recorded
+in `simulation/inference/stack.lock.json`: Python 3.12.13, PyTorch
+2.13.0+cu130, NCCL 2.30.7, vLLM 0.27.1, Ray 2.58.0, and Transformers 5.15.0.
+Kubernetes, Slurm, a local container, and a future `uib-sim` adapter use the
+same command:
+
+```text
+/opt/uib-inference/bin/inference serve --config /run/workload.json
+```
+
+The configuration selects one of two backends without changing the image:
+
+- `transformers` is a single-replica CPU functional backend. It implements
+  the OpenAI-compatible models and completions endpoints, so the default test
+  can run without a GPU. It is L0 plumbing evidence, not a vLLM performance
+  result.
+- `vllm` executes the image's unmodified `vllm serve` command. It supports
+  tensor, pipeline, and data parallelism through either local multiprocessing
+  or Ray and is the production GPU backend.
+
+Build and test the image with:
+
+```text
+make inference-image
+make inference-smoke-test
+make inference-gpu-test       # opt-in; needs NVIDIA CDI and a GPU
+```
+
+The mandatory smoke test runs a real local Ray task, starts the CPU backend,
+checks `/health` and `/v1/models`, sends warmup plus concurrent completions,
+repeats the workload through the streaming API, and records deterministic
+request traces and results. The GPU test starts the real vLLM OpenAI server,
+runs the same deterministic probe, and then runs the unmodified standard
+`vllm bench serve` load generator with fixed random input length, output
+length, concurrency, and seed. The standard benchmark JSON is saved beside
+the common result.
+
+### Small default and production models
+
+The default profile uses the public 135-million-parameter
+[`HuggingFaceTB/SmolLM2-135M-Instruct`](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct)
+safetensors model at full commit
+`12fd25f77366fa6b3b4b768ec3050bf629380bac`. It is large enough to exercise
+the real loaders and vLLM engine while remaining practical on CPU and a small
+GPU. The weights are not in this repository or image. They are downloaded on
+the first test and reused from `simulation/.artifacts/huggingface`.
+
+Production testing copies the complete default JSON and changes the immutable
+model ID and revision, sizing, precision, quantization, parallelism, and load
+fields. `INFERENCE_GPU_CONFIG=/absolute/path/workload.json` lets the GPU target
+use that external configuration. Private repositories use the standard
+`HF_TOKEN` environment; credentials never belong in workload JSON or results.
+
+### Inference configuration
+
+`simulation/inference/workload.schema.json` rejects unknown fields and
+invalid basic ranges. The entry point also rejects distributed or quantized
+settings when the CPU backend is selected.
+
+| Field | Meaning |
+|---|---|
+| `backend` | CPU-functional `transformers` or production `vllm` |
+| `model.id`, `revision`, `servedName` | Repository, immutable commit, and API name |
+| `server.host`, `port` | OpenAI-compatible listening address |
+| `server.dtype`, `quantization` | Weight/activation type and optional vLLM quantizer |
+| `server.maxModelLength` | Maximum prompt plus generated context |
+| `server.tensorParallel`, `pipelineParallel` | Model partition sizes |
+| `server.dataParallel`, `replicas` | vLLM data-parallel group and launcher replicas |
+| `server.gpuMemoryUtilization` | Fraction available to weights, graphs, and KV cache |
+| `server.distributedExecutor` | Local `mp`, multi-node `ray`, or automatic selection |
+| `load.requests`, `concurrency`, `requestRate` | Closed- or open-loop traffic shape |
+| `load.promptTokens`, `outputTokens` | Deterministic request sizes |
+| `load.streaming`, `warmupRequests` | Streaming mode and unmeasured warmup |
+| `load.timeoutSeconds`, `seed` | Readiness/request bound and reproducibility seed |
+| `result.directory` | Shared evidence root |
+
+The common result includes the image stack, model revision, workload identity,
+parallelism, request count, token count, latency distribution, throughput,
+response hashes, trace path, and injected transport environment. The trace
+stores prompts and scheduled offsets so native-verbs and UIB runs can receive
+identical application traffic.
+
+### Multi-GPU and multi-node inference
+
+On a multi-GPU node, configure TP, PP, and DP independently. Their product
+must fit the exposed CDI device set:
+
+```text
+make INFERENCE_GPU_TENSOR_PARALLEL=4 inference-gpu-test
+make INFERENCE_GPU_TENSOR_PARALLEL=2 \
+  INFERENCE_GPU_PIPELINE_PARALLEL=2 inference-gpu-test
+make INFERENCE_GPU_DATA_PARALLEL=4 inference-gpu-test
+```
+
+The local target passes those values into the same JSON-to-`vllm serve`
+adapter. For multi-node use, start Ray on every node after injecting the UIB
+environment, set `server.distributedExecutor=ray`, and launch the same image
+and `serve --config` command on the head. KubeRay and Slurm/Pyxis are launcher
+adapters around that contract; direct vLLM multiprocessing remains a
 replaceable, separately labeled launcher.
 
-Supported shapes include:
+Moving to physical hardware changes mounts, addresses, CDI resources, model
+size, and the launcher—not image code. Mount the identical model cache and UIB
+runtime artifact, inject `NCCL_NET=IB`, `NCCL_IB_HCA==uib0`, and
+`NCCL_IBVERBS_LIB=/opt/uib/libuibv.so`, and keep the same workload JSON for the
+UIB/native pair. The evidence gate must require NCCL `NET/IB` and reject Socket
+fallback just as the training gate does.
 
-- tensor-parallel serving;
-- pipeline-parallel serving;
-- multiple data-parallel replicas;
-- later prefill/decode disaggregation;
-- later MoE serving after all-to-all validation.
-
-Use the OpenAI-compatible API and a standard load generator such as
-`vllm bench serve`. Save the generated request trace so UIB and native runs
-receive identical prompt lengths, output lengths, arrival times, concurrency,
-streaming behavior, warmup, and duration.
+This host validated one-GPU vLLM serving and therefore did not send distributed
+inference traffic through UIB. Multi-GPU and physical multi-node inference,
+Ray-based vLLM workers, and UIB transport remain explicit unvalidated gates;
+one vLLM rank can initialize NCCL but cannot validate libuib traffic.
 
 ## Network and failure simulation
 
@@ -1416,9 +1513,8 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 
 ## Limitations
 
-- The cluster lifecycle harness, scheduler adapters, inference image,
-  DeepSpeed adapter, and Megatron-Core adapter are planned and not yet
-  implemented.
+- The cluster lifecycle harness, scheduler adapters, DeepSpeed adapter, and
+  Megatron-Core adapter are planned and not yet implemented.
 - UIB's versioned NCCL loader ABI and a two-rank, host-staged NCCL all-reduce
   are covered by repository tests. The actual collective test is opt-in
   because it requires CUDA, NCCL, MPI, MPS, a GPU, and UTS namespace access.
@@ -1428,6 +1524,10 @@ Cleanup must remain safe after interruption during every lifecycle stage.
   actual single-GPU NCCL initialization, single-GPU FSDP restart, and local
   two-rank NCCL DDP through UIB. The two ranks share one GPU through MPS;
   multi-GPU and physical multi-node training remain unvalidated.
+- The inference image passed a CPU OpenAI-compatible service, local Ray task,
+  single-GPU vLLM service, deterministic probe, and standard
+  `vllm bench serve`. Distributed inference and inference through UIB remain
+  unvalidated because this host has one GPU.
 - Host-staged NCCL and GPU-direct NCCL are materially different and are never
   combined in one result class.
 - virtme is intended for kernel and functional validation, not accurate L2
