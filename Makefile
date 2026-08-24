@@ -137,6 +137,11 @@ INFERENCE_GPU_TENSOR_PARALLEL ?= 1
 INFERENCE_GPU_PIPELINE_PARALLEL ?= 1
 INFERENCE_GPU_DATA_PARALLEL ?= 1
 INFERENCE_IMAGE_TEST := tests/run_inference_smoke_test.sh
+DIAGNOSTIC_IMAGE ?= uib-diagnostics:test
+DIAGNOSTIC_CONTAINER_ENGINE ?= $(TRAINING_CONTAINER_ENGINE)
+DIAGNOSTIC_GPU_DEVICE ?= $(TRAINING_GPU_DEVICE)
+DIAGNOSTIC_DOWNLOAD_CACHE ?= $(RUNTIME_ARTIFACT_DIR)/downloads
+DIAGNOSTIC_IMAGE_TEST := tests/run_diagnostic_image_test.sh
 
 STANDALONE_AFXDP ?= 0
 ifneq ($(filter $(STANDALONE_AFXDP),0 1),$(STANDALONE_AFXDP))
@@ -247,6 +252,37 @@ inference-gpu-test:
 	INFERENCE_IMAGE=$(INFERENCE_IMAGE) \
 	INFERENCE_CONTAINER_ENGINE='$(INFERENCE_CONTAINER_ENGINE)' \
 		$(INFERENCE_IMAGE_TEST)
+
+diagnostic-sources:
+	DIAGNOSTIC_DOWNLOAD_CACHE='$(CURDIR)/$(DIAGNOSTIC_DOWNLOAD_CACHE)' \
+		simulation/diagnostics/fetch-sources
+
+diagnostic-image: diagnostic-sources
+	$(DIAGNOSTIC_CONTAINER_ENGINE) build --progress=plain \
+		--build-context \
+			diagnostic-sources='$(CURDIR)/$(DIAGNOSTIC_DOWNLOAD_CACHE)' \
+		-f simulation/diagnostics/Containerfile -t $(DIAGNOSTIC_IMAGE) \
+		simulation/diagnostics
+
+diagnostic-smoke-test:
+	DIAGNOSTIC_IMAGE=$(DIAGNOSTIC_IMAGE) \
+	DIAGNOSTIC_DOWNLOAD_CACHE='$(CURDIR)/$(DIAGNOSTIC_DOWNLOAD_CACHE)' \
+	DIAGNOSTIC_CONTAINER_ENGINE='$(DIAGNOSTIC_CONTAINER_ENGINE)' \
+		$(DIAGNOSTIC_IMAGE_TEST)
+
+diagnostic-uib-preflight-test: runtime-bundle diagnostic-image
+	DIAGNOSTIC_SKIP_BUILD=1 \
+	DIAGNOSTIC_UIB_RUNTIME='$(CURDIR)/$(RUNTIME_ARTIFACT_DIR)/uib-runtime' \
+	DIAGNOSTIC_IMAGE=$(DIAGNOSTIC_IMAGE) \
+	DIAGNOSTIC_CONTAINER_ENGINE='$(DIAGNOSTIC_CONTAINER_ENGINE)' \
+		$(DIAGNOSTIC_IMAGE_TEST)
+
+diagnostic-gpu-test: diagnostic-image
+	DIAGNOSTIC_SKIP_BUILD=1 DIAGNOSTIC_GPU_TEST=1 \
+	DIAGNOSTIC_GPU_DEVICE='$(DIAGNOSTIC_GPU_DEVICE)' \
+	DIAGNOSTIC_IMAGE=$(DIAGNOSTIC_IMAGE) \
+	DIAGNOSTIC_CONTAINER_ENGINE='$(DIAGNOSTIC_CONTAINER_ENGINE)' \
+		$(DIAGNOSTIC_IMAGE_TEST)
 
 docs:
 	python3 $(DOC_GENERATOR)
@@ -745,6 +781,8 @@ clean:
 	training-public-test training-gpu-test training-uib-preflight-test \
 	training-uib-test \
 	inference-image inference-smoke-test inference-gpu-test \
+	diagnostic-sources diagnostic-image diagnostic-smoke-test \
+	diagnostic-uib-preflight-test diagnostic-gpu-test \
 	docs-check examples clean install install-static test rxe-test-build \
 	rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \

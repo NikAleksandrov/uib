@@ -19,6 +19,7 @@ configuration.
 ## Contents
 
 - [What the harness validates](#what-the-harness-validates)
+- [Validation requirements](#validation-requirements)
 - [Architecture](#architecture)
 - [Layer model](#layer-model)
 - [Common configuration](#common-configuration)
@@ -26,6 +27,8 @@ configuration.
 - [NCCL compatibility comes first](#nccl-compatibility-comes-first)
 - [Transparent UIB injection](#transparent-uib-injection)
 - [Runtime artifact](#runtime-artifact)
+- [Diagnostic image](#diagnostic-image)
+- [Where transparent UIB is useful](#where-transparent-uib-is-useful)
 - [Kubernetes execution stack](#kubernetes-execution-stack)
 - [Slurm, Pyxis, and Enroot execution stack](#slurm-pyxis-and-enroot-execution-stack)
 - [Training workloads](#training-workloads)
@@ -63,6 +66,31 @@ Results are classified by capability:
 
 Kind or CPU-only VMs can provide valuable L0 coverage, but they are not NCCL
 or GPU performance simulators.
+
+## Validation requirements
+
+The local gates and physical-cluster gates are intentionally separate. Two
+processes or containers on one host can prove protocol traffic and application
+compatibility, but they do not reproduce a physical multi-node GPU/RDMA
+topology.
+
+| Gate | Minimum hardware | Physical multi-node required | What it proves |
+|---|---|---:|---|
+| `make diagnostic-smoke-test` | CPU | No | Diagnostic tools, versions, dynamic dependencies, and capability output |
+| `make diagnostic-uib-preflight-test` | CPU | No | The common UIB runtime mounts into an independently built image |
+| `make diagnostic-gpu-test` | One NVIDIA GPU | No | CUDA visibility and a correctness-checked, single-rank NCCL collective |
+| `make nccl-test` | One NVIDIA GPU with local MPS support | No | Two local ranks send host-staged NCCL traffic through UIB |
+| `make training-uib-test` | One NVIDIA GPU with local MPS support | No | Unmodified two-rank PyTorch DDP sends gradient traffic through UIB |
+| Multi-GPU training gate | At least two GPUs in one node | No | DDP or FSDP sharding across distinct GPUs; not node-to-node behavior |
+| Two-node NCCL promotion gate | GPU on each of at least two nodes | **Yes** | Host-staged NCCL traffic through UIB across physical nodes; required for L1 |
+| Kubeflow or Slurm distributed training | GPU on each participating node | **Yes** | Real scheduler placement, bootstrap, checkpointing, and UIB collectives |
+| KubeRay or Slurm distributed inference | GPU on each participating node | **Yes** | vLLM TP/PP/DP worker traffic and serving through UIB |
+| GPU-memory or DMA-BUF promotion gate | Compatible GPUs, drivers, and RDMA path on at least two nodes | **Yes** | L2 GPU-memory data path rather than host staging |
+| Fabric performance, congestion, and failure qualification | Production-like GPU/RDMA nodes and fabric | **Yes** | L3 behavior and comparison with native verbs |
+
+The physical multi-node gates are deferred until suitable hardware is
+available. A one-rank NCCL initialization never counts as UIB data-plane
+validation because it has no remote rank to communicate with.
 
 ## Architecture
 
@@ -616,6 +644,115 @@ Applications using UIB's native API can avoid runtime libraries entirely with
 `libuib-standalone.a`. `make static-test` creates a fully static executable and
 rejects any ELF dynamic dependency. See the
 [standalone build instructions](../README.md#standalone-static-library).
+
+## Diagnostic image
+
+The diagnostic image is the inexpensive gate that runs before a model is
+downloaded or GPUs are reserved for a long workload. It contains:
+
+- `ibv_devices`, `ibv_devinfo`, and `rdma` from rdma-core;
+- `ib_read_bw`, `ib_send_bw`, `ib_write_bw`, and the remaining packaged
+  perftest commands;
+- all MPI-enabled NCCL tests, including all-reduce, all-gather,
+  reduce-scatter, send/receive, and all-to-all;
+- NVIDIA CUDA Samples `deviceQuery`;
+- Open MPI, `ip`, `ping`, `ethtool`, `lspci`, `jq`, and process inspection.
+
+The CUDA development and runtime inputs are immutable multi-architecture
+digests. NCCL is pinned to the same 2.30.4 ABI used by the training image.
+NCCL-tests and CUDA Samples are pinned by full commits and archive hashes;
+their licenses are included beside the binaries. Exact inputs are recorded in
+`simulation/diagnostics/stack.lock.json`, and every installed package version
+is recorded in `/opt/uib-diagnostics/resolved-packages.txt`.
+
+Build and exercise it with:
+
+```text
+make diagnostic-image
+make diagnostic-smoke-test
+make diagnostic-uib-preflight-test
+make diagnostic-gpu-test       # opt-in; needs NVIDIA CDI and one GPU
+```
+
+The source fetcher downloads each hash-verified archive once to the ignored
+`simulation/.artifacts/downloads/` directory. Docker retains base images,
+package layers, and compiled stages in its local cache. The ignored
+`simulation/.artifacts/download-cache-inventory.json` records the large local
+objects for later sessions; it is local state and must not be committed.
+Override `DIAGNOSTIC_DOWNLOAD_CACHE` to use a shared CI cache.
+
+The default preflight does not require a GPU or RDMA device. It verifies that
+all tools and their dynamic libraries are present, exercises hardware-neutral
+rdma-core and network inspection, and emits machine-readable capabilities:
+
+```text
+docker run --rm uib-diagnostics:test capabilities
+docker run --rm uib-diagnostics:test preflight
+```
+
+Hardware gates are explicit, so an unavailable device cannot silently reduce
+coverage:
+
+```text
+docker run --rm --device nvidia.com/gpu=all \
+  uib-diagnostics:test preflight --require-gpu
+docker run --rm --device /dev/infiniband/uverbs0 \
+  uib-diagnostics:test preflight --require-rdma
+```
+
+`--require-gpu` runs `deviceQuery` and a small correctness-checked NCCL
+all-reduce. It remains a single-rank CUDA gate. Cluster adapters launch the
+same `all_reduce_perf` binary through MPI across nodes for the L1 gate.
+
+Mount the common runtime artifact to validate independent composition:
+
+```text
+docker run --rm \
+  -v "$PWD/simulation/.artifacts/uib-runtime:/opt/uib:ro" \
+  uib-diagnostics:test preflight --uib-library-only
+```
+
+`--uib-library-only` checks hashes, dependencies, and verbs symbol versions.
+`--require-uib` also opens `uib0`; it needs the network namespace, bind
+address, and io_uring seccomp permissions described in
+[Transparent UIB injection](#transparent-uib-injection). The scheduler must
+run this full gate before a distributed workload.
+
+## Where transparent UIB is useful
+
+These use cases are ordered by expected practical value. Only the first two
+have end-to-end repository coverage today; later entries require the stated
+compatibility work.
+
+1. **Unmodified distributed AI validation.** Exercise NCCL-based training and
+   inference images on ordinary Ethernet, reproduce the exact workload in
+   containers, and promote it to GPU/RDMA nodes without rebuilding the
+   application. This is UIB's primary target.
+2. **Hardware-independent CI for direct-verbs applications.** Catch API,
+   ordering, completion, timeout, and fallback regressions in disposable jobs
+   without reserving scarce RDMA lab hardware. A final real-hardware gate is
+   still required for provider-specific behavior and performance.
+3. **MPI, UCX, and libfabric compatibility testing.** UCX and libfabric both
+   have verbs-backed transports, so they can broaden coverage to MPI, PGAS,
+   RMA, and other HPC software after UIB implements their queried verbs,
+   connection-management, atomic, and event semantics.
+4. **Repeatable protocol, congestion, and failure experiments.** Compare
+   RoCEv2 and Ultra Ethernet behavior with controlled latency, loss,
+   reordering, ECN, multipath, and rank failure while preserving a normal
+   verbs-facing application.
+5. **User-space storage validation.** SPDK's NVMe-oF RDMA transport uses
+   libibverbs and librdmacm, making it a valuable future target after UIB adds
+   the required connection-management and storage workload semantics. This
+   does not cover kernel NVMe-oF or other kernel-RDMA clients.
+6. **Education and application development.** Let developers inspect QPs,
+   memory registration, completions, collectives, and failure modes on a
+   workstation before using a shared lab.
+
+Applications tied to a vendor library such as `libmlx5`, direct device
+registers, kernel RDMA, or a proprietary NCCL network plugin are not
+transparent `libibverbs` substitutions. They need a separate adapter or are
+out of scope. Passing a small direct-verbs test also does not imply that UCX,
+libfabric, SPDK, or every MPI implementation is already compatible.
 
 ## Kubernetes execution stack
 
@@ -1515,6 +1652,9 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 
 - The cluster lifecycle harness, scheduler adapters, DeepSpeed adapter, and
   Megatron-Core adapter are planned and not yet implemented.
+- The diagnostic image passed its hardware-neutral, UIB runtime-injection,
+  CUDA `deviceQuery`, and single-GPU NCCL all-reduce gates. Its NCCL run has
+  one rank and therefore does not send UIB traffic.
 - UIB's versioned NCCL loader ABI and a two-rank, host-staged NCCL all-reduce
   are covered by repository tests. The actual collective test is opt-in
   because it requires CUDA, NCCL, MPI, MPS, a GPU, and UTS namespace access.
@@ -1545,6 +1685,9 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 - [Ray on Kubernetes](https://docs.ray.io/en/latest/cluster/kubernetes/index.html)
 - [vLLM distributed serving](https://docs.vllm.ai/en/stable/serving/parallelism_scaling/)
 - [NCCL tests](https://github.com/NVIDIA/nccl-tests)
+- [UCX transports](https://openucx.readthedocs.io/en/master/faq.html)
+- [libfabric verbs provider](https://ofiwg.github.io/libfabric/main/man/fi_verbs.7.html)
+- [SPDK NVMe-oF RDMA transport](https://spdk.io/doc/nvmf_tgt_pg.html)
 - [OpenTofu](https://opentofu.org/docs/)
 - [libvirt](https://libvirt.org/docs.html)
 - [virtme-ng](https://github.com/arighi/virtme-ng)

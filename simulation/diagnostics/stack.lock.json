@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "image": {
+    "devel": "docker.io/nvidia/cuda@sha256:f9492f2eea77fbc3d0c14fa8738f35946b42da72917bf5959d284ca39b4f209a",
+    "runtime": "docker.io/nvidia/cuda@sha256:36cccda4bebc3b0b1ebe1907ead8169cf144d45df890be871b36b304cf91145a",
+    "cuda": "13.2.0",
+    "ubuntu": "24.04"
+  },
+  "sources": {
+    "ncclTests": {
+      "commit": "2535da805b34e96d1dc08be66289be1a6d57f5ad",
+      "sha256": "637249acb10d04e060ff6af7de66e0ca917743f98762b0517f5ddc1815221995"
+    },
+    "cudaSamples": {
+      "tag": "v13.2",
+      "commit": "a4526d52290b667cbc46b4a9830fbaad35be1ec2",
+      "sha256": "9bda45969c70116475edcb52949ec514ba7e294aa9ac61df9cd9a88cb6c555bf"
+    }
+  },
+  "packages": {
+    "nccl": "2.30.4-1+cuda13.2",
+    "rdmaCore": "50.0",
+    "perftest": "24.01.0",
+    "openmpi": "4.1.6"
+  },
+  "included": {
+    "rdmaCoreTools": ["ibv_devices", "ibv_devinfo", "rdma"],
+    "perftest": ["ib_read_bw", "ib_send_bw", "ib_write_bw"],
+    "ncclTests": [
+      "all_gather_perf",
+      "all_reduce_perf",
+      "alltoall_perf",
+      "broadcast_perf",
+      "gather_perf",
+      "hypercube_perf",
+      "reduce_perf",
+      "reduce_scatter_perf",
+      "scatter_perf",
+      "sendrecv_perf"
+    ],
+    "cudaSamples": ["deviceQuery"],
+    "network": ["ethtool", "ip", "ping", "rdma"],
+    "inspection": ["jq", "lspci", "ps"]
+  }
+}

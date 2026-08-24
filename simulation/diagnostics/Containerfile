@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: Apache-2.0
+ARG DEVEL_IMAGE=docker.io/nvidia/cuda@sha256:\
+f9492f2eea77fbc3d0c14fa8738f35946b42da72917bf5959d284ca39b4f209a
+ARG RUNTIME_IMAGE=docker.io/nvidia/cuda@sha256:\
+36cccda4bebc3b0b1ebe1907ead8169cf144d45df890be871b36b304cf91145a
+
+FROM ${DEVEL_IMAGE} AS builder
+
+ARG NCCL_PACKAGE_VERSION=2.30.4-1+cuda13.2
+ARG NCCL_TESTS_COMMIT=2535da805b34e96d1dc08be66289be1a6d57f5ad
+ARG CUDA_SAMPLES_COMMIT=a4526d52290b667cbc46b4a9830fbaad35be1ec2
+ARG NCCL_TESTS_SHA256=637249acb10d04e060ff6af7de66e0ca917743f98762b0517f5ddc1815221995
+ARG CUDA_SAMPLES_SHA256=9bda45969c70116475edcb52949ec514ba7e294aa9ac61df9cd9a88cb6c555bf
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates cmake g++ libnccl2=${NCCL_PACKAGE_VERSION} \
+        libnccl-dev=${NCCL_PACKAGE_VERSION} libopenmpi-dev make && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=diagnostic-sources \
+    /nccl-tests-${NCCL_TESTS_COMMIT}.tar.gz /sources/nccl-tests.tar.gz
+COPY --from=diagnostic-sources \
+    /cuda-samples-${CUDA_SAMPLES_COMMIT}.tar.gz /sources/cuda-samples.tar.gz
+
+RUN printf '%s  %s\n' \
+        "${NCCL_TESTS_SHA256}" /sources/nccl-tests.tar.gz \
+        "${CUDA_SAMPLES_SHA256}" /sources/cuda-samples.tar.gz | \
+        sha256sum -c - && \
+    mkdir -p /build/nccl-tests /build/cuda-samples && \
+    tar -xzf /sources/nccl-tests.tar.gz \
+        --strip-components=1 -C /build/nccl-tests && \
+    tar -xzf /sources/cuda-samples.tar.gz \
+        --strip-components=1 -C /build/cuda-samples
+
+RUN mpi_home=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)/openmpi && \
+    make -C /build/nccl-tests -j"$(nproc)" \
+        CUDA_HOME=/usr/local/cuda NCCL_HOME=/usr \
+        MPI=1 MPI_HOME="$mpi_home"
+RUN cmake -S /build/cuda-samples/Samples/1_Utilities/deviceQuery \
+        -B /build/device-query -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build /build/device-query --parallel "$(nproc)"
+
+FROM ${RUNTIME_IMAGE}
+
+ARG NCCL_PACKAGE_VERSION=2.30.4-1+cuda13.2
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates ethtool ibverbs-utils iproute2 iputils-ping jq \
+        libnccl2=${NCCL_PACKAGE_VERSION} openmpi-bin pciutils perftest \
+        procps rdma-core && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/nccl-tests/build/*_perf /usr/local/bin/
+COPY --from=builder /build/device-query/deviceQuery /usr/local/bin/deviceQuery
+COPY --from=builder /build/nccl-tests/LICENSE.txt \
+    /usr/share/doc/uib-diagnostics/nccl-tests-LICENSE.txt
+COPY --from=builder /build/cuda-samples/LICENSE \
+    /usr/share/doc/uib-diagnostics/cuda-samples-LICENSE
+COPY diagnose /usr/local/bin/diagnose
+COPY stack.lock.json /opt/uib-diagnostics/stack.lock.json
+
+RUN chmod 0755 /usr/local/bin/diagnose && \
+    dpkg-query -W -f='${Package}\t${Version}\n' | sort \
+        > /opt/uib-diagnostics/resolved-packages.txt && \
+    diagnose preflight
+
+ENTRYPOINT ["/usr/local/bin/diagnose"]
+CMD ["preflight"]

@@ -56,6 +56,23 @@
         "tiny-public-vllm-single-gpu",
         "tiny-public-vllm-standard-benchmark-single-gpu"
       ]
+    },
+    "diagnostics": {
+      "lock": "simulation/diagnostics/stack.lock.json",
+      "develImage": "docker.io/nvidia/cuda@sha256:f9492f2eea77fbc3d0c14fa8738f35946b42da72917bf5959d284ca39b4f209a",
+      "runtimeImage": "docker.io/nvidia/cuda@sha256:36cccda4bebc3b0b1ebe1907ead8169cf144d45df890be871b36b304cf91145a",
+      "cuda": "13.2.0",
+      "nccl": "2.30.4",
+      "ncclTests": "2.17.9",
+      "rdmaCore": "50.0",
+      "perftest": "24.01.0",
+      "openmpi": "4.1.6",
+      "validatedProfiles": [
+        "hardware-neutral-tool-preflight",
+        "uib-runtime-library-injection",
+        "single-gpu-device-query",
+        "single-gpu-nccl-all-reduce"
+      ]
     }
   },
   "validatedConfigurations": [
@@ -129,6 +146,27 @@
       "uibTraffic": "not-applicable-single-rank",
       "validationLevel": "local-functional-only",
       "testTarget": "make inference-gpu-test"
+    },
+    {
+      "id": "diagnostics-cuda-13.2-nccl-2.30.4-single-gpu",
+      "date": "2026-08-24",
+      "uibCommit": "a40fb2497d66bf5662db390b0bf171a94973be4a",
+      "image": "uib-diagnostics:test",
+      "cuda": "13.2.0",
+      "nccl": "2.30.4",
+      "ncclTests": "2.17.9",
+      "physicalGpus": 1,
+      "gpu": "NVIDIA GeForce RTX 4070 SUPER",
+      "collective": "single-rank all-reduce",
+      "correctness": "deviceQuery and NCCL bounds checks passed",
+      "uibInjection": "runtime library preflight passed",
+      "uibTraffic": "not-applicable-single-rank",
+      "validationLevel": "local-functional-only",
+      "testTargets": [
+        "make diagnostic-smoke-test",
+        "make diagnostic-uib-preflight-test",
+        "make diagnostic-gpu-test"
+      ]
     }
   ],
   "limitations": {

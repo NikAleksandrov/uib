@@ -1,0 +1,192 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+usage()
+{
+	cat >&2 <<'EOF'
+usage: diagnose capabilities
+       diagnose preflight [--require-gpu] [--require-rdma]
+                          [--uib-library-only | --require-uib]
+       diagnose exec COMMAND [ARGUMENT...]
+EOF
+}
+
+package_version()
+{
+	dpkg-query -W -f='${Version}' "$1" 2>/dev/null || printf 'unavailable'
+}
+
+device_count()
+{
+	directory=$1
+	count=0
+
+	if [ -d "$directory" ]; then
+		for path in "$directory"/*; do
+			[ -e "$path" ] || continue
+			count=$((count + 1))
+		done
+	fi
+	printf '%s' "$count"
+}
+
+command_available()
+{
+	if command -v "$1" >/dev/null 2>&1; then
+		printf true
+	else
+		printf false
+	fi
+}
+
+capabilities()
+{
+	gpu_nodes=0
+	for path in /dev/nvidia[0-9]*; do
+		[ -e "$path" ] || continue
+		gpu_nodes=$((gpu_nodes + 1))
+	done
+	rdma_devices=$(device_count /sys/class/infiniband)
+	uib_mounted=false
+	[ ! -x /opt/uib/bin/uib-preflight ] || uib_mounted=true
+
+	jq -n \
+		--arg cuda "${CUDA_VERSION:-unavailable}" \
+		--arg nccl "$(package_version libnccl2)" \
+		--arg rdmaCore "$(package_version rdma-core)" \
+		--arg perftest "$(package_version perftest)" \
+		--arg openmpi "$(package_version openmpi-bin)" \
+		--argjson gpuDeviceNodes "$gpu_nodes" \
+		--argjson rdmaDevices "$rdma_devices" \
+		--argjson uibMounted "$uib_mounted" \
+		--argjson allReducePerf "$(command_available all_reduce_perf)" \
+		--argjson cudaDeviceQuery "$(command_available deviceQuery)" \
+		--argjson ibvDevices "$(command_available ibv_devices)" \
+		--argjson ibvDevinfo "$(command_available ibv_devinfo)" \
+		--argjson perftest "$(command_available ib_write_bw)" \
+		--argjson networkInspection "$(command_available ip)" \
+		'{
+			schemaVersion: 1,
+			stack: {
+				cuda: $cuda,
+				nccl: $nccl,
+				rdmaCore: $rdmaCore,
+				perftest: $perftest,
+				openmpi: $openmpi
+			},
+			tools: {
+				allReducePerf: $allReducePerf,
+				cudaDeviceQuery: $cudaDeviceQuery,
+				ibvDevices: $ibvDevices,
+				ibvDevinfo: $ibvDevinfo,
+				perftest: $perftest,
+				networkInspection: $networkInspection
+			},
+			hardware: {
+				gpuDeviceNodes: $gpuDeviceNodes,
+				rdmaDevices: $rdmaDevices
+			},
+			uib: {
+				mounted: $uibMounted
+			}
+		}'
+}
+
+require_command()
+{
+	if ! command -v "$1" >/dev/null 2>&1; then
+		echo "required diagnostic command is missing: $1" >&2
+		exit 1
+	fi
+}
+
+preflight()
+{
+	require_gpu=0
+	require_rdma=0
+	uib_mode=none
+
+	while [ "$#" -gt 0 ]; do
+		case $1 in
+		--require-gpu)
+			require_gpu=1
+			;;
+		--require-rdma)
+			require_rdma=1
+			;;
+		--uib-library-only)
+			uib_mode=library
+			;;
+		--require-uib)
+			uib_mode=full
+			;;
+		*)
+			usage
+			exit 2
+			;;
+		esac
+		shift
+	done
+
+	for command in all_reduce_perf deviceQuery ethtool ib_read_bw \
+		ib_send_bw ib_write_bw ibv_devices ibv_devinfo ip jq lspci \
+		mpirun rdma; do
+		require_command "$command"
+	done
+
+	if ldd /usr/local/bin/all_reduce_perf | grep -q 'not found'; then
+		echo "NCCL test runtime dependency is missing" >&2
+		exit 1
+	fi
+	ibv_devices >/dev/null
+	ip link show >/dev/null
+	rdma link show >/dev/null
+	capabilities | jq -e '.schemaVersion == 1' >/dev/null
+
+	if [ "$require_rdma" -eq 1 ] && \
+		[ "$(device_count /sys/class/infiniband)" -eq 0 ]; then
+		echo "no physical or kernel RDMA device is visible" >&2
+		exit 1
+	fi
+
+	if [ "$uib_mode" != none ]; then
+		if [ ! -x /opt/uib/bin/uib-preflight ]; then
+			echo "UIB runtime is not mounted at /opt/uib" >&2
+			exit 1
+		fi
+		if [ "$uib_mode" = library ]; then
+			/opt/uib/bin/uib-preflight --library-only
+		else
+			/opt/uib/bin/uib-preflight
+		fi
+	fi
+
+	if [ "$require_gpu" -eq 1 ]; then
+		deviceQuery
+		all_reduce_perf -b 8 -e 64K -f 2 -g 1 -w 1 -n 3 -c 1
+	fi
+
+	echo "diagnostic image preflight: PASS"
+}
+
+case ${1:-} in
+capabilities)
+	shift
+	[ "$#" -eq 0 ] || { usage; exit 2; }
+	capabilities
+	;;
+preflight)
+	shift
+	preflight "$@"
+	;;
+exec)
+	shift
+	[ "$#" -gt 0 ] || { usage; exit 2; }
+	exec "$@"
+	;;
+*)
+	usage
+	exit 2
+	;;
+esac
