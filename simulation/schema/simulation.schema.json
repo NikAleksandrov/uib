@@ -39,7 +39,11 @@
       "required": ["manager"],
       "properties": {
         "manager": { "enum": ["kubernetes", "slurm"] },
-        "version": { "type": "string", "minLength": 1 }
+        "version": { "type": "string", "minLength": 1 },
+        "nodeImage": {
+          "type": "string",
+          "pattern": "^\\S+@sha256:[0-9a-f]{64}$"
+        }
       }
     },
     "container": {

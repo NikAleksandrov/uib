@@ -291,6 +291,9 @@ simulation-cli-test:
 simulation-netem-test:
 	./tests/run_netem_config_test.sh
 
+simulation-kind-test:
+	./tests/run_kind_backend_test.sh
+
 docs:
 	python3 $(DOC_GENERATOR)
 
@@ -820,6 +823,7 @@ clean:
 	diagnostic-sources diagnostic-image diagnostic-smoke-test \
 	diagnostic-uib-preflight-test diagnostic-gpu-test \
 	simulation-cli-test simulation-netem-test simulation-congestion-test \
+	simulation-kind-test \
 	docs-check examples clean install install-static test rxe-test-build \
 	rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \

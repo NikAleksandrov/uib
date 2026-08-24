@@ -498,6 +498,8 @@ only one communication, protocol, and network-condition overlay.
 | `infrastructure.slurmPartition` | Partition name | Existing Slurm target |
 | `infrastructure.allowExistingMutations` | `true`, `false` | Permit explicitly requested shaping on existing hardware |
 | `cluster.manager` | `kubernetes`, `slurm` | Scheduler/control plane |
+| `cluster.version` | Non-empty version | Kubernetes or Slurm version selected by the adapter |
+| `cluster.nodeImage` | OCI reference with an `@sha256:` digest | Reproducible Kind node image |
 | `container.runtime` | `containerd`, `enroot`, `apptainer` | OCI execution implementation |
 | `container.integration` | `none`, `pyxis` | Slurm/container integration |
 | `launcher.training` | `kubeflow`, `jobset`, `slurm` | Training submitter |
@@ -1192,17 +1194,24 @@ libfabric, SPDK, or every MPI implementation is already compatible.
 Kind provides the quickest Kubernetes lifecycle:
 
 ```text
-uib-sim doctor --profile kind-kubernetes
-uib-sim up --profile kind-kubernetes
-uib-sim deploy --profile kind-kubernetes
-uib-sim run --request training-smoke.yaml
-uib-sim collect
-uib-sim down
+simulation/bin/uib-sim render --profile kind-kubernetes --format json \
+    > /tmp/uib-kind.json
+simulation/backends/kind/cluster render /tmp/uib-kind.json
+simulation/backends/kind/cluster up /tmp/uib-kind.json \
+    --name uib-lab --kubeconfig /tmp/uib-lab.kubeconfig
+simulation/backends/kind/cluster status --name uib-lab
+simulation/backends/kind/cluster down --name uib-lab
 ```
 
-The planned adapter creates a named cluster, loads pinned images, installs
-Kubeflow Trainer and KubeRay, spreads ranks across worker containers, shapes
-pod network namespaces, exports logs, and deletes only the named cluster.
+The adapter renders ordinary Kind v1alpha4 YAML with one control-plane and the
+configured worker count. Every node uses the digest-pinned image from
+`cluster.nodeImage`. `up`, `status`, `kubeconfig`, and `down` invoke the real
+Kind CLI and always require an explicit, validated cluster name. The rendered
+YAML can be passed directly to `kind create cluster` when debugging.
+
+Loading workload images, installing Kubeflow Trainer and KubeRay, spreading
+ranks, shaping pod network namespaces, and collecting results are later
+deployment phases; the current Kind adapter does not claim those steps.
 
 Kind nodes share one host kernel and compute capacity. Results are L0 unless a
 separate GPU capability has been proven.
@@ -2274,14 +2283,31 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-cli-test` | Python 3, PyYAML, and `jsonschema` | Every profile, named layer replacement, schema and semantic rejection, typed `--set`, and the read-only `doctor` report |
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in network condition renders to the expected `tc netem` command; unsafe interfaces and invalid combinations are rejected; it does not modify a qdisc |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | UET SEND, RDMA read/write, and atomics complete with actual netem conditions and the selected built-in or plugin congestion algorithm |
+| `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 
-Run all three:
+Run all four:
 
 ```text
 make simulation-cli-test
 make simulation-netem-test
 make simulation-congestion-test
+make simulation-kind-test
 ```
+
+The Kind adapter test does not create a cluster. To exercise the actual
+container-backed lifecycle, first run
+`uib-sim doctor --profile kind-kubernetes`, then use the commands in
+[Kind](#kind). The host needs Kind, a working Docker-compatible runtime, and
+sufficient CPU and memory for the declared nodes.
+
+| Kind option | Default | Syntax and meaning |
+|---|---|---|
+| `cluster.nodeImage` | Pinned in `kind-kubernetes.yaml` | Digest-qualified node image written to every Kind node |
+| `--name` | Required | Lowercase DNS label, at most 63 characters; identifies the only cluster an operation may inspect or delete |
+| `--wait` | `120s` | Positive integer plus `s`, `m`, or `h` passed to `kind create cluster` |
+| `--kubeconfig` | Kind default | Explicit output path for the new cluster's kubeconfig |
+| `--retain` | Off | Preserve Kind nodes when cluster creation fails |
+| `KIND_COMMAND` | `kind` | Exact Kind executable, primarily useful for pinned installations and tests |
 
 The congestion test creates a disposable network namespace, applies netem to
 its loopback interface, runs `tests/loopback`, and destroys the namespace. It
@@ -2511,8 +2537,10 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 
 ## Limitations
 
-- The cluster lifecycle harness, scheduler adapters, DeepSpeed adapter, and
-  Megatron-Core adapter are planned and not yet implemented.
+- The Kind backend renders and delegates named cluster lifecycle operations,
+  but its real Docker-backed creation was not run on this development host.
+  The common lifecycle harness, scheduler deployment adapters, DeepSpeed
+  adapter, and Megatron-Core adapter are planned and not yet implemented.
 - The diagnostic image passed its hardware-neutral, UIB runtime-injection,
   CUDA `deviceQuery`, and single-GPU NCCL all-reduce gates. Its NCCL run has
   one rank and therefore does not send UIB traffic.

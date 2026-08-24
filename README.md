@@ -139,6 +139,7 @@ Common targets are:
     make rccl-test            # opt-in two-or-more-rank RCCL test on AMD GPUs
     make ucx-libfabric-test   # opt-in UCX and libfabric transfers through UIB
     make simulation-cli-test  # validate simulation profiles and layer overlays
+    make simulation-kind-test # validate standard Kind rendering and delegation
     make training-smoke-test  # pinned two-rank CPU DDP and restart workload
     make training-public-test # dynamically cached tiny public model and data
     make training-gpu-test    # opt-in NCCL and FSDP restart on NVIDIA CDI
