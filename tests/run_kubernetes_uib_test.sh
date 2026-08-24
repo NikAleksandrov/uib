@@ -15,13 +15,21 @@ runtime_image=${SIMULATION_KUBERNETES_UIB_RUNTIME_IMAGE:-uib-runtime:test}
 kind_command=${KIND_COMMAND:-kind}
 kubectl_command=${KUBECTL_COMMAND:-kubectl}
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-kubernetes-data.XXXXXX")
+results_root=${SIMULATION_KUBERNETES_UIB_RESULTS:-$project_dir/simulation/.artifacts/results}
+result_dir=$results_root/$name
 kubeconfig=$test_dir/kubeconfig
 created=0
+completed=0
 
 cleanup()
 {
 	if [ "$created" = 1 ]; then
 		if [ -s "$kubeconfig" ]; then
+			if [ "$completed" = 0 ]; then
+				"$kubectl_command" --kubeconfig "$kubeconfig" get pods \
+					--all-namespaces -o wide \
+					> "$result_dir/failure-pods.txt" 2>&1 || true
+			fi
 			"$kubectl_command" --kubeconfig "$kubeconfig" delete namespace \
 				"$namespace" --ignore-not-found --wait=false \
 				>/dev/null 2>&1 || true
@@ -70,6 +78,39 @@ for command_name in "$kind_command" "$kubectl_command"; do
 		exit 1
 	fi
 done
+
+if [ -e "$result_dir" ]; then
+	echo "Kubernetes UIB result directory already exists: $result_dir" >&2
+	exit 1
+fi
+mkdir -p "$result_dir"
+"$kind_command" version > "$result_dir/kind-version.txt" 2>&1
+"$kubectl_command" version --client -o json \
+	> "$result_dir/kubectl-version.json" 2>&1
+python3 - "$result_dir/request.json" "$name" "$namespace" "$protocols" \
+	"$iterations" "$runtime_image" "$diagnostic_image" <<'PY'
+import json
+import sys
+
+
+path, name, namespace, protocols, iterations, runtime, diagnostics = sys.argv[1:]
+request = {
+    "schemaVersion": 1,
+    "runId": name,
+    "namespace": namespace,
+    "protocols": protocols.split(),
+    "operations": ["rc-send-receive", "rdma-write"],
+    "iterations": int(iterations),
+    "images": {"runtime": runtime, "diagnostics": diagnostics},
+}
+with open(path, "w", encoding="utf-8") as output:
+    json.dump(request, output, indent=2, sort_keys=True)
+    output.write("\n")
+PY
+if [ -f "$project_dir/simulation/.artifacts/uib-runtime/share/uib/runtime-manifest.json" ]; then
+	cp "$project_dir/simulation/.artifacts/uib-runtime/share/uib/runtime-manifest.json" \
+		"$result_dir/uib-runtime-manifest.json"
+fi
 
 created=1
 "$cli" up --profile kind-kubernetes --run-id "$name" \
@@ -237,17 +278,19 @@ PY
 			"$kubectl_command" --kubeconfig "$kubeconfig" logs \
 				--namespace "$namespace" "$pod" \
 				--container uib-runtime-check \
-				| grep -F 'UIB runtime preflight: PASS' >/dev/null
+				> "$result_dir/$pod-preflight.log"
+			grep -F 'UIB runtime preflight: PASS' \
+				"$result_dir/$pod-preflight.log" >/dev/null
 			"$kubectl_command" --kubeconfig "$kubeconfig" logs \
 				--namespace "$namespace" "$pod" --container verbs \
-				> "$test_dir/$pod.log"
-			grep -F "$result_pattern" "$test_dir/$pod.log" >/dev/null
+				> "$result_dir/$pod.log"
+			grep -F "$result_pattern" "$result_dir/$pod.log" >/dev/null
 		done
 
 		"$kubectl_command" --kubeconfig "$kubeconfig" get pod \
 			--namespace "$namespace" "$server" "$client" -o json \
-			> "$test_dir/$protocol-$operation-pods.json"
-		python3 - "$test_dir/$protocol-$operation-pods.json" "$name" <<'PY'
+			> "$result_dir/$protocol-$operation-pods.json"
+		python3 - "$result_dir/$protocol-$operation-pods.json" "$name" <<'PY'
 import json
 import sys
 
@@ -260,7 +303,7 @@ assert nodes == expected, f"UIB peers used {nodes}, expected {expected}"
 assert all(pod["status"]["phase"] == "Succeeded" for pod in pods)
 assert len({pod["status"]["podIP"] for pod in pods}) == 2
 PY
-		cat "$test_dir/$client.log"
+		cat "$result_dir/$client.log"
 		"$kubectl_command" --kubeconfig "$kubeconfig" delete pod \
 			--namespace "$namespace" "$server" "$client" \
 			--wait --timeout "$test_timeout"
@@ -268,9 +311,45 @@ PY
 	done
 done
 
+python3 - "$result_dir/summary.json" "$name" "$protocols" "$iterations" <<'PY'
+import json
+import sys
+
+
+path, run_id, protocol_text, iterations = sys.argv[1:]
+protocols = protocol_text.split()
+summary = {
+    "schemaVersion": 1,
+    "runId": run_id,
+    "status": "passed",
+    "validationLevel": "L0",
+    "uibTraffic": True,
+    "protocols": protocols,
+    "operations": ["rc-send-receive", "rdma-write"],
+    "iterationsPerOperation": int(iterations),
+    "placement": "distinct Kind workers and Pod IPs",
+    "proves": [
+        "transparent UIB runtime injection",
+        "uib0 selection by unchanged rdma-core and perftest programs",
+        f"cross-worker {', '.join(protocols)} traffic",
+    ],
+    "doesNotProve": [
+        "physical multi-node behavior",
+        "GPU-memory transport",
+        "NCCL, RCCL, or LLM collective traffic",
+        "production performance",
+    ],
+}
+with open(path, "w", encoding="utf-8") as output:
+    json.dump(summary, output, indent=2, sort_keys=True)
+    output.write("\n")
+PY
+
 "$kubectl_command" --kubeconfig "$kubeconfig" delete namespace "$namespace" \
 	--wait --timeout "$test_timeout"
 "$cli" down --profile kind-kubernetes --run-id "$name"
 created=0
+completed=1
 
+echo "UIB evidence: $result_dir"
 echo "real Kubernetes UIB data-plane test: PASS"

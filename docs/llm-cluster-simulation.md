@@ -1384,6 +1384,7 @@ Supported options are deliberately small:
 | `SIMULATION_KUBERNETES_UIB_NAMESPACE` | Unique `uib-data-<pid>` | Disposable test namespace. |
 | `SIMULATION_KUBERNETES_UIB_WAIT` | `180s` | Kind readiness duration. |
 | `SIMULATION_KUBERNETES_UIB_TIMEOUT` | `180s` | Per-pod and cleanup duration. |
+| `SIMULATION_KUBERNETES_UIB_RESULTS` | `simulation/.artifacts/results` | Ignored persistent result root. Each unique cluster name gets one subdirectory; an existing directory is never overwritten. |
 | `RUNTIME_IMAGE` | `uib-runtime:test` | Local runtime init image built and loaded into Kind. |
 | `DIAGNOSTIC_IMAGE` | `uib-diagnostics:test` | Local standard-tool image built and loaded into Kind. |
 | `KIND_COMMAND`, `KUBECTL_COMMAND` | `kind`, `kubectl` | Exact client executables. |
@@ -1409,6 +1410,14 @@ before treating a scheduler smoke test as useful. It remains L0: both Kind
 workers share one physical host and kernel, the program uses host memory, and
 no GPU collective runs. It does not replace the two-physical-node NCCL or RCCL
 promotion gate required for L1.
+
+Every run prints its evidence directory. It survives cluster cleanup and
+contains `request.json`, `summary.json`, client versions, the UIB runtime
+manifest, a Pod topology JSON file for every case, and separate preflight and
+verbs logs for both peers. `summary.json` states both what passed and which
+physical-node, GPU, collective, and performance claims remain untested. The
+default result root is ignored by Git; use a unique explicit cluster name when
+setting a shared result root.
 
 ### Real Kind and Kubeflow L0 gate
 

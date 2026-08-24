@@ -182,6 +182,14 @@
       "memoryMode": "host",
       "uibRuntimePreflight": "passed-on-both-pods-for-each-protocol",
       "uibTraffic": "actual-cross-pod-data-plane",
+      "evidence": [
+        "resolved request",
+        "client versions",
+        "UIB runtime manifest",
+        "peer preflight and verbs logs",
+        "Pod placement and address topology",
+        "validation summary"
+      ],
       "cleanup": "test pods, namespace, and Kind cluster removed",
       "validationLevel": "L0",
       "testTarget": "make simulation-kubernetes-uib-test"
