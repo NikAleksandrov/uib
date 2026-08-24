@@ -106,6 +106,26 @@ def command_load_image(args):
     return invoke_backend(config, arguments)
 
 
+def command_render_workload(args):
+    from .config import resolve
+    from .core import ConfigurationError, KUBERNETES_RENDERER
+
+    config = resolve(args)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                     prefix="uib-sim-", suffix=".json") as output:
+        json.dump(config, output, indent=2, sort_keys=True)
+        output.flush()
+        command = [str(KUBERNETES_RENDERER), output.name,
+                   "--run-id", args.run_id]
+        if args.allow_mutable_tags:
+            command.append("--allow-mutable-tags")
+        try:
+            return subprocess.run(command, check=False).returncode
+        except OSError as error:
+            raise ConfigurationError(
+                f"cannot invoke Kubernetes renderer: {error}") from error
+
+
 def command_down(args):
     from .config import resolve
 

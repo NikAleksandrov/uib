@@ -24,5 +24,8 @@ COMPATIBILITY = SIMULATION / "compatibility-lock.json"
 KIND_BACKEND = SIMULATION / "backends" / "kind" / "cluster"
 
 
+KUBERNETES_RENDERER = SIMULATION / "adapters" / "kubernetes" / "render"
+
+
 class ConfigurationError(Exception):
     pass

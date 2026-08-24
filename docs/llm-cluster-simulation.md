@@ -519,6 +519,7 @@ only one communication, protocol, and network-condition overlay.
 | `uib.enabled` | `true`, `false` | UIB run or native-verbs baseline |
 | `uib.bundle` | Path, archive, or immutable image reference | Runtime artifact supplied to the workload |
 | `uib.protocol` | `rocev2`, `uet` | UIB wire protocol |
+| `uib.bindPort` | Integer 1-65535; 4791 for RoCEv2, 5432 for UET | Per-pod UIB service port selected by the protocol overlay |
 | `uib.transport` | `udp-sync`, `udp-io-uring`, `udp-zc-afxdp`, `tcp-devmem` | Packet-I/O backend |
 | `uib.memoryMode` | `host-staged`, `gpu-direct` | Collective buffer path/result class |
 | `uib.environment` | Map whose keys start with `UIB_` | Validated advanced UIB settings |
@@ -529,7 +530,7 @@ only one communication, protocol, and network-condition overlay.
 | `communication.fallbackPolicy` | `fail` | Software/native fallback is never accepted for validation |
 | `communication.transportAllowlist` | Non-empty list | Only data transports/providers that may satisfy the run |
 | `communication.nccl.network`, `.rccl.network` | `IB` | Required collective data network |
-| `communication.nccl.hca`, `.rccl.hca` | `=uib0` | Exact UIB device filter |
+| `communication.nccl.hca`, `.rccl.hca` | `=uib0` for UIB; an explicit site device for a native baseline | Exact device filter; UIB rendering rejects any value other than `=uib0` |
 | `communication.ucx.transports` | Non-empty list, normally `rc`, `ud` | Explicit UCX verbs transports |
 | `communication.ucx.device` | Device and port, normally `uib0:1` | Exact UCX device |
 | `communication.libfabric.provider` | `verbs`, `ofi_rxm;verbs` | Exact OFI provider chain |
@@ -1219,11 +1220,104 @@ profile; other providers fail explicitly as unimplemented.
 `load-image` delegates to `kind load docker-image` and requires digest-pinned
 references by default. Local development tags require the explicit
 `--allow-mutable-tags` option. Installing Kubeflow Trainer and KubeRay,
-spreading ranks, shaping pod network namespaces, and collecting results are
-later deployment phases; the current Kind adapter does not claim those steps.
+applying rendered workloads, shaping pod network namespaces, and collecting
+results are later deployment phases; the current Kind adapter does not claim
+those steps.
 
 Kind nodes share one host kernel and compute capacity. Results are L0 unless a
 separate GPU capability has been proven.
+
+### Kubeflow training renderer
+
+`render-workload` turns the same resolved configuration used by every backend
+into ordinary Kubeflow Trainer v2 resources. The checked-in request is a
+generated, four-step CPU DDP workload and therefore needs no model or dataset
+download:
+
+```text
+simulation/bin/uib-sim render-workload --profile kind-kubernetes \
+    --request simulation/requests/training-smoke.yaml \
+    --run-id uib-smoke --allow-mutable-tags > /tmp/uib-smoke.yaml
+```
+
+The output contains exactly four run-owned resources:
+
+1. namespace `uib-smoke`, which is the cleanup boundary;
+2. a ConfigMap containing the unchanged training JSON;
+3. a namespaced `TrainingRuntime` derived from Kubeflow's standard Torch
+   runtime; and
+4. a `TrainJob` that supplies the same image, command, arguments, rank count,
+   resources, and communication environment.
+
+The runtime uses one pod per requested node and required pod anti-affinity on
+`kubernetes.io/hostname`. When UIB is enabled, its first init container copies
+the runtime image from `/uib-runtime` into a shared `/opt/uib` `emptyDir`; a
+second init container executes `uib-preflight --library-only` inside the
+training image. The trainer receives its pod IP through the downward API as
+`UIB_BIND_IP`, the protocol overlay's `UIB_BIND_PORT`, and the explicit
+`NCCL_NET=IB`, `NCCL_IB_HCA==uib0`, and `NCCL_IBVERBS_LIB` selection. NCCL
+logging is enabled so the later evidence collector can reject socket or
+native-provider fallback.
+
+Local image tags are accepted only with `--allow-mutable-tags`. The renderer
+otherwise requires immutable digests for both images:
+
+```text
+simulation/bin/uib-sim render-workload --profile kind-kubernetes \
+    --request simulation/requests/training-smoke.yaml \
+    --run-id uib-smoke \
+    --set workload.image=registry.example/training@sha256:<digest> \
+    --set uib.bundle=registry.example/uib-runtime@sha256:<digest>
+```
+
+Images use `IfNotPresent`, so Kind/containerd and real nodes reuse their normal
+image cache. The generated smoke model requires no external artifact cache.
+The current renderer uses per-pod `emptyDir` volumes for model data and
+results; persistent cache, checkpoint, and result claims must be implemented
+before public-model or restart jobs are applied to a cluster.
+
+The native-verbs comparison keeps the image and workload identical and only
+turns off UIB injection while selecting an explicit physical HCA:
+
+```text
+simulation/bin/uib-sim render-workload --profile real-kubernetes \
+    --request simulation/requests/training-smoke.yaml \
+    --run-id native-smoke \
+    --set uib.enabled=false \
+    --set communication.nccl.hca==mlx5_0 \
+    --set workload.image=registry.example/training@sha256:<digest>
+```
+
+Change the UIB protocol without changing the scheduler or workload:
+
+```text
+simulation/bin/uib-sim render-workload --profile kind-kubernetes \
+    --request simulation/requests/training-smoke.yaml \
+    --overlay protocol/uet-nscc --run-id uib-uet \
+    --allow-mutable-tags
+```
+
+The protocol overlay changes the port to 5432 and adds `UIB_UET_CC=nscc`.
+`uib.environment` and the collective environment accept advanced variables,
+but the renderer owns bind, protocol, verbs-library, HCA, and network-selection
+variables and rejects attempts to override them through those maps.
+
+Current compatibility boundaries are intentional:
+
+| Request | Result |
+|---|---|
+| `launcher.training: kubeflow`, `workload.kind: training` | Supported render path |
+| NCCL with `transportAllowlist: [IB]` | Supported communication shape |
+| UIB enabled without `uib.bundle` or with HCA other than `=uib0` | Rejected |
+| Mutable workload or runtime images without explicit opt-in | Rejected |
+| More than one process per pod | Rejected until UIB derives a unique bind port for each local rank |
+| RCCL, UCX, or libfabric training front end | Rejected until a corresponding workload image and launcher pass their compatibility gate |
+| CPU smoke request | L0 scheduler/rendering coverage; PyTorch uses Gloo and does not exercise UIB traffic |
+
+Kubeflow Trainer v2.2.1 and API `trainer.kubeflow.org/v1alpha1` are pinned in
+the compatibility lock. The next deployment gate installs that exact operator,
+applies this output, waits for the `TrainJob`, captures results and logs, and
+deletes only the run namespace.
 
 ### virtme with Kind
 
@@ -1603,10 +1697,11 @@ srun --ntasks-per-node=8 --gpus-per-task=1 \
   /opt/uib-training/bin/train --config /run/workload.json
 ```
 
-Kubeflow Trainer uses the same image, executable, JSON ConfigMap, cache PVC,
-checkpoint PVC, and result PVC. Its launcher supplies the equivalent rank
-environment. This makes changing Kubernetes to Slurm a launcher change rather
-than a training-code change.
+The current Kubeflow renderer uses the same image, executable, JSON ConfigMap,
+and environment. Its L0 smoke manifest uses `emptyDir` storage; the next
+storage slice replaces those volumes with configurable cache, checkpoint, and
+result claims without changing the workload. This makes changing Kubernetes
+to Slurm a launcher change rather than a training-code change.
 
 Native verbs and UIB also use the same image digest and command. The native
 baseline has no UIB variables. The UIB variant adds only the `/opt/uib` mount
@@ -2299,14 +2394,16 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | UET SEND, RDMA read/write, and atomics complete with actual netem conditions and the selected built-in or plugin congestion algorithm |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
+| `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 resource shape, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, digest enforcement, and rejection of unsafe combinations |
 
-Run the four hardware-neutral gates:
+Run the five hardware-neutral gates:
 
 ```text
 make simulation-cli-test
 make simulation-netem-test
 make simulation-congestion-test
 make simulation-kind-test
+make simulation-kubernetes-render-test
 ```
 
 The mocked Kind adapter test does not create a cluster. The opt-in real gate is:
@@ -2586,9 +2683,10 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 
 - The Kind backend passed a real one-control-plane, one-worker lifecycle test,
   including readiness, kubeconfig export, node-count validation, and cleanup.
-  Scheduler deployment, pod-level UIB validation, multi-worker workload runs,
-  the other infrastructure adapters, DeepSpeed, and Megatron-Core remain
-  planned.
+  Kubeflow training resources render and pass structural tests. Operator
+  installation, server-side CRD validation, pod-level UIB validation,
+  multi-worker workload runs, the other infrastructure adapters, DeepSpeed,
+  and Megatron-Core remain planned.
 - The diagnostic image passed its hardware-neutral, UIB runtime-injection,
   CUDA `deviceQuery`, and single-GPU NCCL all-reduce gates. Its NCCL run has
   one rank and therefore does not send UIB traffic.
@@ -2622,7 +2720,8 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 - [Generated environment-variable reference](environment-variables.md)
 - [DMA-BUF and zero-copy](dmabuf-zerocopy.md)
 - [Kind configuration](https://kind.sigs.k8s.io/docs/user/configuration/)
-- [Kubeflow Trainer](https://www.kubeflow.org/docs/components/trainer/overview/)
+- [Kubeflow Trainer runtime guide](https://trainer.kubeflow.org/en/latest/operator-guides/runtime/)
+- [Kubeflow Trainer v2.2.1](https://github.com/kubeflow/trainer/releases/tag/v2.2.1)
 - [Ray on Kubernetes](https://docs.ray.io/en/latest/cluster/kubernetes/index.html)
 - [vLLM distributed serving](https://docs.vllm.ai/en/stable/serving/parallelism_scaling/)
 - [NCCL tests](https://github.com/NVIDIA/nccl-tests)

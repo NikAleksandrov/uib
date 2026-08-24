@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+
+import pathlib
+import sys
+
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from kubernetes_renderer.cli import main
+from kubernetes_renderer.storage import volume_mounts
+from kubernetes_renderer.storage import volumes
+
+
+if __name__ == "__main__":
+    sys.exit(main())

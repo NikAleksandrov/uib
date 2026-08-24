@@ -91,11 +91,12 @@
     "uib": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "protocol", "transport", "memoryMode", "congestionControl"],
+      "required": ["enabled", "protocol", "bindPort", "transport", "memoryMode", "congestionControl"],
       "properties": {
         "enabled": { "type": "boolean" },
         "bundle": { "type": "string", "minLength": 1 },
         "protocol": { "enum": ["rocev2", "uet"] },
+        "bindPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "transport": {
           "enum": ["udp-sync", "udp-io-uring", "udp-zc-afxdp", "tcp-devmem"]
         },
@@ -283,7 +284,7 @@
       "properties": {
         "version": { "type": "string" },
         "network": { "const": "IB" },
-        "hca": { "const": "=uib0" },
+        "hca": { "type": "string", "minLength": 1 },
         "environment": {
           "type": "object",
           "additionalProperties": { "type": ["string", "integer", "boolean"] }

@@ -80,6 +80,7 @@ def apply_overlay(config, name):
     if name.startswith("protocol/"):
         protocol = overlay["uib"]
         config["uib"]["protocol"] = protocol["protocol"]
+        config["uib"]["bindPort"] = protocol["bindPort"]
         config["uib"]["congestionControl"] = copy.deepcopy(
             protocol["congestionControl"])
         return config

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 uib:
   protocol: uet
+  bindPort: 5432
   congestionControl:
     algorithm: nscc
     abi: 1

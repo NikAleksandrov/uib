@@ -64,6 +64,19 @@
           "kubernetes": "v1.25.3",
           "nodeImage": "kindest/node:v1.25.3@sha256:f52781bc0d7a19fb6c405c2af83abfeb311f130707a0e219175677e366cc45d1"
         }
+      },
+      "kubernetesOperators": {
+        "kubeflowTrainer": {
+          "version": "v2.2.1",
+          "api": "trainer.kubeflow.org/v1alpha1",
+          "status": "render-validated-install-pending",
+          "testTarget": "make simulation-kubernetes-render-test"
+        },
+        "kuberay": {
+          "version": "v1.6.1",
+          "api": "ray.io/v1",
+          "status": "planned"
+        }
       }
     }
   },

@@ -141,6 +141,7 @@ Common targets are:
     make simulation-cli-test  # validate simulation profiles and layer overlays
     make simulation-kind-test # validate standard Kind rendering and delegation
     make simulation-kind-e2e-test # opt-in real disposable Kind lifecycle
+    make simulation-kubernetes-render-test # validate Kubeflow workload YAML
     make training-smoke-test  # pinned two-rank CPU DDP and restart workload
     make training-public-test # dynamically cached tiny public model and data
     make training-gpu-test    # opt-in NCCL and FSDP restart on NVIDIA CDI
@@ -205,6 +206,16 @@ only the desired layers and inspect the result before invoking standard tools:
 Replace `communication/ucx` with `communication/libfabric`, `nccl`, or `rccl`;
 replace `protocol/uet-nscc` with `protocol/rocev2` or `uet-none`. The thin
 wrapper does not replace Kind, OpenTofu, Ansible, Helm, Kubernetes, or Slurm.
+
+Render the checked-in CPU-sized training request as standard Kubeflow Trainer
+resources without deploying it:
+
+    simulation/bin/uib-sim render-workload --profile kind-kubernetes \
+      --request simulation/requests/training-smoke.yaml \
+      --run-id uib-smoke --allow-mutable-tags
+
+Published and real-cluster runs omit `--allow-mutable-tags` and use immutable
+digests for both the workload image and `uib.bundle`.
 
 Memory and zero-copy
 --------------------

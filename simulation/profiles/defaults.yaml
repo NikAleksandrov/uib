@@ -20,6 +20,7 @@ nodes:
 uib:
   enabled: true
   protocol: rocev2
+  bindPort: 4791
   transport: udp-sync
   memoryMode: host-staged
   environment: {}

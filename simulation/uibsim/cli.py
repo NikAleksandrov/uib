@@ -22,7 +22,7 @@ def add_lifecycle_args(parser):
 
 def main():
     from .core import ConfigurationError
-    from .lifecycle import command_doctor, command_down, command_kubeconfig, command_load_image, command_render, command_status, command_up
+    from .lifecycle import command_doctor, command_down, command_kubeconfig, command_load_image, command_render, command_render_workload, command_status, command_up
 
     parser = argparse.ArgumentParser(
         description="resolve and inspect UIB simulation configuration")
@@ -56,6 +56,13 @@ def main():
         "--allow-mutable-tags", action="store_true",
         help="allow local development tags instead of immutable digests")
     load_image.set_defaults(handler=command_load_image)
+    render_workload = commands.add_parser(
+        "render-workload", help="render scheduler resources for one workload")
+    add_lifecycle_args(render_workload)
+    render_workload.add_argument(
+        "--allow-mutable-tags", action="store_true",
+        help="allow local development tags instead of immutable digests")
+    render_workload.set_defaults(handler=command_render_workload)
     down = commands.add_parser("down", help="remove selected infrastructure")
     add_lifecycle_args(down)
     down.set_defaults(handler=command_down)
