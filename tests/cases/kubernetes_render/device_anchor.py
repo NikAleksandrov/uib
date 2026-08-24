@@ -46,10 +46,16 @@ assert job["spec"]["runtimeRef"] == {
     "name": "uib-smoke-torch",
 }
 assert trainer["image"] == "uib-training:test"
-assert trainer["command"] == ["/opt/uib-training/bin/train"]
-assert trainer["args"] == [
-    "--config", "/etc/uib-workload/workload.json"
+assert trainer["command"] == ["/bin/sh", "-c"]
+assert trainer["args"][1:] == [
+    "uib-kubeflow",
+    "/opt/uib-training/bin/train",
+    "--config",
+    "/etc/uib-workload/workload.json",
 ]
+assert 'exec torchrun --nnodes="$PET_NNODES"' in trainer["args"][0]
+assert '--node-rank="$PET_NODE_RANK"' in trainer["args"][0]
+assert '--no-python "$@"' in trainer["args"][0]
 assert trainer["numNodes"] == 2
 assert trainer["numProcPerNode"] == 1
 environment = {entry["name"]: entry for entry in trainer["env"]}

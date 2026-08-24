@@ -9,6 +9,7 @@ def render(config, run_id, allow_mutable_tags):
     from .core import LiteralString, labels, resources, validate_config
     from .environment import environment
     from .storage import init_containers, volume_mounts, volumes
+    from .training import trainer_launch
 
     validate_config(config, run_id, allow_mutable_tags)
     workload = config["workload"]
@@ -17,6 +18,7 @@ def render(config, run_id, allow_mutable_tags):
     resource_labels = labels(run_id)
     runtime_name = f"{run_id}-torch"
     image_pull_policy = "IfNotPresent"
+    trainer_command, trainer_args = trainer_launch(workload, run_id)
     pod_labels = copy.deepcopy(resource_labels)
     pod_labels["trainer.kubeflow.org/trainjob-ancestor-step"] = "trainer"
 
@@ -125,8 +127,8 @@ def render(config, run_id, allow_mutable_tags):
                 },
                 "trainer": {
                     "image": workload["image"],
-                    "command": [workload["entrypoint"]],
-                    "args": workload.get("arguments", []),
+                    "command": trainer_command,
+                    "args": trainer_args,
                     "env": environment(config),
                     "numNodes": workload["parallelism"]["nodes"],
                     "numProcPerNode": workload["parallelism"]["processesPerNode"],

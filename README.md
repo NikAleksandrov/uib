@@ -142,6 +142,7 @@ Common targets are:
     make simulation-kind-test # validate standard Kind rendering and delegation
     make simulation-kind-e2e-test # opt-in real disposable Kind lifecycle
     make simulation-kubernetes-render-test # validate Kubeflow workload YAML
+    make simulation-kubeflow-e2e-test # opt-in real two-worker CPU TrainJob
     make training-smoke-test  # pinned two-rank CPU DDP and restart workload
     make training-public-test # dynamically cached tiny public model and data
     make training-gpu-test    # opt-in NCCL and FSDP restart on NVIDIA CDI

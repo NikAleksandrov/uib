@@ -552,6 +552,8 @@ vice versa.
 | `workload.parallelism.processesPerNode` | Positive integer | Ranks per node |
 | `workload.parallelism.data`, `.tensor`, `.pipeline`, `.expert` | Positive integers | Parallel degrees |
 | `workload.parameters` | Framework-specific mapping | Training, serving, or load-generator settings passed unchanged |
+| `storage.modelCacheClaim` | Existing Kubernetes PVC name | Optional shared Hugging Face/model cache mounted at `/cache` |
+| `storage.resultsClaim` | Existing Kubernetes PVC name | Optional shared checkpoint and result storage mounted at `/results` |
 | `measurement.seed` | Non-negative integer | Workload random seed |
 | `measurement.warmupSteps` | Non-negative integer | Excluded warmup |
 | `measurement.steps` | Positive integer | Measured iterations |
@@ -1219,10 +1221,9 @@ profile; other providers fail explicitly as unimplemented.
 
 `load-image` delegates to `kind load docker-image` and requires digest-pinned
 references by default. Local development tags require the explicit
-`--allow-mutable-tags` option. Installing Kubeflow Trainer and KubeRay,
-applying rendered workloads, shaping pod network namespaces, and collecting
-results are later deployment phases; the current Kind adapter does not claim
-those steps.
+`--allow-mutable-tags` option. KubeRay installation, pod network-namespace
+shaping, and durable result collection are later deployment phases; the
+current Kind adapter does not claim those steps.
 
 Kind nodes share one host kernel and compute capacity. Results are L0 unless a
 separate GPU capability has been proven.
@@ -1246,8 +1247,16 @@ The output contains exactly four run-owned resources:
 2. a ConfigMap containing the unchanged training JSON;
 3. a namespaced `TrainingRuntime` derived from Kubeflow's standard Torch
    runtime; and
-4. a `TrainJob` that supplies the same image, command, arguments, rank count,
-   resources, and communication environment.
+4. a `TrainJob` that supplies the same image, underlying executable and
+   arguments, rank count, resources, and communication environment.
+
+Kubeflow Trainer supplies standard `PET_*` node-count, node-rank, and rendezvous
+variables but does not launch an arbitrary container command through
+`torchrun`. The adapter therefore adds a fixed `torchrun` launcher that consumes
+those variables and then executes the unchanged workload entry point and
+arguments with `--no-python`. Slurm supplies `RANK`, `LOCAL_RANK`, and
+`WORLD_SIZE` through `srun` instead; the executable beneath the scheduler's
+standard launcher remains identical.
 
 The runtime uses one pod per requested node and required pod anti-affinity on
 `kubernetes.io/hostname`. When UIB is enabled, its first init container copies
@@ -1272,9 +1281,24 @@ simulation/bin/uib-sim render-workload --profile kind-kubernetes \
 
 Images use `IfNotPresent`, so Kind/containerd and real nodes reuse their normal
 image cache. The generated smoke model requires no external artifact cache.
-The current renderer uses per-pod `emptyDir` volumes for model data and
-results; persistent cache, checkpoint, and result claims must be implemented
-before public-model or restart jobs are applied to a cluster.
+The renderer uses per-pod `emptyDir` volumes by default. Public-model,
+checkpoint/restart, and durable-result runs name existing site claims:
+
+```text
+simulation/bin/uib-sim render-workload --profile real-kubernetes \
+    --request simulation/requests/training-smoke.yaml \
+    --run-id uib-training \
+    --set storage.modelCacheClaim=shared-model-cache \
+    --set storage.resultsClaim=uib-results \
+    --set workload.image=registry.example/training@sha256:<digest> \
+    --set uib.bundle=registry.example/uib-runtime@sha256:<digest>
+```
+
+Multi-node jobs require claims that the site can mount read-write from all
+selected workers, normally `ReadWriteMany`. The adapter references but never
+creates or deletes these shared claims. Every workload writes below its run
+ID, preventing two runs from sharing a result directory. Kind's generated
+smoke request needs no persistent claim.
 
 The native-verbs comparison keeps the image and workload identical and only
 turns off UIB injection while selecting an explicit physical HCA:
@@ -1315,9 +1339,55 @@ Current compatibility boundaries are intentional:
 | CPU smoke request | L0 scheduler/rendering coverage; PyTorch uses Gloo and does not exercise UIB traffic |
 
 Kubeflow Trainer v2.2.1 and API `trainer.kubeflow.org/v1alpha1` are pinned in
-the compatibility lock. The next deployment gate installs that exact operator,
-applies this output, waits for the `TrainJob`, captures results and logs, and
-deletes only the run namespace.
+the compatibility lock.
+
+### Real Kind and Kubeflow L0 gate
+
+The opt-in gate installs that exact operator and executes the generated
+two-node request rather than only inspecting YAML:
+
+```text
+make simulation-kubeflow-e2e-test
+```
+
+It creates one control-plane and two Kind workers, loads the existing training
+and UIB runtime images, installs the pinned OCI chart, applies the namespace,
+ConfigMap, `TrainingRuntime`, and `TrainJob`, and waits for completion. Passing
+requires two successful trainer pods on two distinct Kind workers, a passing
+UIB runtime preflight in each pod, and a rank-zero result with CPU, Gloo, four
+completed steps, and `worldSize: 2`. It then deletes the run namespace,
+uninstalls the Helm release, and deletes the Kind cluster. Cleanup is attempted
+after failure or interruption as well.
+
+The validated local tool set is Kind v0.31.0, kubectl v1.35.0, Helm v3.21.3,
+Kubernetes v1.35.0, and Kubeflow Trainer v2.2.1. Required host resources are a
+working Kind container engine, enough disk for the approximately 9 GB training
+image in each node, and enough CPU and memory for two training pods. The first
+run needs network access for the pinned node image, operator chart, and
+operator images. Those remain in the normal Docker/containerd and Helm caches;
+the training/runtime images are reused from the host cache. The generated
+workload downloads no model or dataset.
+
+| Variable | Default | Syntax and meaning |
+|---|---|---|
+| `SIMULATION_KUBEFLOW_E2E_NAME` | Unique `uib-kf-<pid>` | Disposable Kind cluster name |
+| `SIMULATION_KUBEFLOW_E2E_RUN_ID` | Unique `uib-smoke-<pid>` | Run namespace and TrainJob name |
+| `SIMULATION_KUBEFLOW_TRAINER_VERSION` | `2.2.1` | OCI chart version; another value is unvalidated and changes the compatibility claim |
+| `SIMULATION_KUBEFLOW_OPERATOR_TIMEOUT` | `10m` | Helm install/readiness timeout |
+| `SIMULATION_KUBEFLOW_WORKLOAD_TIMEOUT` | `10m` | TrainJob and namespace-deletion timeout |
+| `SIMULATION_KUBEFLOW_TRAINING_IMAGE` | `uib-training:test` | Existing host image loaded into Kind |
+| `SIMULATION_KUBEFLOW_RUNTIME_IMAGE` | `uib-runtime:test` | Existing host UIB runtime image loaded into Kind |
+| `KIND_COMMAND` | `kind` | Exact Kind executable |
+| `KUBECTL_COMMAND` | `kubectl` | Exact kubectl executable |
+| `HELM_COMMAND` | `helm` | Exact Helm executable |
+
+Changing either local image is useful for development but does not create an
+immutable promotion result. Published-cluster runs use image digests through
+the renderer and pull from a registry instead of this local Kind staging path.
+This gate needs two Kubernetes workers but not two physical machines or GPUs:
+all nodes share one host and kernel. PyTorch deliberately uses Gloo on CPU, so
+the passing UIB preflight proves library deployment only. It does not open
+`uib0`, send UIB traffic, validate NCCL, or qualify as L1.
 
 ### virtme with Kind
 
@@ -1698,10 +1768,10 @@ srun --ntasks-per-node=8 --gpus-per-task=1 \
 ```
 
 The current Kubeflow renderer uses the same image, executable, JSON ConfigMap,
-and environment. Its L0 smoke manifest uses `emptyDir` storage; the next
-storage slice replaces those volumes with configurable cache, checkpoint, and
-result claims without changing the workload. This makes changing Kubernetes
-to Slurm a launcher change rather than a training-code change.
+and environment. Its L0 smoke manifest uses `emptyDir` storage; real profiles
+can select existing shared cache and result claims without changing the
+workload. This makes changing Kubernetes to Slurm a launcher change rather
+than a training-code change.
 
 Native verbs and UIB also use the same image digest and command. The native
 baseline has no UIB variables. The UIB variant adds only the `/opt/uib` mount
@@ -2395,6 +2465,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 resource shape, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, digest enforcement, and rejection of unsafe combinations |
+| `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, admission, two-node torchrun rendezvous, distinct placement, UIB preflight, CPU DDP result, and complete run/operator/cluster cleanup; no UIB traffic |
 
 Run the five hardware-neutral gates:
 
@@ -2684,9 +2755,10 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 - The Kind backend passed a real one-control-plane, one-worker lifecycle test,
   including readiness, kubeconfig export, node-count validation, and cleanup.
   Kubeflow training resources render and pass structural tests. Operator
-  installation, server-side CRD validation, pod-level UIB validation,
-  multi-worker workload runs, the other infrastructure adapters, DeepSpeed,
-  and Megatron-Core remain planned.
+  installation, server-side CRD/admission validation, and an actual two-worker
+  CPU TrainJob passed. The run uses Gloo and validates UIB packaging but not
+  its data plane. GPU/NCCL Kubernetes execution, the other infrastructure
+  adapters, DeepSpeed, and Megatron-Core remain planned.
 - The diagnostic image passed its hardware-neutral, UIB runtime-injection,
   CUDA `deviceQuery`, and single-GPU NCCL all-reduce gates. Its NCCL run has
   one rank and therefore does not send UIB traffic.

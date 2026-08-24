@@ -3,11 +3,21 @@
 import copy
 
 
+def storage_volume(name, storage, claim):
+    volume = {"name": name}
+    if claim in storage:
+        volume["persistentVolumeClaim"] = {"claimName": storage[claim]}
+    else:
+        volume["emptyDir"] = {}
+    return volume
+
+
 def volumes(config):
+    storage = config["storage"]
     result = [
         {"name": "workload-config", "configMap": {"name": "workload-config"}},
-        {"name": "results", "emptyDir": {}},
-        {"name": "model-cache", "emptyDir": {}},
+        storage_volume("results", storage, "resultsClaim"),
+        storage_volume("model-cache", storage, "modelCacheClaim"),
     ]
     if config["uib"]["enabled"]:
         result.append({"name": "uib-runtime", "emptyDir": {}})

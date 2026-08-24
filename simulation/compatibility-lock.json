@@ -56,7 +56,10 @@
         "configApi": "kind.x-k8s.io/v1alpha4",
         "kubernetes": "v1.35.0",
         "nodeImage": "kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f",
-        "topology": "one-control-plane-one-worker",
+        "validatedTopologies": [
+          "one-control-plane-one-worker",
+          "one-control-plane-two-workers"
+        ],
         "testTarget": "make simulation-kind-e2e-test",
         "validatedOn": "2026-08-24",
         "previousValidated": {
@@ -69,8 +72,17 @@
         "kubeflowTrainer": {
           "version": "v2.2.1",
           "api": "trainer.kubeflow.org/v1alpha1",
-          "status": "render-validated-install-pending",
-          "testTarget": "make simulation-kubernetes-render-test"
+          "chart": "oci://ghcr.io/kubeflow/charts/kubeflow-trainer",
+          "chartDigest": "sha256:8e8e3de0257be804f60dbc8e6784eaddb64b2e158a46cade30ca18b6030183b1",
+          "status": "validated-local-cpu-lifecycle",
+          "testTargets": [
+            "make simulation-kubernetes-render-test",
+            "make simulation-kubeflow-e2e-test"
+          ],
+          "validatedClients": {
+            "helm": "v3.21.3",
+            "kubectl": "v1.35.0"
+          }
         },
         "kuberay": {
           "version": "v1.6.1",
@@ -139,6 +151,25 @@
     }
   },
   "validatedConfigurations": [
+    {
+      "id": "kubeflow-trainer-2.2.1-kind-two-node-cpu",
+      "date": "2026-08-24",
+      "kind": "v0.31.0",
+      "kubernetes": "v1.35.0",
+      "kubeflowTrainer": "v2.2.1",
+      "chartDigest": "sha256:8e8e3de0257be804f60dbc8e6784eaddb64b2e158a46cade30ca18b6030183b1",
+      "topology": "one-control-plane-two-workers",
+      "trainerPods": 2,
+      "worldSize": 2,
+      "device": "cpu",
+      "distributedBackend": "gloo",
+      "uibRuntimePreflight": "passed-on-both-pods",
+      "uibTraffic": "not-applicable-cpu-gloo",
+      "correctness": "four DDP steps and final checkpoint passed",
+      "cleanup": "run namespace, Helm release, and Kind cluster removed",
+      "validationLevel": "L0",
+      "testTarget": "make simulation-kubeflow-e2e-test"
+    },
     {
       "id": "nccl-2.30.4-cuda-13.2-host-staged",
       "date": "2026-08-23",

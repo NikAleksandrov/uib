@@ -47,3 +47,4 @@ measurement:
   seed: 12345
   warmupSteps: 1
   steps: 4
+storage: {}

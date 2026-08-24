@@ -71,4 +71,10 @@ python3 "$project_dir/tests/cases/kubernetes_render/training.py" "$test_dir/nati
 	> "$test_dir/uet.yaml"
 python3 "$project_dir/tests/cases/kubernetes_render/resources.py" "$test_dir/uet.yaml"
 
+"$cli" render-workload --profile kind-kubernetes --request "$request" \
+	--run-id uib-storage --allow-mutable-tags \
+	--set storage.modelCacheClaim=uib-model-cache \
+	--set storage.resultsClaim=uib-results > "$test_dir/storage.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/native.py" "$test_dir/storage.yaml"
+
 echo "Kubernetes workload render test: PASS"
