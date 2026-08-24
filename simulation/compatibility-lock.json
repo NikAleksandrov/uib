@@ -159,7 +159,10 @@
       "kind": "v0.31.0",
       "kubernetes": "v1.35.0",
       "rdmaCore": "50.0",
-      "application": "unmodified ibv_rc_pingpong",
+      "applications": [
+        "unmodified ibv_rc_pingpong",
+        "unmodified ib_write_bw"
+      ],
       "verbsDevice": "uib0",
       "topology": "one-control-plane-two-workers",
       "peers": 2,
@@ -168,11 +171,11 @@
       "protocols": {
         "rocev2": {
           "bindPort": 4791,
-          "correctness": "64 exchanges passed"
+          "correctness": "64 RC SEND/RECV and 64 RDMA Write exchanges passed"
         },
         "uet": {
           "bindPort": 5432,
-          "correctness": "64 exchanges passed"
+          "correctness": "64 RC SEND/RECV and 64 RDMA Write exchanges passed"
         }
       },
       "transport": "udp-sync",

@@ -84,7 +84,7 @@ topology.
 | `make diagnostic-smoke-test` | CPU | No | Diagnostic tools, versions, dynamic dependencies, and capability output |
 | `make diagnostic-uib-preflight-test` | CPU | No | The common UIB runtime mounts into an independently built image |
 | `make diagnostic-gpu-test` | One NVIDIA GPU | No | CUDA visibility and a correctness-checked, single-rank NCCL collective |
-| `make simulation-kubernetes-uib-test` | CPU | No | An unchanged verbs program exchanges actual RoCEv2 and UET traffic through UIB between two Kind workers |
+| `make simulation-kubernetes-uib-test` | CPU | No | Unchanged verbs programs exchange actual RC SEND/RECV and RDMA Write traffic through UIB between two Kind workers |
 | `make nccl-test` | One NVIDIA GPU with local MPS support | No | Two local ranks send host-staged NCCL traffic through UIB |
 | `make training-uib-test` | One NVIDIA GPU with local MPS support | No | Unmodified two-rank PyTorch DDP sends gradient traffic through UIB |
 | UCX verbs transport gate | CPU | No | Two local processes exchange data through UCX's verbs transport and UIB, with TCP and shared-memory transports excluded |
@@ -1353,17 +1353,19 @@ make simulation-kubernetes-uib-test
 It builds the current UIB runtime bundle and diagnostic image, creates one
 control-plane and two Kind workers, and starts a server and client pod on
 different workers. The image supplies the distribution's unmodified
-`ibv_rc_pingpong`; the pod injects `libuibv.so` with `LD_PRELOAD` and selects
-`-d uib0`. No source patch, wrapper binary, synthetic verbs implementation, or
-application rebuild is involved.
+`ibv_rc_pingpong` and perftest `ib_write_bw`; the pod injects `libuibv.so` with
+`LD_PRELOAD` and selects `-d uib0`. No source patch, wrapper binary, synthetic
+verbs implementation, or application rebuild is involved.
 
 The client connects to the server's real Pod IP. Its control connection and
 UIB packets therefore traverse the Kind CNI between the two worker containers.
-The gate runs twice by default: RoCEv2 on port 4791 and UET on port 5432. Each
-run must pass the full runtime probe in both pods, complete 64 verbs exchanges,
-report transferred bytes, use distinct Pod IPs and distinct worker nodes, and
-exit successfully. The test then removes both pods, the namespace, and the
-Kind cluster; its trap also attempts cleanup after failure or interruption.
+The gate tests RoCEv2 on port 4791 and UET on port 5432 by default. For each
+protocol it performs both RC SEND/RECV ping-pong and RDMA Write bandwidth
+operations. Every case must pass the full runtime probe in both pods, complete
+64 verbs exchanges, report transferred bytes or RDMA Write results, use
+distinct Pod IPs and distinct worker nodes, and exit successfully. The test
+then removes both pods, the namespace, and the Kind cluster; its trap also
+attempts cleanup after failure or interruption.
 
 The normal path has no required configuration. The one common override is:
 
@@ -1377,7 +1379,7 @@ Supported options are deliberately small:
 | Variable | Default | Syntax and meaning |
 |---|---|---|
 | `SIMULATION_KUBERNETES_UIB_PROTOCOLS` | `rocev2 uet` | Space-separated subset of `rocev2` and `uet`; any other or empty value is rejected. The port is derived and cannot conflict with the protocol. |
-| `SIMULATION_KUBERNETES_UIB_ITERATIONS` | `64` | Positive exchange count passed to the unchanged verbs program. |
+| `SIMULATION_KUBERNETES_UIB_ITERATIONS` | `64` | Positive exchange count passed to both unchanged verbs programs. |
 | `SIMULATION_KUBERNETES_UIB_NAME` | Unique `uib-data-<pid>` | Disposable Kind cluster name. |
 | `SIMULATION_KUBERNETES_UIB_NAMESPACE` | Unique `uib-data-<pid>` | Disposable test namespace. |
 | `SIMULATION_KUBERNETES_UIB_WAIT` | `180s` | Kind readiness duration. |
@@ -2532,7 +2534,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 resource shape, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, digest enforcement, and rejection of unsafe combinations |
-| `make simulation-kubernetes-uib-test` | Kind, kubectl, a Docker-compatible engine, build dependencies, and CPU/memory for two workers; network access is needed only for uncached pinned images and diagnostic sources | Actual RoCEv2 and UET UIB traffic from an unchanged standard verbs binary between distinct Pod IPs and Kind workers, plus runtime injection and complete cleanup; no GPU or collective claim |
+| `make simulation-kubernetes-uib-test` | Kind, kubectl, a Docker-compatible engine, build dependencies, and CPU/memory for two workers; network access is needed only for uncached pinned images and diagnostic sources | Actual RoCEv2 and UET RC SEND/RECV and RDMA Write traffic from unchanged standard verbs binaries between distinct Pod IPs and Kind workers, plus runtime injection and complete cleanup; no GPU or collective claim |
 | `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, admission, two-node torchrun rendezvous, distinct placement, UIB preflight, CPU DDP result, and complete run/operator/cluster cleanup; no UIB traffic |
 
 Run the five hardware-neutral gates:

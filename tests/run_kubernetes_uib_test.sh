@@ -84,10 +84,39 @@ for protocol in $protocols; do
 	rocev2) port=4791 ;;
 	uet) port=5432 ;;
 	esac
-	server=uib-$protocol-server
-	client=uib-$protocol-client
-	manifest=$test_dir/$protocol.yaml
-	cat > "$manifest" <<EOF
+	for operation in send-receive rdma-write; do
+		case $operation in
+		send-receive)
+			program_args='        - ibv_rc_pingpong
+        - -d
+        - uib0
+        - -g
+        - "0"
+        - -m
+        - "1024"
+        - -s
+        - "2051"
+        - -n
+        - "'"$iterations"'"
+        - -c'
+			result_pattern='bytes in'
+			;;
+		rdma-write)
+			program_args='        - ib_write_bw
+        - -d
+        - uib0
+        - -F
+        - -s
+        - "4096"
+        - -n
+        - "'"$iterations"'"'
+			result_pattern='RDMA_Write BW Test'
+			;;
+		esac
+		server=uib-$protocol-$operation-server
+		client=uib-$protocol-$operation-client
+		manifest=$test_dir/$protocol-$operation.yaml
+		cat > "$manifest" <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -145,18 +174,7 @@ spec:
         - -k
         - "1"
         - "$test_timeout"
-        - ibv_rc_pingpong
-        - -d
-        - uib0
-        - -g
-        - "0"
-        - -m
-        - "1024"
-        - -s
-        - "2051"
-        - -n
-        - "$iterations"
-        - -c
+$program_args
       env:
         - name: LD_PRELOAD
           value: /opt/uib/lib/libuibv.so
@@ -181,15 +199,15 @@ spec:
     - name: uib-runtime
       emptyDir: {}
 EOF
-	"$kubectl_command" --kubeconfig "$kubeconfig" apply -f "$manifest"
-	"$kubectl_command" --kubeconfig "$kubeconfig" wait \
-		--namespace "$namespace" --for=condition=Ready "pod/$server" \
-		--timeout "$test_timeout"
-	server_ip=$("$kubectl_command" --kubeconfig "$kubeconfig" get pod \
-		--namespace "$namespace" "$server" \
-		-o jsonpath='{.status.podIP}')
+		"$kubectl_command" --kubeconfig "$kubeconfig" apply -f "$manifest"
+		"$kubectl_command" --kubeconfig "$kubeconfig" wait \
+			--namespace "$namespace" --for=condition=Ready "pod/$server" \
+			--timeout "$test_timeout"
+		server_ip=$("$kubectl_command" --kubeconfig "$kubeconfig" get pod \
+			--namespace "$namespace" "$server" \
+			-o jsonpath='{.status.podIP}')
 
-	python3 - "$manifest" "$client" "$server_ip" "$name-worker2" <<'PY'
+		python3 - "$manifest" "$client" "$server_ip" "$name-worker2" <<'PY'
 import sys
 
 import yaml
@@ -205,31 +223,31 @@ pod["spec"]["containers"][0]["args"].append(server_ip)
 with open(path, "w", encoding="utf-8") as output:
     yaml.safe_dump(pod, output, sort_keys=False)
 PY
-	"$kubectl_command" --kubeconfig "$kubeconfig" apply -f "$manifest"
-	"$kubectl_command" --kubeconfig "$kubeconfig" wait \
-		--namespace "$namespace" \
-		--for=jsonpath='{.status.phase}'=Succeeded "pod/$client" \
-		--timeout "$test_timeout"
-	"$kubectl_command" --kubeconfig "$kubeconfig" wait \
-		--namespace "$namespace" \
-		--for=jsonpath='{.status.phase}'=Succeeded "pod/$server" \
-		--timeout "$test_timeout"
+		"$kubectl_command" --kubeconfig "$kubeconfig" apply -f "$manifest"
+		"$kubectl_command" --kubeconfig "$kubeconfig" wait \
+			--namespace "$namespace" \
+			--for=jsonpath='{.status.phase}'=Succeeded "pod/$client" \
+			--timeout "$test_timeout"
+		"$kubectl_command" --kubeconfig "$kubeconfig" wait \
+			--namespace "$namespace" \
+			--for=jsonpath='{.status.phase}'=Succeeded "pod/$server" \
+			--timeout "$test_timeout"
 
-	for pod in "$server" "$client"; do
-		"$kubectl_command" --kubeconfig "$kubeconfig" logs \
-			--namespace "$namespace" "$pod" \
-			--container uib-runtime-check \
-			| grep -F 'UIB runtime preflight: PASS' >/dev/null
-		"$kubectl_command" --kubeconfig "$kubeconfig" logs \
-			--namespace "$namespace" "$pod" --container verbs \
-			> "$test_dir/$pod.log"
-		grep -F 'bytes in' "$test_dir/$pod.log" >/dev/null
-	done
+		for pod in "$server" "$client"; do
+			"$kubectl_command" --kubeconfig "$kubeconfig" logs \
+				--namespace "$namespace" "$pod" \
+				--container uib-runtime-check \
+				| grep -F 'UIB runtime preflight: PASS' >/dev/null
+			"$kubectl_command" --kubeconfig "$kubeconfig" logs \
+				--namespace "$namespace" "$pod" --container verbs \
+				> "$test_dir/$pod.log"
+			grep -F "$result_pattern" "$test_dir/$pod.log" >/dev/null
+		done
 
-	"$kubectl_command" --kubeconfig "$kubeconfig" get pod \
-		--namespace "$namespace" "$server" "$client" -o json \
-		> "$test_dir/$protocol-pods.json"
-	python3 - "$test_dir/$protocol-pods.json" "$name" <<'PY'
+		"$kubectl_command" --kubeconfig "$kubeconfig" get pod \
+			--namespace "$namespace" "$server" "$client" -o json \
+			> "$test_dir/$protocol-$operation-pods.json"
+		python3 - "$test_dir/$protocol-$operation-pods.json" "$name" <<'PY'
 import json
 import sys
 
@@ -242,11 +260,12 @@ assert nodes == expected, f"UIB peers used {nodes}, expected {expected}"
 assert all(pod["status"]["phase"] == "Succeeded" for pod in pods)
 assert len({pod["status"]["podIP"] for pod in pods}) == 2
 PY
-	cat "$test_dir/$client.log"
-	"$kubectl_command" --kubeconfig "$kubeconfig" delete pod \
-		--namespace "$namespace" "$server" "$client" \
-		--wait --timeout "$test_timeout"
-	echo "Kubernetes $protocol UIB data-plane test: PASS"
+		cat "$test_dir/$client.log"
+		"$kubectl_command" --kubeconfig "$kubeconfig" delete pod \
+			--namespace "$namespace" "$server" "$client" \
+			--wait --timeout "$test_timeout"
+		echo "Kubernetes $protocol $operation UIB test: PASS"
+	done
 done
 
 "$kubectl_command" --kubeconfig "$kubeconfig" delete namespace "$namespace" \
