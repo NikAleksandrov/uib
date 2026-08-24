@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uib.example/schemas/simulation.schema.json",
+  "title": "UIB cluster simulation request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "infrastructure",
+    "cluster",
+    "container",
+    "launcher",
+    "nodes",
+    "uib",
+    "communication",
+    "network"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,47}$"
+    },
+    "infrastructure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider"],
+      "properties": {
+        "provider": {
+          "enum": ["kind", "virtme", "libvirt", "existing"]
+        },
+        "kernel": { "type": "string", "minLength": 1 },
+        "kubernetesContext": { "type": "string", "minLength": 1 },
+        "slurmPartition": { "type": "string", "minLength": 1 },
+        "allowExistingMutations": { "type": "boolean" }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manager"],
+      "properties": {
+        "manager": { "enum": ["kubernetes", "slurm"] },
+        "version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "container": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime"],
+      "properties": {
+        "runtime": { "enum": ["containerd", "enroot", "apptainer"] },
+        "integration": { "enum": ["none", "pyxis"] }
+      }
+    },
+    "launcher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["training", "inference"],
+      "properties": {
+        "training": { "enum": ["kubeflow", "jobset", "slurm"] },
+        "inference": {
+          "enum": ["kuberay", "vllm-multiprocessing", "slurm-ray"]
+        }
+      }
+    },
+    "nodes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["controlPlane", "workers", "cpu", "memory", "disk", "gpus"],
+      "properties": {
+        "controlPlane": { "type": "integer", "minimum": 0, "maximum": 9 },
+        "workers": { "type": "integer", "minimum": 1, "maximum": 1024 },
+        "cpu": { "type": "integer", "minimum": 1 },
+        "memory": { "$ref": "#/$defs/quantity" },
+        "disk": { "$ref": "#/$defs/quantity" },
+        "gpus": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["vendor", "perWorker"],
+          "properties": {
+            "vendor": { "enum": ["none", "nvidia", "amd"] },
+            "perWorker": { "type": "integer", "minimum": 0, "maximum": 64 },
+            "resourceName": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "uib": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "protocol", "transport", "memoryMode", "congestionControl"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "bundle": { "type": "string", "minLength": 1 },
+        "protocol": { "enum": ["rocev2", "uet"] },
+        "transport": {
+          "enum": ["udp-sync", "udp-io-uring", "udp-zc-afxdp", "tcp-devmem"]
+        },
+        "memoryMode": { "enum": ["host-staged", "gpu-direct"] },
+        "environment": {
+          "type": "object",
+          "propertyNames": { "pattern": "^UIB_[A-Z0-9_]+$" },
+          "additionalProperties": { "type": ["string", "integer", "boolean"] }
+        },
+        "congestionControl": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["algorithm", "abi", "parameters"],
+          "properties": {
+            "algorithm": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$" },
+            "abi": { "const": 1 },
+            "parameters": {
+              "type": "object",
+              "additionalProperties": { "type": ["string", "integer", "number", "boolean"] }
+            }
+          }
+        }
+      }
+    },
+    "communication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frontend", "fallbackPolicy"],
+      "properties": {
+        "frontend": { "enum": ["nccl", "rccl", "ucx", "libfabric"] },
+        "fallbackPolicy": { "const": "fail" },
+        "transportAllowlist": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "nccl": { "$ref": "#/$defs/collective" },
+        "rccl": { "$ref": "#/$defs/collective" },
+        "ucx": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "version": { "type": "string" },
+            "device": { "type": "string" },
+            "transports": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "libfabric": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "version": { "type": "string" },
+            "provider": { "enum": ["verbs", "ofi_rxm;verbs"] }
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topology", "mtu", "shaping"],
+      "properties": {
+        "topology": { "enum": ["pairwise", "full-mesh", "leaf-spine", "physical"] },
+        "managementCIDR": { "$ref": "#/$defs/cidr" },
+        "dataCIDR": { "$ref": "#/$defs/cidr" },
+        "mtu": { "type": "integer", "minimum": 576, "maximum": 65535 },
+        "shaping": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "bandwidth": { "$ref": "#/$defs/rate" },
+            "latency": { "$ref": "#/$defs/duration" },
+            "jitter": { "$ref": "#/$defs/duration" },
+            "delayCorrelationPercent": { "$ref": "#/$defs/percent" },
+            "delayDistribution": {
+              "enum": ["uniform", "normal", "pareto", "paretonormal"]
+            },
+            "lossPercent": { "type": "number", "minimum": 0, "maximum": 100 },
+            "lossCorrelationPercent": { "$ref": "#/$defs/percent" },
+            "duplicatePercent": { "$ref": "#/$defs/percent" },
+            "duplicateCorrelationPercent": { "$ref": "#/$defs/percent" },
+            "corruptPercent": { "$ref": "#/$defs/percent" },
+            "corruptCorrelationPercent": { "$ref": "#/$defs/percent" },
+            "reorderPercent": { "type": "number", "minimum": 0, "maximum": 100 },
+            "reorderCorrelationPercent": { "$ref": "#/$defs/percent" },
+            "reorderGap": { "type": "integer", "minimum": 1 },
+            "queueLimit": { "type": "integer", "minimum": 1 },
+            "packetOverheadBytes": { "type": "integer", "minimum": -128, "maximum": 512 },
+            "cellSizeBytes": { "type": "integer", "minimum": 1 },
+            "cellOverheadBytes": { "type": "integer", "minimum": -128, "maximum": 512 },
+            "ecn": { "type": "boolean" },
+            "seed": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+          }
+        }
+      }
+    },
+    "workload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "image", "entrypoint", "parallelism"],
+      "properties": {
+        "kind": { "enum": ["collectives", "training", "inference"] },
+        "image": { "type": "string", "minLength": 1 },
+        "entrypoint": { "type": "string", "minLength": 1 },
+        "arguments": { "type": "array", "items": { "type": "string" } },
+        "model": { "$ref": "#/$defs/artifact" },
+        "dataset": { "$ref": "#/$defs/artifact" },
+        "parallelism": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["nodes", "processesPerNode", "data", "tensor", "pipeline", "expert"],
+          "properties": {
+            "nodes": { "type": "integer", "minimum": 1 },
+            "processesPerNode": { "type": "integer", "minimum": 1 },
+            "data": { "type": "integer", "minimum": 1 },
+            "tensor": { "type": "integer", "minimum": 1 },
+            "pipeline": { "type": "integer", "minimum": 1 },
+            "expert": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "parameters": { "type": "object" }
+      }
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "seed": { "type": "integer", "minimum": 0 },
+        "warmupSteps": { "type": "integer", "minimum": 0 },
+        "steps": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "faults": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action"],
+        "properties": {
+          "at": { "$ref": "#/$defs/timeOffset" },
+          "afterEvent": { "type": "string", "minLength": 1 },
+          "action": {
+            "enum": ["add-delay", "packet-loss", "link-down", "terminate-rank"]
+          },
+          "target": { "type": "string", "minLength": 1 },
+          "rank": { "type": "integer", "minimum": 0 },
+          "latency": { "$ref": "#/$defs/duration" },
+          "percent": { "$ref": "#/$defs/percent" },
+          "duration": { "$ref": "#/$defs/timeOffset" }
+        },
+        "oneOf": [
+          { "required": ["at"] },
+          { "required": ["afterEvent"] }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "quantity": { "type": "string", "pattern": "^[1-9][0-9]*(Mi|Gi|Ti)$" },
+    "duration": { "type": "string", "pattern": "^[0-9]+(ns|us|ms|s)$" },
+    "timeOffset": { "type": "string", "pattern": "^[0-9]+(ms|s|m|h)$" },
+    "rate": { "type": "string", "pattern": "^[1-9][0-9]*(k|K|m|M|g|G)bit$" },
+    "percent": { "type": "number", "minimum": 0, "maximum": 100 },
+    "cidr": { "type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "revision"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "revision": { "type": "string", "minLength": 1 }
+      }
+    },
+    "collective": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": { "type": "string" },
+        "network": { "const": "IB" },
+        "hca": { "const": "=uib0" },
+        "environment": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "integer", "boolean"] }
+        }
+      }
+    }
+  }
+}

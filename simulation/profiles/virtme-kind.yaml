@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+infrastructure:
+  provider: virtme
+cluster:
+  manager: kubernetes
+container:
+  runtime: containerd
+nodes:
+  controlPlane: 1
+  workers: 1

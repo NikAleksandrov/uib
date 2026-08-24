@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+communication:
+  frontend: nccl
+  fallbackPolicy: fail
+  transportAllowlist: [IB]
+  nccl:
+    network: IB
+    hca: =uib0
+    environment: {}

@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+network:
+  shaping:
+    enabled: true
+    bandwidth: 25Gbit
+    latency: 100us
+    jitter: 20us
+    delayCorrelationPercent: 10
+    delayDistribution: normal
+    queueLimit: 8192
+    seed: 12345

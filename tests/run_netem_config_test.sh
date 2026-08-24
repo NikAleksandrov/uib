@@ -1,0 +1,45 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+project_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+cli=$project_dir/simulation/bin/uib-sim
+netem=$project_dir/simulation/network/netem
+test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-netem-config-test.XXXXXX")
+trap 'rm -rf -- "$test_dir"' EXIT INT TERM
+
+for condition in clean datacenter constrained lossy reordered ecn; do
+	"$cli" render --profile kind-kubernetes \
+		--overlay "network/$condition" --format json \
+		> "$test_dir/$condition.json"
+	"$netem" render "$test_dir/$condition.json" eth-test \
+		> "$test_dir/$condition.command"
+done
+
+grep -F 'qdisc del dev eth-test root' "$test_dir/clean.command" >/dev/null
+grep -F 'delay 100us 20us 10% distribution normal' \
+	"$test_dir/datacenter.command" >/dev/null
+grep -F 'rate 100Mbit' "$test_dir/constrained.command" >/dev/null
+grep -F 'loss random 1% 25%' "$test_dir/lossy.command" >/dev/null
+grep -F 'reorder 10% 25% gap 5' "$test_dir/reordered.command" >/dev/null
+grep -F 'loss random 2% ecn' "$test_dir/ecn.command" >/dev/null
+
+if "$cli" render --profile kind-kubernetes \
+	--set network.shaping.enabled=true \
+	--set network.shaping.jitter=1ms > /dev/null 2>&1; then
+	echo "jitter without base latency was accepted" >&2
+	exit 1
+fi
+if "$cli" render --profile kind-kubernetes \
+	--set network.shaping.enabled=true \
+	--set network.shaping.ecn=true > /dev/null 2>&1; then
+	echo "ECN without a loss model was accepted" >&2
+	exit 1
+fi
+if "$netem" render "$test_dir/datacenter.json" 'bad;interface' \
+	> /dev/null 2>&1; then
+	echo "unsafe interface name was accepted" >&2
+	exit 1
+fi
+
+echo "netem configuration test: PASS"

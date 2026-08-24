@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+infrastructure:
+  provider: existing
+  slurmPartition: replace-me
+cluster:
+  manager: slurm
+container:
+  runtime: enroot
+  integration: pyxis
+launcher:
+  training: slurm
+  inference: slurm-ray
+nodes:
+  controlPlane: 0
+  workers: 2
+  gpus:
+    vendor: nvidia
+    perWorker: 1
+    resourceName: gpu
+network:
+  topology: physical

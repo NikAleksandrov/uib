@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+infrastructure:
+  provider: libvirt
+cluster:
+  manager: slurm
+container:
+  runtime: enroot
+  integration: pyxis
+launcher:
+  training: slurm
+  inference: slurm-ray
+nodes:
+  controlPlane: 1
+  workers: 2
+  cpu: 8
+  memory: 16Gi
+  disk: 64Gi

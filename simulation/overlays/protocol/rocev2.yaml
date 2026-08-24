@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+uib:
+  protocol: rocev2
+  congestionControl:
+    algorithm: none
+    abi: 1
+    parameters: {}

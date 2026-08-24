@@ -136,6 +136,9 @@ Common targets are:
 
     make test                 # native unit and traffic tests
     make nccl-test            # actual two-rank NCCL collective through UIB
+    make rccl-test            # opt-in two-or-more-rank RCCL test on AMD GPUs
+    make ucx-libfabric-test   # opt-in UCX and libfabric transfers through UIB
+    make simulation-cli-test  # validate simulation profiles and layer overlays
     make training-smoke-test  # pinned two-rank CPU DDP and restart workload
     make training-public-test # dynamically cached tiny public model and data
     make training-gpu-test    # opt-in NCCL and FSDP restart on NVIDIA CDI
@@ -185,10 +188,21 @@ cannot validate UIB traffic. Set `TRAINING_CONTAINER_ENGINE`, for example to
 `sudo docker`, when the OCI engine requires a privilege helper.
 
 The [LLM cluster simulation guide](docs/llm-cluster-simulation.md) describes a
-layered validation environment for unchanged NCCL workloads. It covers
+layered validation environment for unchanged collective and LLM workloads. It
+covers
 Kind, virtme, libvirt/OpenTofu, Kubernetes, Kubeflow, KubeRay and
 Slurm/Pyxis/Enroot, including how to exchange individual layers and promote the
 same workloads to physical GPU and RDMA clusters.
+
+Simulation configuration uses ordinary YAML overlays and JSON Schema. Swap
+only the desired layers and inspect the result before invoking standard tools:
+
+    simulation/bin/uib-sim render --profile virtme-kubernetes \
+      --overlay communication/ucx --overlay protocol/uet-nscc
+
+Replace `communication/ucx` with `communication/libfabric`, `nccl`, or `rccl`;
+replace `protocol/uet-nscc` with `protocol/rocev2` or `uet-none`. The thin
+wrapper does not replace Kind, OpenTofu, Ansible, Helm, Kubernetes, or Slurm.
 
 Memory and zero-copy
 --------------------

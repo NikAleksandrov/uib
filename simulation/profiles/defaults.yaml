@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+infrastructure:
+  allowExistingMutations: false
+cluster:
+  version: pinned-by-adapter
+container:
+  integration: none
+launcher:
+  training: kubeflow
+  inference: kuberay
+nodes:
+  controlPlane: 1
+  workers: 1
+  cpu: 4
+  memory: 8Gi
+  disk: 32Gi
+  gpus:
+    vendor: none
+    perWorker: 0
+uib:
+  enabled: true
+  protocol: rocev2
+  transport: udp-sync
+  memoryMode: host-staged
+  environment: {}
+  congestionControl:
+    algorithm: none
+    abi: 1
+    parameters: {}
+communication:
+  frontend: nccl
+  fallbackPolicy: fail
+  transportAllowlist: [IB]
+  nccl:
+    network: IB
+    hca: =uib0
+    environment: {}
+network:
+  topology: pairwise
+  managementCIDR: 192.0.2.0/24
+  dataCIDR: 198.51.100.0/24
+  mtu: 1500
+  shaping:
+    enabled: false
+measurement:
+  seed: 12345
+  warmupSteps: 1
+  steps: 4

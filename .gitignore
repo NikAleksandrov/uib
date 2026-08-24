@@ -39,3 +39,5 @@ __pycache__/
 # generated benchmark output
 /.benchmark-*/
 /simulation/.artifacts/
+/simulation/.state/
+/simulation/results/

@@ -285,6 +285,12 @@ diagnostic-gpu-test: diagnostic-image
 	DIAGNOSTIC_CONTAINER_ENGINE='$(DIAGNOSTIC_CONTAINER_ENGINE)' \
 		$(DIAGNOSTIC_IMAGE_TEST)
 
+simulation-cli-test:
+	./tests/run_simulation_cli_test.sh
+
+simulation-netem-test:
+	./tests/run_netem_config_test.sh
+
 docs:
 	python3 $(DOC_GENERATOR)
 
@@ -561,6 +567,9 @@ uet-congestion-test: all $(TEST_BIN) $(NSCC_TEST) $(CONGESTION_TEST) \
 	LD_PRELOAD=$(CURDIR)/$(CONGESTION_PLUGIN) UIB_PROTOCOL=uet \
 		UIB_UET_CC=test-pass ./$(TEST_BIN)
 
+simulation-congestion-test: all $(TEST_BIN) $(CONGESTION_PLUGIN)
+	./tests/run_simulation_congestion_test.sh
+
 uet-multipath-test: all $(TEST_BIN)
 	UIB_PROTOCOL=uet UIB_UET_MULTIPATH=oblivious ./$(TEST_BIN)
 	UIB_PROTOCOL=uet UIB_UET_MULTIPATH=path-aware UIB_TEST_DROP_TX=1 \
@@ -810,6 +819,7 @@ clean:
 	inference-image inference-smoke-test inference-gpu-test \
 	diagnostic-sources diagnostic-image diagnostic-smoke-test \
 	diagnostic-uib-preflight-test diagnostic-gpu-test \
+	simulation-cli-test simulation-netem-test simulation-congestion-test \
 	docs-check examples clean install install-static test rxe-test-build \
 	rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \

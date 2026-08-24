@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+communication:
+  frontend: ucx
+  fallbackPolicy: fail
+  transportAllowlist: [rc, ud]
+  ucx:
+    device: uib0:1
+    transports: [rc, ud]

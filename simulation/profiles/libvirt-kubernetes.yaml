@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+infrastructure:
+  provider: libvirt
+cluster:
+  manager: kubernetes
+container:
+  runtime: containerd
+nodes:
+  controlPlane: 1
+  workers: 2
+  cpu: 8
+  memory: 16Gi
+  disk: 64Gi

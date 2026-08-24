@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+infrastructure:
+  provider: virtme
+cluster:
+  manager: slurm
+container:
+  runtime: enroot
+  integration: pyxis
+launcher:
+  training: slurm
+  inference: slurm-ray
+nodes:
+  controlPlane: 1
+  workers: 2

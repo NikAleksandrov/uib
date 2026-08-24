@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+infrastructure:
+  provider: existing
+  kubernetesContext: replace-me
+cluster:
+  manager: kubernetes
+container:
+  runtime: containerd
+nodes:
+  controlPlane: 0
+  workers: 2
+  gpus:
+    vendor: nvidia
+    perWorker: 1
+    resourceName: nvidia.com/gpu
+network:
+  topology: physical

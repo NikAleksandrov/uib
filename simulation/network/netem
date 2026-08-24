@@ -1,0 +1,64 @@
+#!/bin/bash
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+netem_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+. "$netem_dir/netem_lib/common.sh"
+. "$netem_dir/netem_lib/command.sh"
+
+tc_command=${NETEM_TC:-}
+if [ -z "$tc_command" ]; then
+	tc_command=$(command -v tc || true)
+fi
+if [ -z "$tc_command" ] && [ -x /sbin/tc ]; then
+	tc_command=/sbin/tc
+fi
+if [ -z "$tc_command" ]; then
+	echo "tc was not found; set NETEM_TC to its path" >&2
+	exit 1
+fi
+
+action=${1:-}
+case $action in
+render|apply)
+	[ "$#" -ge 3 ] || { usage; exit 2; }
+	config=$2
+	interface=$3
+	valid_interface "$interface" || {
+		echo "invalid network interface: $interface" >&2
+		exit 2
+	}
+	jq -e '.network.shaping.enabled | type == "boolean"' "$config" \
+		>/dev/null
+	build_command "$config" "$interface"
+	print_command
+	if [ "$action" = render ]; then
+		exit 0
+	fi
+	if [ "$shaping_enabled" != true ]; then
+		clear_netem "$interface"
+		exit 0
+	fi
+	existing=$(root_qdisc "$interface")
+	if [ -n "$existing" ] && [ "$existing" != netem ] && \
+	   [ "$existing" != noqueue ] && [ "${4:-}" != --replace-existing ]; then
+		echo "refusing to replace root qdisc '$existing' on $interface" >&2
+		exit 1
+	fi
+	"${command[@]}"
+	;;
+clear)
+	[ "$#" -eq 2 ] || { usage; exit 2; }
+	valid_interface "$2" || { echo "invalid network interface: $2" >&2; exit 2; }
+	clear_netem "$2"
+	;;
+show)
+	[ "$#" -eq 2 ] || { usage; exit 2; }
+	valid_interface "$2" || { echo "invalid network interface: $2" >&2; exit 2; }
+	"$tc_command" -s qdisc show dev "$2"
+	;;
+*)
+	usage
+	exit 2
+	;;
+esac

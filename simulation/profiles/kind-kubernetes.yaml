@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+infrastructure:
+  provider: kind
+cluster:
+  manager: kubernetes
+container:
+  runtime: containerd
+launcher:
+  training: kubeflow
+  inference: kuberay
+nodes:
+  controlPlane: 1
+  workers: 2

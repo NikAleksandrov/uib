@@ -23,6 +23,8 @@ configuration.
 - [Architecture](#architecture)
 - [Layer model](#layer-model)
 - [Common configuration](#common-configuration)
+- [Configuration syntax and values](#configuration-syntax-and-values)
+- [Configuration examples](#configuration-examples)
 - [Available deployment compositions](#available-deployment-compositions)
 - [Communication compatibility comes first](#communication-compatibility-comes-first)
 - [Congestion-control experiments](#congestion-control-experiments)
@@ -35,10 +37,12 @@ configuration.
 - [Training workloads](#training-workloads)
 - [Inference workloads](#inference-workloads)
 - [Network and failure simulation](#network-and-failure-simulation)
+- [Network emulation with netem](#network-emulation-with-netem)
 - [Changing one layer](#changing-one-layer)
 - [Running a simulation](#running-a-simulation)
 - [Moving to real hardware](#moving-to-real-hardware)
 - [Results and evidence](#results-and-evidence)
+- [Simulation test reference](#simulation-test-reference)
 - [Cleanup and safety](#cleanup-and-safety)
 - [Limitations](#limitations)
 
@@ -397,28 +401,31 @@ workload:
     revision: <immutable-revision>
   parallelism:
     nodes: 2
+    processesPerNode: 8
     tensor: 8
     pipeline: 2
     data: 1
-  inference:
-    maxModelLength: 32768
-    gpuMemoryUtilization: 0.9
-    replicas: 1
-    streaming: true
-load:
-  mode: open-loop
-  requestRate: 20
-  concurrency: 128
-  promptLength:
-    distribution: normal
-    mean: 2048
-    deviation: 256
-  outputLength:
-    distribution: fixed
-    value: 256
-  warmupRequests: 100
-  duration: 10m
-  seed: 12345
+    expert: 1
+  parameters:
+    inference:
+      maxModelLength: 32768
+      gpuMemoryUtilization: 0.9
+      replicas: 1
+      streaming: true
+    load:
+      mode: open-loop
+      requestRate: 20
+      concurrency: 128
+      promptLength:
+        distribution: normal
+        mean: 2048
+        deviation: 256
+      outputLength:
+        distribution: fixed
+        value: 256
+      warmupRequests: 100
+      duration: 10m
+      seed: 12345
 ```
 
 ### Fault schedule example
@@ -438,6 +445,255 @@ faults:
   - afterEvent: checkpoint-complete
     action: terminate-rank
     rank: 7
+```
+
+## Configuration syntax and values
+
+Configuration is merged in this order, with later values winning:
+
+```text
+profiles/defaults.yaml
+        |
+        +-- profiles/<infrastructure>.yaml
+        |
+        +-- --overlay <layer>       (repeatable, left to right)
+        |
+        +-- --request <workload.yaml>
+        |
+        `-- --set path=value        (repeatable, typed YAML scalar)
+```
+
+Use `render` to see the complete result. Nothing is deployed by this command:
+
+```text
+simulation/bin/uib-sim render --profile kind-kubernetes
+simulation/bin/uib-sim render --profile kind-kubernetes --format json
+```
+
+`--profile` accepts a checked-in name or a YAML file path. `--overlay` accepts
+a checked-in layer name or a YAML file path and can be repeated. `--request`
+is normally a scheduler-neutral workload. `--set` is convenient for one value;
+use a small YAML overlay for a group of related values.
+
+### Checked-in profiles and overlays
+
+| Layer | Names |
+|---|---|
+| Infrastructure profiles | `kind-kubernetes`, `virtme-kind`, `virtme-kubernetes`, `virtme-slurm`, `libvirt-kubernetes`, `libvirt-slurm`, `real-kubernetes`, `real-slurm` |
+| Communication | `communication/nccl`, `communication/rccl`, `communication/ucx`, `communication/libfabric` |
+| Protocol and congestion | `protocol/rocev2`, `protocol/uet-nscc`, `protocol/uet-none` |
+| Network condition | `network/clean`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/reordered`, `network/ecn` |
+
+A later overlay from the same layer replaces the earlier layer settings. This
+makes interactive comparisons easy, but a committed request should specify
+only one communication, protocol, and network-condition overlay.
+
+### Infrastructure and execution values
+
+| Path | Accepted values or syntax | Meaning |
+|---|---|---|
+| `infrastructure.provider` | `kind`, `virtme`, `libvirt`, `existing` | Node source |
+| `infrastructure.kernel` | Non-empty path | Kernel selected by a virtme profile |
+| `infrastructure.kubernetesContext` | Context name | Existing Kubernetes target |
+| `infrastructure.slurmPartition` | Partition name | Existing Slurm target |
+| `infrastructure.allowExistingMutations` | `true`, `false` | Permit explicitly requested shaping on existing hardware |
+| `cluster.manager` | `kubernetes`, `slurm` | Scheduler/control plane |
+| `container.runtime` | `containerd`, `enroot`, `apptainer` | OCI execution implementation |
+| `container.integration` | `none`, `pyxis` | Slurm/container integration |
+| `launcher.training` | `kubeflow`, `jobset`, `slurm` | Training submitter |
+| `launcher.inference` | `kuberay`, `vllm-multiprocessing`, `slurm-ray` | Inference submitter |
+| `nodes.controlPlane` | Integer 0-9 | Control-plane nodes; existing clusters normally use 0 |
+| `nodes.workers` | Integer 1-1024 | Worker nodes available to the request |
+| `nodes.cpu` | Positive integer | vCPUs per simulated worker |
+| `nodes.memory`, `nodes.disk` | Integer plus `Mi`, `Gi`, or `Ti`, such as `16Gi` | Per-worker capacity |
+| `nodes.gpus.vendor` | `none`, `nvidia`, `amd` | Accelerator family |
+| `nodes.gpus.perWorker` | Integer 0-64 | GPUs available per worker |
+| `nodes.gpus.resourceName` | Scheduler resource name | For example `nvidia.com/gpu` |
+
+### UIB and communication values
+
+| Path | Accepted values or syntax | Meaning |
+|---|---|---|
+| `uib.enabled` | `true`, `false` | UIB run or native-verbs baseline |
+| `uib.bundle` | Path, archive, or immutable image reference | Runtime artifact supplied to the workload |
+| `uib.protocol` | `rocev2`, `uet` | UIB wire protocol |
+| `uib.transport` | `udp-sync`, `udp-io-uring`, `udp-zc-afxdp`, `tcp-devmem` | Packet-I/O backend |
+| `uib.memoryMode` | `host-staged`, `gpu-direct` | Collective buffer path/result class |
+| `uib.environment` | Map whose keys start with `UIB_` | Validated advanced UIB settings |
+| `uib.congestionControl.algorithm` | `none`, `nscc`, or registered name matching `[a-z][a-z0-9_-]+` | Per-QP algorithm |
+| `uib.congestionControl.abi` | `1` | Required congestion operations ABI |
+| `uib.congestionControl.parameters` | Algorithm-specific scalar map | `nscc` currently accepts `maxWindowBytes` |
+| `communication.frontend` | `nccl`, `rccl`, `ucx`, `libfabric` | Application-facing communication library |
+| `communication.fallbackPolicy` | `fail` | Software/native fallback is never accepted for validation |
+| `communication.transportAllowlist` | Non-empty list | Only data transports/providers that may satisfy the run |
+| `communication.nccl.network`, `.rccl.network` | `IB` | Required collective data network |
+| `communication.nccl.hca`, `.rccl.hca` | `=uib0` | Exact UIB device filter |
+| `communication.ucx.transports` | Non-empty list, normally `rc`, `ud` | Explicit UCX verbs transports |
+| `communication.ucx.device` | Device and port, normally `uib0:1` | Exact UCX device |
+| `communication.libfabric.provider` | `verbs`, `ofi_rxm;verbs` | Exact OFI provider chain |
+
+The communication overlay removes settings for other front ends from the
+resolved file. This prevents stale NCCL values from appearing in an UCX run or
+vice versa.
+
+### Workload and measurement values
+
+| Path | Accepted values or syntax | Meaning |
+|---|---|---|
+| `workload.kind` | `collectives`, `training`, `inference` | Workload class |
+| `workload.image` | Non-empty OCI reference; digest strongly recommended | Unchanged workload image |
+| `workload.entrypoint` | Absolute or image-relative executable | Unchanged command |
+| `workload.arguments` | String list | Command arguments |
+| `workload.model`, `.dataset` | `{id, revision}` | Dynamically cached immutable artifact |
+| `workload.parallelism.nodes` | Positive integer | Participating worker nodes |
+| `workload.parallelism.processesPerNode` | Positive integer | Ranks per node |
+| `workload.parallelism.data`, `.tensor`, `.pipeline`, `.expert` | Positive integers | Parallel degrees |
+| `workload.parameters` | Framework-specific mapping | Training, serving, or load-generator settings passed unchanged |
+| `measurement.seed` | Non-negative integer | Workload random seed |
+| `measurement.warmupSteps` | Non-negative integer | Excluded warmup |
+| `measurement.steps` | Positive integer | Measured iterations |
+| `faults[].at` | Integer plus `ms`, `s`, `m`, or `h` | Time-relative fault |
+| `faults[].afterEvent` | Event name | Event-relative fault alternative |
+| `faults[].action` | `add-delay`, `packet-loss`, `link-down`, `terminate-rank` | Fault type |
+
+The rank invariant is:
+
+```text
+nodes * processesPerNode == data * tensor * pipeline * expert
+```
+
+### Combinations rejected before deployment
+
+| Combination | Reason |
+|---|---|
+| Kind with Slurm | Kind is the Kubernetes backend |
+| Kubernetes with Enroot or Apptainer | Kubernetes profiles use containerd/CRI |
+| Slurm with containerd | Slurm profiles use Enroot/Pyxis or Apptainer |
+| RCCL without `nodes.gpus.vendor: amd` | RCCL requires AMD/ROCm hardware |
+| NCCL with `nodes.gpus.vendor: amd` | Select RCCL for the AMD profile |
+| `gpu-direct` while the compatibility lock says unvalidated | Prevents an L2 claim from an unsupported path |
+| RoCEv2 with a congestion algorithm other than `none` | RoCEv2 pending admission and feedback are not implemented yet |
+| Network parameters while `shaping.enabled` is false | Prevents a condition that looks active but is not |
+| Jitter without latency; distribution without jitter | These netem options depend on the preceding delay options |
+| Reordering without latency | Netem needs delay for observable reordering |
+| ECN without nonzero loss | Netem uses a loss model to decide which packets to mark |
+| Correlation without its delay/loss/duplicate/corrupt/reorder parent | Invalid netem grammar |
+| Cell size without packet overhead; cell overhead without cell size | Invalid netem rate grammar |
+| Shaping an `existing` profile without `allowExistingMutations: true` | Protects real interfaces |
+| Workload nodes greater than profile workers | Placement is impossible |
+| Parallel degrees whose product differs from rank count | Framework topology is inconsistent |
+
+## Configuration examples
+
+Default Kind configuration:
+
+```text
+simulation/bin/uib-sim render --profile kind-kubernetes
+```
+
+UET/NSCC in an emulated data-center network:
+
+```text
+simulation/bin/uib-sim render --profile virtme-kubernetes \
+  --overlay protocol/uet-nscc --overlay network/datacenter
+```
+
+Change only the NSCC initial window:
+
+```text
+simulation/bin/uib-sim render --profile virtme-kubernetes \
+  --overlay protocol/uet-nscc \
+  --set uib.congestionControl.parameters.maxWindowBytes=131072
+```
+
+Compare with congestion admission disabled in the same condition:
+
+```text
+simulation/bin/uib-sim render --profile virtme-kubernetes \
+  --overlay protocol/uet-none --overlay network/constrained
+```
+
+NCCL on a libvirt/Slurm lab:
+
+```text
+simulation/bin/uib-sim render --profile libvirt-slurm \
+  --overlay communication/nccl --overlay protocol/rocev2
+```
+
+RCCL on an existing AMD Kubernetes cluster:
+
+```text
+simulation/bin/uib-sim render --profile real-kubernetes \
+  --overlay communication/rccl \
+  --set nodes.gpus.vendor=amd \
+  --set nodes.gpus.resourceName=amd.com/gpu
+```
+
+UCX over UIB/UET with loss:
+
+```text
+simulation/bin/uib-sim render --profile virtme-kubernetes \
+  --overlay communication/ucx --overlay protocol/uet-nscc \
+  --overlay network/lossy
+```
+
+libfabric RxM/verbs with reordering:
+
+```text
+simulation/bin/uib-sim render --profile libvirt-kubernetes \
+  --overlay communication/libfabric --overlay network/reordered
+```
+
+Native-verbs baseline without changing the workload:
+
+```text
+simulation/bin/uib-sim render --profile real-slurm \
+  --overlay communication/nccl --request training.yaml \
+  --set uib.enabled=false
+```
+
+Custom site overlay:
+
+```yaml
+# site-a.yaml
+infrastructure:
+  kubernetesContext: research-a
+nodes:
+  workers: 8
+  gpus:
+    vendor: nvidia
+    perWorker: 8
+    resourceName: nvidia.com/gpu
+network:
+  topology: physical
+```
+
+```text
+simulation/bin/uib-sim render --profile real-kubernetes \
+  --overlay site-a.yaml --overlay communication/nccl \
+  --request training.yaml
+```
+
+Custom network overlay:
+
+```yaml
+# campus-link.yaml
+network:
+  shaping:
+    enabled: true
+    bandwidth: 1Gbit
+    latency: 4ms
+    jitter: 500us
+    delayCorrelationPercent: 20
+    delayDistribution: normal
+    lossPercent: 0.05
+    queueLimit: 2048
+    seed: 42
+```
+
+```text
+simulation/bin/uib-sim render --profile virtme-slurm \
+  --overlay campus-link.yaml --overlay protocol/uet-nscc
 ```
 
 ## Available deployment compositions
@@ -1497,7 +1753,8 @@ Configurable link features include:
 
 - bandwidth and oversubscription;
 - base latency, jitter, correlation, and distribution;
-- random or burst loss;
+- random loss with optional correlation; state/Gilbert-Elliott burst models
+  remain a planned overlay extension;
 - reordering, duplication, and corruption;
 - queue capacity and MTU;
 - ECN where available;
@@ -1511,6 +1768,93 @@ records physical NIC and switch counters instead.
 
 Faults can also terminate a pod, Slurm rank, virtme guest, or VM. Each fault is
 recorded with planned time, actual time, target, result, and recovery time.
+
+## Network emulation with netem
+
+The network overlay maps directly to Linux `tc netem`; there is no separate
+network simulator or invented syntax. Render the full configuration, inspect
+the exact command, then apply it to an explicitly named interface:
+
+```text
+simulation/bin/uib-sim render --profile virtme-kubernetes \
+  --overlay network/constrained --format json > /tmp/uib-config.json
+
+simulation/network/netem render /tmp/uib-config.json tap-uib-0
+simulation/network/netem apply  /tmp/uib-config.json tap-uib-0
+simulation/network/netem show   tap-uib-0
+simulation/network/netem clear  tap-uib-0
+```
+
+`render` is read-only. `apply` prints the command before invoking it. It may
+replace an existing root `netem` qdisc, but refuses to replace a different
+root qdisc unless `--replace-existing` is explicitly supplied. `clear` deletes
+only a root qdisc whose kind is `netem`; it does not delete an unrelated qdisc.
+Set `NETEM_TC=/path/to/tc` when `tc` is outside `PATH`.
+
+The checked-in conditions are intentionally small and readable:
+
+| Overlay | Effective condition |
+|---|---|
+| `network/clean` | Shaping disabled |
+| `network/datacenter` | 25 Gbit/s, 100 us delay, 20 us normal jitter, 10% delay correlation, 8192-packet queue, seed 12345 |
+| `network/constrained` | 100 Mbit/s, 2 ms delay, 200 us normal jitter, 256-packet queue, seed 12345 |
+| `network/lossy` | 1 ms delay, 1% random loss, 25% loss correlation, 1024-packet queue, seed 12345 |
+| `network/reordered` | 2 ms delay, 500 us normal jitter, 10% reordering, 25% correlation, gap 5, seed 12345 |
+| `network/ecn` | 10 Gbit/s, 250 us delay, 2% loss decision model converted to ECN marks for ECN-capable packets, 512-packet queue, seed 12345 |
+
+### Netem configuration fields
+
+All percentages are numbers from 0 through 100. Durations accept `ns`, `us`,
+`ms`, or `s`. Rates accept an integer followed by `kbit`, `Mbit`, `Gbit`, or
+the corresponding case variants.
+
+| Field under `network.shaping` | Default | Netem mapping |
+|---|---:|---|
+| `enabled` | Required | Apply or remove the owned netem condition |
+| `bandwidth` | Unset | `rate RATE` |
+| `latency` | Unset | `delay TIME` |
+| `jitter` | Unset | Second `delay` argument |
+| `delayCorrelationPercent` | Unset | Third `delay` argument |
+| `delayDistribution` | Unset | `uniform`, `normal`, `pareto`, or `paretonormal` |
+| `lossPercent` | Unset | `loss random PERCENT` |
+| `lossCorrelationPercent` | Unset | Correlation for random loss |
+| `duplicatePercent`, `duplicateCorrelationPercent` | Unset | Packet duplication and correlation |
+| `corruptPercent`, `corruptCorrelationPercent` | Unset | Random packet corruption and correlation |
+| `reorderPercent`, `reorderCorrelationPercent` | Unset | Percentage reordering and correlation |
+| `reorderGap` | Unset | Send every Nth packet immediately |
+| `queueLimit` | Netem default | Maximum queued packets |
+| `packetOverheadBytes` | Unset | Per-packet rate overhead; may be negative |
+| `cellSizeBytes`, `cellOverheadBytes` | Unset | Cell-based rate emulation |
+| `ecn` | `false` | Mark ECN-capable packets instead of dropping according to the loss model |
+| `seed` | Unset | Seed for reproducible random decisions |
+
+Custom example with duplication and corruption:
+
+```yaml
+network:
+  shaping:
+    enabled: true
+    bandwidth: 500Mbit
+    latency: 5ms
+    jitter: 1ms
+    delayCorrelationPercent: 20
+    delayDistribution: paretonormal
+    lossPercent: 0.1
+    duplicatePercent: 0.05
+    corruptPercent: 0.01
+    queueLimit: 512
+    seed: 9001
+```
+
+Apply egress shaping to every endpoint-facing interface whose traffic belongs
+to the run. For a two-node tap topology, apply the same or deliberately
+asymmetric condition to both taps. For realistic TCP receive-side tests,
+place netem on the receiver ingress path (normally an IFB or the peer egress),
+because TCP Small Queues can distort sender-egress-only results. Netem timing
+and rate accuracy are limited by kernel clock/timer granularity, and a seed
+does not guarantee identical packet decisions across different kernel/iproute2
+versions. Record both versions with the run. See the
+[upstream netem manual](https://man7.org/linux/man-pages/man8/tc-netem.8.html).
 
 ## Changing one layer
 
@@ -1709,34 +2053,76 @@ same data paths, and run the same command.
 
 ## Running a simulation
 
-The planned CLI lifecycle is:
+Configuration stays deliberately conventional: a small defaults file, one
+YAML profile, an optional YAML workload request, and standard JSON Schema
+validation. The thin `uib-sim` wrapper only merges, validates, and inspects
+configuration; it does not replace Kind, OpenTofu, Ansible, Helm, `kubectl`,
+Slurm, Pyxis, or Enroot.
 
 ```text
-uib-sim doctor --profile <profile>
-uib-sim up --profile <profile>
-uib-sim deploy --profile <profile>
-uib-sim run --profile <profile> --request <request.yaml>
-uib-sim collect
-uib-sim status
-uib-sim down
+simulation/bin/uib-sim render --profile kind-kubernetes
+simulation/bin/uib-sim doctor --profile kind-kubernetes
+
+simulation/bin/uib-sim render \
+  --profile virtme-kubernetes \
+  --overlay communication/ucx \
+  --overlay protocol/uet-nscc \
+  --request requests/training-smoke.yaml \
+  --set uib.congestionControl.parameters.maxWindowBytes=262144
+```
+
+Overlays are repeatable and correspond to replaceable layers. For example,
+change only `communication/ucx` to `communication/libfabric`, or only
+`protocol/uet-nscc` to `protocol/rocev2`. A site can pass a YAML file path
+instead of a checked-in overlay. The rendered file is ordinary YAML that can
+be inspected, versioned, and translated directly to Helm values, OpenTofu
+variables, an Ansible inventory, or Slurm environment settings.
+
+The schema rejects unknown keys and malformed units. A few cross-field checks
+reject impossible rank products, incompatible scheduler/runtime choices,
+RCCL without AMD GPUs, unvalidated GPU-direct, premature RoCEv2 congestion
+plug-ins, and shaping existing hardware without explicit permission.
+`doctor` is read-only and reports which standard tools are missing. Run
+`make simulation-cli-test` to validate every checked-in profile. The wrapper
+requires Python, PyYAML, and jsonschema.
+
+Each backend will keep using its own normal configuration and state:
+
+- Kind configuration and cluster names;
+- OpenTofu state for libvirt resources;
+- Ansible inventories and roles for node provisioning;
+- Helm values and Kubernetes labels/namespaces;
+- Slurm batch files, job IDs, Pyxis, and Enroot configuration.
+
+`uib-sim` will delegate the planned lifecycle to those tools:
+
+```text
+simulation/bin/uib-sim doctor --profile <profile>
+kind create cluster --config <rendered-kind-config>
+tofu -chdir=<run-directory> apply
+ansible-playbook -i <inventory> <playbook>
+helm upgrade --install <release> <chart> -f <rendered-values>
+sbatch <rendered-job>
 ```
 
 `doctor` is read-only. It reports missing tools, kernel features, GPU and RDMA
 capabilities, scheduler versions, storage, permissions, and the highest valid
 validation level.
 
-`up` creates only infrastructure owned by the selected profile. For existing
+The later `up` adapter creates only infrastructure owned by the selected
+profile. For existing
 clusters it performs no infrastructure changes.
 
-`deploy` installs or detects scheduler adapters and stages images and UIB
+The later `deploy` adapter installs or detects scheduler components and stages images and UIB
 artifacts.
 
-`run` resolves configuration, renders scheduler resources, executes
+The later `run` adapter resolves configuration, renders scheduler resources, executes
 preflight gates, submits the workload, and records ownership.
 
-`collect` can be repeated and does not delete the workload.
+The later `collect` operation can be repeated and does not delete the workload.
 
-`down` exports final evidence and removes only resources in the ownership
+The later `down` operation exports final evidence and asks each standard tool
+to remove only resources in the ownership
 ledger. `--keep-on-failure` preserves resources and prints the exact cleanup
 command.
 
@@ -1873,6 +2259,239 @@ recovery.
 Inference metrics include request and token throughput, time to first token,
 inter-token latency, end-to-end percentiles, queueing, KV-cache use, errors,
 GPU use, network counters, and recovery.
+
+## Simulation test reference
+
+Run the smallest applicable gate first. Configuration and network-rendering
+tests require no container engine or accelerator. Image tests use a container
+engine, and communication tests deliberately fail when their required real
+library or hardware is absent; they do not turn missing coverage into a pass.
+
+### Configuration and network tests
+
+| Target | Requirements | What it validates |
+|---|---|---|
+| `make simulation-cli-test` | Python 3, PyYAML, and `jsonschema` | Every profile, named layer replacement, schema and semantic rejection, typed `--set`, and the read-only `doctor` report |
+| `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in network condition renders to the expected `tc netem` command; unsafe interfaces and invalid combinations are rejected; it does not modify a qdisc |
+| `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | UET SEND, RDMA read/write, and atomics complete with actual netem conditions and the selected built-in or plugin congestion algorithm |
+
+Run all three:
+
+```text
+make simulation-cli-test
+make simulation-netem-test
+make simulation-congestion-test
+```
+
+The congestion test creates a disposable network namespace, applies netem to
+its loopback interface, runs `tests/loopback`, and destroys the namespace. It
+never changes the host root qdisc. Its options are:
+
+| Variable | Default | Syntax and values |
+|---|---|---|
+| `SIMULATION_CC_MATRIX` | `nscc:clean nscc:datacenter nscc:constrained nscc:lossy nscc:reordered none:constrained test-pass:datacenter` | Space-separated `algorithm:condition` pairs. Test algorithms are `nscc`, `none`, and the sample plugin `test-pass`; conditions are `clean`, `datacenter`, `constrained`, `lossy`, `reordered`, and `ecn` |
+| `SIMULATION_CC_TIMEOUT` | `60` | Positive timeout in seconds for each matrix entry |
+| `SIMULATION_CC_MAX_WINDOW` | `65536` | NSCC maximum window in bytes |
+| `SIMULATION_NETNS_PRIVILEGE` | Auto-detect user namespaces, then `sudo` when present | Command prefix used only to execute `unshare --net`, for example `sudo` |
+| `NETEM_TC` | `tc` or `/sbin/tc` | Exact `tc` executable used by the netem adapter |
+
+For example:
+
+```text
+SIMULATION_CC_MATRIX='nscc:ecn none:lossy' \
+SIMULATION_CC_TIMEOUT=90 make simulation-congestion-test
+```
+
+`test-pass` requires `tests/congestion_plugin.so`, which the Make target builds
+automatically. Other algorithm names are rejected because this test must know
+whether and how to load their plugin. Add the algorithm to the test runner when
+adding a new test plugin.
+
+### Runtime and diagnostic tests
+
+| Target | Requirements | Command | What it validates |
+|---|---|---|---|
+| Runtime bundle | Normal static and shared build dependencies | `make runtime-bundle-test` | Reproducible archive, standalone archive, provider library, manifest, compatibility lock, symlinks, and library-only preflight |
+| CPU diagnostic image | Docker-compatible container engine and download access on the first run | `make diagnostic-smoke-test` | Pinned tool versions, capabilities JSON, and CPU-safe preflight |
+| UIB diagnostic preflight | Container engine and runtime bundle build dependencies | `make diagnostic-uib-preflight-test` | The independently built image can mount and load the UIB runtime artifact |
+| GPU diagnostic | NVIDIA driver, accessible CUDA GPU, and container GPU support | `make diagnostic-gpu-test` | CUDA `deviceQuery` and a correctness-checked single-rank NCCL collective |
+
+Runtime and diagnostic options:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RUNTIME_ARTIFACT_DIR` | `simulation/.artifacts` | Bundle and persistent download-cache root; it is ignored by Git |
+| `DIAGNOSTIC_IMAGE` | `uib-diagnostics:test` | Local image name |
+| `DIAGNOSTIC_CONTAINER_ENGINE` | Value of `TRAINING_CONTAINER_ENGINE` | Container command |
+| `DIAGNOSTIC_DOWNLOAD_CACHE` | `$(RUNTIME_ARTIFACT_DIR)/downloads` | Persistent source cache; downloads are reused by later runs |
+| `DIAGNOSTIC_GPU_DEVICE` | `nvidia.com/gpu=all` | Device selector passed to the container engine |
+| `DIAGNOSTIC_SKIP_BUILD` | `0` | Direct-script option; set to `1` to reuse an existing image |
+| `DIAGNOSTIC_UIB_RUNTIME` | Unset | Direct-script path to a runtime bundle mounted read-only at `/opt/uib` |
+
+The GPU diagnostic has one rank. It validates the CUDA and NCCL installation,
+not the UIB data plane.
+
+### Communication front-end tests
+
+| Target | Requirements | What it validates |
+|---|---|---|
+| `make provider-nccl-abi-test` | libibverbs development files | The provider exposes the versioned ABI and calls NCCL's required verbs entry points; no GPU is used |
+| `make nccl-test` | NVIDIA GPU and driver, CUDA MPS, MPI, `nccl-tests` `all_reduce_perf`, `setpriv`, `unshare`, and `timeout` | Two local NCCL ranks use `libuibv.so`, the NCCL IB network, and UIB traffic; Socket fallback and data errors fail the test |
+| `make rccl-test` | At least two accessible AMD GPU ranks, ROCm/RCCL, MPI-enabled `rccl-tests`, `rocminfo`, `setpriv`, `unshare`, and `timeout` | Two or more local RCCL ranks select the IB network through UIB without Socket fallback |
+| `make ucx-libfabric-test` | `ucx_info`, `ucx_perftest`, `fi_info`, `fi_pingpong`, `fi_rdm_pingpong`, and `timeout` | Actual two-process UCX tag traffic over `rc`/`ud` and libfabric message/RDM traffic over verbs; TCP, shared-memory, and sockets fallbacks fail the test |
+
+NCCL options:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `NCCL_TESTS_BIN` | First `all_reduce_perf` in `PATH` | Exact MPI-enabled `nccl-tests` binary |
+| `MPIEXEC` | `mpirun` | MPI launcher |
+| `NCCL_TEST_MAX_BYTES` | `64K` | Largest collective buffer accepted by `all_reduce_perf -e` |
+| `NCCL_TEST_ITERATIONS` | `3` | Measured iterations |
+| `NCCL_TEST_WARMUPS` | `1` | Warm-up iterations |
+| `NCCL_TEST_TIMEOUT` | `90` | Whole-test timeout in seconds |
+| `NCCL_TEST_BIND_PORT` | `19700` | UIB UDP bind port |
+
+RCCL options:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RCCL_TESTS_BIN` | First `all_reduce_perf` in `PATH` | Exact MPI-enabled `rccl-tests` binary |
+| `MPIEXEC` | `mpirun` | MPI launcher |
+| `RCCL_TEST_RANKS` | `2` | Rank count; values below two are rejected |
+| `HIP_VISIBLE_DEVICES` | `0,1` | AMD devices visible to the ranks |
+| `RCCL_TEST_MAX_BYTES` | `64K` | Largest collective buffer |
+| `RCCL_TEST_ITERATIONS` | `3` | Measured iterations |
+| `RCCL_TEST_WARMUPS` | `1` | Warm-up iterations |
+| `RCCL_TEST_TIMEOUT` | `90` | Whole-test timeout in seconds |
+| `RCCL_TEST_BIND_PORT` | `19900` | UIB UDP bind port |
+
+UCX/libfabric options:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `COMM_TEST_ITERATIONS` | `100` | UCX performance-test iterations |
+| `COMM_TEST_TIMEOUT` | `30` | Timeout in seconds for each client or server |
+| `COMM_TEST_BIND_PORT` | `19800` | UIB and UCX test port |
+
+Examples:
+
+```text
+NCCL_TESTS_BIN=/opt/nccl-tests/build/all_reduce_perf \
+NCCL_TEST_MAX_BYTES=1M make nccl-test
+
+RCCL_TESTS_BIN=/opt/rccl-tests/build/all_reduce_perf \
+RCCL_TEST_RANKS=4 HIP_VISIBLE_DEVICES=0,1,2,3 make rccl-test
+
+COMM_TEST_ITERATIONS=1000 COMM_TEST_TIMEOUT=60 \
+make ucx-libfabric-test
+```
+
+`nccl-test` intentionally uses two ranks on one GPU through MPS. That is real
+NCCL/UIB traffic, but not multi-GPU or multi-node validation. `rccl-test`
+requires AMD hardware and was not run on the NVIDIA-only development host.
+The UCX/libfabric gate was not run there because those tools were unavailable.
+
+### Training tests
+
+| Target | Requirements | What it validates |
+|---|---|---|
+| `make training-smoke-test` | Container engine; image build access on first run | CPU DDP with two Gloo ranks, checkpoint/restart equivalence, and pinned NCCL library loading |
+| `make training-public-test` | The smoke-test requirements and model-download access on first run | Small public Hugging Face model/dataset training on CPU; downloads persist in the ignored cache |
+| `make training-gpu-test` | NVIDIA driver, accessible GPU or GPUs, and container GPU support | DDP or FSDP on CUDA plus checkpoint/restart; multiple processes use multiple visible GPUs when available |
+| `make training-uib-preflight-test` | Container engine and runtime bundle dependencies | The training image can mount and load the UIB runtime without a GPU |
+| `make training-uib-test` | NVIDIA GPU, CUDA MPS, MPI, container GPU support, `nvidia-cuda-mps-control`, `nvidia-smi`, and `timeout` | Two unmodified PyTorch DDP ranks send NCCL gradient traffic through UIB and reject Socket fallback |
+
+Training options:
+
+| Variable | Default | Values and meaning |
+|---|---|---|
+| `TRAINING_IMAGE` | `uib-training:test` | Local image name |
+| `TRAINING_CONTAINER_ENGINE` | `docker` | Container command |
+| `TRAINING_SKIP_BUILD` | `0` | Direct-script option; `1` reuses the existing image |
+| `TRAINING_HF_CACHE` | `simulation/.artifacts/huggingface` | Persistent Hugging Face cache |
+| `TRAINING_GPU_DEVICE` | `nvidia.com/gpu=all` | Container device selector |
+| `TRAINING_GPU_PROCESSES` | `1` | Positive local CUDA process count |
+| `TRAINING_GPU_STRATEGY` | `fsdp` | `ddp` or `fsdp`; other values are rejected |
+| `TRAINING_UIB_RUNTIME` | `simulation/.artifacts/uib-runtime` | Runtime-bundle directory used by the UIB test |
+| `TRAINING_UIB_TIMEOUT` | `180` | Two-rank UIB test timeout in seconds |
+| `TRAINING_UIB_BIND_PORT` | `19720` | UIB UDP bind port |
+| `TRAINING_MASTER_PORT` | `29720` | PyTorch rendezvous port |
+| `MPIEXEC` | `mpirun` | MPI launcher for the UIB test |
+
+Examples:
+
+```text
+TRAINING_HF_CACHE=/data/uib-cache/huggingface \
+make training-public-test
+
+TRAINING_GPU_PROCESSES=4 TRAINING_GPU_STRATEGY=fsdp \
+make training-gpu-test
+
+TRAINING_UIB_TIMEOUT=300 TRAINING_UIB_BIND_PORT=19820 \
+make training-uib-test
+```
+
+`TRAINING_GPU_PROCESSES` must not exceed the usable visible GPU count for an
+ordinary multi-GPU run. The special `training-uib-test` always uses two ranks
+on one GPU through MPS and therefore does not use that variable.
+
+### Inference tests
+
+| Target | Requirements | What it validates |
+|---|---|---|
+| `make inference-smoke-test` | Container engine and model-download access on first run | CPU Transformers serving, streaming and non-streaming OpenAI-compatible probes, local Ray, and generated vLLM arguments |
+| `make inference-gpu-test` | NVIDIA driver, container GPU support, and enough visible GPUs for the selected parallel product | Actual vLLM serving, deterministic request probe, and standard `vllm bench serve` result generation |
+
+Inference options:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `INFERENCE_IMAGE` | `uib-inference:test` | Local image name |
+| `INFERENCE_CONTAINER_ENGINE` | Value of `TRAINING_CONTAINER_ENGINE` | Container command |
+| `INFERENCE_SKIP_BUILD` | `0` | Direct-script option; `1` reuses the existing image |
+| `INFERENCE_HF_CACHE` | `simulation/.artifacts/huggingface` | Persistent Hugging Face cache |
+| `INFERENCE_GPU_DEVICE` | Value of `TRAINING_GPU_DEVICE` | Container device selector |
+| `INFERENCE_GPU_TENSOR_PARALLEL` | `1` | Positive tensor-parallel degree |
+| `INFERENCE_GPU_PIPELINE_PARALLEL` | `1` | Positive pipeline-parallel degree |
+| `INFERENCE_GPU_DATA_PARALLEL` | `1` | Positive data-parallel degree |
+| `INFERENCE_GPU_CONFIG` | Generated tiny GPU configuration | Direct-script path to a complete workload JSON configuration |
+
+The three parallel degrees must be positive integers. Their product is the
+required vLLM worker count, so it cannot exceed available resources. A useful
+two-GPU example is:
+
+```text
+INFERENCE_GPU_TENSOR_PARALLEL=2 \
+INFERENCE_GPU_PIPELINE_PARALLEL=1 \
+INFERENCE_GPU_DATA_PARALLEL=1 make inference-gpu-test
+```
+
+The CPU default downloads `HuggingFaceTB/SmolLM2-135M-Instruct` only once into
+the ignored cache. Larger models use a custom request or
+`INFERENCE_GPU_CONFIG`; model files remain outside the repository.
+
+### Physical multi-node promotion tests
+
+The following gates are requirements, not local Make targets yet. They remain
+explicitly pending until a suitable cluster is available.
+
+| Gate | Minimum requirement | Reusable workload | Pass condition |
+|---|---|---|---|
+| Two-node NCCL | NVIDIA GPU and working network on each of two physical nodes | The same `nccl-tests` all-reduce settings | Both ranks select UIB's IB network, no Socket fallback, correct data |
+| Two-node RCCL | AMD GPU and working network on each of two physical nodes | The same `rccl-tests` all-reduce settings | Both ranks select UIB's IB network, no Socket fallback, correct data |
+| Kubernetes training | At least two GPU workers, Kubeflow Trainer, GPU device plugin, and UIB runtime injection | The same training image and workload configuration | Correct placement, checkpoint/restart, loss, and UIB evidence |
+| Slurm training | At least two GPU nodes with Slurm, Pyxis, and Enroot | The same training image and workload configuration | Correct rank placement, checkpoint/restart, loss, and UIB evidence |
+| Kubernetes inference | At least two GPU workers and KubeRay or equivalent launcher | The same inference image, model, and probe | Correct TP/PP/DP placement, responses, benchmark, and UIB evidence |
+| Slurm inference | At least two GPU nodes with Slurm, Pyxis, and Enroot | The same inference image, model, and probe | Correct placement, responses, benchmark, and UIB evidence |
+| GPU-direct promotion | Compatible GPUs, drivers, DMA-BUF/RDMA support, and at least two physical nodes | Any passing two-node collective | Evidence that payloads use the validated GPU-memory path, not host staging |
+| Fabric qualification | Production-like switches, links, GPUs, and RDMA NICs | Simulation request plus a native-verbs baseline | Correctness and comparative metrics under congestion and faults |
+
+These tests reuse immutable images and request files. A site overlay changes
+only inventory, device selectors, interface names, addresses, storage, and
+scheduler-specific placement. The application entrypoint, model revision,
+dataset revision, parallelism, correctness probes, and metric definitions stay
+unchanged, which makes simulation-to-hardware differences reviewable.
 
 ## Cleanup and safety
 
