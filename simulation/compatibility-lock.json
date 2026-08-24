@@ -145,12 +145,44 @@
       "validatedProfiles": [
         "hardware-neutral-tool-preflight",
         "uib-runtime-library-injection",
+        "kind-two-worker-uib-rocev2",
+        "kind-two-worker-uib-uet",
         "single-gpu-device-query",
         "single-gpu-nccl-all-reduce"
       ]
     }
   },
   "validatedConfigurations": [
+    {
+      "id": "uib-rdma-core-kind-two-worker",
+      "date": "2026-08-24",
+      "kind": "v0.31.0",
+      "kubernetes": "v1.35.0",
+      "rdmaCore": "50.0",
+      "application": "unmodified ibv_rc_pingpong",
+      "verbsDevice": "uib0",
+      "topology": "one-control-plane-two-workers",
+      "peers": 2,
+      "placement": "one pod per distinct worker",
+      "network": "distinct Pod IPs across the Kind CNI",
+      "protocols": {
+        "rocev2": {
+          "bindPort": 4791,
+          "correctness": "64 exchanges passed"
+        },
+        "uet": {
+          "bindPort": 5432,
+          "correctness": "64 exchanges passed"
+        }
+      },
+      "transport": "udp-sync",
+      "memoryMode": "host",
+      "uibRuntimePreflight": "passed-on-both-pods-for-each-protocol",
+      "uibTraffic": "actual-cross-pod-data-plane",
+      "cleanup": "test pods, namespace, and Kind cluster removed",
+      "validationLevel": "L0",
+      "testTarget": "make simulation-kubernetes-uib-test"
+    },
     {
       "id": "kubeflow-trainer-2.2.1-kind-two-node-cpu",
       "date": "2026-08-24",
