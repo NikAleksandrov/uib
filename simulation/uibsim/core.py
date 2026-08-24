@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pathlib
+import re
 
 
 SIMULATION = pathlib.Path(__file__).resolve().parents[1]
@@ -28,6 +29,12 @@ KUBERNETES_RENDERER = SIMULATION / "adapters" / "kubernetes" / "render"
 
 
 SLURM_RENDERER = SIMULATION / "adapters" / "slurm" / "render"
+
+
+DEFAULT_STATE_DIR = SIMULATION / ".artifacts" / "runs"
+
+
+RUN_ID = re.compile(r"^[a-z](?:[a-z0-9-]{1,46}[a-z0-9])$")
 
 
 class ConfigurationError(Exception):

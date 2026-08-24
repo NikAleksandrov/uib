@@ -334,6 +334,9 @@ simulation-kubernetes-render-test:
 simulation-slurm-render-test:
 	./tests/run_slurm_render_test.sh
 
+simulation-slurm-lifecycle-test:
+	./tests/run_slurm_lifecycle_test.sh
+
 simulation-kubeflow-e2e-test:
 	./tests/run_kubeflow_e2e_test.sh
 
@@ -883,6 +886,7 @@ clean:
 	simulation-cli-test simulation-netem-test simulation-congestion-test \
 	simulation-kind-test simulation-kind-e2e-test \
 	simulation-kubernetes-render-test simulation-slurm-render-test \
+	simulation-slurm-lifecycle-test \
 	simulation-kubeflow-e2e-test \
 	simulation-kubernetes-uib-test \
 	simulation-kuberay-e2e-test \

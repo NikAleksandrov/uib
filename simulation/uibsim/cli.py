@@ -20,9 +20,17 @@ def add_lifecycle_args(parser):
                         help="explicit provider-owned resource name")
 
 
+def add_state_dir_arg(parser):
+    from .core import DEFAULT_STATE_DIR
+
+    parser.add_argument(
+        "--state-dir", default=str(DEFAULT_STATE_DIR),
+        help="run ledger root (default: simulation/.artifacts/runs)")
+
+
 def main():
     from .core import ConfigurationError
-    from .lifecycle import command_doctor, command_down, command_kubeconfig, command_load_image, command_render, command_render_workload, command_status, command_up
+    from .lifecycle import command_doctor, command_down, command_kubeconfig, command_load_image, command_render, command_render_workload, command_run, command_status, command_up
 
     parser = argparse.ArgumentParser(
         description="resolve and inspect UIB simulation configuration")
@@ -43,6 +51,7 @@ def main():
     up.set_defaults(handler=command_up)
     status = commands.add_parser("status", help="inspect selected infrastructure")
     add_lifecycle_args(status)
+    add_state_dir_arg(status)
     status.set_defaults(handler=command_status)
     kubeconfig = commands.add_parser("kubeconfig", help="print provider kubeconfig")
     add_lifecycle_args(kubeconfig)
@@ -63,8 +72,17 @@ def main():
         "--allow-mutable-tags", action="store_true",
         help="allow local development tags instead of immutable digests")
     render_workload.set_defaults(handler=command_render_workload)
+    run = commands.add_parser(
+        "run", help="render and submit one scheduler workload")
+    add_lifecycle_args(run)
+    add_state_dir_arg(run)
+    run.add_argument(
+        "--allow-mutable-tags", action="store_true",
+        help="allow local development image tags instead of immutable digests")
+    run.set_defaults(handler=command_run)
     down = commands.add_parser("down", help="remove selected infrastructure")
     add_lifecycle_args(down)
+    add_state_dir_arg(down)
     down.set_defaults(handler=command_down)
     args = parser.parse_args()
     try:

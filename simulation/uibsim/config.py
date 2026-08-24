@@ -263,7 +263,7 @@ def tools_for(config):
         "existing": {"kubectl"} if manager == "kubernetes" else {"srun"},
     }[provider])
     if manager == "slurm":
-        tools.update({"sbatch", "scontrol", "srun"})
+        tools.update({"sacct", "sbatch", "scancel", "scontrol", "srun"})
     tools.update({
         "nccl": {"all_reduce_perf", "mpirun"},
         "rccl": {"all_reduce_perf", "mpirun", "rocminfo"},

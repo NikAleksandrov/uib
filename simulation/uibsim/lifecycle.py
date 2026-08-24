@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import pathlib
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
 from .dependencies import yaml
@@ -76,8 +79,11 @@ def command_up(args):
 
 def command_status(args):
     from .config import resolve
+    from .slurm import command_slurm_status
 
     config = resolve(args)
+    if config["cluster"]["manager"] == "slurm":
+        return command_slurm_status(args)
     return invoke_backend(
         config, lambda unused: ["status", "--name", args.run_id])
 
@@ -132,9 +138,132 @@ def command_render_workload(args):
                 f"cannot invoke {manager} renderer: {error}") from error
 
 
-def command_down(args):
+def command_run(args):
     from .config import resolve
+    from .core import ConfigurationError, SLURM_RENDERER
+    from .scheduler import slurm_command
+    from .state import state_path, utc_now, write_json
 
     config = resolve(args)
+    if config["cluster"]["manager"] != "slurm":
+        raise ConfigurationError("run is currently implemented only for Slurm")
+    config["runId"] = args.run_id
+    run_dir = state_path(args)
+    try:
+        run_dir.parent.mkdir(parents=True, exist_ok=True)
+        run_dir.mkdir()
+    except FileExistsError as error:
+        raise ConfigurationError(f"run state already exists: {run_dir}") from error
+    except OSError as error:
+        raise ConfigurationError(f"cannot create run state {run_dir}: {error}") from error
+
+    ledger_path = run_dir / "ledger.json"
+    ledger = {
+        "schemaVersion": 1,
+        "runId": args.run_id,
+        "scheduler": "slurm",
+        "state": "preparing",
+        "createdAt": utc_now(),
+        "batchFile": "workload.sbatch",
+        "resolvedConfig": "resolved-simulation.json",
+    }
+    write_json(ledger_path, ledger)
+    config_path = run_dir / "resolved-simulation.json"
+    write_json(config_path, config)
+
+    required_paths = [
+        config["storage"]["modelCachePath"],
+        config["storage"]["resultsPath"],
+    ]
+    if config["uib"]["enabled"]:
+        required_paths.append(config["storage"]["uibRuntimePath"])
+    missing = [path for path in required_paths if not pathlib.Path(path).is_dir()]
+    if missing:
+        ledger["state"] = "preflight-failed"
+        ledger["missingPaths"] = missing
+        write_json(ledger_path, ledger)
+        raise ConfigurationError(
+            "Slurm shared paths do not exist: " + ", ".join(missing))
+
+    batch_path = run_dir / "workload.sbatch"
+    render_error = run_dir / "render.stderr"
+    command = [str(SLURM_RENDERER), str(config_path),
+               "--run-id", args.run_id]
+    if args.allow_mutable_tags:
+        command.append("--allow-mutable-tags")
+    try:
+        with batch_path.open("w", encoding="utf-8") as batch, \
+                render_error.open("w", encoding="utf-8") as errors:
+            rendered = subprocess.run(
+                command, stdout=batch, stderr=errors, check=False)
+    except OSError as error:
+        ledger["state"] = "render-failed"
+        ledger["error"] = str(error)
+        write_json(ledger_path, ledger)
+        raise ConfigurationError(f"cannot render Slurm workload: {error}") from error
+    if rendered.returncode:
+        ledger["state"] = "render-failed"
+        ledger["renderExitCode"] = rendered.returncode
+        write_json(ledger_path, ledger)
+        try:
+            print(render_error.read_text(encoding="utf-8"),
+                  file=sys.stderr, end="")
+        except OSError:
+            pass
+        return rendered.returncode
+
+    ledger["state"] = "rendered"
+    write_json(ledger_path, ledger)
+    sbatch = slurm_command("SBATCH_COMMAND", "sbatch")
+    try:
+        submitted = subprocess.run(
+            [sbatch, "--parsable", str(batch_path)], text=True,
+            capture_output=True, check=False)
+    except OSError as error:
+        ledger["state"] = "submission-not-started"
+        ledger["error"] = str(error)
+        write_json(ledger_path, ledger)
+        raise ConfigurationError(f"cannot invoke sbatch: {error}") from error
+    try:
+        (run_dir / "sbatch.stdout").write_text(
+            submitted.stdout, encoding="utf-8")
+        (run_dir / "sbatch.stderr").write_text(
+            submitted.stderr, encoding="utf-8")
+    except OSError as error:
+        ledger["state"] = "submission-unknown"
+        ledger["error"] = f"cannot record sbatch output: {error}"
+        write_json(ledger_path, ledger)
+        raise ConfigurationError(
+            f"sbatch returned but its output cannot be recorded: {error}") from error
+    if submitted.returncode:
+        ledger["state"] = "submission-failed"
+        ledger["submissionExitCode"] = submitted.returncode
+        write_json(ledger_path, ledger)
+        if submitted.stderr:
+            print(submitted.stderr, file=sys.stderr, end="")
+        return submitted.returncode
+
+    match = re.fullmatch(r"([0-9]+)(?:;[^\s;]+)?\s*", submitted.stdout)
+    if not match:
+        ledger["state"] = "submission-unknown"
+        ledger["submissionOutput"] = submitted.stdout
+        write_json(ledger_path, ledger)
+        raise ConfigurationError(
+            f"sbatch succeeded without a parseable job ID; inspect {run_dir}")
+    ledger["state"] = "submitted"
+    ledger["jobId"] = match.group(1)
+    ledger["submittedAt"] = utc_now()
+    write_json(ledger_path, ledger)
+    print(ledger["jobId"])
+    return 0
+
+
+def command_down(args):
+    from .config import resolve
+    from .slurm import command_slurm_down
+
+    config = resolve(args)
+    if config["cluster"]["manager"] == "slurm":
+        return command_slurm_down(args)
     return invoke_backend(
         config, lambda unused: ["down", "--name", args.run_id])

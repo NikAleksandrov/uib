@@ -115,7 +115,7 @@
           "pyxis": "0.24.0",
           "enroot": "4.2.1"
         },
-        "status": "validated-structural-render-only",
+        "status": "validated-fake-cli-lifecycle",
         "supportedWorkloads": [
           "multi-rank-training",
           "single-task-inference"
@@ -123,7 +123,10 @@
         "unsupportedWorkloads": [
           "multi-node-ray-inference"
         ],
-        "testTarget": "make simulation-slurm-render-test",
+        "testTargets": [
+          "make simulation-slurm-render-test",
+          "make simulation-slurm-lifecycle-test"
+        ],
         "realClusterValidation": "pending-slurm-pyxis-enroot-cluster",
         "validatedOn": "2026-08-24"
       }
