@@ -49,23 +49,38 @@ export KIND_TEST_LOG="$test_dir/kind.log"
 "$backend" up "$test_dir/config.json" --name uib-test --wait 30s
 "$backend" status --name uib-test
 "$backend" kubeconfig --name uib-test > "$test_dir/kubeconfig"
+"$backend" load-image --name uib-test \
+	--image example.invalid/training@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 "$backend" down --name uib-test
 
 "$cli" up --profile kind-kubernetes --run-id uib-test --wait 30s
 "$cli" status --profile kind-kubernetes --run-id uib-test
 "$cli" kubeconfig --profile kind-kubernetes --run-id uib-test \
 	> "$test_dir/cli-kubeconfig"
+"$cli" load-image --profile kind-kubernetes --run-id uib-test \
+	--image example.invalid/training@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"$cli" load-image --profile kind-kubernetes --run-id uib-test \
+	--image uib-training:test --allow-mutable-tags
 "$cli" down --profile kind-kubernetes --run-id uib-test
 
 grep -q '^create cluster --name uib-test ' "$test_dir/kind.log"
 grep -q '^get clusters$' "$test_dir/kind.log"
 grep -q '^get kubeconfig --name uib-test$' "$test_dir/kind.log"
+grep -q '^load docker-image example.invalid/training@sha256:a\{64\} --name uib-test$' \
+	"$test_dir/kind.log"
+grep -q '^load docker-image uib-training:test --name uib-test$' \
+	"$test_dir/kind.log"
 grep -q '^delete cluster --name uib-test$' "$test_dir/kind.log"
 grep -q '^apiVersion: v1$' "$test_dir/kubeconfig"
 grep -q '^apiVersion: v1$' "$test_dir/cli-kubeconfig"
 
 if "$backend" down --name 'unsafe/name' >/dev/null 2>&1; then
 	echo "unsafe Kind cluster name was accepted" >&2
+	exit 1
+fi
+if "$backend" load-image --name uib-test --image uib-training:test \
+	> /dev/null 2>&1; then
+	echo "mutable Kind image was accepted without explicit opt-in" >&2
 	exit 1
 fi
 if "$cli" status --profile virtme-kubernetes --run-id uib-test \

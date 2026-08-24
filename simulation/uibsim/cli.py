@@ -22,7 +22,7 @@ def add_lifecycle_args(parser):
 
 def main():
     from .core import ConfigurationError
-    from .lifecycle import command_doctor, command_down, command_kubeconfig, command_render, command_status, command_up
+    from .lifecycle import command_doctor, command_down, command_kubeconfig, command_load_image, command_render, command_status, command_up
 
     parser = argparse.ArgumentParser(
         description="resolve and inspect UIB simulation configuration")
@@ -47,6 +47,15 @@ def main():
     kubeconfig = commands.add_parser("kubeconfig", help="print provider kubeconfig")
     add_lifecycle_args(kubeconfig)
     kubeconfig.set_defaults(handler=command_kubeconfig)
+    load_image = commands.add_parser(
+        "load-image", help="stage explicit images in selected infrastructure")
+    add_lifecycle_args(load_image)
+    load_image.add_argument("--image", action="append", required=True,
+                            help="image reference; repeatable")
+    load_image.add_argument(
+        "--allow-mutable-tags", action="store_true",
+        help="allow local development tags instead of immutable digests")
+    load_image.set_defaults(handler=command_load_image)
     down = commands.add_parser("down", help="remove selected infrastructure")
     add_lifecycle_args(down)
     down.set_defaults(handler=command_down)

@@ -90,6 +90,22 @@ def command_kubeconfig(args):
         config, lambda unused: ["kubeconfig", "--name", args.run_id])
 
 
+def command_load_image(args):
+    from .config import resolve
+
+    config = resolve(args)
+
+    def arguments(unused):
+        command = ["load-image", "--name", args.run_id]
+        for image in args.image:
+            command.extend(["--image", image])
+        if args.allow_mutable_tags:
+            command.append("--allow-mutable-tags")
+        return command
+
+    return invoke_backend(config, arguments)
+
+
 def command_down(args):
     from .config import resolve
 

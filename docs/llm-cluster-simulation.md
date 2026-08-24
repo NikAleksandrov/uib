@@ -1200,20 +1200,27 @@ simulation/backends/kind/cluster render /tmp/uib-kind.json
 simulation/bin/uib-sim up --profile kind-kubernetes --run-id uib-lab \
     --kubeconfig /tmp/uib-lab.kubeconfig
 simulation/bin/uib-sim status --profile kind-kubernetes --run-id uib-lab
+simulation/bin/uib-sim load-image --profile kind-kubernetes \
+    --run-id uib-lab \
+    --image registry.example/uib-training@sha256:<digest>
 simulation/bin/uib-sim down --profile kind-kubernetes --run-id uib-lab
 ```
 
 The adapter renders ordinary Kind v1alpha4 YAML with one control-plane and the
 configured worker count. Every node uses the digest-pinned image from
-`cluster.nodeImage`. `up`, `status`, `kubeconfig`, and `down` invoke the real
+`cluster.nodeImage`. The default profile pins Kind v0.31.0 and Kubernetes
+v1.35.0; use a matching Kind executable through `KIND_COMMAND` when the host
+has another version. `up`, `status`, `kubeconfig`, and `down` invoke the real
 Kind CLI and always require an explicit, validated cluster name. The rendered
 YAML can be passed directly to `kind create cluster` when debugging. The
 top-level `uib-sim` lifecycle commands currently delegate only the Kind
 profile; other providers fail explicitly as unimplemented.
 
-Loading workload images, installing Kubeflow Trainer and KubeRay, spreading
-ranks, shaping pod network namespaces, and collecting results are later
-deployment phases; the current Kind adapter does not claim those steps.
+`load-image` delegates to `kind load docker-image` and requires digest-pinned
+references by default. Local development tags require the explicit
+`--allow-mutable-tags` option. Installing Kubeflow Trainer and KubeRay,
+spreading ranks, shaping pod network namespaces, and collecting results are
+later deployment phases; the current Kind adapter does not claim those steps.
 
 Kind nodes share one host kernel and compute capacity. Results are L0 unless a
 separate GPU capability has been proven.
@@ -2291,8 +2298,9 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in network condition renders to the expected `tc netem` command; unsafe interfaces and invalid combinations are rejected; it does not modify a qdisc |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | UET SEND, RDMA read/write, and atomics complete with actual netem conditions and the selected built-in or plugin congestion algorithm |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
+| `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 
-Run all four:
+Run the four hardware-neutral gates:
 
 ```text
 make simulation-cli-test
@@ -2301,11 +2309,16 @@ make simulation-congestion-test
 make simulation-kind-test
 ```
 
-The Kind adapter test does not create a cluster. To exercise the actual
-container-backed lifecycle, first run
-`uib-sim doctor --profile kind-kubernetes`, then use the commands in
-[Kind](#kind). The host needs Kind, a working Docker-compatible runtime, and
-sufficient CPU and memory for the declared nodes.
+The mocked Kind adapter test does not create a cluster. The opt-in real gate is:
+
+```text
+make simulation-kind-e2e-test
+```
+
+It creates an explicitly named disposable cluster and always attempts cleanup
+after `up`, including failure paths. The successful local gate used one
+control-plane and one worker. The digest-pinned node image remains in the
+container runtime's normal cache for later runs.
 
 | Kind option | Default | Syntax and meaning |
 |---|---|---|
@@ -2315,7 +2328,33 @@ sufficient CPU and memory for the declared nodes.
 | `--wait` | `120s` | Positive integer plus `s`, `m`, or `h` passed to `kind create cluster` |
 | `--kubeconfig` | Kind default | Explicit output path for the new cluster's kubeconfig |
 | `--retain` | Off | Preserve Kind nodes when cluster creation fails |
-| `KIND_COMMAND` | `kind` | Exact Kind executable, primarily useful for pinned installations and tests |
+| `KIND_COMMAND` | `kind` | Exact Kind executable; the default profile is validated with v0.31.0 |
+| `load-image --image` | Required; repeatable | Host image passed to standard `kind load docker-image` |
+| `--allow-mutable-tags` | Off | Permit a local development tag such as `uib-training:test`; incompatible with promotion or reproducibility claims |
+
+Real Kind gate options:
+
+| Variable | Default | Syntax and meaning |
+|---|---|---|
+| `SIMULATION_KIND_E2E_NAME` | Unique `uib-e2e-<pid>` | Explicit cluster name owned by the test |
+| `SIMULATION_KIND_E2E_WORKERS` | `1` | Positive worker count |
+| `SIMULATION_KIND_E2E_WAIT` | `180s` | Kind readiness duration |
+| `SIMULATION_KIND_E2E_TIMEOUT` | `600` | Positive whole-test timeout in seconds |
+| `SIMULATION_KIND_E2E_IMAGES` | Unset | Whitespace-separated image references loaded after readiness |
+| `SIMULATION_KIND_E2E_ALLOW_MUTABLE_TAGS` | `0` | `0` requires digests; `1` permits local tags |
+
+Examples:
+
+```text
+SIMULATION_KIND_E2E_WORKERS=2 make simulation-kind-e2e-test
+
+SIMULATION_KIND_E2E_IMAGES='registry.example/training@sha256:<digest>' \
+make simulation-kind-e2e-test
+
+SIMULATION_KIND_E2E_IMAGES='uib-training:test uib-inference:test' \
+SIMULATION_KIND_E2E_ALLOW_MUTABLE_TAGS=1 \
+make simulation-kind-e2e-test
+```
 
 The congestion test creates a disposable network namespace, applies netem to
 its loopback interface, runs `tests/loopback`, and destroys the namespace. It
@@ -2326,7 +2365,7 @@ never changes the host root qdisc. Its options are:
 | `SIMULATION_CC_MATRIX` | `nscc:clean nscc:datacenter nscc:constrained nscc:lossy nscc:reordered none:constrained test-pass:datacenter` | Space-separated `algorithm:condition` pairs. Test algorithms are `nscc`, `none`, and the sample plugin `test-pass`; conditions are `clean`, `datacenter`, `constrained`, `lossy`, `reordered`, and `ecn` |
 | `SIMULATION_CC_TIMEOUT` | `60` | Positive timeout in seconds for each matrix entry |
 | `SIMULATION_CC_MAX_WINDOW` | `65536` | NSCC maximum window in bytes |
-| `SIMULATION_NETNS_PRIVILEGE` | Auto-detect user namespaces, then `sudo` when present | Command prefix used only to execute `unshare --net`, for example `sudo` |
+| `SIMULATION_NETNS_PRIVILEGE` | Unset | Optional command prefix used only to execute `unshare --net` when root and unprivileged user namespaces are unavailable |
 | `NETEM_TC` | `tc` or `/sbin/tc` | Exact `tc` executable used by the netem adapter |
 
 For example:
@@ -2545,10 +2584,11 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 
 ## Limitations
 
-- The Kind backend renders and delegates named cluster lifecycle operations,
-  but its real Docker-backed creation was not run on this development host.
-  The common lifecycle harness, scheduler deployment adapters, DeepSpeed
-  adapter, and Megatron-Core adapter are planned and not yet implemented.
+- The Kind backend passed a real one-control-plane, one-worker lifecycle test,
+  including readiness, kubeconfig export, node-count validation, and cleanup.
+  Scheduler deployment, pod-level UIB validation, multi-worker workload runs,
+  the other infrastructure adapters, DeepSpeed, and Megatron-Core remain
+  planned.
 - The diagnostic image passed its hardware-neutral, UIB runtime-injection,
   CUDA `deviceQuery`, and single-GPU NCCL all-reduce gates. Its NCCL run has
   one rank and therefore does not send UIB traffic.

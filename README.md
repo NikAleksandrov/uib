@@ -140,6 +140,7 @@ Common targets are:
     make ucx-libfabric-test   # opt-in UCX and libfabric transfers through UIB
     make simulation-cli-test  # validate simulation profiles and layer overlays
     make simulation-kind-test # validate standard Kind rendering and delegation
+    make simulation-kind-e2e-test # opt-in real disposable Kind lifecycle
     make training-smoke-test  # pinned two-rank CPU DDP and restart workload
     make training-public-test # dynamically cached tiny public model and data
     make training-gpu-test    # opt-in NCCL and FSDP restart on NVIDIA CDI
@@ -185,8 +186,8 @@ training entry point in the pinned OCI image. It starts two containerized NCCL
 ranks, forces gradient collectives through `uib0`, checks the workload result,
 and rejects Socket fallback. The local gate can share one physical GPU through
 NVIDIA MPS, but it still needs two communicating ranks: a one-process GPU run
-cannot validate UIB traffic. Set `TRAINING_CONTAINER_ENGINE`, for example to
-`sudo docker`, when the OCI engine requires a privilege helper.
+cannot validate UIB traffic. Set `TRAINING_CONTAINER_ENGINE` to the appropriate
+container command when the default engine is not directly accessible.
 
 The [LLM cluster simulation guide](docs/llm-cluster-simulation.md) describes a
 layered validation environment for unchanged collective and LLM workloads. It

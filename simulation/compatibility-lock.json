@@ -48,6 +48,23 @@
         "dynamic-loader"
       ],
       "requiresGlibcAtLeastBuildVersion": true
+    },
+    "infrastructure": {
+      "kind": {
+        "status": "validated-local-lifecycle",
+        "cliVersion": "v0.31.0",
+        "configApi": "kind.x-k8s.io/v1alpha4",
+        "kubernetes": "v1.35.0",
+        "nodeImage": "kindest/node:v1.35.0@sha256:452d707d4862f52530247495d180205e029056831160e22870e37e3f6c1ac31f",
+        "topology": "one-control-plane-one-worker",
+        "testTarget": "make simulation-kind-e2e-test",
+        "validatedOn": "2026-08-24",
+        "previousValidated": {
+          "cliVersion": "v0.17.0",
+          "kubernetes": "v1.25.3",
+          "nodeImage": "kindest/node:v1.25.3@sha256:f52781bc0d7a19fb6c405c2af83abfeb311f130707a0e219175677e366cc45d1"
+        }
+      }
     }
   },
   "workloadStacks": {
@@ -112,7 +129,7 @@
     {
       "id": "nccl-2.30.4-cuda-13.2-host-staged",
       "date": "2026-08-23",
-      "uibCommit": "0b25bbffb0f67317d78de470196f4f8b1a74314a",
+      "uibCommit": "18ce8a7605acadce7a5d18045cd05bdc6a878bf4",
       "nccl": "2.30.4-1+cuda13.2",
       "cuda": "13.2",
       "mpi": "Open MPI 5.0.7",
@@ -137,7 +154,7 @@
     {
       "id": "pytorch-2.12.1-nccl-2.30.4-local-uib-training",
       "date": "2026-08-23",
-      "uibCommit": "42ea472d63758c4d592737d994149fe426f74cc2",
+      "uibCommit": "904c012707bee8f6c16ecb9d9af55de3edb647c2",
       "image": "uib-training:test",
       "torch": "2.12.1+cu132",
       "nccl": "2.30.4",
@@ -159,7 +176,7 @@
     {
       "id": "vllm-0.27.1-smollm2-single-gpu-serving",
       "date": "2026-08-24",
-      "uibCommit": "7d6cd4c1ec0cf022872c3dc94cea0164f79d4c7b",
+      "uibCommit": "ff2ce80cabd7ad81aad8cc5a699fbec3546353e1",
       "image": "uib-inference:test",
       "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
       "modelRevision": "12fd25f77366fa6b3b4b768ec3050bf629380bac",
@@ -183,7 +200,7 @@
     {
       "id": "diagnostics-cuda-13.2-nccl-2.30.4-single-gpu",
       "date": "2026-08-24",
-      "uibCommit": "a40fb2497d66bf5662db390b0bf171a94973be4a",
+      "uibCommit": "859f0aaa6172ba7f733ba57455f2dff3909686db",
       "image": "uib-diagnostics:test",
       "cuda": "13.2.0",
       "nccl": "2.30.4",

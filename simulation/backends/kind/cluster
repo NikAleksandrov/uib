@@ -18,6 +18,7 @@ import yaml
 NAME = re.compile(r"^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$")
 DIGEST = re.compile(r"^\S+@sha256:[0-9a-f]{64}$")
 DURATION = re.compile(r"^[1-9][0-9]*(?:s|m|h)$")
+IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]*$")
 
 
 class KindError(Exception):
@@ -59,6 +60,16 @@ def validate_name(name):
     if not NAME.fullmatch(name):
         raise KindError(
             "cluster name must be a lowercase DNS label of at most 63 characters")
+
+
+def validate_images(images, allow_mutable_tags):
+    for image in images:
+        if not IMAGE.fullmatch(image):
+            raise KindError(f"invalid image reference: {image}")
+        if "@sha256:" not in image and not allow_mutable_tags:
+            raise KindError(
+                f"image reference is not digest-pinned: {image}; "
+                "use --allow-mutable-tags only for local development images")
 
 
 def kind_command():
@@ -123,6 +134,13 @@ def command_kubeconfig(args):
     print(result.stdout, end="")
 
 
+def command_load_image(args):
+    validate_name(args.name)
+    validate_images(args.image, args.allow_mutable_tags)
+    run([kind_command(), "load", "docker-image", *args.image,
+         "--name", args.name])
+
+
 def command_down(args):
     validate_name(args.name)
     run([kind_command(), "delete", "cluster", "--name", args.name])
@@ -154,6 +172,16 @@ def main():
         "kubeconfig", help="print the standard Kind kubeconfig")
     kubeconfig.add_argument("--name", required=True)
     kubeconfig.set_defaults(handler=command_kubeconfig)
+
+    load_image = commands.add_parser(
+        "load-image", help="load explicit host images into every Kind node")
+    load_image.add_argument("--name", required=True)
+    load_image.add_argument("--image", action="append", required=True,
+                            help="image reference; repeatable")
+    load_image.add_argument(
+        "--allow-mutable-tags", action="store_true",
+        help="allow local development tags instead of immutable digests")
+    load_image.set_defaults(handler=command_load_image)
 
     down = commands.add_parser("down", help="delete one named Kind cluster")
     down.add_argument("--name", required=True)

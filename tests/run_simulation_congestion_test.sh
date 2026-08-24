@@ -41,8 +41,6 @@ elif unshare --user --map-root-user --net true >/dev/null 2>&1; then
 elif [ -n "${SIMULATION_NETNS_PRIVILEGE:-}" ]; then
 	read -r -a privilege <<<"$SIMULATION_NETNS_PRIVILEGE"
 	runner=("${privilege[@]}" unshare --net)
-elif [ -x sudo ]; then
-	runner=(sudo unshare --net)
 else
 	echo "network-namespace privilege is required; set SIMULATION_NETNS_PRIVILEGE" >&2
 	exit 1
