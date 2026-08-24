@@ -6,6 +6,7 @@
 #include "uib/types.h"
 #include "uib/transport_ops.h"
 #include "uib/protocol.h"
+#include "uib/congestion.h"
 #include "uib/bth.h"
 #include "uib/uet.h"
 #include "uib/uet_nscc.h"

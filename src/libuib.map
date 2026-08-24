@@ -19,6 +19,16 @@ UIB_0.1 {
 		uib_bth_unpack;
 		uib_close_device;
 		uib_comp_channel_fd;
+		uib_congestion_ack_request;
+		uib_congestion_can_send;
+		uib_congestion_enabled;
+		uib_congestion_init;
+		uib_congestion_name;
+		uib_congestion_on_ack;
+		uib_congestion_on_loss;
+		uib_congestion_on_nack;
+		uib_congestion_on_send;
+		uib_congestion_register;
 		uib_cq_push;
 		uib_crc32;
 		uib_create_comp_channel;

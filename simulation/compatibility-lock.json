@@ -9,6 +9,39 @@
       "minimumNccl": "2.30.0",
       "providerDevice": "uib0"
     },
+    "communicationFrontends": {
+      "nccl": {
+        "status": "validated-local-two-rank",
+        "testTarget": "make nccl-test",
+        "forbiddenFallbacks": ["Socket", "native-libibverbs"]
+      },
+      "rccl": {
+        "status": "planned-amd-hardware-required",
+        "testTarget": "make rccl-test",
+        "providerDevice": "uib0",
+        "forbiddenFallbacks": ["Socket", "native-libibverbs"]
+      },
+      "ucx": {
+        "status": "planned-missing-call-inventory-required",
+        "testTarget": "make ucx-libfabric-test",
+        "requiredTransportClass": "verbs",
+        "forbiddenFallbacks": ["tcp", "self", "posix", "sysv", "cma", "vendor-direct"]
+      },
+      "libfabric": {
+        "status": "planned-librdmacm-boundary-required",
+        "testTarget": "make ucx-libfabric-test",
+        "allowedProviders": ["verbs", "ofi_rxm;verbs"],
+        "forbiddenFallbacks": ["tcp", "sockets", "native-libibverbs"]
+      }
+    },
+    "congestionControl": {
+      "abiVersion": 1,
+      "stateBytes": 512,
+      "implementedProtocols": {
+        "uet": ["nscc", "none", "registered"]
+      },
+      "plannedProtocols": ["rocev2"]
+    },
     "runtime": {
       "platformLibraries": [
         "libc",
@@ -175,6 +208,10 @@
     "multiGpuTraining": "not-validated",
     "multiGpuInference": "not-validated",
     "inferenceOverUib": "not-validated",
+    "ucxOverUib": "not-validated",
+    "libfabricOverUib": "not-validated",
+    "rcclOverUib": "not-validated-amd-hardware-required",
+    "rocev2PluggableCongestion": "not-implemented",
     "collectives": {
       "allReduce": "validated",
       "allGather": "not-validated",

@@ -92,6 +92,7 @@ SRCS := \
 	src/protocol_rocev2.c \
 	src/protocol_dummy.c \
 	src/protocol_uet.c \
+	src/congestion.c \
 	src/uet_nscc.c \
 	src/context.c \
 	src/transport.c \
@@ -347,6 +348,8 @@ RXE_TEST    := tests/rxe_interop
 PROTOCOL_TEST := tests/protocol_test
 UET_TEST     := tests/uet_test
 NSCC_TEST    := tests/nscc_test
+CONGESTION_TEST := tests/congestion_test
+CONGESTION_PLUGIN := tests/congestion_plugin.so
 ZEROCOPY_TEST := tests/zerocopy_test
 PROVIDER_DMABUF_TEST := tests/provider_dmabuf_test
 PROVIDER_NCCL_ABI_TEST := tests/provider_nccl_abi_test
@@ -375,7 +378,7 @@ endif
 
 DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d \
 	$(BTH_TEST).d $(RXE_TEST).d $(PROTOCOL_TEST).d $(UET_TEST).d \
-	$(NSCC_TEST).d
+	$(NSCC_TEST).d $(CONGESTION_TEST).d tests/congestion_plugin.d
 
 DEPS += $(ZEROCOPY_TEST).d $(PROVIDER_DMABUF_TEST).d \
 	$(PROVIDER_NCCL_ABI_TEST).d $(EXTERNAL_DMABUF_TEST).d
@@ -418,6 +421,13 @@ $(UET_TEST): tests/uet_test.c $(LIB_SHARED)
 
 $(NSCC_TEST): tests/nscc_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+$(CONGESTION_TEST): tests/congestion_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
+
+$(CONGESTION_PLUGIN): tests/congestion_plugin.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -shared -o $@ $< -L. \
+		-Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
 $(ZEROCOPY_TEST): tests/zerocopy_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
@@ -519,9 +529,18 @@ nccl-test: all $(PROVIDER_CQ_EVENT_TEST) $(PROVIDER_NCCL_ABI_TEST)
 	$(MAKE) provider-cq-event-test
 	$(MAKE) provider-nccl-abi-test
 	./tests/run_nccl_test.sh
+
+rccl-test: all $(PROVIDER_CQ_EVENT_TEST) $(PROVIDER_NCCL_ABI_TEST)
+	$(MAKE) provider-cq-event-test
+	$(MAKE) provider-nccl-abi-test
+	./tests/run_rccl_test.sh
+
+ucx-libfabric-test: all
+	./tests/run_ucx_libfabric_test.sh
 else
 rxe-test-build rxe-test rxe-tools-test uib-tools-test uet-tools-test \
-provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test nccl-test:
+provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test nccl-test \
+rccl-test ucx-libfabric-test:
 	@echo "SKIP $@: libibverbs development files are unavailable"
 endif
 
@@ -533,9 +552,14 @@ uet-loss-test: all
 rocev2-loss-test: all $(TEST_BIN)
 	UIB_TEST_DROP_TX=1 ./$(TEST_BIN)
 
-uet-congestion-test: all $(TEST_BIN) $(NSCC_TEST)
+uet-congestion-test: all $(TEST_BIN) $(NSCC_TEST) $(CONGESTION_TEST) \
+	$(CONGESTION_PLUGIN)
+	./$(CONGESTION_TEST)
 	./$(NSCC_TEST)
 	UIB_PROTOCOL=uet UIB_UET_NSCC_MAX_WND=5000 ./$(TEST_BIN)
+	UIB_PROTOCOL=uet UIB_UET_CC=none ./$(TEST_BIN)
+	LD_PRELOAD=$(CURDIR)/$(CONGESTION_PLUGIN) UIB_PROTOCOL=uet \
+		UIB_UET_CC=test-pass ./$(TEST_BIN)
 
 uet-multipath-test: all $(TEST_BIN)
 	UIB_PROTOCOL=uet UIB_UET_MULTIPATH=oblivious ./$(TEST_BIN)
@@ -664,7 +688,8 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 	UIB_PROTOCOL=uet UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 
 test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
-	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
+	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(CONGESTION_TEST) \
+	$(ZEROCOPY_TEST) \
 	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PTR_RING_TEST) $(REORDER_TEST) \
 	$(TRANSPORT_TEST) $(QP_SCALE_TEST) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
 	$(HOST_ZC_E2E_TEST) $(MR_LIFETIME_TEST) $(NCCL_PROVIDER_TEST)
@@ -674,6 +699,7 @@ test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_
 	./$(PROTOCOL_TEST)
 	./$(UET_TEST)
 	./$(NSCC_TEST)
+	./$(CONGESTION_TEST)
 	./$(ZEROCOPY_TEST)
 	./$(CQ_EVENT_TEST)
 	./$(URING_ASYNC_TEST)
@@ -765,7 +791,8 @@ clean:
 		$(LIB_STANDALONE) $(STATIC_LINK_TEST) \
 		$(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) \
 		$(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST) \
-		$(UET_TEST) $(NSCC_TEST) $(ZEROCOPY_TEST) \
+		$(UET_TEST) $(NSCC_TEST) $(CONGESTION_TEST) \
+		$(CONGESTION_PLUGIN) $(ZEROCOPY_TEST) \
 		$(PROVIDER_DMABUF_TEST) $(PROVIDER_NCCL_ABI_TEST) \
 		$(EXTERNAL_DMABUF_TEST) \
 		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST) \
@@ -793,7 +820,7 @@ clean:
 	benchmark-smoke ib-write-bw-test dummy-reorder-test \
 	scaling-benchmark scaling-test \
 	provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test \
-	nccl-test \
+	nccl-test rccl-test ucx-libfabric-test \
 	gpu-dmabuf-test external-dmabuf-test remote-benchmark-test \
 	namespace-benchmark-test guest-test \
 	optional-features-test virtme-test configure-test test-all \

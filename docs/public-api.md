@@ -17,6 +17,7 @@ comments above the function definitions in `src/`.
 - [Completion queues and events](#completion-queues-and-events)
 - [Queue pairs and data transfer](#queue-pairs-and-data-transfer)
 - [Packet transports](#packet-transports)
+- [Congestion control](#congestion-control)
 - [Zero-copy helpers](#zero-copy-helpers)
 - [Provider-owned host-memory receive](#provider-owned-host-memory-receive)
 - [Netdev DMA-BUF helpers](#netdev-dma-buf-helpers)
@@ -1918,6 +1919,187 @@ Parameters:
 Return value:
 
 0 on success or a negative error code on failure.
+
+## Congestion control
+
+### [`uib_congestion_register`](../include/uib/congestion.h)
+
+```c
+int uib_congestion_register(const struct uib_congestion_ops *ops);
+```
+
+Description:
+
+Register an experimental congestion algorithm.
+
+Parameters:
+
+- `ops` — Static operations table that remains valid until process exit
+
+Return value:
+
+0 on success, `-EEXIST` for a duplicate name, `-ENOSPC` when the registry is full, or `-EINVAL` for an invalid operations table.
+
+### [`uib_congestion_init`](../include/uib/congestion.h)
+
+```c
+int uib_congestion_init(struct uib_congestion *congestion, const char *name,
+			const void *config, uint32_t mtu, uint64_t now_ns);
+```
+
+Description:
+
+Select and initialize a congestion algorithm.
+
+Parameters:
+
+- `congestion` — Per-flow congestion-control object to initialize
+- `name` — Registered algorithm name
+- `config` — Optional algorithm-specific configuration
+- `mtu` — Protocol packet size used to derive default settings
+- `now_ns` — Current monotonic time in nanoseconds
+
+Return value:
+
+0 on success, `-ENOENT` if @name is not registered, or a negative algorithm-specific error code.
+
+### [`uib_congestion_name`](../include/uib/congestion.h)
+
+```c
+const char *uib_congestion_name(const struct uib_congestion *congestion);
+```
+
+Description:
+
+Read the selected congestion algorithm name.
+
+Parameters:
+
+- `congestion` — Initialized congestion-control object
+
+Return value:
+
+The registered algorithm name, or `NULL` if uninitialized.
+
+### [`uib_congestion_enabled`](../include/uib/congestion.h)
+
+```c
+int uib_congestion_enabled(const struct uib_congestion *congestion);
+```
+
+Description:
+
+Test whether congestion control is active.
+
+Parameters:
+
+- `congestion` — Initialized congestion-control object
+
+Return value:
+
+Nonzero for an active algorithm, otherwise 0.
+
+### [`uib_congestion_can_send`](../include/uib/congestion.h)
+
+```c
+int uib_congestion_can_send(const struct uib_congestion *congestion,
+			    size_t bytes);
+```
+
+Description:
+
+Test whether a flow may transmit bytes.
+
+Parameters:
+
+- `congestion` — Initialized congestion-control object
+- `bytes` — Nominal bytes in the prospective transmission
+
+Return value:
+
+Nonzero when the algorithm admits the transmission, otherwise 0.
+
+### [`uib_congestion_ack_request`](../include/uib/congestion.h)
+
+```c
+int uib_congestion_ack_request(const struct uib_congestion *congestion,
+			       uint32_t trigger);
+```
+
+Description:
+
+Test whether a packet should request an ACK.
+
+Parameters:
+
+- `congestion` — Initialized congestion-control object
+- `trigger` — Protocol-specific ACK generation threshold
+
+Return value:
+
+Nonzero when the packet should request an ACK, otherwise 0.
+
+### [`uib_congestion_on_send`](../include/uib/congestion.h)
+
+```c
+void uib_congestion_on_send(struct uib_congestion *congestion, size_t bytes);
+```
+
+Description:
+
+Report newly transmitted bytes.
+
+Parameters:
+
+- `congestion` — Initialized congestion-control object
+- `bytes` — Number of newly transmitted nominal bytes
+
+### [`uib_congestion_on_ack`](../include/uib/congestion.h)
+
+```c
+void uib_congestion_on_ack(struct uib_congestion *congestion,
+			   const struct uib_congestion_ack *ack);
+```
+
+Description:
+
+Report sender and receiver ACK feedback.
+
+Parameters:
+
+- `congestion` — Initialized congestion-control object
+- `ack` — Protocol-neutral ACK event
+
+### [`uib_congestion_on_loss`](../include/uib/congestion.h)
+
+```c
+void uib_congestion_on_loss(struct uib_congestion *congestion, size_t bytes);
+```
+
+Description:
+
+Report inferred packet loss.
+
+Parameters:
+
+- `congestion` — Initialized congestion-control object
+- `bytes` — Nominal bytes removed from flight
+
+### [`uib_congestion_on_nack`](../include/uib/congestion.h)
+
+```c
+void uib_congestion_on_nack(struct uib_congestion *congestion,
+			    const struct uib_congestion_nack *nack);
+```
+
+Description:
+
+Report explicit negative acknowledgement feedback.
+
+Parameters:
+
+- `congestion` — Initialized congestion-control object
+- `nack` — Protocol-neutral NACK event
 
 ## Zero-copy helpers
 

@@ -16,6 +16,7 @@
     "Completion queues and events",
     "Queue pairs and data transfer",
     "Packet transports",
+    "Congestion control",
     "Zero-copy helpers",
     "Provider-owned host-memory receive",
     "Netdev DMA-BUF helpers",

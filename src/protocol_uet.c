@@ -15,6 +15,7 @@
 #include "uib/protocol.h"
 #include "uib/qp.h"
 #include "uib/context.h"
+#include "uib/congestion.h"
 #include "uib/env.h"
 #include "uib/transport.h"
 #include "uib/mr.h"
@@ -109,10 +110,9 @@ struct uib_uet_qp {
 	struct uib_uet_out_pool *out_pool;
 	struct uib_psn_index out_index;
 	uint32_t unindexed_count;
-	struct uib_uet_nscc nscc;
+	struct uib_congestion congestion;
 	uint32_t receiver_bytes;
 	uint32_t previous_received_units;
-	int nscc_enabled;
 	int debug;
 	struct uib_uet_session_config session;
 	enum uib_uet_optimized_mode optimized_mode;
@@ -579,26 +579,36 @@ static int uet_packet_qpn(const void *packet, size_t len, uint32_t *qpn)
 	}
 }
 
-static void uet_nscc_init(struct uib_qp *qp, struct uib_uet_qp *uet)
+static int uet_congestion_init(struct uib_qp *qp, struct uib_uet_qp *uet)
 {
 	struct uib_uet_nscc_config config;
 	const char *cc;
+	const void *configuration = NULL;
 
-	uib_uet_nscc_config_default(&config, qp->path_mtu + 40);
-	cc = getenv(UIB_ENV_UET_NSCC_MAX_WND);
-	if (cc && strtoull(cc, NULL, 0) >= config.mtu) {
-		config.max_wnd = (uint32_t)strtoull(cc, NULL, 0);
-		config.bdp = config.max_wnd;
+	cc = getenv(UIB_ENV_UET_CC);
+	if (!cc)
+		cc = "nscc";
+	if (!strcmp(cc, "nscc")) {
+		const char *max_wnd;
+
+		uib_uet_nscc_config_default(&config, qp->path_mtu + 40);
+		max_wnd = getenv(UIB_ENV_UET_NSCC_MAX_WND);
+		if (max_wnd && strtoull(max_wnd, NULL, 0) >= config.mtu) {
+			config.max_wnd = (uint32_t)strtoull(max_wnd, NULL, 0);
+			config.bdp = config.max_wnd;
+		}
+		configuration = &config;
 	}
-	uib_uet_nscc_init(&uet->nscc, &config, uib_now_ns());
+	return uib_congestion_init(&uet->congestion, cc, configuration,
+				   qp->path_mtu + 40, uib_now_ns());
 }
 
 static int uet_qp_init(struct uib_qp *qp)
 {
 	struct uib_uet_qp *uet = calloc(1, sizeof(*uet));
-	const char *cc;
 	const char *optimized;
 	const char *multipath;
+	int rc;
 
 	if (!uet)
 		return -ENOMEM;
@@ -634,10 +644,14 @@ static int uet_qp_init(struct uib_qp *qp)
 		uet->multipath.mode = UIB_UET_MULTIPATH_PATH_AWARE;
 	uet->path_cursor = (uint16_t)(qp->qp_num % UIB_UET_MAX_PATHS);
 	uet->previous_path = UINT16_MAX;
-	cc = getenv(UIB_ENV_UET_CC);
-	uet->nscc_enabled = !cc || strcmp(cc, "none");
 	uet->debug = !!getenv(UIB_ENV_UET_DEBUG);
-	uet_nscc_init(qp, uet);
+	rc = uet_congestion_init(qp, uet);
+	if (rc) {
+		uib_psn_index_destroy(&uet->out_index);
+		uet_out_pool_destroy(uet->out_pool);
+		free(uet);
+		return rc;
+	}
 	qp->protocol_private = uet;
 	return 0;
 }
@@ -646,8 +660,12 @@ static void uet_qp_modified(struct uib_qp *qp, int attr_mask)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
 
-	if ((attr_mask & UIB_QP_PATH_MTU) && uet)
-		uet_nscc_init(qp, uet);
+	if ((attr_mask & UIB_QP_PATH_MTU) && uet) {
+		struct uib_congestion previous = uet->congestion;
+
+		if (uet_congestion_init(qp, uet))
+			uet->congestion = previous;
+	}
 }
 
 /**
@@ -933,8 +951,11 @@ int uib_uet_nscc_configure_qp(struct uib_qp *qp,
 		pthread_mutex_unlock(&qp->lock);
 		return -EBUSY;
 	}
-	uib_uet_nscc_init(&uet->nscc, config, uib_now_ns());
-	uet->nscc_enabled = 1;
+	if (uib_congestion_init(&uet->congestion, "nscc", config,
+				qp->path_mtu + 40, uib_now_ns())) {
+		pthread_mutex_unlock(&qp->lock);
+		return -EINVAL;
+	}
 	pthread_mutex_unlock(&qp->lock);
 	return 0;
 }
@@ -955,7 +976,11 @@ int uib_uet_nscc_query_qp(struct uib_qp *qp, struct uib_uet_nscc *state)
 		return -EINVAL;
 	pthread_mutex_lock(&qp->lock);
 	uet = qp->protocol_private;
-	*state = uet->nscc;
+	if (strcmp(uib_congestion_name(&uet->congestion), "nscc")) {
+		pthread_mutex_unlock(&qp->lock);
+		return -EOPNOTSUPP;
+	}
+	*state = *(struct uib_uet_nscc *)uet->congestion.state.bytes;
 	pthread_mutex_unlock(&qp->lock);
 	return 0;
 }
@@ -1213,7 +1238,7 @@ static int uet_drain_locked(struct uib_qp *qp)
 	struct uib_uet_outstanding *candidate;
 	struct uib_uet_outstanding *out;
 	struct uib_transport_ref refs[UIB_UET_PDC_MPR];
-	struct uib_uet_nscc nscc_before;
+	struct uib_congestion congestion_before;
 	uint64_t deadline;
 	uint64_t now_ns;
 	uint32_t capacity;
@@ -1224,13 +1249,11 @@ static int uet_drain_locked(struct uib_qp *qp)
 	capacity = UIB_UET_PDC_MPR - uet->sent_count;
 	candidate = uet->tx_cursor;
 	count = 0;
-	if (uet->nscc_enabled)
-		nscc_before = uet->nscc;
+	congestion_before = uet->congestion;
 	now_ns = uib_now_ns();
 	while (candidate && count < capacity) {
-		if (uet->nscc_enabled &&
-		    !uib_uet_nscc_can_send(&uet->nscc,
-					  candidate->nominal_len))
+		if (!uib_congestion_can_send(&uet->congestion,
+					     candidate->nominal_len))
 			break;
 		candidate->tx_time_ns = now_ns;
 		if (!candidate->entropy)
@@ -1243,9 +1266,8 @@ static int uet_drain_locked(struct uib_qp *qp)
 		refs[count].entropy = candidate->entropy;
 		outstanding[count] = candidate;
 		__atomic_add_fetch(&candidate->refs, 1, __ATOMIC_RELAXED);
-		if (uet->nscc_enabled)
-			uib_uet_nscc_on_send(&uet->nscc,
-					     candidate->nominal_len);
+		uib_congestion_on_send(&uet->congestion,
+				       candidate->nominal_len);
 		count++;
 		candidate = candidate->next;
 		while (candidate && candidate->sent)
@@ -1255,8 +1277,7 @@ static int uet_drain_locked(struct uib_qp *qp)
 		return 0;
 	rc = uib_transport_send_ref_batch(qp->ctx, refs, count);
 	if (rc < 0) {
-		if (uet->nscc_enabled)
-			uet->nscc = nscc_before;
+		uet->congestion = congestion_before;
 		return rc;
 	}
 	deadline = UINT64_MAX;
@@ -1979,7 +2000,8 @@ static int uet_handle_request(struct uib_qp *qp,
 		return 0;
 	}
 	rc = uet_rx_mark(uet, psn, &duplicate);
-	if (!rc && !duplicate && uet->nscc_enabled)
+	if (!rc && !duplicate &&
+	    uib_congestion_enabled(&uet->congestion))
 		uet->receiver_bytes += (uint32_t)len + 40;
 	cack = uet->rx_base_psn - 1;
 	pthread_mutex_unlock(&qp->lock);
@@ -2205,11 +2227,11 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 				uib_now_ns() + uet->multipath.ecn_hold_ns;
 		}
 	}
-	if (uet->nscc_enabled && extension) {
+	if (uib_congestion_enabled(&uet->congestion) && extension) {
 		const struct uib_uet_nscc_wire_state *cc_state =
 			(const struct uib_uet_nscc_wire_state *)
 			&extension->ack_cc_state;
-		struct uib_uet_nscc_ack nscc_ack = {0};
+		struct uib_congestion_ack congestion_ack = {0};
 		uint32_t delta;
 
 		uib_uet_nscc_wire_unpack(cc_state, &service_time_ns, &restore,
@@ -2217,23 +2239,25 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 		delta = (received_units - uet->previous_received_units) &
 			UIB_UET_NSCC_RCVD_MASK;
 		if (delta < 0x00800000U) {
-			nscc_ack.newly_received = delta << 8;
+			congestion_ack.newly_received = delta << 8;
 			uet->previous_received_units = received_units;
 		}
-		nscc_ack.ack_time_ns = uib_now_ns();
-		nscc_ack.receiver_cwnd_penalty = penalty;
-		nscc_ack.restore_cwnd = restore;
-		nscc_ack.ecn_marked = !!(uib_uet_prologue_flags(&ack->prologue) &
-					 UIB_UET_ACK_FLAG_M);
-		nscc_ack.retransmit = !!(uib_uet_prologue_flags(&ack->prologue) &
-					 UIB_UET_ACK_FLAG_RETX);
+		congestion_ack.ack_time_ns = uib_now_ns();
+		congestion_ack.receiver_cwnd_penalty = penalty;
+		congestion_ack.restore_cwnd = restore;
+		congestion_ack.ecn_marked =
+			!!(uib_uet_prologue_flags(&ack->prologue) &
+			   UIB_UET_ACK_FLAG_M);
+		congestion_ack.retransmit =
+			!!(uib_uet_prologue_flags(&ack->prologue) &
+			   UIB_UET_ACK_FLAG_RETX);
 		if (exact) {
-			nscc_ack.tx_time_ns = exact->tx_time_ns;
-			nscc_ack.tx_retries = exact->retries;
+			congestion_ack.tx_time_ns = exact->tx_time_ns;
+			congestion_ack.tx_retries = exact->retries;
 		} else {
-			nscc_ack.tx_retries = 2;
+			congestion_ack.tx_retries = 2;
 		}
-		uib_uet_nscc_on_ack(&uet->nscc, &nscc_ack);
+		uib_congestion_on_ack(&uet->congestion, &congestion_ack);
 	}
 	if (response_code != UIB_UET_SES_RC_OK && exact) {
 		struct uib_uet_wr_track *track = exact->track;
@@ -2364,12 +2388,16 @@ static int uet_handle_nack(struct uib_qp *qp, const void *packet, size_t len)
 	out = uet_find_outstanding(uet, ntohl(nack->nack_psn), 0);
 	found = !!out;
 	if (out) {
-		if (uet->nscc_enabled)
-			uib_uet_nscc_on_nack(&uet->nscc, out->nominal_len,
-				nack->nack_code == UIB_UET_NACK_TRIMMED ||
+		struct uib_congestion_nack event = {
+			.bytes = out->nominal_len,
+			.now_ns = uib_now_ns(),
+			.trimmed = nack->nack_code == UIB_UET_NACK_TRIMMED ||
 				nack->nack_code == UIB_UET_NACK_TRIMMED_LASTHOP,
+			.last_hop =
 				nack->nack_code == UIB_UET_NACK_TRIMMED_LASTHOP,
-				0, uib_now_ns());
+		};
+
+		uib_congestion_on_nack(&uet->congestion, &event);
 		uet_remove_track_locked(qp, out->track, UIB_WC_REM_OP_ERR);
 	}
 	pthread_mutex_unlock(&qp->lock);
@@ -2835,9 +2863,7 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 		uet_mark_retransmit(out->packet);
 		uet_debug(qp, "retransmit psn=%u msg=%u attempt=%u", out->psn,
 			  out->msg_id, out->retries + 1);
-		if (uet->nscc_enabled)
-			uib_uet_nscc_on_inferred_loss(&uet->nscc,
-						      out->nominal_len);
+		uib_congestion_on_loss(&uet->congestion, out->nominal_len);
 		if (out->entropy) {
 			uet->paths[out->path_index].timeouts++;
 			if (uet->multipath.mode ==

@@ -73,7 +73,7 @@ when the relevant context, transport, benchmark, or test is created.
 
 | Variable | Default | Accepted values | Description | Example |
 |---|---|---|---|---|
-| <code>UIB_UET_CC</code> | `nscc` | `nscc` or `none` | Select NSCC congestion control or disable it for comparison. | <code>UIB_PROTOCOL=uet UIB_UET_CC=none ./examples/stress_bench</code> |
+| <code>UIB_UET_CC</code> | `nscc` | `nscc`, `none`, or a name registered with `uib_congestion_register()` | Select the congestion-control algorithm for UET queue pairs. Use `none` only as an experimental baseline because it removes congestion-window admission control. | <code>UIB_PROTOCOL=uet UIB_UET_CC=none ./examples/stress_bench</code> |
 | <code>UIB_UET_NSCC_MAX_WND</code> | The maximum window calculated by NSCC configuration. | A byte count no smaller than the active MTU. | Cap the initial NSCC congestion window for experiments. | <code>UIB_PROTOCOL=uet UIB_UET_NSCC_MAX_WND=65536 app</code> |
 | <code>UIB_UET_OPTIMIZED</code> | `auto` | `off`, `auto`, `small`, or `medium` | Select the SES request-header optimization policy. | <code>UIB_PROTOCOL=uet UIB_UET_OPTIMIZED=medium app</code> |
 | <code>UIB_UET_MULTIPATH</code> | `off` | `off`, `oblivious`, or `path-aware` | Select entropy multipathing and path-failure tracking mode. | <code>UIB_PROTOCOL=uet UIB_UET_MULTIPATH=path-aware app</code> |

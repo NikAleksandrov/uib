@@ -24,7 +24,8 @@ configuration.
 - [Layer model](#layer-model)
 - [Common configuration](#common-configuration)
 - [Available deployment compositions](#available-deployment-compositions)
-- [NCCL compatibility comes first](#nccl-compatibility-comes-first)
+- [Communication compatibility comes first](#communication-compatibility-comes-first)
+- [Congestion-control experiments](#congestion-control-experiments)
 - [Transparent UIB injection](#transparent-uib-injection)
 - [Runtime artifact](#runtime-artifact)
 - [Diagnostic image](#diagnostic-image)
@@ -81,8 +82,12 @@ topology.
 | `make diagnostic-gpu-test` | One NVIDIA GPU | No | CUDA visibility and a correctness-checked, single-rank NCCL collective |
 | `make nccl-test` | One NVIDIA GPU with local MPS support | No | Two local ranks send host-staged NCCL traffic through UIB |
 | `make training-uib-test` | One NVIDIA GPU with local MPS support | No | Unmodified two-rank PyTorch DDP sends gradient traffic through UIB |
+| UCX verbs transport gate | CPU | No | Two local processes exchange data through UCX's verbs transport and UIB, with TCP and shared-memory transports excluded |
+| libfabric verbs provider gate | CPU | No | `fi_info` and multi-process fabtests select `verbs` or `ofi_rxm;verbs` through UIB, with sockets/tcp providers excluded |
+| RCCL local collective gate | At least two AMD GPUs | No | Two local RCCL ranks exchange host-staged collective traffic through UIB; this is functional, not multi-node validation |
 | Multi-GPU training gate | At least two GPUs in one node | No | DDP or FSDP sharding across distinct GPUs; not node-to-node behavior |
 | Two-node NCCL promotion gate | GPU on each of at least two nodes | **Yes** | Host-staged NCCL traffic through UIB across physical nodes; required for L1 |
+| Two-node RCCL promotion gate | AMD GPU on each of at least two nodes | **Yes** | Host-staged RCCL traffic through UIB across physical nodes; required for AMD L1 |
 | Kubeflow or Slurm distributed training | GPU on each participating node | **Yes** | Real scheduler placement, bootstrap, checkpointing, and UIB collectives |
 | KubeRay or Slurm distributed inference | GPU on each participating node | **Yes** | vLLM TP/PP/DP worker traffic and serving through UIB |
 | GPU-memory or DMA-BUF promotion gate | Compatible GPUs, drivers, and RDMA path on at least two nodes | **Yes** | L2 GPU-memory data path rather than host staging |
@@ -129,9 +134,15 @@ launcher, transport, networking, and metrics can change independently.
                                  |
                                  v
               +----------------------------------------+
-              | Communication adapter                  |
+              | Communication front end                |
+              | NCCL | RCCL | MPI/UCX | libfabric      |
+              +----------------------------------------+
+                                 |
+                                 v
+              +----------------------------------------+
+              | Verbs adapter and protocol             |
               | UIB libuibv.so or native libibverbs    |
-              | NCCL IB selection and fallback proof   |
+              | RoCEv2/UET + selected congestion algo  |
               +----------------------------------------+
                                  |
                                  v
@@ -176,7 +187,11 @@ The scheduler-specific paths converge at the container boundary:
                                |
                     same image and entry point
                                |
-                    NCCL -> libuibv.so -> UIB
+             NCCL / RCCL / UCX / libfabric
+                           |
+                     libuibv.so
+                           |
+                    UIB protocol + CC
 ```
 
 ## Layer model
@@ -234,13 +249,21 @@ vLLM. Each launcher consumes the same resolved workload contract.
 
 ### Communication
 
-The communication layer selects either:
+The communication layer has two independent selections. The front end is one
+of NCCL, RCCL, UCX, or libfabric; the verbs implementation beneath it is:
 
 - UIB through `libuibv.so`; or
 - the system's native libibverbs implementation as a baseline.
 
-A future NCCL network plugin could be another adapter, but it would be labeled
-separately because it would not test transparent libibverbs substitution.
+NCCL and RCCL share many `NCCL_*` configuration names but remain separate
+validation stacks: NVIDIA CUDA/NCCL results cannot satisfy an AMD ROCm/RCCL
+gate. UCX must select a verbs transport, and libfabric must select `verbs` or
+`ofi_rxm;verbs`; TCP, sockets, shared-memory, and vendor-direct fallbacks are
+failures for a UIB compatibility result.
+
+A native collective network plugin could be another adapter, but it would be
+labeled separately because it would not test transparent libibverbs
+substitution.
 
 ### Network
 
@@ -299,6 +322,12 @@ uib:
   protocol: rocev2
   transport: udp-io-uring
   memoryMode: host-staged
+  congestionControl:
+    algorithm: nscc
+    parameters:
+      maxWindowBytes: 262144
+communication:
+  frontend: nccl
 nccl:
   network: IB
   hca: "=uib0"
@@ -424,7 +453,14 @@ faults:
 | `real-kubernetes` | Existing hardware | Kubernetes | site CRI | Kubeflow/KubeRay | L1-L3 |
 | `real-slurm` | Existing hardware | Slurm | Pyxis/Enroot | `sbatch`/`srun` | L1-L3 |
 
-## NCCL compatibility comes first
+## Communication compatibility comes first
+
+Compatibility is promoted one front end at a time. A direct verbs test is a
+prerequisite, not evidence that a higher-level library works. Every gate pins
+the front-end source or package revision, records its queried symbols, runs a
+multi-process data transfer, and rejects alternative transports.
+
+### NCCL
 
 Current NCCL can open a verbs library explicitly and resolve versioned symbols
 with `dlvsym()`. UIB therefore needs more than an ordinary unversioned
@@ -458,6 +494,139 @@ DMA-BUF TX/RX path.
 
 See the [NCCL verbs loader](https://github.com/NVIDIA/nccl/blob/master/src/misc/ibvsymbols.cc)
 and [NCCL environment documentation](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html).
+
+### UCX and libfabric
+
+The UCX gate runs `ucx_info -d` and `ucx_perftest` with only the verbs-backed
+transport enabled. The libfabric gate runs `fi_info -p verbs`, then fabtests
+with `FI_PROVIDER=verbs` and `FI_PROVIDER=ofi_rxm;verbs`. Logs must name
+`uib0`, UIB's library must appear in the process map, and any TCP, sockets,
+shared-memory, or vendor-direct data path fails the gate.
+
+These gates require more than symbol loading. UCX exercises device discovery,
+memory registration, completion channels, address-vector behavior, atomics,
+and error handling. The libfabric verbs provider also uses `librdmacm` for
+connection management. The implementation sequence therefore inventories the
+exact calls from pinned UCX/libfabric builds, adds missing semantics, tests
+local namespace pairs, and finally repeats the same binaries on two physical
+nodes. Until that sequence passes, UCX and libfabric support remains planned.
+
+Use explicit selectors in a diagnostic run:
+
+```text
+UCX_TLS=rc,ud UCX_NET_DEVICES=uib0:1 \
+LD_PRELOAD=/opt/uib/libuibv.so ucx_perftest <peer>
+
+FI_PROVIDER=verbs LD_PRELOAD=/opt/uib/libuibv.so \
+fi_pingpong <peer>
+
+FI_PROVIDER='ofi_rxm;verbs' LD_PRELOAD=/opt/uib/libuibv.so \
+fi_rdm_pingpong <peer>
+```
+
+The exact UCX transport list is taken from `ucx_info -d` for the pinned
+release; a configuration is rejected if it accidentally retains `tcp`,
+`self`, `posix`, `sysv`, or another non-verbs data transport.
+
+### RCCL
+
+RCCL is the AMD/ROCm collective front end. Its diagnostic image is separate
+from the CUDA image and pins ROCm, RCCL, MPI, and `rccl-tests` from the current
+ROCm systems source tree. The gate runs at least two ranks, sets the ordinary
+RCCL `NCCL_NET=IB`, `NCCL_IB_HCA==uib0`, and debug settings, mounts the same
+UIB runtime artifact, and rejects the Socket network. A PyTorch ROCm DDP smoke
+test follows the lower-level `all_reduce_perf` gate.
+
+A one-rank RCCL run only proves loading and GPU visibility. A local two-rank
+run proves UIB traffic if the host can schedule both ranks. The AMD L1 claim
+still requires at least two physical nodes with AMD GPUs; it cannot be inferred
+from NVIDIA NCCL, CPU emulation, or a skipped ROCm test.
+
+## Congestion-control experiments
+
+Congestion control is below the verbs front ends and above protocol wire
+encoding. This keeps NCCL, RCCL, UCX, and libfabric unchanged while allowing a
+run to select an algorithm independently of the scheduler and infrastructure.
+
+```text
+NCCL / RCCL / UCX / libfabric
+                |
+             verbs API
+                |
+       +--------+---------+
+       | protocol adapter |
+       | RoCEv2 or UET    |
+       +--------+---------+
+                |
+       protocol-neutral events
+       send / ACK / NACK / loss / ECN
+                |
+       +--------+---------+
+       | congestion ops   |
+       | nscc | none | X  |
+       +------------------+
+```
+
+UET currently uses this operations contract. `nscc` is the default and
+`none` is an unsafe comparison baseline:
+
+```text
+UIB_PROTOCOL=uet UIB_UET_CC=nscc app
+UIB_PROTOCOL=uet UIB_UET_CC=none app
+UIB_PROTOCOL=uet UIB_UET_CC=my_algorithm app
+```
+
+The third form works after an experiment registers `my_algorithm` with
+`uib_congestion_register()` before queue-pair creation. Its static operations
+table supplies initialization, admission, ACK-request, send, ACK, NACK, and
+inferred-loss callbacks. State must fit `UIB_CONGESTION_STATE_SIZE`, the table
+must use `UIB_CONGESTION_ABI_VERSION`, and it must remain valid for the life of
+the process. A preloadable experiment module may register from a constructor,
+so the target application still requires no source change. The repository's
+`tests/congestion_plugin.c` and `make uet-congestion-test` provide a minimal
+working example of that path.
+
+```text
+cc -shared -fPIC -I/path/to/uib/include my_algorithm.c \
+   -L/path/to/uib -Wl,-rpath,/opt/uib/lib -luib -o my_algorithm.so
+
+LD_PRELOAD=/opt/experiments/my_algorithm.so:/opt/uib/libuibv.so \
+UIB_PROTOCOL=uet UIB_UET_CC=my_algorithm unchanged-application
+```
+
+The module and UIB must use the same ABI version. A run stores the module hash
+with its result because the algorithm name alone is not reproducible.
+
+For an in-tree experiment, add the operations table beside
+`src/congestion.c`, register it during initialization, rebuild UIB, and select
+its name. Do not put protocol wire parsing in the algorithm: the UET or RoCEv2
+adapter translates its ACK/NACK/ECN format into the common event structures.
+This separation allows the same algorithm to be compared across protocols
+where their feedback semantics are equivalent.
+
+RoCEv2 integration is the next step and is not yet implemented. It needs a
+pending-send queue so admission delays work requests instead of returning an
+application-visible error, plus explicit ECN/CNP feedback translation. A
+future selector such as `UIB_ROCEV2_CC=<name>` must not be documented as
+working until those data-path tests pass.
+
+The common request form is independent of UET-specific environment names:
+
+```yaml
+uib:
+  protocol: uet
+  congestionControl:
+    algorithm: nscc
+    parameters:
+      maxWindowBytes: 262144
+```
+
+The adapter renders this to `UIB_UET_CC=nscc` and
+`UIB_UET_NSCC_MAX_WND=262144`. Each result records the algorithm name, ABI,
+resolved parameters, UIB commit, protocol, topology, offered load, ECN/loss
+settings, throughput, tail latency, retransmissions, and fairness. Comparisons
+must include `none` only in an isolated simulation; it is not a deployment
+recommendation.
 
 ## Transparent UIB injection
 
@@ -657,6 +826,12 @@ downloaded or GPUs are reserved for a long workload. It contains:
   reduce-scatter, send/receive, and all-to-all;
 - NVIDIA CUDA Samples `deviceQuery`;
 - Open MPI, `ip`, `ping`, `ethtool`, `lspci`, `jq`, and process inspection.
+
+That image is the NVIDIA variant. A parallel AMD variant will use a pinned
+ROCm base and contain RCCL, MPI-enabled `rccl-tests`, `rocminfo`, and the same
+network/UIB diagnostics. The two variants share the preflight/result contract
+but are built and reported separately; neither image is allowed to satisfy the
+other vendor's collective gate.
 
 The CUDA development and runtime inputs are immutable multi-architecture
 digests. NCCL is pinned to the same 2.30.4 ABI used by the training image.
@@ -1448,6 +1623,70 @@ uib:
 All workload and infrastructure fields remain unchanged, producing a valid
 baseline comparison.
 
+### NCCL to RCCL
+
+Keep the workload contract, UIB bundle, protocol, network profile, and result
+schema, but select the matching vendor image and front end:
+
+```yaml
+communication:
+  frontend: nccl
+accelerator:
+  vendor: nvidia
+```
+
+becomes:
+
+```yaml
+communication:
+  frontend: rccl
+accelerator:
+  vendor: amd
+```
+
+CUDA and ROCm images are different artifacts, and numerical/performance
+comparisons must record that hardware/software change. Training source and
+checkpoint formats should remain portable where the selected framework
+supports both backends.
+
+### NCCL collectives to MPI over UCX or libfabric
+
+A diagnostic or MPI workload can retain its image, rank layout, launcher,
+UIB bundle, and network profile while changing:
+
+```yaml
+communication:
+  frontend: ucx
+  transportAllowlist: [rc, ud]
+```
+
+to:
+
+```yaml
+communication:
+  frontend: libfabric
+  provider: "ofi_rxm;verbs"
+```
+
+This swaps the communication API and therefore is not the same application
+benchmark. It is useful for isolating whether a failure belongs to UIB's
+verbs surface, UCX, libfabric, or the collective library. Both profiles must
+assert the selected verbs transport and reject software-network fallbacks.
+
+### Congestion algorithm without changing the workload
+
+```yaml
+uib:
+  protocol: uet
+  congestionControl:
+    algorithm: nscc
+```
+
+can select another registered algorithm without changing the image, command,
+model, dataset, ranks, or scheduler. The semantic diff records only the
+algorithm and its parameters. Changing UET to RoCEv2 is a protocol comparison,
+not merely an algorithm comparison, and must be labeled accordingly.
+
 ### Enroot to Apptainer
 
 On a Slurm site without Pyxis:
@@ -1540,7 +1779,8 @@ Fields that remain invariant:
 - model and dataset revisions;
 - numerical settings and checkpoint format;
 - rank layout and parallelism unless deliberately scaled;
-- NCCL and UIB configuration;
+- communication front-end family, UIB protocol, and congestion algorithm,
+  except in an explicitly named comparison;
 - request trace or training seed;
 - metric definitions and correctness thresholds.
 
@@ -1564,7 +1804,8 @@ Fields normally changed by a site profile:
 5. Run `doctor` against the real cluster in read-only mode.
 6. Render a semantic diff against the simulation profile. Changes to invariant
    fields require explicit approval.
-7. Run rdma-core diagnostics and a two-rank NCCL correctness job.
+7. Run rdma-core diagnostics and the selected two-rank NCCL, RCCL, UCX, or
+   libfabric correctness gate.
 8. Run a small LLM smoke request.
 9. Run the unchanged production-shape request at the intended scale.
 10. Repeat with UIB disabled for the native-verbs baseline.
@@ -1616,7 +1857,8 @@ results/<run-id>/
 The summary states:
 
 - UIB or native verbs;
-- NCCL IB or socket network;
+- communication front end and its selected or fallback transport;
+- UIB protocol, congestion algorithm, and resolved algorithm parameters;
 - host-staged or GPU-direct memory;
 - L0, L1, L2, or L3 validation level;
 - exact image and library digests;
@@ -1658,6 +1900,10 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 - UIB's versioned NCCL loader ABI and a two-rank, host-staged NCCL all-reduce
   are covered by repository tests. The actual collective test is opt-in
   because it requires CUDA, NCCL, MPI, MPS, a GPU, and UTS namespace access.
+- UCX/libfabric and RCCL compatibility gates are specified but have not yet
+  passed. UIB does not currently claim transparent compatibility with them.
+- The congestion-control registry and UET/NSCC adapter are implemented.
+  RoCEv2 admission and feedback integration is still planned.
 - Kind and CPU-only virtme/libvirt profiles do not validate real GPU
   collectives or performance.
 - The training image passed CPU DDP, checkpoint/restart, public tiny-model,
@@ -1685,8 +1931,12 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 - [Ray on Kubernetes](https://docs.ray.io/en/latest/cluster/kubernetes/index.html)
 - [vLLM distributed serving](https://docs.vllm.ai/en/stable/serving/parallelism_scaling/)
 - [NCCL tests](https://github.com/NVIDIA/nccl-tests)
+- [RCCL environment variables](https://rocm.docs.amd.com/projects/rccl/en/latest/api-reference/env-variables.html)
+- [ROCm systems source tree](https://github.com/ROCm/rocm-systems)
+- [UCX runtime configuration](https://openucx.readthedocs.io/en/master/running.html)
 - [UCX transports](https://openucx.readthedocs.io/en/master/faq.html)
 - [libfabric verbs provider](https://ofiwg.github.io/libfabric/main/man/fi_verbs.7.html)
+- [libfabric provider selection](https://ofiwg.github.io/libfabric/main/man/fi_fabric.3.html)
 - [SPDK NVMe-oF RDMA transport](https://spdk.io/doc/nvmf_tgt_pg.html)
 - [OpenTofu](https://opentofu.org/docs/)
 - [libvirt](https://libvirt.org/docs.html)

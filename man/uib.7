@@ -289,6 +289,109 @@ Parameter \fBa\fP: ACK Extended Transport Header to encode or decode
 Parameter \fBsyndrome\fP: Output for the acknowledgment syndrome
 .br
 Parameter \fBmsn\fP: Output for the message sequence number
+.SS "Congestion control"
+.TP
+.B uib_congestion_register
+int uib_congestion_register(const struct uib_congestion_ops *ops);
+.br
+Register an experimental congestion algorithm.
+.br
+Parameter \fBops\fP: Static operations table that remains valid until process exit
+.br
+Return value: 0 on success, \-EEXIST for a duplicate name, \-ENOSPC when the registry is full, or \-EINVAL for an invalid operations table.
+.TP
+.B uib_congestion_init
+int uib_congestion_init(struct uib_congestion *congestion, const char *name, const void *config, uint32_t mtu, uint64_t now_ns);
+.br
+Select and initialize a congestion algorithm.
+.br
+Parameter \fBcongestion\fP: Per\-flow congestion\-control object to initialize
+.br
+Parameter \fBname\fP: Registered algorithm name
+.br
+Parameter \fBconfig\fP: Optional algorithm\-specific configuration
+.br
+Parameter \fBmtu\fP: Protocol packet size used to derive default settings
+.br
+Parameter \fBnow_ns\fP: Current monotonic time in nanoseconds
+.br
+Return value: 0 on success, \-ENOENT if @name is not registered, or a negative algorithm\-specific error code.
+.TP
+.B uib_congestion_name
+const char *uib_congestion_name(const struct uib_congestion *congestion);
+.br
+Read the selected congestion algorithm name.
+.br
+Parameter \fBcongestion\fP: Initialized congestion\-control object
+.br
+Return value: The registered algorithm name, or NULL if uninitialized.
+.TP
+.B uib_congestion_enabled
+int uib_congestion_enabled(const struct uib_congestion *congestion);
+.br
+Test whether congestion control is active.
+.br
+Parameter \fBcongestion\fP: Initialized congestion\-control object
+.br
+Return value: Nonzero for an active algorithm, otherwise 0.
+.TP
+.B uib_congestion_can_send
+int uib_congestion_can_send(const struct uib_congestion *congestion, size_t bytes);
+.br
+Test whether a flow may transmit bytes.
+.br
+Parameter \fBcongestion\fP: Initialized congestion\-control object
+.br
+Parameter \fBbytes\fP: Nominal bytes in the prospective transmission
+.br
+Return value: Nonzero when the algorithm admits the transmission, otherwise 0.
+.TP
+.B uib_congestion_ack_request
+int uib_congestion_ack_request(const struct uib_congestion *congestion, uint32_t trigger);
+.br
+Test whether a packet should request an ACK.
+.br
+Parameter \fBcongestion\fP: Initialized congestion\-control object
+.br
+Parameter \fBtrigger\fP: Protocol\-specific ACK generation threshold
+.br
+Return value: Nonzero when the packet should request an ACK, otherwise 0.
+.TP
+.B uib_congestion_on_send
+void uib_congestion_on_send(struct uib_congestion *congestion, size_t bytes);
+.br
+Report newly transmitted bytes.
+.br
+Parameter \fBcongestion\fP: Initialized congestion\-control object
+.br
+Parameter \fBbytes\fP: Number of newly transmitted nominal bytes
+.TP
+.B uib_congestion_on_ack
+void uib_congestion_on_ack(struct uib_congestion *congestion, const struct uib_congestion_ack *ack);
+.br
+Report sender and receiver ACK feedback.
+.br
+Parameter \fBcongestion\fP: Initialized congestion\-control object
+.br
+Parameter \fBack\fP: Protocol\-neutral ACK event
+.TP
+.B uib_congestion_on_loss
+void uib_congestion_on_loss(struct uib_congestion *congestion, size_t bytes);
+.br
+Report inferred packet loss.
+.br
+Parameter \fBcongestion\fP: Initialized congestion\-control object
+.br
+Parameter \fBbytes\fP: Nominal bytes removed from flight
+.TP
+.B uib_congestion_on_nack
+void uib_congestion_on_nack(struct uib_congestion *congestion, const struct uib_congestion_nack *nack);
+.br
+Report explicit negative acknowledgement feedback.
+.br
+Parameter \fBcongestion\fP: Initialized congestion\-control object
+.br
+Parameter \fBnack\fP: Protocol\-neutral NACK event
 .SS "Contexts and QP dispatch"
 .TP
 .B uib_open_device
@@ -2197,11 +2300,11 @@ Example: \fBUIB_VIRTME_KERNEL=/boot/vmlinuz\-test make host\-zc\-virtme\-test\fP
 .SS "Ultra Ethernet"
 .TP
 .B UIB_UET_CC
-Select NSCC congestion control or disable it for comparison.
+Select the congestion\-control algorithm for UET queue pairs. Use none only as an experimental baseline because it removes congestion\-window admission control.
 .br
 Default: nscc
 .br
-Accepted values: nscc or none
+Accepted values: nscc, none, or a name registered with uib_congestion_register()
 .br
 Example: \fBUIB_PROTOCOL=uet UIB_UET_CC=none ./examples/stress_bench\fP
 .TP
