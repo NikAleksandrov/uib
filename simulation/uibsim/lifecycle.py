@@ -108,14 +108,20 @@ def command_load_image(args):
 
 def command_render_workload(args):
     from .config import resolve
-    from .core import ConfigurationError, KUBERNETES_RENDERER
+    from .core import ConfigurationError, KUBERNETES_RENDERER, SLURM_RENDERER
 
     config = resolve(args)
+    manager = config["cluster"]["manager"]
+    renderers = {
+        "kubernetes": KUBERNETES_RENDERER,
+        "slurm": SLURM_RENDERER,
+    }
+    renderer = renderers[manager]
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
                                      prefix="uib-sim-", suffix=".json") as output:
         json.dump(config, output, indent=2, sort_keys=True)
         output.flush()
-        command = [str(KUBERNETES_RENDERER), output.name,
+        command = [str(renderer), output.name,
                    "--run-id", args.run_id]
         if args.allow_mutable_tags:
             command.append("--allow-mutable-tags")
@@ -123,7 +129,7 @@ def command_render_workload(args):
             return subprocess.run(command, check=False).returncode
         except OSError as error:
             raise ConfigurationError(
-                f"cannot invoke Kubernetes renderer: {error}") from error
+                f"cannot invoke {manager} renderer: {error}") from error
 
 
 def command_down(args):

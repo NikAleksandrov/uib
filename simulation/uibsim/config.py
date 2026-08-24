@@ -116,12 +116,34 @@ def validate_scheduler(config):
     frontend = config["communication"]["frontend"]
     gpu = config["nodes"]["gpus"]
     uib = config["uib"]
+    storage = config["storage"]
     if provider == "kind" and manager != "kubernetes":
         raise ConfigurationError("Kind requires Kubernetes")
     if manager == "kubernetes" and runtime != "containerd":
         raise ConfigurationError("Kubernetes requires containerd")
     if manager == "slurm" and runtime == "containerd":
         raise ConfigurationError("Slurm requires Enroot or Apptainer")
+    if manager == "slurm" and "slurm" not in config:
+        raise ConfigurationError("Slurm requires scheduler settings")
+    if manager != "slurm" and "slurm" in config:
+        raise ConfigurationError("Slurm settings require cluster.manager=slurm")
+    if config["container"]["integration"] == "pyxis":
+        if manager != "slurm" or runtime != "enroot":
+            raise ConfigurationError("Pyxis requires Slurm with Enroot")
+    kubernetes_storage = {"modelCacheClaim", "modelCacheImage", "resultsClaim"}
+    slurm_storage = {"uibRuntimePath", "modelCachePath", "resultsPath"}
+    if manager == "kubernetes" and slurm_storage & set(storage):
+        raise ConfigurationError("host storage paths require Slurm")
+    if manager == "slurm":
+        if kubernetes_storage & set(storage):
+            raise ConfigurationError("Kubernetes storage settings cannot be used with Slurm")
+        for name in ("modelCachePath", "resultsPath"):
+            if name not in storage:
+                raise ConfigurationError(f"Slurm requires storage.{name}")
+        if uib["enabled"] and "uibRuntimePath" not in storage:
+            raise ConfigurationError("Slurm UIB runs require storage.uibRuntimePath")
+        if uib["enabled"] and not config["network"].get("dataInterface"):
+            raise ConfigurationError("Slurm UIB runs require network.dataInterface")
 
 
 
@@ -133,6 +155,7 @@ def validate_communication(config):
     frontend = config["communication"]["frontend"]
     gpu = config["nodes"]["gpus"]
     uib = config["uib"]
+    storage = config["storage"]
     if frontend == "rccl" and gpu["vendor"] != "amd":
         raise ConfigurationError("RCCL requires AMD GPUs")
     if frontend == "nccl" and gpu["vendor"] == "amd":
@@ -186,6 +209,7 @@ def validate_workload(config):
     frontend = config["communication"]["frontend"]
     gpu = config["nodes"]["gpus"]
     uib = config["uib"]
+    storage = config["storage"]
     workload = config.get("workload")
     if workload:
         parallel = workload["parallelism"]
@@ -238,6 +262,8 @@ def tools_for(config):
         "libvirt": {"ansible-playbook", "tofu", "virsh"},
         "existing": {"kubectl"} if manager == "kubernetes" else {"srun"},
     }[provider])
+    if manager == "slurm":
+        tools.update({"sbatch", "scontrol", "srun"})
     tools.update({
         "nccl": {"all_reduce_perf", "mpirun"},
         "rccl": {"all_reduce_perf", "mpirun", "rocminfo"},

@@ -1,15 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 infrastructure:
   provider: existing
-  slurmPartition: replace-me
 cluster:
   manager: slurm
+  version: site-managed
 container:
   runtime: enroot
   integration: pyxis
 launcher:
   training: slurm
   inference: slurm-ray
+slurm:
+  partition: replace-me
+  timeLimit: "01:00:00"
+  rendezvousPort: 29500
+  exclusive: false
 nodes:
   controlPlane: 0
   workers: 2
@@ -19,3 +24,8 @@ nodes:
     resourceName: gpu
 network:
   topology: physical
+  dataInterface: ib0
+storage:
+  uibRuntimePath: /shared/uib/runtime
+  modelCachePath: /shared/uib/models
+  resultsPath: /shared/uib/results

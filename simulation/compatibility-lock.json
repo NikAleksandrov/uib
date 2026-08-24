@@ -106,6 +106,26 @@
             "kubectl": "v1.35.0"
           }
         }
+      },
+      "slurmAdapter": {
+        "runtime": "enroot",
+        "integration": "pyxis",
+        "documentedAgainst": {
+          "slurm": "26.05",
+          "pyxis": "0.24.0",
+          "enroot": "4.2.1"
+        },
+        "status": "validated-structural-render-only",
+        "supportedWorkloads": [
+          "multi-rank-training",
+          "single-task-inference"
+        ],
+        "unsupportedWorkloads": [
+          "multi-node-ray-inference"
+        ],
+        "testTarget": "make simulation-slurm-render-test",
+        "realClusterValidation": "pending-slurm-pyxis-enroot-cluster",
+        "validatedOn": "2026-08-24"
       }
     }
   },

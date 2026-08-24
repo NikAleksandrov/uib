@@ -30,7 +30,6 @@
         },
         "kernel": { "type": "string", "minLength": 1 },
         "kubernetesContext": { "type": "string", "minLength": 1 },
-        "slurmPartition": { "type": "string", "minLength": 1 },
         "allowExistingMutations": { "type": "boolean" }
       }
     },
@@ -65,6 +64,28 @@
         "inference": {
           "enum": ["kuberay", "vllm-multiprocessing", "slurm-ray"]
         }
+      }
+    },
+    "slurm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["partition", "timeLimit"],
+      "properties": {
+        "partition": { "$ref": "#/$defs/slurmName" },
+        "account": { "$ref": "#/$defs/slurmName" },
+        "qos": { "$ref": "#/$defs/slurmName" },
+        "reservation": { "$ref": "#/$defs/slurmName" },
+        "constraint": { "$ref": "#/$defs/slurmName" },
+        "timeLimit": {
+          "type": "string",
+          "pattern": "^(?:[0-9]+-)?(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$"
+        },
+        "rendezvousPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "exclusive": { "type": "boolean" }
       }
     },
     "nodes": {
@@ -169,6 +190,7 @@
         "topology": { "enum": ["pairwise", "full-mesh", "leaf-spine", "physical"] },
         "managementCIDR": { "$ref": "#/$defs/cidr" },
         "dataCIDR": { "$ref": "#/$defs/cidr" },
+        "dataInterface": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,15}$" },
         "mtu": { "type": "integer", "minimum": 576, "maximum": 65535 },
         "shaping": {
           "type": "object",
@@ -221,7 +243,10 @@
           "minLength": 1,
           "maxLength": 253,
           "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$"
-        }
+        },
+        "uibRuntimePath": { "$ref": "#/$defs/hostPath" },
+        "modelCachePath": { "$ref": "#/$defs/hostPath" },
+        "resultsPath": { "$ref": "#/$defs/hostPath" }
       }
     },
     "workload": {
@@ -291,6 +316,14 @@
     "timeOffset": { "type": "string", "pattern": "^[0-9]+(ms|s|m|h)$" },
     "rate": { "type": "string", "pattern": "^[1-9][0-9]*(k|K|m|M|g|G)bit$" },
     "percent": { "type": "number", "minimum": 0, "maximum": 100 },
+    "slurmName": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+    },
+    "hostPath": {
+      "type": "string",
+      "pattern": "^/[A-Za-z0-9._+@=-]+(?:/[A-Za-z0-9._+@=-]+)*$"
+    },
     "cidr": { "type": "string", "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$" },
     "artifact": {
       "type": "object",
@@ -310,6 +343,7 @@
         "hca": { "type": "string", "minLength": 1 },
         "environment": {
           "type": "object",
+          "propertyNames": { "pattern": "^(NCCL|RCCL)_[A-Z0-9_]+$" },
           "additionalProperties": { "type": ["string", "integer", "boolean"] }
         }
       }

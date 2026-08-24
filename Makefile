@@ -331,6 +331,9 @@ simulation-kind-e2e-test:
 simulation-kubernetes-render-test:
 	./tests/run_kubernetes_render_test.sh
 
+simulation-slurm-render-test:
+	./tests/run_slurm_render_test.sh
+
 simulation-kubeflow-e2e-test:
 	./tests/run_kubeflow_e2e_test.sh
 
@@ -879,7 +882,8 @@ clean:
 	diagnostic-uib-preflight-test diagnostic-gpu-test \
 	simulation-cli-test simulation-netem-test simulation-congestion-test \
 	simulation-kind-test simulation-kind-e2e-test \
-	simulation-kubernetes-render-test simulation-kubeflow-e2e-test \
+	simulation-kubernetes-render-test simulation-slurm-render-test \
+	simulation-kubeflow-e2e-test \
 	simulation-kubernetes-uib-test \
 	simulation-kuberay-e2e-test \
 	docs-check examples clean install install-static test rxe-test-build \

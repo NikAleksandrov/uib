@@ -3,15 +3,27 @@ infrastructure:
   provider: libvirt
 cluster:
   manager: slurm
+  version: "26.05"
 container:
   runtime: enroot
   integration: pyxis
 launcher:
   training: slurm
   inference: slurm-ray
+slurm:
+  partition: uib
+  timeLimit: "00:30:00"
+  rendezvousPort: 29500
+  exclusive: true
 nodes:
   controlPlane: 1
   workers: 2
   cpu: 8
   memory: 16Gi
   disk: 64Gi
+network:
+  dataInterface: eth1
+storage:
+  uibRuntimePath: /var/lib/uib/runtime
+  modelCachePath: /var/cache/uib/models
+  resultsPath: /var/lib/uib/results

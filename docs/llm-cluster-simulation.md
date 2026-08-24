@@ -496,7 +496,6 @@ only one communication, protocol, and network-condition overlay.
 | `infrastructure.provider` | `kind`, `virtme`, `libvirt`, `existing` | Node source |
 | `infrastructure.kernel` | Non-empty path | Kernel selected by a virtme profile |
 | `infrastructure.kubernetesContext` | Context name | Existing Kubernetes target |
-| `infrastructure.slurmPartition` | Partition name | Existing Slurm target |
 | `infrastructure.allowExistingMutations` | `true`, `false` | Permit explicitly requested shaping on existing hardware |
 | `cluster.manager` | `kubernetes`, `slurm` | Scheduler/control plane |
 | `cluster.version` | Non-empty version | Kubernetes or Slurm version selected by the adapter |
@@ -505,6 +504,11 @@ only one communication, protocol, and network-condition overlay.
 | `container.integration` | `none`, `pyxis` | Slurm/container integration |
 | `launcher.training` | `kubeflow`, `jobset`, `slurm` | Training submitter |
 | `launcher.inference` | `kuberay`, `vllm-multiprocessing`, `slurm-ray` | Inference submitter |
+| `slurm.partition` | Letters, digits, `.`, `_`, or `-` | Required target partition |
+| `slurm.account`, `.qos`, `.reservation`, `.constraint` | Optional Slurm name | Site allocation or placement selection |
+| `slurm.timeLimit` | `[days-]HH:MM:SS`, with valid clock fields | Batch time limit |
+| `slurm.rendezvousPort` | Integer 1-65535 | PyTorch rendezvous port; default profiles use 29500 |
+| `slurm.exclusive` | `true`, `false` | Request whole nodes for the job |
 | `nodes.controlPlane` | Integer 0-9 | Control-plane nodes; existing clusters normally use 0 |
 | `nodes.workers` | Integer 1-1024 | Worker nodes available to the request |
 | `nodes.cpu` | Positive integer | vCPUs per simulated worker |
@@ -512,13 +516,14 @@ only one communication, protocol, and network-condition overlay.
 | `nodes.gpus.vendor` | `none`, `nvidia`, `amd` | Accelerator family |
 | `nodes.gpus.perWorker` | Integer 0-64 | GPUs available per worker |
 | `nodes.gpus.resourceName` | Scheduler resource name | For example `nvidia.com/gpu` |
+| `network.dataInterface` | Linux interface name, at most 15 characters | Interface from which each Slurm task derives `UIB_BIND_IP` |
 
 ### UIB and communication values
 
 | Path | Accepted values or syntax | Meaning |
 |---|---|---|
 | `uib.enabled` | `true`, `false` | UIB run or native-verbs baseline |
-| `uib.bundle` | Path, archive, or immutable image reference | Runtime artifact supplied to the workload |
+| `uib.bundle` | Digest-qualified OCI image; local tags need explicit development opt-in | Runtime identity; Kubernetes pulls it and Slurm mounts the corresponding extracted tree |
 | `uib.protocol` | `rocev2`, `uet` | UIB wire protocol |
 | `uib.bindPort` | Integer 1-65535; 4791 for RoCEv2, 5432 for UET | Per-pod UIB service port selected by the protocol overlay |
 | `uib.transport` | `udp-sync`, `udp-io-uring`, `udp-zc-afxdp`, `tcp-devmem` | Packet-I/O backend |
@@ -532,6 +537,7 @@ only one communication, protocol, and network-condition overlay.
 | `communication.transportAllowlist` | Non-empty list | Only data transports/providers that may satisfy the run |
 | `communication.nccl.network`, `.rccl.network` | `IB` | Required collective data network |
 | `communication.nccl.hca`, `.rccl.hca` | `=uib0` for UIB; an explicit site device for a native baseline | Exact device filter; UIB rendering rejects any value other than `=uib0` |
+| `communication.nccl.environment`, `.rccl.environment` | Scalar map with `NCCL_` or `RCCL_` names | Advanced collective settings; transport-selection variables are adapter-owned |
 | `communication.ucx.transports` | Non-empty list, normally `rc`, `ud` | Explicit UCX verbs transports |
 | `communication.ucx.device` | Device and port, normally `uib0:1` | Exact UCX device |
 | `communication.libfabric.provider` | `verbs`, `ofi_rxm;verbs` | Exact OFI provider chain |
@@ -555,6 +561,9 @@ vice versa.
 | `workload.parameters` | Framework-specific mapping | Training, serving, or load-generator settings passed unchanged |
 | `storage.modelCacheClaim` | Existing Kubernetes PVC name | Optional shared Hugging Face/model cache mounted at `/cache` |
 | `storage.resultsClaim` | Existing Kubernetes PVC name | Optional shared checkpoint and result storage mounted at `/results` |
+| `storage.uibRuntimePath` | Absolute path without spaces, commas, or colons | Slurm-visible extracted UIB runtime mounted read-only at `/opt/uib` |
+| `storage.modelCachePath` | Absolute path without spaces, commas, or colons | Slurm-visible persistent cache mounted at `/cache` |
+| `storage.resultsPath` | Absolute path without spaces, commas, or colons | Slurm-visible result root; it must exist before `sbatch` |
 | `measurement.seed` | Non-negative integer | Workload random seed |
 | `measurement.warmupSteps` | Non-negative integer | Excluded warmup |
 | `measurement.steps` | Positive integer | Measured iterations |
@@ -575,6 +584,10 @@ nodes * processesPerNode == data * tensor * pipeline * expert
 | Kind with Slurm | Kind is the Kubernetes backend |
 | Kubernetes with Enroot or Apptainer | Kubernetes profiles use containerd/CRI |
 | Slurm with containerd | Slurm profiles use Enroot/Pyxis or Apptainer |
+| Pyxis without Slurm and Enroot | Pyxis is the Enroot SPANK integration used by this adapter |
+| Kubernetes with host storage paths | Kubernetes uses claims, cache images, or `emptyDir` volumes |
+| Slurm with Kubernetes claims or cache images | Slurm uses shared host paths visible on every allocated node |
+| Slurm without model-cache/result paths, or UIB without a runtime path/data interface | Pyxis cannot provide the common mount and address contract |
 | RCCL without `nodes.gpus.vendor: amd` | RCCL requires AMD/ROCm hardware |
 | NCCL with `nodes.gpus.vendor: amd` | Select RCCL for the AMD profile |
 | `gpu-direct` while the compatibility lock says unvalidated | Prevents an L2 claim from an unsupported path |
@@ -777,12 +790,12 @@ Use explicit selectors in a diagnostic run:
 
 ```text
 UCX_TLS=rc,ud UCX_NET_DEVICES=uib0:1 \
-LD_PRELOAD=/opt/uib/libuibv.so ucx_perftest <peer>
+LD_PRELOAD=/opt/uib/lib/libuibv.so ucx_perftest <peer>
 
-FI_PROVIDER=verbs LD_PRELOAD=/opt/uib/libuibv.so \
+FI_PROVIDER=verbs LD_PRELOAD=/opt/uib/lib/libuibv.so \
 fi_pingpong <peer>
 
-FI_PROVIDER='ofi_rxm;verbs' LD_PRELOAD=/opt/uib/libuibv.so \
+FI_PROVIDER='ofi_rxm;verbs' LD_PRELOAD=/opt/uib/lib/libuibv.so \
 fi_rdm_pingpong <peer>
 ```
 
@@ -852,7 +865,7 @@ working example of that path.
 cc -shared -fPIC -I/path/to/uib/include my_algorithm.c \
    -L/path/to/uib -Wl,-rpath,/opt/uib/lib -luib -o my_algorithm.so
 
-LD_PRELOAD=/opt/experiments/my_algorithm.so:/opt/uib/libuibv.so \
+LD_PRELOAD=/opt/experiments/my_algorithm.so:/opt/uib/lib/libuibv.so \
 UIB_PROTOCOL=uet UIB_UET_CC=my_algorithm unchanged-application
 ```
 
@@ -896,12 +909,12 @@ The workload source remains unchanged. The adapter mounts a checksummed UIB
 runtime bundle at `/opt/uib` and sets the required environment:
 
 ```text
-NCCL_IBVERBS_LIB=/opt/uib/libuibv.so
+NCCL_IBVERBS_LIB=/opt/uib/lib/libuibv.so
 NCCL_NET=IB
 NCCL_IB_DISABLE=0
 NCCL_IB_HCA==uib0
 NCCL_DEBUG=INFO
-LD_PRELOAD=/opt/uib/libuibv.so
+LD_PRELOAD=/opt/uib/lib/libuibv.so
 LD_LIBRARY_PATH=/opt/uib/lib
 UIB_BIND_IP=<rank data-plane address>
 UIB_PROTOCOL=rocev2
@@ -1075,8 +1088,7 @@ tar -xzf uib-runtime.tar.gz -C /shared/uib/<uib-commit>
 srun \
   --container-image=registry.example/uib-llm@sha256:<digest> \
   --container-mounts=/shared/uib/<uib-commit>/uib-runtime:/opt/uib:ro \
-  env NCCL_IBVERBS_LIB=/opt/uib/libuibv.so \
-      LD_PRELOAD=/opt/uib/libuibv.so \
+  env NCCL_IBVERBS_LIB=/opt/uib/lib/libuibv.so \
       LD_LIBRARY_PATH=/opt/uib/lib \
       /opt/workload/bin/train
 ```
@@ -1350,7 +1362,7 @@ Current compatibility boundaries are intentional:
 | Request | Result |
 |---|---|
 | `launcher.training: kubeflow`, `workload.kind: training` | Supported render path |
-| `launcher.inference: kuberay`, `workload.kind: inference` | Supported RayJob render path; operator lifecycle not yet validated |
+| `launcher.inference: kuberay`, `workload.kind: inference` | Supported RayJob render path; the one-task CPU lifecycle is validated |
 | NCCL with `transportAllowlist: [IB]` | Supported communication shape |
 | UIB enabled without `uib.bundle` or with HCA other than `=uib0` | Rejected |
 | Mutable workload or runtime images without explicit opt-in | Rejected |
@@ -1692,35 +1704,150 @@ The Slurm path mirrors NVIDIA-oriented production clusters.
 
 ### Rendered batch job
 
-The adapter renders a standard batch file from the common request. A simplified
-shape is:
+`render-workload` dispatches on `cluster.manager`; the same command that emits
+Kubernetes objects emits an executable batch file for a Slurm profile:
+
+```text
+simulation/bin/uib-sim render-workload --profile libvirt-slurm \
+    --request simulation/requests/training-smoke.yaml \
+    --run-id uib-slurm-smoke --allow-mutable-tags \
+    > uib-slurm-smoke.sbatch
+sbatch uib-slurm-smoke.sbatch
+```
+
+The local tag opt-in is only for development. A reproducible or real-cluster
+run sets digest-qualified `workload.image` and `uib.bundle` references and
+omits `--allow-mutable-tags`.
+
+The generated file uses Slurm resource directives and Pyxis's documented
+`srun` switches. Its relevant shape is:
 
 ```sh
 #!/bin/sh
 #SBATCH --nodes=4
+#SBATCH --ntasks=32
 #SBATCH --ntasks-per-node=8
 #SBATCH --gpus-per-node=8
+#SBATCH --gpus-per-task=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=1T
+#SBATCH --time=01:00:00
 
 set -eu
 
-export NCCL_IBVERBS_LIB=/opt/uib/libuibv.so
+export NCCL_IBVERBS_LIB=/opt/uib/lib/libuibv.so
 export NCCL_NET=IB
 export NCCL_IB_DISABLE=0
 export NCCL_IB_HCA='=uib0'
-export LD_PRELOAD=/opt/uib/libuibv.so
 export LD_LIBRARY_PATH=/opt/uib/lib
 export UIB_PROTOCOL=rocev2
 export UIB_TRANSPORT_MODE=udp-io-uring
 
 srun \
     --container-image=registry.example/uib-llm@sha256:<digest> \
-    --container-mounts=/shared/uib:/opt/uib:ro,/models:/models:ro,/results:/results \
-    /opt/workload/bin/train --config /run/resolved-workload.yaml
+    --container-mounts=/shared/uib:/opt/uib:ro,/models:/cache,/results/run:/results \
+    --container-workdir=/results \
+    --no-container-mount-home \
+    --no-container-entrypoint \
+    /bin/sh -c '<rank setup and preflight>; exec "$@"' \
+    uib-slurm /opt/uib-training/bin/train \
+    --config /etc/uib-workload/workload.json
 ```
 
-The real renderer supplies rank-specific `UIB_BIND_IP`, scheduler-standard
-GPU visibility, rendezvous settings, exact Pyxis flags, and site storage
-mounts. The rendered file is always retained with the results.
+The implementation follows the [official Pyxis command-line contract](https://github.com/NVIDIA/pyxis#usage)
+and standard [Slurm batch options](https://slurm.schedmd.com/sbatch.html).
+It does not implement a private container runtime or scheduler protocol.
+The structural contract is recorded against Slurm 26.05, Pyxis 0.24.0, and
+Enroot 4.2.1; this is documentation compatibility, not a claim that those
+three packages have completed a real cluster run.
+
+Before the application starts, every rank:
+
+1. maps `SLURM_PROCID`, `SLURM_NTASKS`, and `SLURM_LOCALID` to `RANK`,
+   `WORLD_SIZE`, and `LOCAL_RANK`;
+2. derives `UIB_BIND_IP` from `network.dataInterface` inside its container;
+3. derives a collision-free port as `uib.bindPort + LOCAL_RANK`;
+4. runs `/opt/uib/bin/uib-preflight --library-only`; and
+5. executes the request's unchanged entry point and arguments.
+
+The renderer rejects a port range above 65535 and requires `nodes.cpu` to be
+divisible by `processesPerNode`, so its `--cpus-per-task` value is exact.
+Slurm provides normal GPU visibility from the allocation; when
+`nodes.gpus.perWorker` is nonzero, the adapter emits both the per-node
+allocation and a derived `--gpus-per-task` binding. GPU count, like CPU count,
+must divide evenly across `processesPerNode`.
+
+The following paths must already exist and be visible under the same absolute
+name on every compute node:
+
+| Setting | Container path | Access and purpose |
+|---|---|---|
+| `storage.uibRuntimePath` | `/opt/uib` | Read-only extracted portable runtime corresponding to `uib.bundle` |
+| `storage.modelCachePath` | `/cache` | Read-write persistent model/dataset cache; downloads survive later runs |
+| `storage.resultsPath/<run-id>` | `/results` | New run-owned directory for checkpoints, results, and scheduler evidence |
+
+The result root itself must exist before submission because Slurm opens the
+`%x-%j.out` and `%x-%j.err` files before the script body runs. The adapter
+refuses to reuse an existing `<run-id>` directory. It embeds the resolved
+simulation and unchanged workload JSON in the batch file, then writes both,
+the allocated node list, `scontrol show job`, and a final status JSON to the
+run directory.
+
+Stage the runtime once from the portable artifact, not by installing it over
+the host's libibverbs:
+
+```text
+make runtime-bundle-portable
+mkdir -p /shared/uib/runtime /shared/uib/models /shared/uib/results
+tar -xzf simulation/.artifacts/uib-runtime.tar.gz \
+    -C /shared/uib/runtime --strip-components=1
+```
+
+The exact portable archive name is printed by its build target. On a shared
+cluster an administrator normally owns the runtime directory while users own
+their cache and result roots.
+
+Multiple local ranks are a configuration change, not a different request
+format:
+
+```text
+simulation/bin/uib-sim render-workload --profile real-slurm \
+    --request training.yaml --run-id uib-eight-ranks \
+    --set workload.parallelism.processesPerNode=8 \
+    --set workload.parallelism.data=16 \
+    --set nodes.cpu=128 \
+    --set nodes.gpus.perWorker=8 \
+    --set workload.image=registry.example/training@sha256:<digest> \
+    --set uib.bundle=registry.example/uib-runtime@sha256:<digest> \
+    > uib-eight-ranks.sbatch
+```
+
+Here a two-node profile resolves to 16 ranks and ports `4791` through `4798`
+on each node. The parallel degrees must still multiply to 16.
+
+The UET/NSCC and native-verbs comparisons change only communication layers:
+
+```text
+# UET with NSCC
+simulation/bin/uib-sim render-workload --profile real-slurm \
+    --request training.yaml --overlay protocol/uet-nscc \
+    --run-id uib-uet > uib-uet.sbatch
+
+# Same image and workload through a named physical HCA
+simulation/bin/uib-sim render-workload --profile real-slurm \
+    --request training.yaml --run-id native-verbs \
+    --set uib.enabled=false --set communication.nccl.hca==mlx5_0 \
+    > native-verbs.sbatch
+```
+
+The native file has no `/opt/uib` mount, UIB preflight, `NCCL_IBVERBS_LIB`, or
+`UIB_*` variables. Results from it are comparable only when image, workload,
+rank topology, seeds, and all non-transport settings match.
+
+The implemented inference renderer runs the one-task CPU or single-GPU
+serve/probe lifecycle under one Pyxis job step and uses the same persistent
+cache. Multi-node Slurm-Ray startup is deliberately rejected for now; it will
+be promoted only with real Ray head/worker lifecycle and UIB traffic tests.
 
 ### virtme Slurm
 
@@ -1748,10 +1875,11 @@ tofu destroy
 
 ### Existing Slurm
 
-The adapter accepts login host, partition, account, QoS, reservation,
-constraints, shared paths, and image registry configuration. It performs
-read-only discovery, uploads the rendered request, submits the job, records
-its job ID, and collects results.
+The renderer accepts partition, account, QoS, reservation, constraint, shared
+paths, and data-interface configuration. Submission, monitoring, remote file
+transfer, and automatic cancellation are later lifecycle work; today the
+operator submits the emitted file with standard `sbatch` and can inspect it
+before doing so.
 
 ```yaml
 infrastructure:
@@ -1762,30 +1890,41 @@ container:
   runtime: enroot
   integration: pyxis
 slurm:
-  loginHost: login.cluster.example
   partition: gpu
   account: llm-validation
   qos: normal
   constraint: h100
-  gpusPerNode: 8
+  timeLimit: "01:00:00"
+  rendezvousPort: 29500
+  exclusive: false
+nodes:
+  workers: 4
+  cpu: 128
+  memory: 1Ti
+  disk: 1Ti
+  gpus:
+    vendor: nvidia
+    perWorker: 8
+    resourceName: gpu
 storage:
-  modelPath: /models
-  checkpointPath: /checkpoints/uib-validation
-  resultPath: /results/uib-validation
+  uibRuntimePath: /shared/uib/runtime
+  modelCachePath: /shared/uib/models
+  resultsPath: /shared/uib/results
 network:
   dataInterface: bond-rdma
   shaping:
     enabled: false
 ```
 
-On existing clusters, cleanup cancels only recorded job IDs. It never changes
-Slurm configuration, partitions, Pyxis, Enroot, shared caches, or unrelated
-jobs.
+The future lifecycle adapter will record the returned job ID and cancel only
+that job during cleanup. It will never change Slurm configuration, partitions,
+Pyxis, Enroot, shared caches, or unrelated jobs.
 
 ## Training workloads
 
 The implemented training image deliberately has no scheduler API. Kubernetes,
-Slurm, a shell, and a future `uib-sim` adapter all launch the same executable:
+Slurm and Kubernetes adapters, plus a local shell, all launch the same
+executable:
 
 ```text
 /opt/uib-training/bin/train --config /run/workload.json
@@ -1851,7 +1990,7 @@ of the unchanged training entry point with distinct ranks and hostnames, uses
 an isolated NVIDIA MPS daemon so the local test can share one physical GPU,
 disables NCCL P2P and shared-memory paths, mounts the runtime artifact at
 `/opt/uib`, and selects `NCCL_NET=IB`, `uib0`, and
-`NCCL_IBVERBS_LIB=/opt/uib/libuibv.so`. It requires NCCL's log to contain the
+`NCCL_IBVERBS_LIB=/opt/uib/lib/libuibv.so`. It requires NCCL's log to contain the
 IB plugin, `Using network IB`, and `via NET/IB/<device>`; any Socket network
 selection fails the test. It also requires the training evidence to report a
 two-rank CUDA DDP run through NCCL with UIB enabled.
@@ -1993,7 +2132,7 @@ Native verbs and UIB also use the same image digest and command. The native
 baseline has no UIB variables. The UIB variant adds only the `/opt/uib` mount
 and the environment documented in
 [Transparent UIB injection](#transparent-uib-injection), including
-`NCCL_IBVERBS_LIB=/opt/uib/libuibv.so`. The result records whether those
+`NCCL_IBVERBS_LIB=/opt/uib/lib/libuibv.so`. The result records whether those
 variables selected UIB; the later cluster evidence gate must additionally
 prove NCCL chose `NET/IB` and `uib0` rather than sockets.
 
@@ -2036,7 +2175,7 @@ The implemented inference image uses the official vLLM 0.27.1 CUDA image by
 immutable amd64 digest and adds pinned Ray 2.58.0. Its exact stack is recorded
 in `simulation/inference/stack.lock.json`: Python 3.12.13, PyTorch
 2.13.0+cu130, NCCL 2.30.7, vLLM 0.27.1, Ray 2.58.0, and Transformers 5.15.0.
-Kubernetes, Slurm, a local container, and a future `uib-sim` adapter use the
+Kubernetes, Slurm, and a local container use the
 same command:
 
 ```text
@@ -2137,7 +2276,7 @@ replaceable, separately labeled launcher.
 Moving to physical hardware changes mounts, addresses, CDI resources, model
 size, and the launcher—not image code. Mount the identical model cache and UIB
 runtime artifact, inject `NCCL_NET=IB`, `NCCL_IB_HCA==uib0`, and
-`NCCL_IBVERBS_LIB=/opt/uib/libuibv.so`, and keep the same workload JSON for the
+`NCCL_IBVERBS_LIB=/opt/uib/lib/libuibv.so`, and keep the same workload JSON for the
 UIB/native pair. The evidence gate must require NCCL `NET/IB` and reject Socket
 fallback just as the training gate does.
 
@@ -2432,7 +2571,7 @@ not merely an algorithm comparison, and must be labeled accordingly.
 
 ### Enroot to Apptainer
 
-On a Slurm site without Pyxis:
+Apptainer is a planned adapter for Slurm sites without Pyxis:
 
 ```yaml
 container:
@@ -2440,7 +2579,7 @@ container:
   integration: pyxis
 ```
 
-may become:
+will eventually be replaceable with:
 
 ```yaml
 container:
@@ -2449,6 +2588,10 @@ container:
 
 The adapter must still resolve the same OCI digest, mount `/opt/uib` and the
 same data paths, and run the same command.
+
+The current batch renderer accepts only `runtime: enroot` with
+`integration: pyxis` and rejects Apptainer, preventing an unsupported runtime
+from looking runnable.
 
 ## Running a simulation
 
@@ -2505,9 +2648,10 @@ helm upgrade --install <release> <chart> -f <rendered-values>
 sbatch <rendered-job>
 ```
 
-`doctor` is read-only. It reports missing tools, kernel features, GPU and RDMA
-capabilities, scheduler versions, storage, permissions, and the highest valid
-validation level.
+`doctor` is read-only. Today it reports the selected profile, provider,
+manager, communication front end, and presence of their required command-line
+tools. Kernel, GPU/RDMA, scheduler-version, storage, and permission probes are
+planned preflight extensions.
 
 The current Kind `up` adapter creates only the explicit `--run-id` cluster.
 Later providers follow the same ownership rule. For existing clusters the
@@ -2540,7 +2684,7 @@ These four lifecycle operations are implemented. `deploy`, `run`, and
 `collect` are shown elsewhere as the stable planned interface and are not yet
 accepted by the CLI.
 
-### Selected-kernel example
+### Planned selected-kernel lifecycle
 
 ```text
 uib-sim up --profile virtme-kind \
@@ -2549,15 +2693,19 @@ uib-sim run --request collectives-smoke.yaml
 uib-sim down
 ```
 
-### Realistic local NVIDIA-style example
+### Current NVIDIA-style Slurm rendering
 
 ```text
-uib-sim up --profile libvirt-slurm
-uib-sim run --request training-smoke.yaml
-uib-sim run --request inference-smoke.yaml
-uib-sim collect
-uib-sim down
+simulation/bin/uib-sim render-workload --profile libvirt-slurm \
+    --request simulation/requests/training-smoke.yaml \
+    --run-id uib-slurm-smoke --allow-mutable-tags \
+    > uib-slurm-smoke.sbatch
+sbatch uib-slurm-smoke.sbatch
 ```
+
+The profile currently assumes a separately provisioned Slurm/Pyxis lab and
+the shared paths documented above. OpenTofu/Ansible creation and automatic
+submit/status/cancel are later lifecycle phases.
 
 ## Moving to real hardware
 
@@ -2613,10 +2761,17 @@ uib-sim down
 Slurm promotion:
 
 ```text
-uib-sim doctor --profile real-slurm
-uib-sim run --profile real-slurm --request common-training.yaml
-uib-sim down
+simulation/bin/uib-sim doctor --profile real-slurm \
+    --request common-training.yaml
+simulation/bin/uib-sim render-workload --profile real-slurm \
+    --request common-training.yaml --run-id uib-real-training \
+    > uib-real-training.sbatch
+sbatch uib-real-training.sbatch
+sacct -j <job-id>
 ```
+
+Until the run ledger and lifecycle adapter are implemented, cancel this exact
+recorded job with `scancel <job-id>` if cleanup is needed.
 
 Named scale overlays such as `tiny`, `two-node`, `rack`, and `production` can
 change node count and parallel degrees while retaining application code,
@@ -2681,12 +2836,13 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
+| `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, UET/NSCC, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
 | `make runtime-bundle-portable-test` | A Docker-compatible engine, network access for the pinned Ubuntu image and verified source archives on first use, and normal UIB build resources | Reproducible old-userspace build, GLIBC ceiling, portable feature set, provider/static artifacts, checksums, preflight, source dependency metadata, and copied licenses |
 | `make simulation-kubernetes-uib-test` | Kind, kubectl, a Docker-compatible engine, build dependencies, and CPU/memory for two workers; network access is needed only for uncached pinned images and diagnostic sources | Actual RoCEv2 and UET RC SEND/RECV and RDMA Write traffic from unchanged standard verbs binaries between distinct Pod IPs and Kind workers, plus runtime injection and complete cleanup; no GPU or collective claim |
 | `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, admission, two-node torchrun rendezvous, distinct placement, UIB preflight, CPU DDP result, and complete run/operator/cluster cleanup; no UIB traffic |
 | `make simulation-kuberay-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, roughly 10 GB of image storage, four CPU cores and 8 GiB for the Ray head; network access for uncached images, source archives, chart, and model revision | Required actual two-worker UIB verbs traffic, portable-runtime compatibility, KubeRay v1.6.2 admission and Ray 2.58.0 readiness, offline cached SmolLM2 inference, four-result correctness, retained evidence, and complete cleanup; the single-rank inference portion itself sends no UIB traffic |
 
-Run the five hardware-neutral gates:
+Run the six hardware-neutral gates:
 
 ```text
 make simulation-cli-test
@@ -2694,6 +2850,7 @@ make simulation-netem-test
 make simulation-congestion-test
 make simulation-kind-test
 make simulation-kubernetes-render-test
+make simulation-slurm-render-test
 ```
 
 The mocked Kind adapter test does not create a cluster. The opt-in real gate is:
@@ -2982,8 +3139,10 @@ Cleanup must remain safe after interruption during every lifecycle stage.
   Kubeflow training resources render and pass structural tests. Operator
   installation, server-side CRD/admission validation, and an actual two-worker
   CPU TrainJob passed. The run uses Gloo and validates UIB packaging but not
-  its data plane. GPU/NCCL Kubernetes execution, the other infrastructure
-  adapters, DeepSpeed, and Megatron-Core remain planned.
+  its data plane. The Slurm renderer passes structural and fake-command
+  execution tests, but no real Slurm/Pyxis/Enroot job has run yet. GPU/NCCL
+  Kubernetes execution, non-Kind infrastructure provisioning, DeepSpeed, and
+  Megatron-Core remain planned.
 - The diagnostic image passed its hardware-neutral, UIB runtime-injection,
   CUDA `deviceQuery`, and single-GPU NCCL all-reduce gates. Its NCCL run has
   one rank and therefore does not send UIB traffic.
