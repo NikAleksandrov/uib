@@ -51,14 +51,26 @@ export KIND_TEST_LOG="$test_dir/kind.log"
 "$backend" kubeconfig --name uib-test > "$test_dir/kubeconfig"
 "$backend" down --name uib-test
 
+"$cli" up --profile kind-kubernetes --run-id uib-test --wait 30s
+"$cli" status --profile kind-kubernetes --run-id uib-test
+"$cli" kubeconfig --profile kind-kubernetes --run-id uib-test \
+	> "$test_dir/cli-kubeconfig"
+"$cli" down --profile kind-kubernetes --run-id uib-test
+
 grep -q '^create cluster --name uib-test ' "$test_dir/kind.log"
 grep -q '^get clusters$' "$test_dir/kind.log"
 grep -q '^get kubeconfig --name uib-test$' "$test_dir/kind.log"
 grep -q '^delete cluster --name uib-test$' "$test_dir/kind.log"
 grep -q '^apiVersion: v1$' "$test_dir/kubeconfig"
+grep -q '^apiVersion: v1$' "$test_dir/cli-kubeconfig"
 
 if "$backend" down --name 'unsafe/name' >/dev/null 2>&1; then
 	echo "unsafe Kind cluster name was accepted" >&2
+	exit 1
+fi
+if "$cli" status --profile virtme-kubernetes --run-id uib-test \
+	> /dev/null 2>&1; then
+	echo "unimplemented virtme lifecycle was accepted" >&2
 	exit 1
 fi
 

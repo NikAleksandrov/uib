@@ -21,5 +21,8 @@ SCHEMA = SIMULATION / "schema" / "simulation.schema.json"
 COMPATIBILITY = SIMULATION / "compatibility-lock.json"
 
 
+KIND_BACKEND = SIMULATION / "backends" / "kind" / "cluster"
+
+
 class ConfigurationError(Exception):
     pass

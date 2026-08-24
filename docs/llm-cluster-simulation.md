@@ -1197,17 +1197,19 @@ Kind provides the quickest Kubernetes lifecycle:
 simulation/bin/uib-sim render --profile kind-kubernetes --format json \
     > /tmp/uib-kind.json
 simulation/backends/kind/cluster render /tmp/uib-kind.json
-simulation/backends/kind/cluster up /tmp/uib-kind.json \
-    --name uib-lab --kubeconfig /tmp/uib-lab.kubeconfig
-simulation/backends/kind/cluster status --name uib-lab
-simulation/backends/kind/cluster down --name uib-lab
+simulation/bin/uib-sim up --profile kind-kubernetes --run-id uib-lab \
+    --kubeconfig /tmp/uib-lab.kubeconfig
+simulation/bin/uib-sim status --profile kind-kubernetes --run-id uib-lab
+simulation/bin/uib-sim down --profile kind-kubernetes --run-id uib-lab
 ```
 
 The adapter renders ordinary Kind v1alpha4 YAML with one control-plane and the
 configured worker count. Every node uses the digest-pinned image from
 `cluster.nodeImage`. `up`, `status`, `kubeconfig`, and `down` invoke the real
 Kind CLI and always require an explicit, validated cluster name. The rendered
-YAML can be passed directly to `kind create cluster` when debugging.
+YAML can be passed directly to `kind create cluster` when debugging. The
+top-level `uib-sim` lifecycle commands currently delegate only the Kind
+profile; other providers fail explicitly as unimplemented.
 
 Loading workload images, installing Kubeflow Trainer and KubeRay, spreading
 ranks, shaping pod network namespaces, and collecting results are later
@@ -2064,9 +2066,9 @@ same data paths, and run the same command.
 
 Configuration stays deliberately conventional: a small defaults file, one
 YAML profile, an optional YAML workload request, and standard JSON Schema
-validation. The thin `uib-sim` wrapper only merges, validates, and inspects
-configuration; it does not replace Kind, OpenTofu, Ansible, Helm, `kubectl`,
-Slurm, Pyxis, or Enroot.
+validation. The thin `uib-sim` wrapper merges and validates configuration and
+delegates the implemented Kind lifecycle; it does not replace Kind, OpenTofu,
+Ansible, Helm, `kubectl`, Slurm, Pyxis, or Enroot.
 
 ```text
 simulation/bin/uib-sim render --profile kind-kubernetes
@@ -2103,7 +2105,8 @@ Each backend will keep using its own normal configuration and state:
 - Helm values and Kubernetes labels/namespaces;
 - Slurm batch files, job IDs, Pyxis, and Enroot configuration.
 
-`uib-sim` will delegate the planned lifecycle to those tools:
+`uib-sim` delegates the Kind lifecycle now; the other planned adapters follow
+the same pattern:
 
 ```text
 simulation/bin/uib-sim doctor --profile <profile>
@@ -2118,9 +2121,9 @@ sbatch <rendered-job>
 capabilities, scheduler versions, storage, permissions, and the highest valid
 validation level.
 
-The later `up` adapter creates only infrastructure owned by the selected
-profile. For existing
-clusters it performs no infrastructure changes.
+The current Kind `up` adapter creates only the explicit `--run-id` cluster.
+Later providers follow the same ownership rule. For existing clusters the
+adapter performs no infrastructure changes.
 
 The later `deploy` adapter installs or detects scheduler components and stages images and UIB
 artifacts.
@@ -2139,11 +2142,15 @@ command.
 
 ```text
 uib-sim doctor --profile kind-kubernetes
-uib-sim up --profile kind-kubernetes
-uib-sim run --profile kind-kubernetes --request training-smoke.yaml
-uib-sim collect
-uib-sim down
+uib-sim up --profile kind-kubernetes --run-id uib-lab
+uib-sim status --profile kind-kubernetes --run-id uib-lab
+uib-sim kubeconfig --profile kind-kubernetes --run-id uib-lab
+uib-sim down --profile kind-kubernetes --run-id uib-lab
 ```
+
+These four lifecycle operations are implemented. `deploy`, `run`, and
+`collect` are shown elsewhere as the stable planned interface and are not yet
+accepted by the CLI.
 
 ### Selected-kernel example
 
@@ -2303,7 +2310,8 @@ sufficient CPU and memory for the declared nodes.
 | Kind option | Default | Syntax and meaning |
 |---|---|---|
 | `cluster.nodeImage` | Pinned in `kind-kubernetes.yaml` | Digest-qualified node image written to every Kind node |
-| `--name` | Required | Lowercase DNS label, at most 63 characters; identifies the only cluster an operation may inspect or delete |
+| `--run-id` | Required by `uib-sim` lifecycle commands | Lowercase DNS label, at most 63 characters; becomes the only Kind cluster an operation may inspect or delete |
+| Backend `--name` | Required when invoking the backend directly | Same value and validation as `--run-id` |
 | `--wait` | `120s` | Positive integer plus `s`, `m`, or `h` passed to `kind create cluster` |
 | `--kubeconfig` | Kind default | Explicit output path for the new cluster's kubeconfig |
 | `--retain` | Off | Preserve Kind nodes when cluster creation fails |
