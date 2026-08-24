@@ -125,7 +125,8 @@
         ],
         "testTargets": [
           "make simulation-slurm-render-test",
-          "make simulation-slurm-lifecycle-test"
+          "make simulation-slurm-lifecycle-test",
+          "make simulation-slurm-collect-test"
         ],
         "realClusterValidation": "pending-slurm-pyxis-enroot-cluster",
         "validatedOn": "2026-08-24"

@@ -34,7 +34,24 @@ SLURM_RENDERER = SIMULATION / "adapters" / "slurm" / "render"
 DEFAULT_STATE_DIR = SIMULATION / ".artifacts" / "runs"
 
 
+DEFAULT_RESULT_DIR = SIMULATION / ".artifacts" / "results"
+
+
 RUN_ID = re.compile(r"^[a-z](?:[a-z0-9-]{1,46}[a-z0-9])$")
+
+
+SLURM_TERMINAL_STATES = {
+    "BOOT_FAIL",
+    "CANCELLED",
+    "COMPLETED",
+    "DEADLINE",
+    "FAILED",
+    "NODE_FAIL",
+    "OUT_OF_MEMORY",
+    "PREEMPTED",
+    "REVOKED",
+    "TIMEOUT",
+}
 
 
 class ConfigurationError(Exception):

@@ -23,6 +23,24 @@ def command_slurm_status(args):
     return result.returncode
 
 
+def exact_slurm_record(output, job_id):
+    from .core import ConfigurationError
+
+    for line in output.splitlines():
+        fields = line.split("|")
+        if len(fields) >= 5 and fields[0] == job_id:
+            state = fields[1].split(maxsplit=1)[0].rstrip("+")
+            return {
+                "jobId": fields[0],
+                "state": state,
+                "exitCode": fields[2],
+                "elapsed": fields[3],
+                "nodeList": fields[4],
+            }
+    raise ConfigurationError(
+        f"sacct returned no exact accounting row for job {job_id}")
+
+
 def command_slurm_down(args):
     from .core import ConfigurationError
     from .scheduler import slurm_command

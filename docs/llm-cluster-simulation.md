@@ -1296,8 +1296,8 @@ second init container executes `uib-preflight --library-only` inside the
 training image. The trainer receives its pod IP through the downward API as
 `UIB_BIND_IP`, the protocol overlay's `UIB_BIND_PORT`, and the explicit
 `NCCL_NET=IB`, `NCCL_IB_HCA==uib0`, and `NCCL_IBVERBS_LIB` selection. NCCL
-logging is enabled so the later evidence collector can reject socket or
-native-provider fallback.
+logging is enabled so evidence can be preserved for the planned Kubernetes
+collector to reject socket or native-provider fallback.
 
 Local image tags are accepted only with `--allow-mutable-tags`. The renderer
 otherwise requires immutable digests for both images:
@@ -1901,6 +1901,59 @@ where `sbatch` succeeds without a parseable ID are retained as explicit ledger
 states. In the last case the CLI cannot safely cancel automatically; inspect
 `sbatch.stdout` and `sbatch.stderr` in that run directory.
 
+### Collecting a Slurm result bundle
+
+After the job reaches a terminal accounting state, collect its evidence before
+requesting cleanup:
+
+```text
+simulation/bin/uib-sim collect --run-id uib-training \
+    --state-dir /shared/uib/run-ledgers \
+    --output-dir /shared/uib/collected/uib-training
+```
+
+`collect` intentionally takes no profile, request, overlay, or `--set`
+arguments. It reads the exact inputs and numeric job ID captured by `run`,
+then asks `sacct` only for that exact ID. This prevents a later command-line
+change from relabeling the submitted workload. The default output is the new
+ignored directory `simulation/.artifacts/results/<run-id>`.
+
+| Option | Value | Meaning |
+|---|---|---|
+| `--run-id` | The exact safe ID passed to `run` | Selects one owned ledger and result directory |
+| `--state-dir` | Directory; default `simulation/.artifacts/runs` | Selects the private ledger root |
+| `--output-dir` | A new directory; default `simulation/.artifacts/results/<run-id>` | Selects the complete exported bundle, not merely its parent |
+| `--allow-incomplete` | Flag; default off | Allows a diagnostic snapshot while accounting is nonterminal |
+
+Without `--allow-incomplete`, the accepted Slurm terminal states are
+`BOOT_FAIL`, `CANCELLED`, `COMPLETED`, `DEADLINE`, `FAILED`, `NODE_FAIL`,
+`OUT_OF_MEMORY`, `PREEMPTED`, `REVOKED`, and `TIMEOUT`. An incomplete snapshot
+is always marked non-promotable. The collector also refuses:
+
+- a missing or nonnumeric recorded job ID;
+- an accounting response without the exact top-level job row;
+- a ledger input or artifact path that escapes its run-state directory;
+- an existing output directory;
+- output nested inside the live workload result directory;
+- a mismatched `runId`, scheduler, job ID, or noninteger exit code in the
+  workload status; and
+- symbolic links or special files in the run-owned workload result tree.
+
+This makes export non-destructive: it never cancels the job, deletes shared
+data, follows a result link, or overwrites earlier evidence. To take another
+snapshot, supply another new `--output-dir`. The bundle contains original
+inputs, resolved configuration, rendered batch file, submission diagnostics,
+raw accounting, exact `%x-%j` logs, the complete run-owned workload subtree,
+topology and image metadata, a human and JSON summary, and a SHA-256 manifest.
+Missing optional artifacts are listed in `summary.json` rather than confused
+with successful evidence.
+
+The collector deliberately sets `validationLevel` to `not-assigned`,
+`uibTrafficEvidence` to `not-evaluated`, and `promotionEligible` to false.
+Neither an exit code of zero nor UIB preflight proves that application payloads
+used UIB; assign a validation level only after checking transport-selection,
+correctness, and network evidence.
+
 Normal users need no command overrides. The fake lifecycle gate uses these
 test seams, each of which must name one executable rather than a shell command:
 
@@ -1922,15 +1975,20 @@ an L0 kernel and lifecycle test unless GPU passthrough is proven.
 VMs and networks; Ansible owns node configuration. The workload still runs
 through ordinary `sbatch`, `srun`, Pyxis, and Enroot.
 
-Expected lifecycle:
+After OpenTofu and Ansible provisioning lands, the scheduler-facing commands
+remain the same implemented Slurm lifecycle:
 
 ```text
 tofu apply
 ansible-playbook site-slurm.yaml
-uib-sim deploy --profile libvirt-slurm
-uib-sim run --request training-smoke.yaml
-uib-sim collect
-uib-sim down
+simulation/bin/uib-sim run --profile libvirt-slurm \
+    --request simulation/requests/training-smoke.yaml \
+    --run-id uib-slurm-smoke --state-dir /shared/uib/run-ledgers
+simulation/bin/uib-sim collect --run-id uib-slurm-smoke \
+    --state-dir /shared/uib/run-ledgers \
+    --output-dir /shared/uib/collected/uib-slurm-smoke
+simulation/bin/uib-sim down --profile libvirt-slurm \
+    --run-id uib-slurm-smoke --state-dir /shared/uib/run-ledgers
 tofu destroy
 ```
 
@@ -1938,8 +1996,9 @@ tofu destroy
 
 The renderer accepts partition, account, QoS, reservation, constraint, shared
 paths, and data-interface configuration. `run`, `status`, and `down` provide
-local submission-node lifecycle delegation. Remote login/file transfer and
-automatic result collection remain later work.
+local submission-node lifecycle delegation, and `collect` exports the recorded
+job's evidence. Remote login and file transfer remain later work; run the CLI
+on a submission host that can see the ledger and shared result paths.
 
 ```yaml
 infrastructure:
@@ -2719,15 +2778,15 @@ adapter performs no infrastructure changes.
 The later `deploy` adapter installs or detects scheduler components and stages images and UIB
 artifacts.
 
-The Slurm `run` adapter resolves configuration, checks shared paths, renders
-the batch file, submits it, and records ownership. A Kubernetes `run` adapter
-and deeper Slurm capability preflights remain planned.
-
-The later `collect` operation can be repeated and does not delete the workload.
+The Slurm `run` adapter resolves configuration, records its exact inputs,
+checks shared paths, renders the batch file, submits it, and records ownership.
+Its `collect` adapter exports one exact recorded job without deleting the
+workload; use a new output directory for each repeat snapshot. A Kubernetes
+`run` adapter and deeper Slurm capability preflights remain planned.
 
 Kind `down` removes the named Kind cluster; Slurm `down` requests cancellation
-of the recorded job. Export-before-cleanup and `--keep-on-failure` remain
-planned for the common collector.
+of the recorded job. Automatic export from `down` and a common Kubernetes
+collector remain planned; invoke Slurm `collect` explicitly before cleanup.
 
 ### Fast local example
 
@@ -2740,8 +2799,9 @@ uib-sim down --profile kind-kubernetes --run-id uib-lab
 ```
 
 These four Kind lifecycle operations are implemented. Slurm additionally
-implements `run`, accounting-oriented `status`, and recorded-job `down`.
-`deploy`, `collect`, and Kubernetes workload submission remain planned.
+implements `run`, accounting-oriented `status`, evidence-only `collect`, and
+recorded-job `down`. `deploy`, Kubernetes collection, and Kubernetes workload
+submission remain planned.
 
 ### Planned selected-kernel lifecycle
 
@@ -2760,6 +2820,7 @@ simulation/bin/uib-sim run --profile libvirt-slurm \
     --run-id uib-slurm-smoke --allow-mutable-tags
 simulation/bin/uib-sim status --profile libvirt-slurm \
     --run-id uib-slurm-smoke
+simulation/bin/uib-sim collect --run-id uib-slurm-smoke
 simulation/bin/uib-sim down --profile libvirt-slurm \
     --run-id uib-slurm-smoke
 ```
@@ -2829,6 +2890,9 @@ simulation/bin/uib-sim run --profile real-slurm \
     --state-dir /shared/uib/run-ledgers
 simulation/bin/uib-sim status --profile real-slurm \
     --run-id uib-real-training --state-dir /shared/uib/run-ledgers
+simulation/bin/uib-sim collect --run-id uib-real-training \
+    --state-dir /shared/uib/run-ledgers \
+    --output-dir /shared/uib/collected/uib-real-training
 ```
 
 Request cancellation, if needed, with the same profile, run ID, and state
@@ -2841,18 +2905,38 @@ metric definitions.
 
 ## Results and evidence
 
-Each run produces:
+The implemented Slurm collector produces:
 
 ```text
 results/<run-id>/
+  profile.yaml
   request.yaml
-  resolved-values.yaml
+  overlays/
+  request-provenance.json
+  resolved-values.json
+  compatibility-lock.json
   versions.json
   topology.json
   images.json
   preflight.json
+  manifest.json
   scheduler/
+    workload.sbatch
+    sacct.psv
+    sacct.stderr
+    render.stderr
+    sbatch.stdout
+    sbatch.stderr
+  state/
+    ledger.json
   logs/
+    batch.out
+    batch.err
+  workload/
+    status.json
+    nodes.txt
+    slurm-job.txt
+    ... workload-owned checkpoints, metrics, and traces ...
   metrics/
   traces/
   faults.jsonl
@@ -2860,7 +2944,15 @@ results/<run-id>/
   summary.md
 ```
 
-The summary states:
+`request.yaml` is absent only when `run` had no request file; the exact profile,
+ordered overlays, typed `--set` expressions, and fully resolved result still
+remain. Empty common `metrics/` and `traces/` directories reserve the portable
+schema while workload-native files remain unchanged under `workload/`.
+`manifest.json` records the size and SHA-256 digest of every regular file other
+than the manifest itself. Files absent because a batch failed early are named
+in `summary.json.missingArtifacts`.
+
+The long-term common summary states:
 
 - UIB or native verbs;
 - communication front end and its selected or fallback transport;
@@ -2871,6 +2963,12 @@ The summary states:
 - actual rank placement;
 - skipped gates and reasons;
 - correctness and performance outcomes.
+
+The current collector fills identity, scheduler outcome, requested and
+allocated topology, images, selected UIB layers, workload exit status, and
+missing artifacts. It does not infer transport use, correctness, performance,
+or a validation level from logs; those promotion checks remain explicit so a
+single-process or socket-fallback run cannot be mislabeled as UIB validation.
 
 Training metrics include tokens per second, step time, collective time,
 checkpoint time, loss, GPU use, host use, network counters, retries, and fault
@@ -2899,12 +2997,13 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
 | `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, UET/NSCC, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
 | `make simulation-slurm-lifecycle-test` | The Slurm renderer requirements; no Slurm installation or container engine | Exclusive ignored run ledgers, shared-path preflight, exact `sbatch --parsable` submission, recorded numeric job ownership, read-only `sacct` status, exact-ID `scancel`, retained failures, and rejection of result/ledger reuse or ambiguous submission output using fake standard commands |
+| `make simulation-slurm-collect-test` | The Slurm lifecycle requirements; no Slurm installation, container engine, or network access | Exact-ID accounting, terminal/incomplete policy, captured source inputs, scheduler/log/workload export, ownership validation, symlink rejection, non-overwrite behavior, honest nonpromotion labels, and every SHA-256 manifest entry using fake standard commands |
 | `make runtime-bundle-portable-test` | A Docker-compatible engine, network access for the pinned Ubuntu image and verified source archives on first use, and normal UIB build resources | Reproducible old-userspace build, GLIBC ceiling, portable feature set, provider/static artifacts, checksums, preflight, source dependency metadata, and copied licenses |
 | `make simulation-kubernetes-uib-test` | Kind, kubectl, a Docker-compatible engine, build dependencies, and CPU/memory for two workers; network access is needed only for uncached pinned images and diagnostic sources | Actual RoCEv2 and UET RC SEND/RECV and RDMA Write traffic from unchanged standard verbs binaries between distinct Pod IPs and Kind workers, plus runtime injection and complete cleanup; no GPU or collective claim |
 | `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, admission, two-node torchrun rendezvous, distinct placement, UIB preflight, CPU DDP result, and complete run/operator/cluster cleanup; no UIB traffic |
 | `make simulation-kuberay-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, roughly 10 GB of image storage, four CPU cores and 8 GiB for the Ray head; network access for uncached images, source archives, chart, and model revision | Required actual two-worker UIB verbs traffic, portable-runtime compatibility, KubeRay v1.6.2 admission and Ray 2.58.0 readiness, offline cached SmolLM2 inference, four-result correctness, retained evidence, and complete cleanup; the single-rank inference portion itself sends no UIB traffic |
 
-Run the seven hardware-neutral gates:
+Run the eight hardware-neutral gates:
 
 ```text
 make simulation-cli-test
@@ -2914,6 +3013,7 @@ make simulation-kind-test
 make simulation-kubernetes-render-test
 make simulation-slurm-render-test
 make simulation-slurm-lifecycle-test
+make simulation-slurm-collect-test
 ```
 
 The mocked Kind adapter test does not create a cluster. The opt-in real gate is:

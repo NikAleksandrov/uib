@@ -30,7 +30,7 @@ def add_state_dir_arg(parser):
 
 def main():
     from .core import ConfigurationError
-    from .lifecycle import command_doctor, command_down, command_kubeconfig, command_load_image, command_render, command_render_workload, command_run, command_status, command_up
+    from .lifecycle import command_collect, command_doctor, command_down, command_kubeconfig, command_load_image, command_render, command_render_workload, command_run, command_status, command_up
 
     parser = argparse.ArgumentParser(
         description="resolve and inspect UIB simulation configuration")
@@ -80,6 +80,19 @@ def main():
         "--allow-mutable-tags", action="store_true",
         help="allow local development image tags instead of immutable digests")
     run.set_defaults(handler=command_run)
+    collect = commands.add_parser(
+        "collect", help="collect one recorded scheduler result")
+    collect.add_argument("--run-id", required=True,
+                         help="recorded scheduler run ID")
+    add_state_dir_arg(collect)
+    collect.add_argument(
+        "--output-dir",
+        help="new result bundle directory "
+             "(default: simulation/.artifacts/results/RUN_ID)")
+    collect.add_argument(
+        "--allow-incomplete", action="store_true",
+        help="collect a diagnostic snapshot before the job reaches a terminal state")
+    collect.set_defaults(handler=command_collect)
     down = commands.add_parser("down", help="remove selected infrastructure")
     add_lifecycle_args(down)
     add_state_dir_arg(down)

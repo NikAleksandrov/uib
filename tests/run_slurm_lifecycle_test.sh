@@ -73,11 +73,16 @@ assert ledger["scheduler"] == "slurm"
 assert ledger["state"] == "submitted"
 assert ledger["jobId"] == "7654"
 assert ledger["batchFile"] == "workload.sbatch"
+assert ledger["inputs"]["profile"] == "inputs/profile.yaml"
+assert ledger["inputs"]["request"] == "inputs/request.yaml"
+assert ledger["inputs"]["overrides"]
 with open(sys.argv[2], encoding="utf-8") as source:
     resolved = json.load(source)
 assert resolved["runId"] == "uib-lifecycle"
 assert resolved["cluster"]["manager"] == "slurm"
 PY
+[ -f "$run_dir/inputs/profile.yaml" ]
+[ -f "$run_dir/inputs/request.yaml" ]
 
 ledger_before=$(sha256sum "$run_dir/ledger.json" | awk '{print $1}')
 TEST_LOG="$test_dir/log" SACCT_COMMAND="$test_dir/fake-bin/sacct" \

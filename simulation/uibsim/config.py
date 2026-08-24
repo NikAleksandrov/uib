@@ -136,7 +136,8 @@ def validate_scheduler(config):
         raise ConfigurationError("host storage paths require Slurm")
     if manager == "slurm":
         if kubernetes_storage & set(storage):
-            raise ConfigurationError("Kubernetes storage settings cannot be used with Slurm")
+            raise ConfigurationError(
+                "Kubernetes storage settings cannot be used with Slurm")
         for name in ("modelCachePath", "resultsPath"):
             if name not in storage:
                 raise ConfigurationError(f"Slurm requires storage.{name}")
