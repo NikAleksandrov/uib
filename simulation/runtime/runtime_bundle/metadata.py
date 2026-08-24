@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -62,3 +64,30 @@ def package_metadata(paths, share_dir):
             entry["copyright"] = str(destination.relative_to(share_dir.parent.parent))
         metadata.append(entry)
     return metadata
+
+
+def source_dependency_metadata(share_dir):
+    from .core import copy_file
+
+    raw = os.environ.get("UIB_SOURCE_DEPENDENCIES", "[]")
+    try:
+        dependencies = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("UIB_SOURCE_DEPENDENCIES must be valid JSON") from error
+    if not isinstance(dependencies, list):
+        raise RuntimeError("UIB_SOURCE_DEPENDENCIES must contain a JSON list")
+    result = []
+    for dependency in dependencies:
+        if not isinstance(dependency, dict):
+            raise RuntimeError("source dependency entry must be an object")
+        entry = dict(dependency)
+        license_value = entry.pop("license", None)
+        if license_value:
+            source = pathlib.Path(license_value)
+            if not source.is_file():
+                raise RuntimeError(f"source dependency license not found: {source}")
+            destination = share_dir / "licenses/source" / entry["name"] / source.name
+            copy_file(source, destination, 0o644)
+            entry["license"] = str(destination.relative_to(share_dir.parent.parent))
+        result.append(entry)
+    return result

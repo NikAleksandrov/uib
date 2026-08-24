@@ -954,9 +954,14 @@ checksums, and `uib-preflight`. Build and validate it with:
 ```text
 make runtime-bundle-test
 make runtime-bundle
+make runtime-bundle-portable
+make runtime-bundle-portable-test
 ```
 
-The second command creates these ignored local artifacts:
+The native command builds against the development host. The portable command
+builds the same tracked source in a digest-pinned Ubuntu 22.04 container and is
+the artifact used by `make runtime-image`, Kubernetes, and other container
+workloads. Both commands create these ignored local artifacts:
 
 ```text
 simulation/.artifacts/
@@ -985,10 +990,22 @@ labels unvalidated collectives and GPU-direct operation. On Debian-family
 builders, the artifact also records package versions and includes available
 copyright files for bundled runtime and static-library dependencies.
 
+The portable builder pins and verifies libmnl 1.0.5 and liburing 2.9 source
+archives because Ubuntu 22.04 does not provide the required static libmnl
+archive or a new enough liburing API. Their revisions, archive hashes, source
+URLs, and copied licenses appear under `sourceDependencies` in the manifest.
+The current portable artifact is built with glibc 2.35 and requires no symbols
+newer than GLIBC 2.34. It enables the transparent provider, UDP transport,
+socket zero-copy, and static archive, but disables AF_XDP, TCP devmem,
+DMA-BUF, and io_uring ZCRX. Use a separately qualified native artifact for
+those host/kernel-specific features.
+
 The bundle intentionally does not carry glibc or the dynamic loader. Injecting
 a private glibc into an arbitrary application process is unsafe. Build on the
 oldest supported userspace, and run preflight in the target image or node;
-`ldd` rejects a target whose libc cannot satisfy the recorded libraries.
+`ldd` rejects a target whose libc cannot satisfy the recorded libraries. The
+portable build automates this boundary; do not use a native bundle in a
+container merely because both were built on the same machine.
 
 ### OCI and Kubernetes init container
 
@@ -1492,7 +1509,10 @@ comes from each Pod IP.
 
 The checked-in CPU request deliberately has one Ray head and no worker. It
 tests the smallest real model/API shape and avoids presenting an idle worker
-as distributed inference. A two-node shape changes only common fields:
+as distributed inference. The workload image installs Ray's pinned `default`
+extra because KubeRay 1.6.2 probes Ray 2.58.0 through the dashboard agent HTTP
+endpoint. The image smoke test exercises that exact endpoint. A two-node shape
+changes only common fields:
 
 ```text
 simulation/bin/uib-sim render-workload --profile kind-kubernetes \
@@ -1509,12 +1529,81 @@ cross-node pod anti-affinity. The renderer rejects an idle multi-node CPU
 shape, mismatched parallel degrees, GPU-less vLLM, and more than one process
 per pod because those ranks would share a UIB bind port.
 
-KubeRay v1.6.2 and `ray.io/v1` are pinned in the compatibility lock. Structural
-rendering is tested, but operator installation and a RayJob lifecycle have not
-yet passed, so this is not reported as a validated deployment. On a real
-cluster, set `storage.modelCacheClaim` and `storage.resultsClaim` to existing
-PVCs. This preserves dynamically downloaded model weights between runs and
-keeps them out of this repository.
+KubeRay v1.6.2 and `ray.io/v1` are pinned in the compatibility lock. Run the
+real local gate with:
+
+```text
+make simulation-kuberay-e2e-test
+```
+
+The target first runs the actual two-worker UIB verbs gate, builds the portable
+runtime and inference images, downloads the pinned SmolLM2 revision once into
+the ignored cache, creates a disposable one-worker Kind cluster, installs the
+operator, and submits the standard inference request. It requires a
+Docker-compatible engine, Kind, kubectl, Helm, network access for uncached
+images/charts, about 10 GB of image storage, and four CPU cores plus 8 GiB for
+the Ray head. A successful run checks Ray readiness, all UIB init preflights,
+four requests, 16 output tokens, the Transformers backend, and complete
+namespace/operator/cluster cleanup.
+
+`storage.modelCacheImage` stages the ignored host cache through a disposable
+local image and forces Hugging Face offline mode in the Ray Pod. It cannot be
+combined with `storage.modelCacheClaim`. The local image is convenient for
+Kind only; on a real cluster, omit it and set `storage.modelCacheClaim` and
+`storage.resultsClaim` to existing PVCs. This preserves dynamically downloaded
+model weights between runs and keeps them out of this repository.
+
+Evidence is retained under `simulation/.artifacts/results/<cluster-name>` on
+both success and failure. It includes the rendered workload, RayJob, Pod
+states/descriptions, init and submitter logs, and operator logs. Model and
+result storage are `emptyDir` volumes in the local CPU gate, so the JSON result
+is validated from the submitter log before cleanup.
+
+This is an L0 scheduler/runtime validation. The one-head Transformers workload
+sets and reports the UIB/NCCL environment, but it has no communicating second
+rank and therefore sends no UIB data-plane traffic. Actual UIB traffic is
+validated by the required two-worker verbs gate. Multi-node inference over UIB
+still requires GPU workers and an NCCL/vLLM validation run.
+
+KubeRay gate options:
+
+| Variable | Default | Syntax and meaning |
+|---|---|---|
+| `SIMULATION_KUBERAY_E2E_NAME` | `uib-ray-<pid>` | Owned Kind cluster and evidence-directory name; use a unique lowercase DNS label |
+| `SIMULATION_KUBERAY_E2E_RUN_ID` | `uib-infer-<pid>` | Namespace and RayJob name; use a unique lowercase DNS label |
+| `SIMULATION_KUBERAY_OPERATOR_VERSION` | `1.6.2` | Helm chart version; changing it produces an unqualified compatibility run |
+| `SIMULATION_KUBERAY_OPERATOR_TIMEOUT` | `10m` | Helm duration for operator installation |
+| `SIMULATION_KUBERAY_PROVISIONING_TIMEOUT` | `1800` | Positive seconds allowed after RayJob creation for image unpacking and RayCluster readiness |
+| `SIMULATION_KUBERAY_WORKLOAD_TIMEOUT` | `900` | Positive seconds allowed after the deployment enters `Running` |
+| `SIMULATION_KUBERAY_INFERENCE_IMAGE` | `uib-inference:test` | Existing host image loaded into Kind |
+| `SIMULATION_KUBERAY_RUNTIME_IMAGE` | `uib-runtime:test` | Portable UIB init image loaded into Kind |
+| `SIMULATION_KUBERAY_MODEL_CACHE_IMAGE` | `uib-model-cache:test` | Disposable image built from the ignored Hugging Face cache |
+| `SIMULATION_KUBERAY_RESULTS` | `simulation/.artifacts/results` | Ignored persistent root for success and failure evidence |
+| `KIND_COMMAND`, `KUBECTL_COMMAND`, `HELM_COMMAND` | Standard command names | Exact client executables used by the gate |
+
+Timeouts are separate intentionally: large local images may take minutes to
+unpack before the Ray head exists, while a running inference workload should
+have its own shorter correctness deadline. Reusing an evidence name is
+rejected so an earlier run is never overwritten.
+
+Examples:
+
+```text
+# Give a slow local container store more time without weakening job execution.
+SIMULATION_KUBERAY_PROVISIONING_TIMEOUT=2400 \
+    make simulation-kuberay-e2e-test
+
+# Keep evidence in another ignored or external directory.
+SIMULATION_KUBERAY_RESULTS=/var/tmp/uib-results \
+    make simulation-kuberay-e2e-test
+
+# Real-cluster storage: use PVCs, never the local cache image at the same time.
+simulation/bin/uib-sim render-workload --profile real-kubernetes \
+    --request simulation/requests/inference-smoke.yaml \
+    --run-id inference-real \
+    --set storage.modelCacheClaim=llm-model-cache \
+    --set storage.resultsClaim=llm-results
+```
 
 ### virtme with Kind
 
@@ -2592,8 +2681,10 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
+| `make runtime-bundle-portable-test` | A Docker-compatible engine, network access for the pinned Ubuntu image and verified source archives on first use, and normal UIB build resources | Reproducible old-userspace build, GLIBC ceiling, portable feature set, provider/static artifacts, checksums, preflight, source dependency metadata, and copied licenses |
 | `make simulation-kubernetes-uib-test` | Kind, kubectl, a Docker-compatible engine, build dependencies, and CPU/memory for two workers; network access is needed only for uncached pinned images and diagnostic sources | Actual RoCEv2 and UET RC SEND/RECV and RDMA Write traffic from unchanged standard verbs binaries between distinct Pod IPs and Kind workers, plus runtime injection and complete cleanup; no GPU or collective claim |
 | `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, admission, two-node torchrun rendezvous, distinct placement, UIB preflight, CPU DDP result, and complete run/operator/cluster cleanup; no UIB traffic |
+| `make simulation-kuberay-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, roughly 10 GB of image storage, four CPU cores and 8 GiB for the Ray head; network access for uncached images, source archives, chart, and model revision | Required actual two-worker UIB verbs traffic, portable-runtime compatibility, KubeRay v1.6.2 admission and Ray 2.58.0 readiness, offline cached SmolLM2 inference, four-result correctness, retained evidence, and complete cleanup; the single-rank inference portion itself sends no UIB traffic |
 
 Run the five hardware-neutral gates:
 
@@ -2690,6 +2781,12 @@ Runtime and diagnostic options:
 | Variable | Default | Meaning |
 |---|---|---|
 | `RUNTIME_ARTIFACT_DIR` | `simulation/.artifacts` | Bundle and persistent download-cache root; it is ignored by Git |
+| `RUNTIME_CONTAINER_ENGINE` | `docker` | Container engine used for the runtime init image |
+| `PORTABLE_RUNTIME_CONTAINER_ENGINE` | `RUNTIME_CONTAINER_ENGINE` | Exact engine executable used for the pinned portable build |
+| `PORTABLE_RUNTIME_BUILDER_IMAGE` | `uib-runtime-builder:test` | Local builder image name |
+| `RUNTIME_IMAGE` | `uib-runtime:test` | Portable UIB init image name |
+| `MODEL_CACHE_IMAGE` | `uib-model-cache:test` | Local image built from the ignored Hugging Face cache; for disposable simulations only |
+| `MODEL_CACHE_CONTAINER_ENGINE` | `TRAINING_CONTAINER_ENGINE` | Container engine used to build the local model-cache image |
 | `DIAGNOSTIC_IMAGE` | `uib-diagnostics:test` | Local image name |
 | `DIAGNOSTIC_CONTAINER_ENGINE` | Value of `TRAINING_CONTAINER_ENGINE` | Container command |
 | `DIAGNOSTIC_DOWNLOAD_CACHE` | `$(RUNTIME_ARTIFACT_DIR)/downloads` | Persistent source cache; downloads are reused by later runs |

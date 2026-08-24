@@ -7,7 +7,7 @@ ARG RAY_VERSION=2.58.0
 ARG JSONSCHEMA_VERSION=4.25.1
 
 RUN uv pip install --system \
-    "ray==${RAY_VERSION}" \
+    "ray[default]==${RAY_VERSION}" \
     "jsonschema==${JSONSCHEMA_VERSION}"
 
 COPY inference.py /opt/uib-inference/inference.py

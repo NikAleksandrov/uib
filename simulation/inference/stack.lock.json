@@ -16,5 +16,6 @@
   "backends": {
     "transformers": "cpu-functional-smoke",
     "vllm": "production-gpu-serving"
-  }
+  },
+  "rayDistribution": "default-extra-for-kuberay"
 }

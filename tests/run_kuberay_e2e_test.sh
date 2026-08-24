@@ -1,0 +1,204 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+project_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+cli=$project_dir/simulation/bin/uib-sim
+request=$project_dir/simulation/requests/inference-smoke.yaml
+name=${SIMULATION_KUBERAY_E2E_NAME:-uib-ray-$$}
+run_id=${SIMULATION_KUBERAY_E2E_RUN_ID:-uib-infer-$$}
+operator_version=${SIMULATION_KUBERAY_OPERATOR_VERSION:-1.6.2}
+operator_timeout=${SIMULATION_KUBERAY_OPERATOR_TIMEOUT:-10m}
+provisioning_timeout=${SIMULATION_KUBERAY_PROVISIONING_TIMEOUT:-1800}
+workload_timeout=${SIMULATION_KUBERAY_WORKLOAD_TIMEOUT:-900}
+inference_image=${SIMULATION_KUBERAY_INFERENCE_IMAGE:-uib-inference:test}
+runtime_image=${SIMULATION_KUBERAY_RUNTIME_IMAGE:-uib-runtime:test}
+cache_image=${SIMULATION_KUBERAY_MODEL_CACHE_IMAGE:-uib-model-cache:test}
+kind_command=${KIND_COMMAND:-kind}
+kubectl_command=${KUBECTL_COMMAND:-kubectl}
+helm_command=${HELM_COMMAND:-helm}
+results_root=${SIMULATION_KUBERAY_RESULTS:-$project_dir/simulation/.artifacts/results}
+test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-kuberay-e2e.XXXXXX")
+kubeconfig=$test_dir/kubeconfig
+evidence=$results_root/$name
+manifest=$evidence/workload.yaml
+logs=$evidence/inference.log
+created=0
+
+collect_diagnostics()
+{
+	[ -s "$kubeconfig" ] || return 0
+	"$kubectl_command" --kubeconfig "$kubeconfig" get rayjob "$run_id" \
+		--namespace "$run_id" -o yaml > "$evidence/rayjob.yaml" \
+		2>/dev/null || true
+	"$kubectl_command" --kubeconfig "$kubeconfig" get all \
+		--namespace "$run_id" -o wide > "$evidence/resources.txt" \
+		2>&1 || true
+	"$kubectl_command" --kubeconfig "$kubeconfig" get pods \
+		--namespace "$run_id" -o yaml > "$evidence/pods.yaml" \
+		2>&1 || true
+	"$kubectl_command" --kubeconfig "$kubeconfig" describe pods \
+		--namespace "$run_id" > "$evidence/pods-describe.txt" \
+		2>&1 || true
+	"$kubectl_command" --kubeconfig "$kubeconfig" describe rayjob "$run_id" \
+		--namespace "$run_id" > "$evidence/rayjob-describe.txt" \
+		2>&1 || true
+	"$kubectl_command" --kubeconfig "$kubeconfig" logs \
+		--namespace kuberay-system deployment/kuberay-operator \
+		--all-containers > "$evidence/operator.log" 2>&1 || true
+	: > "$logs"
+	for pod in $("$kubectl_command" --kubeconfig "$kubeconfig" get pods \
+		--namespace "$run_id" \
+		-o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
+		2>/dev/null); do
+		for container in $("$kubectl_command" --kubeconfig "$kubeconfig" \
+			get pod --namespace "$run_id" "$pod" \
+			-o jsonpath='{range .spec.initContainers[*]}{.name}{"\n"}{end}{range .spec.containers[*]}{.name}{"\n"}{end}' \
+			2>/dev/null); do
+			printf '\n[%s/%s]\n' "$pod" "$container" >> "$logs"
+			"$kubectl_command" --kubeconfig "$kubeconfig" logs \
+				--namespace "$run_id" "$pod" --container "$container" \
+				>> "$logs" 2>&1 || true
+		done
+	done
+}
+
+finish()
+{
+	status=$?
+	trap - EXIT INT TERM
+	if [ "$status" -ne 0 ]; then
+		collect_diagnostics
+	fi
+	if [ "$created" = 1 ]; then
+		if [ -s "$kubeconfig" ]; then
+			"$kubectl_command" --kubeconfig "$kubeconfig" delete namespace \
+				"$run_id" --ignore-not-found --wait=false \
+				>/dev/null 2>&1 || true
+			"$helm_command" --kubeconfig "$kubeconfig" uninstall \
+				kuberay-operator --namespace kuberay-system \
+				--wait >/dev/null 2>&1 || true
+		fi
+		"$cli" down --profile kind-kubernetes --run-id "$name" \
+			--set nodes.workers=1 >/dev/null 2>&1 || true
+	fi
+	rm -rf -- "$test_dir"
+	if [ "$status" -ne 0 ]; then
+		echo "KubeRay evidence retained at $evidence" >&2
+	fi
+	exit "$status"
+}
+trap finish EXIT
+trap 'exit 130' INT TERM
+
+require_command()
+{
+	case $1 in
+	*/*) [ -x "$1" ] ;;
+	*) command -v "$1" >/dev/null 2>&1 ;;
+	esac
+}
+
+case $provisioning_timeout:$workload_timeout in
+*:*[!0-9]*|*[!0-9]*:*|0:*|*:0|:*|*:)
+	echo "KubeRay timeouts must be positive integers" >&2
+	exit 2
+	;;
+esac
+for command_name in "$kind_command" "$kubectl_command" "$helm_command"; do
+	if ! require_command "$command_name"; then
+		echo "required KubeRay E2E command not found: $command_name" >&2
+		exit 1
+	fi
+done
+
+if [ -e "$evidence" ]; then
+	echo "KubeRay evidence path already exists: $evidence" >&2
+	exit 1
+fi
+mkdir -p "$evidence"
+
+created=1
+"$cli" up --profile kind-kubernetes --run-id "$name" \
+	--kubeconfig "$kubeconfig" --wait 300s --set nodes.workers=1
+"$cli" load-image --profile kind-kubernetes --run-id "$name" \
+	--image "$inference_image" --image "$runtime_image" \
+	--image "$cache_image" --allow-mutable-tags --set nodes.workers=1
+
+"$helm_command" repo add kuberay \
+	https://ray-project.github.io/kuberay-helm/ --force-update
+"$helm_command" repo update kuberay
+"$helm_command" --kubeconfig "$kubeconfig" upgrade --install \
+	kuberay-operator kuberay/kuberay-operator \
+	--version "$operator_version" --namespace kuberay-system \
+	--create-namespace --wait --timeout "$operator_timeout"
+
+"$cli" render-workload --profile kind-kubernetes --request "$request" \
+	--run-id "$run_id" --allow-mutable-tags \
+	--set nodes.workers=1 \
+	--set "workload.image=$inference_image" \
+	--set "uib.bundle=$runtime_image" \
+	--set "storage.modelCacheImage=$cache_image" > "$manifest"
+"$kubectl_command" --kubeconfig "$kubeconfig" apply -f "$manifest"
+
+phase=provisioning
+deadline=$(($(date +%s) + provisioning_timeout))
+while :; do
+	job_status=$("$kubectl_command" --kubeconfig "$kubeconfig" get rayjob \
+		"$run_id" --namespace "$run_id" \
+		-o jsonpath='{.status.jobStatus}' 2>/dev/null || true)
+	deployment_status=$("$kubectl_command" --kubeconfig "$kubeconfig" \
+		get rayjob "$run_id" --namespace "$run_id" \
+		-o jsonpath='{.status.jobDeploymentStatus}' 2>/dev/null || true)
+	case $job_status:$deployment_status in
+	SUCCEEDED:Complete) break ;;
+	FAILED:*|STOPPED:*)
+		echo "RayJob failed: $job_status ($deployment_status)" >&2
+		exit 1
+		;;
+	esac
+	if [ "$phase" = provisioning ] && [ "$deployment_status" = Running ]; then
+		phase=workload
+		deadline=$(($(date +%s) + workload_timeout))
+	fi
+	if [ "$(date +%s)" -ge "$deadline" ]; then
+		echo "RayJob $phase timed out: $job_status ($deployment_status)" >&2
+		exit 1
+	fi
+	sleep 2
+done
+
+collect_diagnostics
+
+python3 - "$logs" "$run_id" <<'PY'
+import json
+import sys
+
+
+result = None
+with open(sys.argv[1], encoding="utf-8") as source:
+    for line in source:
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if value.get("status") == "passed":
+            result = value
+if result is None:
+    raise AssertionError("RayJob logs contain no passing inference result")
+assert result["runId"] == sys.argv[2]
+assert result["backend"] == "transformers"
+assert result["requests"] == 4
+assert result["outputTokens"] == 16
+assert result["transport"]["uibEnabled"] is True
+print("KubeRay result: " + json.dumps(result, sort_keys=True))
+PY
+
+"$kubectl_command" --kubeconfig "$kubeconfig" delete namespace "$run_id" \
+	--wait --timeout "${workload_timeout}s"
+"$helm_command" --kubeconfig "$kubeconfig" uninstall kuberay-operator \
+	--namespace kuberay-system --wait
+"$cli" down --profile kind-kubernetes --run-id "$name"
+created=0
+
+echo "real KubeRay inference lifecycle test: PASS"

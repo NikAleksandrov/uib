@@ -63,7 +63,7 @@ def render_inference(config, run_id, allow_mutable_tags):
     config_path = "/etc/uib-workload/workload.json"
     executable = shlex.quote(workload["entrypoint"])
     quoted_config = shlex.quote(config_path)
-    entrypoint = LiteralString(
+    lifecycle = (
         "set -eu; "
         f"{executable} serve --config {quoted_config} & server=$!; "
         "cleanup() { kill \"$server\" >/dev/null 2>&1 || true; }; "
@@ -72,6 +72,7 @@ def render_inference(config, run_id, allow_mutable_tags):
         "kill \"$server\" >/dev/null 2>&1 || true; "
         "wait \"$server\" || true; trap - EXIT INT TERM"
     )
+    entrypoint = LiteralString(shlex.join(["/bin/sh", "-c", lifecycle]))
     ray_cluster = {
         "rayVersion": "2.58.0",
         "headGroupSpec": {

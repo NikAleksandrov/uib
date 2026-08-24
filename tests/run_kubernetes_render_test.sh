@@ -112,4 +112,20 @@ if "$cli" render-workload --profile kind-kubernetes \
 	exit 1
 fi
 
+"$cli" render-workload --profile kind-kubernetes \
+	--request "$inference_request" --run-id uib-inference-cache \
+	--allow-mutable-tags \
+	--set storage.modelCacheImage=uib-model-cache:test \
+	> "$test_dir/inference-cache.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/rocev2_dcqcn.py" "$test_dir/inference-cache.yaml"
+
+if "$cli" render-workload --profile kind-kubernetes \
+	--request "$inference_request" --run-id uib-inference-cache-conflict \
+	--allow-mutable-tags \
+	--set storage.modelCacheImage=uib-model-cache:test \
+	--set storage.modelCacheClaim=uib-model-cache > /dev/null 2>&1; then
+	echo "a model cache image and PVC were accepted together" >&2
+	exit 1
+fi
+
 echo "Kubernetes workload render test: PASS"

@@ -123,9 +123,14 @@ LIB_PROVIDER := libuibv.so
 STANDALONE_BUILDER := scripts/build-standalone-archive.sh
 STATIC_LINK_TEST := tests/static_link_test
 RUNTIME_BUNDLE_TEST := tests/run_runtime_bundle_test.sh
+PORTABLE_RUNTIME_BUNDLE_TEST := tests/run_portable_runtime_bundle_test.sh
 RUNTIME_ARTIFACT_DIR ?= simulation/.artifacts
 RUNTIME_IMAGE ?= uib-runtime:test
 RUNTIME_CONTAINER_ENGINE ?= docker
+PORTABLE_RUNTIME_BUILDER_IMAGE ?= uib-runtime-builder:test
+PORTABLE_RUNTIME_CONTAINER_ENGINE ?= $(RUNTIME_CONTAINER_ENGINE)
+MODEL_CACHE_IMAGE ?= uib-model-cache:test
+MODEL_CACHE_CONTAINER_ENGINE ?= $(TRAINING_CONTAINER_ENGINE)
 TRAINING_IMAGE ?= uib-training:test
 TRAINING_CONTAINER_ENGINE ?= docker
 TRAINING_GPU_DEVICE ?= nvidia.com/gpu=all
@@ -195,12 +200,31 @@ runtime-bundle: all static
 		--output $(RUNTIME_ARTIFACT_DIR)/uib-runtime \
 		--archive $(RUNTIME_ARTIFACT_DIR)/uib-runtime.tar.gz
 
+runtime-bundle-portable:
+	RUNTIME_ARTIFACT_DIR='$(abspath $(RUNTIME_ARTIFACT_DIR))' \
+	PORTABLE_RUNTIME_CONTAINER_ENGINE='$(PORTABLE_RUNTIME_CONTAINER_ENGINE)' \
+	PORTABLE_RUNTIME_BUILDER_IMAGE='$(PORTABLE_RUNTIME_BUILDER_IMAGE)' \
+		simulation/runtime/build-portable
+
+runtime-bundle-portable-test: runtime-bundle-portable
+	RUNTIME_ARTIFACT_DIR='$(abspath $(RUNTIME_ARTIFACT_DIR))' \
+		$(PORTABLE_RUNTIME_BUNDLE_TEST)
+
 runtime-bundle-test: all static
 	$(RUNTIME_BUNDLE_TEST)
 
-runtime-image: runtime-bundle
+runtime-image: runtime-bundle-portable
 	$(RUNTIME_CONTAINER_ENGINE) build --progress=plain \
 		-f simulation/runtime/Containerfile -t $(RUNTIME_IMAGE) \
+		$(RUNTIME_ARTIFACT_DIR)
+
+model-cache-image: inference-smoke-test
+	@test -d $(RUNTIME_ARTIFACT_DIR)/huggingface/hub || { \
+		echo "model cache is empty; run make inference-smoke-test first" >&2; \
+		exit 1; \
+	}
+	$(MODEL_CACHE_CONTAINER_ENGINE) build --progress=plain \
+		-f simulation/cache/Containerfile -t $(MODEL_CACHE_IMAGE) \
 		$(RUNTIME_ARTIFACT_DIR)
 
 training-image:
@@ -314,6 +338,13 @@ simulation-kubernetes-uib-test: runtime-image diagnostic-image
 	SIMULATION_KUBERNETES_UIB_RUNTIME_IMAGE=$(RUNTIME_IMAGE) \
 	SIMULATION_KUBERNETES_UIB_DIAGNOSTIC_IMAGE=$(DIAGNOSTIC_IMAGE) \
 		./tests/run_kubernetes_uib_test.sh
+
+simulation-kuberay-e2e-test: simulation-kubernetes-uib-test \
+	runtime-image model-cache-image
+	SIMULATION_KUBERAY_RUNTIME_IMAGE=$(RUNTIME_IMAGE) \
+	SIMULATION_KUBERAY_INFERENCE_IMAGE=$(INFERENCE_IMAGE) \
+	SIMULATION_KUBERAY_MODEL_CACHE_IMAGE=$(MODEL_CACHE_IMAGE) \
+		./tests/run_kuberay_e2e_test.sh
 
 docs:
 	python3 $(DOC_GENERATOR)
@@ -836,8 +867,10 @@ clean:
 		$(PROVIDER_WR_BENCH) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
 		$(HOST_ZC_E2E_TEST) $(HOST_ZC_BENCH)
 
-.PHONY: shared-abi-test all license-check static static-test runtime-bundle runtime-bundle-test \
-	runtime-image \
+.PHONY: shared-abi-test all license-check static static-test runtime-bundle runtime-bundle-portable \
+	runtime-bundle-portable-test \
+	runtime-bundle-test \
+	runtime-image model-cache-image \
 	training-image training-smoke-test FORCE docs \
 	training-public-test training-gpu-test training-uib-preflight-test \
 	training-uib-test \
@@ -848,6 +881,7 @@ clean:
 	simulation-kind-test simulation-kind-e2e-test \
 	simulation-kubernetes-render-test simulation-kubeflow-e2e-test \
 	simulation-kubernetes-uib-test \
+	simulation-kuberay-e2e-test \
 	docs-check examples clean install install-static test rxe-test-build \
 	rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \

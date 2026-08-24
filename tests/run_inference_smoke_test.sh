@@ -35,6 +35,25 @@ run_container --rm --entrypoint /usr/bin/python3 "$image" -c \
 run_container --rm --shm-size=256m --entrypoint /usr/bin/python3 "$image" -c \
 	'import ray; ray.init(num_cpus=1, include_dashboard=False); f = ray.remote(lambda: "ray-ok"); assert ray.get(f.remote()) == "ray-ok"; ray.shutdown()'
 
+# KubeRay 1.6 probes the Ray 2.58 dashboard agent over this HTTP endpoint.
+# shellcheck disable=SC2016
+run_container --rm --shm-size=256m --entrypoint /bin/sh "$image" -c '
+	set -eu
+	ray start --head --dashboard-host=0.0.0.0 --block >/tmp/ray.log 2>&1 &
+	server=$!
+	cleanup() { kill "$server" >/dev/null 2>&1 || true; }
+	trap cleanup EXIT INT TERM
+	for unused in $(seq 1 30); do
+		if python3 -c '\''import urllib.request; urllib.request.urlopen("http://127.0.0.1:52365/api/local_raylet_healthz", timeout=2).read()'\'' \
+			>/dev/null 2>&1; then
+			exit 0
+		fi
+		sleep 1
+	done
+	cat /tmp/ray.log >&2
+	exit 1
+'
+
 mkdir -p "$cache" "$test_dir/results"
 sed -e 's/"runId": "tiny-public-inference-cpu"/"runId": "tiny-public-inference-streaming-cpu"/' \
 	-e 's/"streaming": false/"streaming": true/' \

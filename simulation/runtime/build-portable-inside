@@ -1,0 +1,29 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+source_dir=/source
+build_dir=/tmp/uib-source
+revision=$(git -C "$source_dir" rev-parse HEAD)
+source_epoch=$(git -C "$source_dir" show -s --format=%ct HEAD)
+dirty=0
+
+if [ -n "$(git -C "$source_dir" status --porcelain --untracked-files=no)" ]; then
+	dirty=1
+fi
+
+mkdir -p "$build_dir"
+git -C "$source_dir" ls-files -z | \
+	tar -C "$source_dir" --null --files-from=- --create --file=- | \
+	tar -C "$build_dir" --extract --file=-
+
+cd "$build_dir"
+export LD_LIBRARY_PATH=/usr/local/lib
+./configure --with-liburing=/usr/local --disable-af-xdp --disable-devmem \
+	--disable-dmabuf --disable-host-zc
+make all static
+env SOURCE_DATE_EPOCH="$source_epoch" \
+	UIB_SOURCE_REVISION="$revision" UIB_SOURCE_DIRTY="$dirty" \
+	simulation/runtime/build-bundle.py --no-build --replace \
+	--output /artifacts/uib-runtime \
+	--archive /artifacts/uib-runtime.tar.gz

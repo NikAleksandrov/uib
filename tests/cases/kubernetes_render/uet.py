@@ -21,6 +21,7 @@ assert config["model"]["revision"] == \
 assert job["apiVersion"] == "ray.io/v1"
 assert job["spec"]["shutdownAfterJobFinishes"] is True
 assert job["spec"]["ttlSecondsAfterFinished"] == 60
+assert job["spec"]["entrypoint"].startswith("/bin/sh -c ")
 assert "inference serve" in job["spec"]["entrypoint"]
 assert "inference probe" in job["spec"]["entrypoint"]
 cluster = job["spec"]["rayClusterSpec"]

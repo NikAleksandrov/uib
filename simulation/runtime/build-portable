@@ -1,0 +1,28 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+project_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
+engine=${PORTABLE_RUNTIME_CONTAINER_ENGINE:-docker}
+image=${PORTABLE_RUNTIME_BUILDER_IMAGE:-uib-runtime-builder:test}
+artifact_dir=${RUNTIME_ARTIFACT_DIR:-$project_dir/simulation/.artifacts}
+
+case $engine in
+*/*) [ -x "$engine" ] ;;
+*) command -v "$engine" >/dev/null 2>&1 ;;
+esac || {
+	echo "portable runtime container engine not found: $engine" >&2
+	exit 1
+}
+
+mkdir -p "$artifact_dir"
+artifact_dir=$(CDPATH='' cd -- "$artifact_dir" && pwd)
+
+"$engine" build --progress=plain \
+	-f "$project_dir/simulation/runtime/Builder.Containerfile" \
+	-t "$image" "$project_dir"
+"$engine" run --rm --user "$(id -u):$(id -g)" \
+	-e HOME=/tmp \
+	-v "$project_dir:/source:ro" \
+	-v "$artifact_dir:/artifacts" \
+	"$image"

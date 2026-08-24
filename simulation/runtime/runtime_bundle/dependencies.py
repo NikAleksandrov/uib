@@ -11,7 +11,10 @@ def ldd_paths(path, library_dir):
     from .core import command
 
     environment = os.environ.copy()
+    library_path = environment.get("LD_LIBRARY_PATH")
     environment["LD_LIBRARY_PATH"] = str(library_dir)
+    if library_path:
+        environment["LD_LIBRARY_PATH"] += os.pathsep + library_path
     output = command("ldd", str(path), env=environment)
     paths = []
     for line in output.splitlines():

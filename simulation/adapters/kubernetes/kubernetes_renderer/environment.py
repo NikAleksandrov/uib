@@ -15,6 +15,9 @@ def environment(config):
         "NCCL_NET": collective["network"],
         "HF_HOME": "/cache/huggingface",
     }
+    if config["storage"].get("modelCacheImage"):
+        values["HF_HUB_OFFLINE"] = "1"
+        values["TRANSFORMERS_OFFLINE"] = "1"
     protected_nccl = {
         "NCCL_IBVERBS_LIB",
         "NCCL_IB_DISABLE",

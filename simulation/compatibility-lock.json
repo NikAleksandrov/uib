@@ -47,7 +47,15 @@
         "libc",
         "dynamic-loader"
       ],
-      "requiresGlibcAtLeastBuildVersion": true
+      "requiresGlibcAtLeastBuildVersion": true,
+      "portableBuilder": {
+        "base": "ubuntu-22.04",
+        "glibc": "2.35",
+        "minimumGlibcSymbols": "2.34",
+        "libmnl": "1.0.5",
+        "liburing": "2.9",
+        "testTarget": "make runtime-bundle-portable"
+      }
     },
     "infrastructure": {
       "kind": {
@@ -88,10 +96,15 @@
           "version": "v1.6.2",
           "api": "ray.io/v1",
           "ray": "2.58.0",
-          "status": "render-supported-lifecycle-unvalidated",
+          "status": "validated-local-cpu-lifecycle",
           "testTargets": [
-            "make simulation-kubernetes-render-test"
-          ]
+            "make simulation-kubernetes-render-test",
+            "make simulation-kuberay-e2e-test"
+          ],
+          "validatedClients": {
+            "helm": "v3.21.3",
+            "kubectl": "v1.35.0"
+          }
         }
       }
     }
@@ -132,6 +145,7 @@
         "tiny-public-transformers-cpu",
         "tiny-public-transformers-streaming-cpu",
         "local-ray-task-cpu",
+        "kuberay-tiny-public-transformers-cpu",
         "tiny-public-vllm-single-gpu",
         "tiny-public-vllm-standard-benchmark-single-gpu"
       ]
@@ -157,6 +171,31 @@
     }
   },
   "validatedConfigurations": [
+    {
+      "id": "kuberay-1.6.2-kind-single-node-cpu-inference",
+      "date": "2026-08-24",
+      "kind": "v0.31.0",
+      "kubernetes": "v1.35.0",
+      "kuberay": "v1.6.2",
+      "ray": "2.58.0",
+      "topology": "one-control-plane-one-worker",
+      "rayPods": 1,
+      "device": "cpu",
+      "backend": "transformers",
+      "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
+      "modelRevision": "12fd25f77366fa6b3b4b768ec3050bf629380bac",
+      "modelCache": "ignored-local-image-offline-in-pod",
+      "requests": 4,
+      "outputTokens": 16,
+      "uibRuntimePreflight": "passed-on-ray-head",
+      "uibConfiguration": "present-and-reported",
+      "uibTraffic": "not-applicable-single-rank",
+      "correctness": "Ray readiness, job submission, serving, and probe passed",
+      "evidence": "retained-under-ignored-simulation-artifacts",
+      "cleanup": "run namespace, Helm release, and Kind cluster removed",
+      "validationLevel": "L0",
+      "testTarget": "make simulation-kuberay-e2e-test"
+    },
     {
       "id": "uib-rdma-core-kind-two-worker",
       "date": "2026-08-24",

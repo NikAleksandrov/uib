@@ -65,7 +65,7 @@ def stage_payload(binary_dir, library_dir, required, share_dir, staging, tools):
 
 def collect_dependencies(binary_dir, library_dir, share_dir, staging, tools):
     from .dependencies import config_values, configure_options, copy_dependencies, glibc_requirement
-    from .metadata import artifact_entries, package_metadata
+    from .metadata import artifact_entries, package_metadata, source_dependency_metadata
 
     dynamic_inputs = [library_dir / "libuib.so", library_dir / "libuibv.so"]
     dynamic_inputs.extend(binary_dir / source.name for source in tools)
@@ -77,15 +77,26 @@ def collect_dependencies(binary_dir, library_dir, share_dir, staging, tools):
         pathlib.Path(entry["sourcePath"]) for entry in dependencies
     ]
     packages = package_metadata(package_sources, share_dir)
+    source_dependencies = source_dependency_metadata(share_dir)
     return dependencies, glibc_inputs, packages, source_dependencies
 
-def create_manifest(dependencies, glibc_inputs, packages, share_dir, staging):
+def create_manifest(dependencies, glibc_inputs, packages, share_dir, source_dependencies, staging):
     from .core import PLATFORM_LIBRARIES, PROJECT_DIR, SCRIPT_DIR, command, copy_file, digest
-    from .metadata import artifact_entries, package_metadata
+    from .metadata import artifact_entries, package_metadata, source_dependency_metadata
     from .dependencies import config_values, configure_options, copy_dependencies, glibc_requirement
 
-    revision = command("git", "rev-parse", "HEAD")
-    dirty = bool(command("git", "status", "--porcelain", "--untracked-files=no"))
+    revision = os.environ.get("UIB_SOURCE_REVISION")
+    if revision is None:
+        revision = command("git", "rev-parse", "HEAD")
+    dirty_value = os.environ.get("UIB_SOURCE_DIRTY")
+    if dirty_value is None:
+        dirty = bool(command(
+            "git", "status", "--porcelain", "--untracked-files=no"
+        ))
+    elif dirty_value in ("0", "1"):
+        dirty = dirty_value == "1"
+    else:
+        raise RuntimeError("UIB_SOURCE_DIRTY must be 0 or 1")
     built_at = datetime.datetime.now(datetime.timezone.utc).replace(
         microsecond=0).isoformat()
     if "SOURCE_DATE_EPOCH" in os.environ:
@@ -111,6 +122,7 @@ def create_manifest(dependencies, glibc_inputs, packages, share_dir, staging):
         "payload": artifact_entries(staging),
         "bundledDependencies": dependencies,
         "packages": packages,
+        "sourceDependencies": source_dependencies,
         "platformDependencies": sorted(PLATFORM_LIBRARIES),
         "compatibilityLockSha256": digest(share_dir / "compatibility-lock.json"),
     }
@@ -132,7 +144,7 @@ def build(args):
     try:
         stage_payload(binary_dir, library_dir, required, share_dir, staging, tools)
         dependencies, glibc_inputs, packages, source_dependencies = collect_dependencies(binary_dir, library_dir, share_dir, staging, tools)
-        create_manifest(dependencies, glibc_inputs, packages, share_dir, staging)
+        create_manifest(dependencies, glibc_inputs, packages, share_dir, source_dependencies, staging)
         finalize_bundle(archive_path, args, output, staging)
     finally:
         if work_dir.exists():

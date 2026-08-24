@@ -40,10 +40,28 @@ def volume_mounts(config):
 
 
 def init_containers(config, image_pull_policy):
+    result = []
+    cache_image = config["storage"].get("modelCacheImage")
+    if cache_image:
+        result.append(
+            {
+                "name": "model-cache",
+                "image": cache_image,
+                "imagePullPolicy": image_pull_policy,
+                "command": ["/bin/sh", "-c"],
+                "args": [
+                    "mkdir -p /cache/huggingface && "
+                    "cp -a /model-cache/huggingface/. /cache/huggingface/"
+                ],
+                "volumeMounts": [
+                    {"name": "model-cache", "mountPath": "/cache"}
+                ],
+            }
+        )
     if not config["uib"]["enabled"]:
-        return []
+        return result
     runtime_mount = [{"name": "uib-runtime", "mountPath": "/opt/uib"}]
-    return [
+    result.extend([
         {
             "name": "uib-runtime",
             "image": config["uib"]["bundle"],
@@ -60,4 +78,5 @@ def init_containers(config, image_pull_policy):
             "args": ["--library-only"],
             "volumeMounts": copy.deepcopy(runtime_mount),
         },
-    ]
+    ])
+    return result
