@@ -5,6 +5,7 @@ set -eu
 project_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cli=$project_dir/simulation/bin/uib-sim
 request=$project_dir/simulation/requests/training-smoke.yaml
+inference_request=$project_dir/simulation/requests/inference-smoke.yaml
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-kubernetes-render.XXXXXX")
 trap 'rm -rf -- "$test_dir"' EXIT INT TERM
 
@@ -76,5 +77,39 @@ python3 "$project_dir/tests/cases/kubernetes_render/resources.py" "$test_dir/uet
 	--set storage.modelCacheClaim=uib-model-cache \
 	--set storage.resultsClaim=uib-results > "$test_dir/storage.yaml"
 python3 "$project_dir/tests/cases/kubernetes_render/native.py" "$test_dir/storage.yaml"
+
+"$cli" render-workload --profile kind-kubernetes \
+	--request "$inference_request" --run-id uib-inference \
+	--allow-mutable-tags > "$test_dir/inference.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/uet.py" "$test_dir/inference.yaml"
+
+"$cli" render-workload --profile kind-kubernetes \
+	--request "$inference_request" --run-id uib-inference-two \
+	--allow-mutable-tags --set workload.parallelism.nodes=2 \
+	--set workload.parallelism.data=2 \
+	--set workload.parameters.config.backend=vllm \
+	--set workload.parameters.config.server.dtype=auto \
+	--set workload.parameters.config.server.dataParallel=2 \
+	--set workload.parameters.config.server.distributedExecutor=ray \
+	--set nodes.gpus.vendor=nvidia --set nodes.gpus.perWorker=1 \
+	--set nodes.gpus.resourceName=nvidia.com/gpu \
+	> "$test_dir/inference-two.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/rocev2_nscc.py" "$test_dir/inference-two.yaml"
+
+if "$cli" render-workload --profile kind-kubernetes \
+	--request "$inference_request" --run-id uib-inference-ranks \
+	--allow-mutable-tags --set workload.parallelism.processesPerNode=2 \
+	--set workload.parallelism.data=2 > /dev/null 2>&1; then
+	echo "multiple inference ranks sharing one UIB bind port were accepted" >&2
+	exit 1
+fi
+
+if "$cli" render-workload --profile kind-kubernetes \
+	--request "$inference_request" --run-id uib-inference-idle \
+	--allow-mutable-tags --set workload.parallelism.nodes=2 \
+	--set workload.parallelism.data=2 > /dev/null 2>&1; then
+	echo "a multi-node CPU request with an idle Ray worker was accepted" >&2
+	exit 1
+fi
 
 echo "Kubernetes workload render test: PASS"

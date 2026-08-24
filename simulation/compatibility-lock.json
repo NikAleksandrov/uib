@@ -85,9 +85,13 @@
           }
         },
         "kuberay": {
-          "version": "v1.6.1",
+          "version": "v1.6.2",
           "api": "ray.io/v1",
-          "status": "planned"
+          "ray": "2.58.0",
+          "status": "render-supported-lifecycle-unvalidated",
+          "testTargets": [
+            "make simulation-kubernetes-render-test"
+          ]
         }
       }
     }

@@ -9,7 +9,7 @@ def main():
     from .renderer import render
 
     parser = argparse.ArgumentParser(
-        description="render a Kubeflow training workload from resolved UIB JSON"
+        description="render a Kubernetes workload from resolved UIB JSON"
     )
     parser.add_argument("config", help="resolved uib-sim JSON configuration")
     parser.add_argument("--run-id", required=True, help="run namespace and ownership ID")

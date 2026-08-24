@@ -1222,9 +1222,10 @@ profile; other providers fail explicitly as unimplemented.
 
 `load-image` delegates to `kind load docker-image` and requires digest-pinned
 references by default. Local development tags require the explicit
-`--allow-mutable-tags` option. KubeRay installation, pod network-namespace
-shaping, and durable result collection are later deployment phases; the
-current Kind adapter does not claim those steps.
+`--allow-mutable-tags` option. KubeRay installation and pod network-namespace
+shaping are later deployment phases; the current Kind adapter does not claim
+those steps. The Kubernetes UIB gate preserves ignored evidence, but generic
+lifecycle commands do not yet collect arbitrary workload results.
 
 Kind nodes share one host kernel and compute capacity. Results are L0 unless a
 separate GPU capability has been proven.
@@ -1332,6 +1333,7 @@ Current compatibility boundaries are intentional:
 | Request | Result |
 |---|---|
 | `launcher.training: kubeflow`, `workload.kind: training` | Supported render path |
+| `launcher.inference: kuberay`, `workload.kind: inference` | Supported RayJob render path; operator lifecycle not yet validated |
 | NCCL with `transportAllowlist: [IB]` | Supported communication shape |
 | UIB enabled without `uib.bundle` or with HCA other than `=uib0` | Rejected |
 | Mutable workload or runtime images without explicit opt-in | Rejected |
@@ -1466,6 +1468,53 @@ This gate needs two Kubernetes workers but not two physical machines or GPUs:
 all nodes share one host and kernel. PyTorch deliberately uses Gloo on CPU, so
 the passing UIB preflight proves library deployment only. It does not open
 `uib0`, send UIB traffic, validate NCCL, or qualify as L1.
+
+### KubeRay inference renderer
+
+The inference request uses the same resolver, runtime artifact, image policy,
+storage fields, and ownership labels as training:
+
+```text
+simulation/bin/uib-sim render-workload --profile kind-kubernetes \
+    --request simulation/requests/inference-smoke.yaml \
+    --run-id inference-smoke --allow-mutable-tags \
+    > /tmp/inference-smoke.yaml
+```
+
+`workload.kind: inference` selects KubeRay automatically; there is no second
+KubeRay configuration format. The output contains one namespace, one ConfigMap
+with the unchanged inference JSON, and one `ray.io/v1` `RayJob`. The RayJob
+uses Ray 2.58.0 from the workload image, starts the standard inference server,
+runs the deterministic probe, requests automatic cluster shutdown, and mounts
+the same model-cache, result, and UIB-runtime volumes in every Ray pod. UIB and
+NCCL selection comes from the common communication layer, and `UIB_BIND_IP`
+comes from each Pod IP.
+
+The checked-in CPU request deliberately has one Ray head and no worker. It
+tests the smallest real model/API shape and avoids presenting an idle worker
+as distributed inference. A two-node shape changes only common fields:
+
+```text
+simulation/bin/uib-sim render-workload --profile kind-kubernetes \
+    --request /path/to/vllm-ray.yaml \
+    --run-id inference-ray --allow-mutable-tags \
+    --set workload.parallelism.nodes=2 \
+    --set workload.parallelism.data=2
+```
+
+The external request retains the checked-in shape but selects `backend: vllm`,
+`server.distributedExecutor: ray`, matching TP/PP/DP degrees, and NVIDIA GPU
+resources. The rendering then adds one fixed-size worker group and required
+cross-node pod anti-affinity. The renderer rejects an idle multi-node CPU
+shape, mismatched parallel degrees, GPU-less vLLM, and more than one process
+per pod because those ranks would share a UIB bind port.
+
+KubeRay v1.6.2 and `ray.io/v1` are pinned in the compatibility lock. Structural
+rendering is tested, but operator installation and a RayJob lifecycle have not
+yet passed, so this is not reported as a validated deployment. On a real
+cluster, set `storage.modelCacheClaim` and `storage.resultsClaim` to existing
+PVCs. This preserves dynamically downloaded model weights between runs and
+keeps them out of this repository.
 
 ### virtme with Kind
 
@@ -2542,7 +2591,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | UET SEND, RDMA read/write, and atomics complete with actual netem conditions and the selected built-in or plugin congestion algorithm |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
-| `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 resource shape, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, digest enforcement, and rejection of unsafe combinations |
+| `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
 | `make simulation-kubernetes-uib-test` | Kind, kubectl, a Docker-compatible engine, build dependencies, and CPU/memory for two workers; network access is needed only for uncached pinned images and diagnostic sources | Actual RoCEv2 and UET RC SEND/RECV and RDMA Write traffic from unchanged standard verbs binaries between distinct Pod IPs and Kind workers, plus runtime injection and complete cleanup; no GPU or collective claim |
 | `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, admission, two-node torchrun rendezvous, distinct placement, UIB preflight, CPU DDP result, and complete run/operator/cluster cleanup; no UIB traffic |
 
