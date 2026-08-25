@@ -29,7 +29,17 @@ cat > "$test_dir/fake-bin/sacct" <<'EOF'
 #!/bin/sh
 set -eu
 printf '%s\n' "$@" > "$TEST_LOG/sacct.args"
+if [ "${SACCT_TEST_MODE:-available}" = disabled ]; then
+	echo 'Slurm accounting storage is disabled' >&2
+	exit 1
+fi
 echo '7654|RUNNING|0:0|00:00:03|node-a'
+EOF
+cat > "$test_dir/fake-bin/scontrol" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "$@" > "$TEST_LOG/scontrol.args"
+echo "${SCONTROL_ROW:-JobId=7654 JobState=COMPLETED ExitCode=0:0 RunTime=00:00:19 NodeList=node-a}"
 EOF
 cat > "$test_dir/fake-bin/scancel" <<'EOF'
 #!/bin/sh
@@ -37,7 +47,7 @@ set -eu
 printf '%s\n' "$@" >> "$TEST_LOG/scancel.args"
 EOF
 chmod +x "$test_dir/fake-bin/sbatch" "$test_dir/fake-bin/sacct" \
-	"$test_dir/fake-bin/scancel"
+	"$test_dir/fake-bin/scontrol" "$test_dir/fake-bin/scancel"
 
 run_workload()
 {
@@ -94,6 +104,25 @@ grep -F '7654|RUNNING|0:0|' "$test_dir/status.out" > /dev/null
 grep -Fx -- '--jobs=7654' "$test_dir/log/sacct.args" > /dev/null
 grep -Fx -- '--format=JobIDRaw,State,ExitCode,Elapsed,NodeList' \
 	"$test_dir/log/sacct.args" > /dev/null
+
+TEST_LOG="$test_dir/log" SACCT_TEST_MODE=disabled \
+	SACCT_COMMAND="$test_dir/fake-bin/sacct" \
+	SCONTROL_COMMAND="$test_dir/fake-bin/scontrol" \
+	"$cli" status --profile libvirt-slurm --run-id uib-lifecycle \
+	--state-dir "$test_dir/state" > "$test_dir/fallback-status.out"
+grep -Fx '7654|COMPLETED|0:0|00:00:19|node-a' \
+	"$test_dir/fallback-status.out" > /dev/null
+grep -Fx -- '--oneliner' "$test_dir/log/scontrol.args" > /dev/null
+grep -Fx 7654 "$test_dir/log/scontrol.args" > /dev/null
+
+TEST_LOG="$test_dir/log" SACCT_TEST_MODE=disabled \
+	SCONTROL_ROW='JobId=7654 JobState=PENDING ExitCode=0:0 RunTime=00:00:00 NodeList=' \
+	SACCT_COMMAND="$test_dir/fake-bin/sacct" \
+	SCONTROL_COMMAND="$test_dir/fake-bin/scontrol" \
+	"$cli" status --profile libvirt-slurm --run-id uib-lifecycle \
+	--state-dir "$test_dir/state" > "$test_dir/pending-status.out"
+grep -Fx '7654|PENDING|0:0|00:00:00|' \
+	"$test_dir/pending-status.out" > /dev/null
 
 TEST_LOG="$test_dir/log" SCANCEL_COMMAND="$test_dir/fake-bin/scancel" \
 	"$cli" down --profile libvirt-slurm --run-id uib-lifecycle \

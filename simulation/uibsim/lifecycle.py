@@ -182,7 +182,7 @@ def command_render_workload(args):
 def command_run(args):
     from .config import resolve
     from .core import ConfigurationError, SLURM_RENDERER
-    from .scheduler import slurm_command
+    from .scheduler import remote_path_exists, run_scheduler, scheduler_remote
     from .state import record_run_inputs, state_path, utc_now, write_json
 
     config = resolve(args)
@@ -242,7 +242,8 @@ def command_run(args):
     ]
     if config["uib"]["enabled"]:
         required_paths.append(config["storage"]["uibRuntimePath"])
-    missing = [path for path in required_paths if not pathlib.Path(path).is_dir()]
+    missing = [path for path in required_paths
+               if not remote_path_exists(args, path, "directory")]
     if missing:
         ledger["state"] = "preflight-failed"
         ledger["missingPaths"] = missing
@@ -279,12 +280,20 @@ def command_run(args):
 
     ledger["state"] = "rendered"
     write_json(ledger_path, ledger)
-    sbatch = slurm_command("SBATCH_COMMAND", "sbatch")
     try:
-        submitted = subprocess.run(
-            [sbatch, "--parsable", str(batch_path)], text=True,
-            capture_output=True, check=False)
-    except OSError as error:
+        if scheduler_remote(args):
+            submitted = run_scheduler(
+                args, "SBATCH_COMMAND", "sbatch", ["--parsable"],
+                input=batch_path.read_text(encoding="utf-8"), text=True,
+                capture_output=True)
+            ledger["schedulerTransport"] = "libvirt-ssh"
+        else:
+            submitted = run_scheduler(
+                args, "SBATCH_COMMAND", "sbatch",
+                ["--parsable", str(batch_path)], text=True,
+                capture_output=True)
+            ledger["schedulerTransport"] = "local"
+    except (ConfigurationError, OSError) as error:
         ledger["state"] = "submission-not-started"
         ledger["error"] = str(error)
         write_json(ledger_path, ledger)
@@ -326,8 +335,8 @@ def command_run(args):
 def command_collect(args):
     from .core import COMPATIBILITY, ConfigurationError, DEFAULT_RESULT_DIR, SLURM_TERMINAL_STATES
     from .evidence import file_manifest
-    from .scheduler import slurm_command
-    from .slurm import exact_slurm_record
+    from .scheduler import copy_remote_path, remote_path_exists, run_scheduler, scheduler_remote
+    from .slurm import query_slurm_status
     from .state import copy_file, copy_tree, load_ledger, owned_state_file, path_is_within, read_json, state_path, utc_now, write_json
 
     run_dir = state_path(args)
@@ -342,19 +351,8 @@ def command_collect(args):
     if config.get("runId") != args.run_id:
         raise ConfigurationError("resolved configuration ownership mismatch")
 
-    sacct = slurm_command("SACCT_COMMAND", "sacct")
-    try:
-        accounting = subprocess.run([
-            sacct, "--noheader", "--parsable2", f"--jobs={job_id}",
-            "--format=JobIDRaw,State,ExitCode,Elapsed,NodeList",
-        ], text=True, capture_output=True, check=False)
-    except OSError as error:
-        raise ConfigurationError(f"cannot invoke sacct: {error}") from error
-    if accounting.returncode:
-        if accounting.stderr:
-            print(accounting.stderr, file=sys.stderr, end="")
-        return accounting.returncode
-    scheduler = exact_slurm_record(accounting.stdout, job_id)
+    status = query_slurm_status(args, job_id)
+    scheduler = status["record"]
     terminal = scheduler["state"] in SLURM_TERMINAL_STATES
     if not terminal and not args.allow_incomplete:
         raise ConfigurationError(
@@ -363,6 +361,7 @@ def command_collect(args):
 
     results_root = pathlib.Path(config["storage"]["resultsPath"]).resolve()
     workload_results = results_root / args.run_id
+    remote = scheduler_remote(args)
     output = (pathlib.Path(args.output_dir).expanduser().resolve()
               if args.output_dir else
               (DEFAULT_RESULT_DIR / args.run_id).resolve())
@@ -419,11 +418,31 @@ def command_collect(args):
                       temporary / "overlays" / f"{index:02d}.yaml")
         write_json(temporary / "request-provenance.json", inputs)
 
-        if workload_results.is_symlink():
+        collected_workload = workload_results
+        if remote:
+            if remote_path_exists(args, str(workload_results), "directory"):
+                checked = run_scheduler(
+                    args, "", "find", [str(workload_results), "-type", "l",
+                                        "-print", "-quit"],
+                    text=True, capture_output=True)
+                if checked.returncode or checked.stdout.strip():
+                    raise ConfigurationError(
+                        "remote workload results contain a symbolic link")
+                staged_workload = temporary / ".remote-workload"
+                copy_remote_path(
+                    args, str(workload_results), staged_workload,
+                    recursive=True)
+                copy_tree(staged_workload, temporary / "workload")
+                shutil.rmtree(staged_workload)
+                collected_workload = temporary / "workload"
+            else:
+                collected_workload = None
+        elif workload_results.is_symlink():
             raise ConfigurationError(
                 f"workload result directory is a symbolic link: {workload_results}")
-        if workload_results.is_dir():
-            status_path = workload_results / "status.json"
+
+        if collected_workload and collected_workload.is_dir():
+            status_path = collected_workload / "status.json"
             if status_path.is_file() and not status_path.is_symlink():
                 workload_status = read_json(status_path, "workload status")
                 if (workload_status.get("runId") != args.run_id or
@@ -432,24 +451,42 @@ def command_collect(args):
                         not isinstance(workload_status.get("exitCode"), int)):
                     raise ConfigurationError(
                         f"workload status ownership mismatch: {status_path}")
-            copy_tree(workload_results, temporary / "workload")
+            if not remote:
+                copy_tree(workload_results, temporary / "workload")
         else:
             missing.append(f"workload/{args.run_id}")
 
         for extension in ("out", "err"):
             source = results_root / f"{args.run_id}-{job_id}.{extension}"
-            if source.is_file() and not source.is_symlink():
+            if remote and remote_path_exists(args, str(source), "file"):
+                copy_remote_path(
+                    args, str(source),
+                    temporary / "logs" / f"batch.{extension}")
+            elif not remote and source.is_file() and not source.is_symlink():
                 copy_file(source, temporary / "logs" / f"batch.{extension}")
             else:
                 missing.append(f"logs/batch.{extension}")
-        (temporary / "scheduler" / "sacct.psv").write_text(
-            accounting.stdout, encoding="utf-8")
+        (temporary / "scheduler" / "status.psv").write_text(
+            status["normalized"], encoding="utf-8")
+        write_json(temporary / "scheduler" / "status-source.json", {
+            "schemaVersion": 1,
+            "source": status["source"],
+        })
         (temporary / "scheduler" / "sacct.stderr").write_text(
-            accounting.stderr, encoding="utf-8")
+            status["sacct"].stderr, encoding="utf-8")
+        if status["source"] == "sacct":
+            (temporary / "scheduler" / "sacct.psv").write_text(
+                status["sacct"].stdout, encoding="utf-8")
+        else:
+            (temporary / "scheduler" / "scontrol.txt").write_text(
+                status["scontrol"].stdout, encoding="utf-8")
+            (temporary / "scheduler" / "scontrol.stderr").write_text(
+                status["scontrol"].stderr, encoding="utf-8")
         (temporary / "faults.jsonl").write_text("", encoding="utf-8")
 
         nodes = []
-        nodes_path = workload_results / "nodes.txt"
+        nodes_path = ((temporary / "workload" / "nodes.txt") if remote else
+                      workload_results / "nodes.txt")
         if nodes_path.is_file() and not nodes_path.is_symlink():
             nodes = [line for line in nodes_path.read_text(
                 encoding="utf-8").splitlines() if line]
@@ -488,6 +525,7 @@ def command_collect(args):
             "collectedAt": utc_now(),
             "completeSchedulerSnapshot": terminal,
             "scheduler": "slurm",
+            "schedulerEvidenceSource": status["source"],
             "jobId": job_id,
             "schedulerState": scheduler["state"],
             "schedulerExitCode": scheduler["exitCode"],
@@ -532,15 +570,19 @@ def command_collect(args):
 def command_down(args):
     from .config import resolve
     from .slurm import command_slurm_down
-    from .state import state_path
+    from .state import load_ledger, state_path
 
     config = resolve(args)
     if config["infrastructure"]["provider"] == "libvirt":
         run_dir = state_path(args)
         if (run_dir / "ledger.json").is_file():
-            result = command_slurm_down(args)
-            if result or not (run_dir / "infrastructure" / "ledger.json").is_file():
-                return result
+            unused, ledger = load_ledger(args)
+            if ledger.get("jobId"):
+                result = command_slurm_down(args)
+                if result:
+                    return result
+            if not (run_dir / "infrastructure" / "ledger.json").is_file():
+                return 0
         return invoke_libvirt(config, lambda unused: [
             "down", "--name", args.run_id,
             "--state-dir", str(run_dir / "infrastructure"),

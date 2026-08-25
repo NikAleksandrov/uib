@@ -86,7 +86,7 @@ topology.
 | `make diagnostic-uib-preflight-test` | CPU | No | The common UIB runtime mounts into an independently built image |
 | `make diagnostic-gpu-test` | One NVIDIA GPU | No | CUDA visibility and a correctness-checked, single-rank NCCL collective |
 | `make simulation-kubernetes-uib-test` | CPU | No | Unchanged verbs programs exchange actual RC SEND/RECV and RDMA Write traffic through UIB between two Kind workers |
-| `make simulation-libvirt-e2e-test` | CPU with KVM | No | Disposable Slurm/Pyxis/Enroot controller/two-worker lifecycle and actual cross-VM RC payload traffic through UIB |
+| `make simulation-libvirt-e2e-test` | CPU with KVM | No | Disposable Slurm/Pyxis/Enroot controller/two-worker lifecycle, actual cross-VM RC payload traffic through UIB, and remote `run`/`status`/`collect`/`down` |
 | `make nccl-test` | One NVIDIA GPU with local MPS support | No | Two local ranks send host-staged NCCL traffic through UIB |
 | `make training-uib-test` | One NVIDIA GPU with local MPS support | No | Unmodified two-rank PyTorch DDP sends gradient traffic through UIB |
 | UCX verbs transport gate | CPU | No | Two local processes exchange data through UCX's verbs transport and UIB, with TCP and shared-memory transports excluded |
@@ -527,6 +527,7 @@ only one communication, protocol, and network-condition overlay.
 | `launcher.inference` | `kuberay`, `vllm-multiprocessing`, `slurm-ray` | Inference submitter |
 | `slurm.partition` | Letters, digits, `.`, `_`, or `-` | Required target partition |
 | `slurm.account`, `.qos`, `.reservation`, `.constraint` | Optional Slurm name | Site allocation or placement selection |
+| `slurm.memory` | Integer plus `Mi`, `Gi`, or `Ti`, such as `12Gi` | Optional workload memory request per node; omit it to use the partition or site default. For libvirt it cannot exceed `nodes.memory - 512Mi` |
 | `slurm.timeLimit` | `[days-]HH:MM:SS`, with valid clock fields | Batch time limit |
 | `slurm.rendezvousPort` | Integer 1-65535 | PyTorch rendezvous port; default profiles use 29500 |
 | `slurm.exclusive` | `true`, `false` | Request whole nodes for the job |
@@ -1908,9 +1909,11 @@ simulation/bin/uib-sim status --profile real-slurm \
     --run-id uib-training --state-dir /shared/uib/run-ledgers
 ```
 
-This delegates to `sacct` for the exact recorded job and reports raw
-`JobIDRaw`, state, exit code, elapsed time, and node list. Request cancellation
-with:
+This prefers `sacct` for the exact recorded job and reports its `JobIDRaw`,
+state, exit code, elapsed time, and node list. A disposable libvirt cluster has
+no accounting database, so it falls back to the standard `scontrol show job`
+record and emits the same pipe-separated fields. It never searches by job
+name or user. Request cancellation with:
 
 ```text
 simulation/bin/uib-sim down --profile real-slurm \
@@ -1933,7 +1936,7 @@ states. In the last case the CLI cannot safely cancel automatically; inspect
 
 ### Collecting a Slurm result bundle
 
-After the job reaches a terminal accounting state, collect its evidence before
+After the job reaches a terminal scheduler state, collect its evidence before
 requesting cleanup:
 
 ```text
@@ -1944,16 +1947,18 @@ simulation/bin/uib-sim collect --run-id uib-training \
 
 `collect` intentionally takes no profile, request, overlay, or `--set`
 arguments. It reads the exact inputs and numeric job ID captured by `run`,
-then asks `sacct` only for that exact ID. This prevents a later command-line
-change from relabeling the submitted workload. The default output is the new
-ignored directory `simulation/.artifacts/results/<run-id>`.
+then asks Slurm only for that exact ID. It prefers durable `sacct` accounting
+and uses `scontrol` only when accounting is unavailable. This prevents a later
+command-line change from relabeling the submitted workload. The default output
+is the new ignored directory
+`simulation/.artifacts/results/<run-id>`.
 
 | Option | Value | Meaning |
 |---|---|---|
 | `--run-id` | The exact safe ID passed to `run` | Selects one owned ledger and result directory |
 | `--state-dir` | Directory; default `simulation/.artifacts/runs` | Selects the private ledger root |
 | `--output-dir` | A new directory; default `simulation/.artifacts/results/<run-id>` | Selects the complete exported bundle, not merely its parent |
-| `--allow-incomplete` | Flag; default off | Allows a diagnostic snapshot while accounting is nonterminal |
+| `--allow-incomplete` | Flag; default off | Allows a diagnostic snapshot while scheduler state is nonterminal |
 
 Without `--allow-incomplete`, the accepted Slurm terminal states are
 `BOOT_FAIL`, `CANCELLED`, `COMPLETED`, `DEADLINE`, `FAILED`, `NODE_FAIL`,
@@ -1961,7 +1966,7 @@ Without `--allow-incomplete`, the accepted Slurm terminal states are
 is always marked non-promotable. The collector also refuses:
 
 - a missing or nonnumeric recorded job ID;
-- an accounting response without the exact top-level job row;
+- a scheduler response without the exact top-level job record;
 - a ledger input or artifact path that escapes its run-state directory;
 - an existing output directory;
 - output nested inside the live workload result directory;
@@ -1973,10 +1978,12 @@ This makes export non-destructive: it never cancels the job, deletes shared
 data, follows a result link, or overwrites earlier evidence. To take another
 snapshot, supply another new `--output-dir`. The bundle contains original
 inputs, resolved configuration, rendered batch file, submission diagnostics,
-raw accounting, exact `%x-%j` logs, the complete run-owned workload subtree,
-topology and image metadata, a human and JSON summary, and a SHA-256 manifest.
-Missing optional artifacts are listed in `summary.json` rather than confused
-with successful evidence.
+normalized scheduler status, its declared source and raw source response,
+exact `%x-%j` logs, the complete run-owned workload subtree, topology and image
+metadata, a human and JSON summary, and a SHA-256 manifest. Missing optional
+artifacts are listed in `summary.json` rather than confused with successful
+evidence. `scheduler/status-source.json` says `sacct` or `scontrol`; the latter
+is transient scheduler state and is not presented as durable accounting.
 
 The collector deliberately sets `validationLevel` to `not-assigned`,
 `uibTrafficEvidence` to `not-evaluated`, and `promotionEligible` to false.
@@ -1991,7 +1998,10 @@ test seams, each of which must name one executable rather than a shell command:
 |---|---|---|
 | `SBATCH_COMMAND` | `sbatch` | Submit the generated batch file |
 | `SACCT_COMMAND` | `sacct` | Read accounting for the recorded job ID |
+| `SCONTROL_COMMAND` | `scontrol` | Read exact job state when accounting is unavailable |
 | `SCANCEL_COMMAND` | `scancel` | Cancel the recorded job ID |
+| `SSH_COMMAND` | `ssh` | Reach a provisioned libvirt controller |
+| `SCP_COMMAND` | `scp` | Copy its run-owned result files |
 
 ### virtme Slurm
 
@@ -2010,16 +2020,31 @@ Enroot, and Pyxis components. The application-facing stack remains ordinary
 introduced.
 
 Bridge mode is the closer local model of a conventional cluster. It creates
-run-owned management and isolated data networks through system libvirt:
+run-owned management and isolated data networks through system libvirt. The
+complete lifecycle uses the same public commands as an existing Slurm site:
 
 ```text
 simulation/bin/uib-sim up --profile libvirt-slurm \
     --run-id uib-slurm-lab
+simulation/bin/uib-sim run --profile libvirt-slurm \
+    --request simulation/requests/slurm-lifecycle-smoke.yaml \
+    --run-id uib-slurm-lab --allow-mutable-tags
 simulation/bin/uib-sim status --profile libvirt-slurm \
     --run-id uib-slurm-lab
+simulation/bin/uib-sim collect --run-id uib-slurm-lab \
+    --output-dir simulation/.artifacts/results/uib-slurm-lab
 simulation/bin/uib-sim down --profile libvirt-slurm \
     --run-id uib-slurm-lab
 ```
+
+Before `run`, `status` reports infrastructure state. After a job has been
+recorded, it reports that exact Slurm job. `run`, `status`, `collect`, and the
+job-cancellation part of `down` automatically use the controller endpoint and
+ephemeral key from the owned inventory. The host therefore needs `ssh` and
+`scp`, but no local Slurm client. The rendered batch is piped to ordinary
+`sbatch --parsable`; result paths and `%x-%j` logs are copied back before the
+VMs are destroyed. Always collect a libvirt run before `down`, because the
+controller and its shared result storage are disposable.
 
 The named `libvirt.pool` must already be active. The caller also needs normal
 permission to use the configured URI and create networks. Each run receives
@@ -2045,7 +2070,11 @@ one unchanged `ibv_rc_pingpong` rank on each worker, preloads the portable
 `libuibv.so`, exchanges 32 correctness-checked 2051-byte multi-packet RC
 messages through UIB/RoCEv2, and requires the standard payload result. Finally,
 it runs a digest-pinned OCI image through Pyxis/Enroot and executes
-`uib-preflight --library-only` inside that container.
+`uib-preflight --library-only` inside that container. It then submits the
+two-rank scheduler-neutral lifecycle request through the controller, derives
+each rank's data address with the portable runtime's `ip`, runs UIB preflight
+inside both Pyxis containers, collects both rank results and scheduler
+evidence, and removes the exact job and infrastructure state.
 
 This is actual cross-VM UIB traffic, but remains CPU L0 evidence. It is not an
 NCCL collective, a GPU path, or a performance model. Passt and multicast
@@ -2059,12 +2088,13 @@ multi-user cluster. The multicast data tunnel is likewise intended only for a
 trusted development host. Existing clusters should supply their normal
 segmented network and secured shared storage instead.
 
-Infrastructure lifecycle and Slurm job lifecycle intentionally have separate
-ownership. `up`, infrastructure `status`, and infrastructure `down` work for
-the VM lab today. The current Slurm `run` command executes on its local
-submission host, so it is not yet wired to submit a workload remotely through
-the VM controller. Until that adapter is added, use the automated provisioning
-preflights for the VM lab and use `run` on an existing Slurm login node.
+Infrastructure lifecycle and Slurm job lifecycle have separate ledgers under
+one run ID. If submission fails before Slurm returns an ID, `down` still
+destroys the owned infrastructure without inventing a cancellation target. If
+an ID was recorded, `down` cancels only that numeric ID before destroying the
+OpenTofu state. The disposable controller retains completed `scontrol` records
+for one hour so collection can finish without adding a database solely for an
+ephemeral test; production profiles continue to use site `sacct` accounting.
 
 ### Existing Slurm
 
@@ -2996,8 +3026,12 @@ results/<run-id>/
   manifest.json
   scheduler/
     workload.sbatch
-    sacct.psv
+    status.psv
+    status-source.json
     sacct.stderr
+    sacct.psv                 # when sacct supplied the record
+    scontrol.txt              # when scontrol supplied the record
+    scontrol.stderr           # when scontrol supplied the record
     render.stderr
     sbatch.stdout
     sbatch.stderr
@@ -3067,13 +3101,13 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in network condition renders to the expected `tc netem` command; unsafe interfaces and invalid combinations are rejected; it does not modify a qdisc |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | UET SEND, RDMA read/write, and atomics complete with actual netem conditions and the selected built-in or plugin congestion algorithm |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
-| `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge and rootless rendering, cached-image verification, generated OpenTofu and Ansible inputs, exclusive ownership, command delegation, status, and exact-state cleanup with fake standard commands |
+| `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge and rootless rendering, cached-image verification, generated OpenTofu and Ansible inputs, remote submit/status/collect/cancel transport, cleanup after a rejected pre-ID submission, exclusive ownership, and exact-state cleanup with fake standard commands |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
-| `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, passt, NFS-capable Ubuntu guests, roughly 12 GiB memory for the default three VMs, and download access on the first run | Actual controller/two-worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, ordinary worker tasks, cross-VM standard RC payload through UIB, pinned OCI execution, portable UIB library preflight in Pyxis, state-based destruction, and domain/pool absence; no NCCL or GPU claim |
+| `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, SSH/SCP, passt, NFS-capable Ubuntu guests, roughly 12 GiB memory for the default three VMs, and download access on the first run | Actual controller/two-worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, ordinary worker tasks, cross-VM standard RC payload through UIB, remote batch submission and status, two-rank pinned OCI execution with portable UIB preflight, result collection, state-based destruction, and domain/pool absence; no NCCL or GPU claim |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
 | `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, UET/NSCC, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
-| `make simulation-slurm-lifecycle-test` | The Slurm renderer requirements; no Slurm installation or container engine | Exclusive ignored run ledgers, shared-path preflight, exact `sbatch --parsable` submission, recorded numeric job ownership, read-only `sacct` status, exact-ID `scancel`, retained failures, and rejection of result/ledger reuse or ambiguous submission output using fake standard commands |
-| `make simulation-slurm-collect-test` | The Slurm lifecycle requirements; no Slurm installation, container engine, or network access | Exact-ID accounting, terminal/incomplete policy, captured source inputs, scheduler/log/workload export, ownership validation, symlink rejection, non-overwrite behavior, honest nonpromotion labels, and every SHA-256 manifest entry using fake standard commands |
+| `make simulation-slurm-lifecycle-test` | The Slurm renderer requirements; no Slurm installation or container engine | Exclusive ignored run ledgers, shared-path preflight, exact `sbatch --parsable` submission, recorded numeric job ownership, read-only `sacct` status and `scontrol` fallback including an empty pending node list, exact-ID `scancel`, retained failures, and rejection of result/ledger reuse or ambiguous submission output using fake standard commands |
+| `make simulation-slurm-collect-test` | The Slurm lifecycle requirements; no Slurm installation, container engine, or network access | Exact-ID `sacct` and `scontrol` evidence, terminal/incomplete policy, captured source inputs, scheduler/log/workload export, ownership validation, symlink rejection, non-overwrite behavior, honest nonpromotion labels, and every SHA-256 manifest entry using fake standard commands |
 | `make runtime-bundle-portable-test` | A Docker-compatible engine, network access for the pinned Ubuntu image and verified source archives on first use, and normal UIB build resources | Reproducible old-userspace build, GLIBC ceiling, portable feature set, provider/static artifacts, checksums, preflight, source dependency metadata, and copied licenses |
 | `make simulation-kubernetes-uib-test` | Kind, kubectl, a Docker-compatible engine, build dependencies, and CPU/memory for two workers; network access is needed only for uncached pinned images and diagnostic sources | Actual RoCEv2 and UET RC SEND/RECV and RDMA Write traffic from unchanged standard verbs binaries between distinct Pod IPs and Kind workers, plus runtime injection and complete cleanup; no GPU or collective claim |
 | `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, admission, two-node torchrun rendezvous, distinct placement, UIB preflight, CPU DDP result, and complete run/operator/cluster cleanup; no UIB traffic |
@@ -3176,6 +3210,7 @@ committed.
 | `LIBVIRT_MEMORY` | `4Gi` | Per-VM memory with `Mi`, `Gi`, or `Ti` suffix |
 | `LIBVIRT_DISK` | `16Gi` | Per-VM overlay capacity with `Mi`, `Gi`, or `Ti` suffix |
 | `LIBVIRT_E2E_RUN_ID` | Unique `uib-libvirt-e2e-<pid>` | Safe run ID used for all owned resources and state |
+| `LIBVIRT_E2E_RESULT_DIR` | `simulation/.artifacts/results/<run-id>` | New host directory that receives collected scheduler and workload evidence |
 | `SIMULATION_LIBVIRT_STATE_DIR` | `simulation/.artifacts/runs` | Private lifecycle-ledger root |
 | `TOFU_COMMAND` | `tofu` | Exact OpenTofu executable; the module requires version 1.12.3 |
 | `ANSIBLE_PLAYBOOK_COMMAND` | `ansible-playbook` | Exact Ansible playbook executable |
@@ -3448,10 +3483,12 @@ Cleanup must remain safe after interruption during every lifecycle stage.
   its data plane. A disposable libvirt controller/two-worker lab passed actual
   Slurm, NFS, cross-VM standard RC payload through UIB, Enroot, Pyxis,
   pinned-container, UIB library-preflight, and exact cleanup gates. The UIB
-  gate uses a 2051-byte payload to exercise multi-packet RC transfers. Remote
-  Slurm workload submission through the guest controller is not wired into
-  `uib-sim run` yet. GPU/NCCL Kubernetes execution, libvirt/Kubernetes,
-  DeepSpeed, and Megatron-Core remain planned.
+  gate uses a 2051-byte payload to exercise multi-packet RC transfers. The
+  public lifecycle also passed remote controller submission, exact-job status,
+  two-rank Pyxis execution with UIB preflight, result collection, and cleanup.
+  That lifecycle request is an orchestration probe; the preceding unchanged
+  verbs gate is the actual UIB payload evidence. GPU/NCCL Kubernetes execution,
+  libvirt/Kubernetes, DeepSpeed, and Megatron-Core remain planned.
 - The diagnostic image passed its hardware-neutral, UIB runtime-injection,
   CUDA `deviceQuery`, and single-GPU NCCL all-reduce gates. Its NCCL run has
   one rank and therefore does not send UIB traffic.

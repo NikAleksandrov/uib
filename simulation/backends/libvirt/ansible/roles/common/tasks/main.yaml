@@ -5,6 +5,11 @@
   ansible.builtin.wait_for_connection:
     timeout: 600
 
+- name: Wait for cloud-init configuration
+  ansible.builtin.command:
+    cmd: cloud-init status --wait
+  changed_when: false
+
 - name: Gather facts after SSH is ready
   ansible.builtin.setup:
 

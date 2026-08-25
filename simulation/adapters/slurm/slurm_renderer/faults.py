@@ -11,7 +11,8 @@ def task_wrapper(uib_enabled):
 		lines.extend([
 			"export LD_LIBRARY_PATH=/opt/uib/lib"
 			"${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}",
-			"UIB_BIND_IP=$(ip -o -4 addr show dev \"$SLURM_UIB_DATA_INTERFACE\" "
+			"UIB_BIND_IP=$(/opt/uib/bin/ip -o -4 addr show dev "
+			"\"$SLURM_UIB_DATA_INTERFACE\" "
 			"scope global | awk 'NR == 1 { split($4, address, \"/\"); "
 			"print address[1] }')",
 			"if [ -z \"$UIB_BIND_IP\" ]; then",

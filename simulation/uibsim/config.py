@@ -3,6 +3,7 @@
 import copy
 import json
 import pathlib
+import re
 
 from .dependencies import jsonschema, yaml
 
@@ -108,6 +109,16 @@ def validate_schema(config):
                              "\n  ".join(messages))
 
 
+def quantity_mib(value):
+    from .core import ConfigurationError
+
+    match = re.fullmatch(r"([1-9][0-9]*)(Mi|Gi|Ti)", value)
+    if not match:
+        raise ConfigurationError(f"invalid memory quantity: {value}")
+    factor = {"Mi": 1, "Gi": 1024, "Ti": 1024 ** 2}[match.group(2)]
+    return int(match.group(1)) * factor
+
+
 def validate_infrastructure(config):
     from .core import COMPATIBILITY, ConfigurationError
     provider = config["infrastructure"]["provider"]
@@ -124,6 +135,17 @@ def validate_infrastructure(config):
             "libvirt settings require infrastructure.provider=libvirt")
     if provider == "libvirt" and config["nodes"]["controlPlane"] != 1:
         raise ConfigurationError("libvirt currently requires one control plane")
+    if provider == "libvirt":
+        usable_memory = quantity_mib(config["nodes"]["memory"]) - 512
+        if usable_memory < 1:
+            raise ConfigurationError(
+                "libvirt node memory must exceed the 512Mi system reserve")
+        requested_memory = config.get("slurm", {}).get("memory")
+        if (requested_memory and
+                quantity_mib(requested_memory) > usable_memory):
+            raise ConfigurationError(
+                "slurm.memory exceeds libvirt scheduler memory after the "
+                "512Mi system reserve")
     if (provider == "libvirt" and
             config["libvirt"]["networkMode"] == "rootless" and
             config["libvirt"]["uri"] != "qemu:///session"):
@@ -292,7 +314,9 @@ def tools_for(config):
         "libvirt": {"ansible-playbook", "tofu", "virsh"},
         "existing": {"kubectl"} if manager == "kubernetes" else {"srun"},
     }[provider])
-    if manager == "slurm":
+    if manager == "slurm" and provider == "libvirt":
+        tools.update({"scp", "ssh"})
+    elif manager == "slurm":
         tools.update({"sacct", "sbatch", "scancel", "scontrol", "srun"})
     tools.update({
         "nccl": {"all_reduce_perf", "mpirun"},

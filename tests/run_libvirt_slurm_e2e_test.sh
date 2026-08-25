@@ -4,8 +4,10 @@ set -eu
 
 project_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cli=$project_dir/simulation/bin/uib-sim
+request=$project_dir/simulation/requests/slurm-lifecycle-smoke.yaml
 state_dir=${SIMULATION_LIBVIRT_STATE_DIR:-$project_dir/simulation/.artifacts/runs}
 run_id=${LIBVIRT_E2E_RUN_ID:-uib-libvirt-e2e-$$}
+result_dir=${LIBVIRT_E2E_RESULT_DIR:-$project_dir/simulation/.artifacts/results/$run_id}
 uri=${LIBVIRT_URI:-qemu:///session}
 network_mode=${LIBVIRT_NETWORK_MODE:-rootless}
 pool=${LIBVIRT_POOL:-$run_id}
@@ -98,6 +100,82 @@ grep -F 'TASK [Run a pinned image through Pyxis and Enroot]' \
 	"$infra/lifecycle.log" >/dev/null
 grep -F 'TASK [Preflight the shared UIB runtime inside Pyxis]' \
 	"$infra/lifecycle.log" >/dev/null
+
+job_id=$("$cli" run --profile libvirt-slurm --request "$request" \
+	--run-id "$run_id" --state-dir "$state_dir" --allow-mutable-tags \
+	$settings)
+
+python3 - "$state_dir/$run_id/ledger.json" "$job_id" <<'PY'
+import json
+import sys
+
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    ledger = json.load(source)
+assert ledger["state"] == "submitted"
+assert ledger["jobId"] == sys.argv[2]
+assert ledger["schedulerTransport"] == "libvirt-ssh"
+PY
+
+status_file=$state_dir/$run_id/slurm-status.psv
+attempt=0
+while [ "$attempt" -lt 90 ]; do
+	"$cli" status --profile libvirt-slurm --run-id "$run_id" \
+		--state-dir "$state_dir" $settings > "$status_file"
+	job_state=$(awk -F '|' -v job="$job_id" \
+		'$1 == job { split($2, state, " "); sub(/[+]+$/, "", state[1]); print state[1]; exit }' \
+		"$status_file")
+	case "$job_state" in
+	COMPLETED)
+		break
+		;;
+	FAILED|CANCELLED|TIMEOUT|NODE_FAIL|OUT_OF_MEMORY|PREEMPTED|BOOT_FAIL|DEADLINE)
+		echo "Slurm job $job_id ended in $job_state" >&2
+		cat "$status_file" >&2
+		exit 1
+		;;
+	esac
+	attempt=$((attempt + 1))
+	sleep 2
+done
+if [ "$job_state" != COMPLETED ]; then
+	echo "Slurm job $job_id did not complete in time" >&2
+	cat "$status_file" >&2
+	exit 1
+fi
+
+reported=$("$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
+	--output-dir "$result_dir")
+[ "$reported" = "$result_dir" ]
+
+python3 - "$result_dir" "$run_id" "$job_id" <<'PY'
+import json
+import pathlib
+import sys
+
+
+root = pathlib.Path(sys.argv[1])
+with (root / "summary.json").open(encoding="utf-8") as source:
+    summary = json.load(source)
+assert summary["runId"] == sys.argv[2]
+assert summary["jobId"] == sys.argv[3]
+assert summary["schedulerState"] == "COMPLETED"
+assert summary["schedulerExitCode"] == "0:0"
+assert summary["workloadStatusRecorded"] is True
+assert summary["workloadExitCode"] == 0
+assert summary["uibEnabled"] is True
+with (root / "topology.json").open(encoding="utf-8") as source:
+    topology = json.load(source)
+assert topology["requestedNodes"] == 2
+assert len(topology["allocatedNodes"]) == 2
+for rank in range(2):
+    with (root / "workload" / f"rank-{rank}.json").open(
+            encoding="utf-8") as source:
+        result = json.load(source)
+    assert result == {"rank": rank, "worldSize": 2}
+PY
+
+grep -F 'UIB runtime preflight: PASS' "$result_dir/logs/batch.out" >/dev/null
 
 env TOFU_COMMAND="${TOFU_COMMAND:-tofu}" \
 	"$cli" down --profile libvirt-slurm --run-id "$run_id" \

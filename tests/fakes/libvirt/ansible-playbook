@@ -31,7 +31,7 @@ import sys
 
 
 values = json.loads(sys.argv[1])
-assert values["uib_run_id"] == "uib-libvirt-test"
+assert values["uib_run_id"] in ("uib-libvirt-test", "uib-libvirt-failed")
 assert values["uib_enabled"] is True
 assert values["uib_data_interface"] == "eth1"
 assert values["uib_slurm_partition"] == "uib"

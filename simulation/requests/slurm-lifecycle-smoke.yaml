@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: Apache-2.0
+uib:
+  bundle: uib-runtime:test
+workload:
+  kind: training
+  image: docker.io/library/ubuntu@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc
+  entrypoint: /bin/sh
+  arguments:
+    - -c
+    - >-
+      printf '{"rank":%s,"worldSize":%s}\n' "$RANK" "$WORLD_SIZE"
+      > "/results/rank-$RANK.json"
+  parallelism:
+    nodes: 2
+    processesPerNode: 1
+    data: 2
+    tensor: 1
+    pipeline: 1
+    expert: 1
+  parameters:
+    config:
+      schemaVersion: 1
+      runId: replaced-by-adapter
+      model:
+        source: generated
+        vocabSize: 128
+        hiddenSize: 32
+        layers: 1
+        heads: 2
+      dataset:
+        source: generated
+      parallelism:
+        strategy: ddp
+        tensor: 1
+        pipeline: 1
+      training:
+        steps: 1
+        sequenceLength: 8
+        microBatchSize: 1
+        globalBatchSize: 2
+        learningRate: 0.001
+        weightDecay: 0.01
+        adamBeta1: 0.9
+        adamBeta2: 0.999
+        adamEpsilon: 1.0e-8
+        warmupSteps: 0
+        gradientClipNorm: 1.0
+        gradientCheckpointing: false
+        device: cpu
+        precision: fp32
+        seed: 20260825
+      checkpoint:
+        directory: /results/checkpoints
+        interval: 1
+        resume: null
+      result:
+        directory: /results

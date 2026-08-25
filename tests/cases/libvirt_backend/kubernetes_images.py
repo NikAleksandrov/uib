@@ -5,5 +5,8 @@ import sys
 
 
 with open(sys.argv[1], encoding="utf-8") as source:
-    ledger = json.load(source)
-assert ledger["state"] == "destroyed"
+    summary = json.load(source)
+assert summary["schedulerEvidenceSource"] == "scontrol"
+assert summary["schedulerState"] == "COMPLETED"
+assert summary["workloadExitCode"] == 0
+assert summary["missingArtifacts"] == []

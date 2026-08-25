@@ -1,0 +1,47 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+command=
+for argument in "$@"; do
+	command=$argument
+done
+printf '%s\n' "$command" >> "$LIBVIRT_TEST_LOG/ssh.commands"
+case "$command" in
+'test -d /var/cache/uib/models'|'test -d /var/lib/uib/results'|\
+'test -d /var/lib/uib/runtime'|\
+'test -d /var/lib/uib/results/uib-libvirt-test')
+	exit 0
+	;;
+'sbatch --parsable')
+	cat > "$LIBVIRT_TEST_LOG/submitted.sbatch"
+	if [ "${REMOTE_SBATCH_FAIL:-0}" = 1 ]; then
+		echo 'submission rejected' >&2
+		exit 7
+	fi
+	echo '7654;uib-libvirt-test'
+	;;
+sacct\ *)
+	echo 'Slurm accounting storage is disabled' >&2
+	exit 1
+	;;
+'scontrol --oneliner show job 7654')
+	echo 'JobId=7654 JobState=COMPLETED ExitCode=0:0 RunTime=00:00:19 NodeList=worker-[01-02]'
+	;;
+'find /var/lib/uib/results/uib-libvirt-test -type l -print -quit')
+	exit 0
+	;;
+
+'find /var/lib/uib/results/uib-libvirt-test-7654.out -maxdepth 0 -type f -print -quit')
+	echo '/var/lib/uib/results/uib-libvirt-test-7654.out'
+	;;
+'find /var/lib/uib/results/uib-libvirt-test-7654.err -maxdepth 0 -type f -print -quit')
+	echo '/var/lib/uib/results/uib-libvirt-test-7654.err'
+	;;
+'scancel --quiet 7654')
+	printf '%s\n' 7654 > "$LIBVIRT_TEST_LOG/scancel.job"
+	;;
+*)
+	echo "unexpected remote command: $command" >&2
+	exit 2
+	;;
+esac

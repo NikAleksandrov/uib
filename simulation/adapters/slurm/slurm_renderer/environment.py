@@ -73,11 +73,12 @@ def directives(config, run_id):
 		f"#SBATCH --ntasks={parallel['nodes'] * parallel['processesPerNode']}",
 		f"#SBATCH --ntasks-per-node={parallel['processesPerNode']}",
 		f"#SBATCH --cpus-per-task={nodes['cpu'] // parallel['processesPerNode']}",
-		f"#SBATCH --mem={slurm_memory(nodes['memory'])}",
 		f"#SBATCH --time={slurm['timeLimit']}",
 		f"#SBATCH --output={config['storage']['resultsPath']}/%x-%j.out",
 		f"#SBATCH --error={config['storage']['resultsPath']}/%x-%j.err",
 	]
+	if "memory" in slurm:
+		result.insert(7, f"#SBATCH --mem={slurm_memory(slurm['memory'])}")
 	for key, option in (
 		("account", "account"),
 		("qos", "qos"),

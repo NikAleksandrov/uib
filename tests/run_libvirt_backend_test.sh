@@ -17,8 +17,11 @@ cp "$test_dir/base.img" "$cached_image"
 cp "$project_dir/tests/fakes/libvirt/ssh-keygen" "$test_dir/bin/ssh-keygen"
 cp "$project_dir/tests/fakes/libvirt/tofu" "$test_dir/bin/tofu"
 cp "$project_dir/tests/fakes/libvirt/ansible-playbook" "$test_dir/bin/ansible-playbook"
+cp "$project_dir/tests/fakes/libvirt/ssh" "$test_dir/bin/ssh"
+cp "$project_dir/tests/fakes/libvirt/scp" "$test_dir/bin/scp"
 chmod +x "$test_dir/bin/ssh-keygen" "$test_dir/bin/tofu" \
-	"$test_dir/bin/ansible-playbook"
+	"$test_dir/bin/ansible-playbook" "$test_dir/bin/ssh" \
+	"$test_dir/bin/scp"
 
 "$cli" render --profile libvirt-slurm --format json \
 	--set "libvirt.baseImage=https://example.invalid/base.img" \
@@ -90,6 +93,49 @@ grep -F -- ' apply -auto-approve ' "$test_dir/log/tofu.args" > /dev/null
 	--state-dir "$test_dir/state" > "$test_dir/status.json"
 python3 "$project_dir/tests/cases/libvirt_backend/kubernetes_status.py" "$test_dir/status.json"
 
+export SSH_COMMAND="$test_dir/bin/ssh"
+export SCP_COMMAND="$test_dir/bin/scp"
+export LIBVIRT_REMOTE_ROOT="$test_dir/remote"
+mkdir -p "$LIBVIRT_REMOTE_ROOT/results"
+
+job_id=$("$cli" run --profile libvirt-slurm \
+	--request "$project_dir/simulation/requests/training-smoke.yaml" \
+	--run-id uib-libvirt-test --state-dir "$test_dir/state" \
+	--allow-mutable-tags)
+[ "$job_id" = 7654 ]
+grep -F '/opt/uib/bin/ip -o -4 addr show' \
+	"$test_dir/log/submitted.sbatch" > /dev/null
+
+remote_run=$LIBVIRT_REMOTE_ROOT/results/uib-libvirt-test
+mkdir "$remote_run"
+cat > "$remote_run/status.json" <<'EOF'
+{
+  "runId": "uib-libvirt-test",
+  "scheduler": "slurm",
+  "jobId": "7654",
+  "exitCode": 0
+}
+EOF
+printf '%s\n' worker-01 worker-02 > "$remote_run/nodes.txt"
+printf '%s\n' '{"result":"passed"}' > "$remote_run/result.json"
+printf '%s\n' 'UIB runtime preflight: PASS' \
+	> "$LIBVIRT_REMOTE_ROOT/results/uib-libvirt-test-7654.out"
+: > "$LIBVIRT_REMOTE_ROOT/results/uib-libvirt-test-7654.err"
+
+"$cli" status --profile libvirt-slurm --run-id uib-libvirt-test \
+	--state-dir "$test_dir/state" > "$test_dir/job-status.psv"
+grep -Fx '7654|COMPLETED|0:0|00:00:19|worker-[01-02]' \
+	"$test_dir/job-status.psv" > /dev/null
+
+"$cli" collect --run-id uib-libvirt-test --state-dir "$test_dir/state" \
+	--output-dir "$test_dir/collected" > /dev/null
+if [ ! -f "$test_dir/collected/workload/result.json" ]; then
+	find "$test_dir/collected" -type f -print >&2
+	exit 1
+fi
+[ -f "$test_dir/collected/logs/batch.out" ]
+python3 "$project_dir/tests/cases/libvirt_backend/kubernetes_images.py" "$test_dir/collected/summary.json"
+
 if "$cli" up --profile libvirt-slurm --run-id uib-libvirt-test \
 	--state-dir "$test_dir/state" \
 	--set "libvirt.baseImage=https://example.invalid/base.img" \
@@ -104,7 +150,8 @@ fi
 	--set "libvirt.baseImage=https://example.invalid/base.img" \
 	--set "libvirt.baseImageSha256=$image_sha"
 grep -F -- ' destroy -auto-approve ' "$test_dir/log/tofu.args" > /dev/null
-python3 "$project_dir/tests/cases/libvirt_backend/kubernetes_images.py" "$infra/ledger.json"
+[ "$(cat "$test_dir/log/scancel.job")" = 7654 ]
+python3 "$project_dir/tests/cases/libvirt_backend/host_network.py" "$infra/ledger.json"
 
 before=$(wc -l < "$test_dir/log/tofu.args")
 "$cli" down --profile libvirt-slurm --run-id uib-libvirt-test \
@@ -113,5 +160,24 @@ before=$(wc -l < "$test_dir/log/tofu.args")
 	--set "libvirt.baseImageSha256=$image_sha"
 after=$(wc -l < "$test_dir/log/tofu.args")
 [ "$before" -eq "$after" ]
+
+"$cli" up --profile libvirt-slurm --run-id uib-libvirt-failed \
+	--state-dir "$test_dir/state" \
+	--set "libvirt.baseImage=https://example.invalid/base.img" \
+	--set "libvirt.baseImageSha256=$image_sha" \
+	--set nodes.cpu=2 --set nodes.memory=4Gi --set nodes.disk=16Gi \
+	> /dev/null
+if REMOTE_SBATCH_FAIL=1 "$cli" run --profile libvirt-slurm \
+	--request "$project_dir/simulation/requests/training-smoke.yaml" \
+	--run-id uib-libvirt-failed --state-dir "$test_dir/state" \
+	--allow-mutable-tags > /dev/null 2>&1; then
+	echo "a rejected remote submission was accepted" >&2
+	exit 1
+fi
+"$cli" down --profile libvirt-slurm --run-id uib-libvirt-failed \
+	--state-dir "$test_dir/state" \
+	--set "libvirt.baseImage=https://example.invalid/base.img" \
+	--set "libvirt.baseImageSha256=$image_sha"
+python3 "$project_dir/tests/cases/libvirt_backend/oversubscription.py" "$test_dir/state/uib-libvirt-failed/infrastructure/ledger.json"
 
 echo "libvirt backend test: PASS"

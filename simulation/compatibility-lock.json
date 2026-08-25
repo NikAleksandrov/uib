@@ -130,7 +130,7 @@
           "make simulation-libvirt-test",
           "make simulation-libvirt-e2e-test"
         ],
-        "realClusterValidation": "passed-three-vm-rootless-cpu-uib-l0",
+        "realClusterValidation": "passed-three-vm-rootless-cpu-uib-l0-and-remote-slurm-lifecycle",
         "validatedOn": "2026-08-25"
       },
       "libvirt": {
@@ -235,6 +235,9 @@
       "dataNetwork": "multicast-tunnel",
       "sharedStorage": "NFSv4-over-data-network",
       "schedulerTask": "passed-on-every-worker",
+      "schedulerLifecycle": "remote-sbatch-status-collect-down-passed",
+      "schedulerEvidence": "exact-job scontrol fallback because disposable accounting storage is disabled",
+      "collectedWorkload": "two Pyxis ranks passed portable UIB preflight and wrote owned results",
       "pyxisPinnedImage": "passed-on-worker",
       "uibRuntimePreflight": "passed-inside-pyxis-container",
       "uibRuntimeBundle": "portable-glibc-2.34-ceiling",

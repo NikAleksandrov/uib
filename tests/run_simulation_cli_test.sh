@@ -79,6 +79,21 @@ fi
 	--set uib.congestionControl.parameters.maxWindowBytes=262144 \
 	> "$test_dir/uet-nscc.json"
 
+if "$cli" render --profile libvirt-slurm \
+	--set nodes.memory=512Mi > /dev/null 2>&1; then
+	echo "libvirt accepted no memory above its system reserve" >&2
+	exit 1
+fi
+if "$cli" render --profile libvirt-slurm \
+	--set nodes.memory=4Gi --set slurm.memory=4Gi \
+	> /dev/null 2>&1; then
+	echo "Slurm accepted more memory than a libvirt worker advertises" >&2
+	exit 1
+fi
+"$cli" render --profile libvirt-slurm \
+	--set nodes.memory=4Gi --set slurm.memory=3584Mi \
+	> "$test_dir/libvirt-memory.yaml"
+
 set +e
 "$cli" doctor --profile kind-kubernetes > "$test_dir/doctor.json"
 doctor_status=$?

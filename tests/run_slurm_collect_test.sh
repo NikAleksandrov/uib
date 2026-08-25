@@ -20,9 +20,19 @@ cat > "$test_dir/fake-bin/sacct" <<'EOF'
 #!/bin/sh
 set -eu
 printf '%s\n' "$@" > "$TEST_LOG/sacct.args"
+if [ "${SACCT_TEST_MODE:-available}" = disabled ]; then
+	echo 'Slurm accounting storage is disabled' >&2
+	exit 1
+fi
 echo "${SACCT_ROW:-7654|COMPLETED|0:0|00:00:19|node-[01-02]}"
 EOF
-chmod +x "$test_dir/fake-bin/sbatch" "$test_dir/fake-bin/sacct"
+cat > "$test_dir/fake-bin/scontrol" <<'EOF'
+#!/bin/sh
+set -eu
+echo 'JobId=7654 JobState=COMPLETED ExitCode=0:0 RunTime=00:00:19 NodeList=node-[01-02]'
+EOF
+chmod +x "$test_dir/fake-bin/sbatch" "$test_dir/fake-bin/sacct" \
+	"$test_dir/fake-bin/scontrol"
 
 TEST_LOG="$test_dir/log" \
 SBATCH_COMMAND="$test_dir/fake-bin/sbatch" \
@@ -62,6 +72,8 @@ reported=$(TEST_LOG="$test_dir/log" \
 [ -f "$bundle/resolved-values.json" ]
 [ -f "$bundle/compatibility-lock.json" ]
 [ -f "$bundle/scheduler/workload.sbatch" ]
+[ -f "$bundle/scheduler/status.psv" ]
+[ -f "$bundle/scheduler/status-source.json" ]
 [ -f "$bundle/scheduler/sacct.psv" ]
 [ -f "$bundle/logs/batch.out" ]
 [ -f "$bundle/workload/result.json" ]
@@ -105,6 +117,28 @@ for item in manifest["files"]:
     data = (root / item["path"]).read_bytes()
     assert len(data) == item["size"]
     assert hashlib.sha256(data).hexdigest() == item["sha256"]
+PY
+
+fallback=$test_dir/fallback
+TEST_LOG="$test_dir/log" SACCT_TEST_MODE=disabled \
+	SACCT_COMMAND="$test_dir/fake-bin/sacct" \
+	SCONTROL_COMMAND="$test_dir/fake-bin/scontrol" \
+	"$cli" collect --run-id uib-collect --state-dir "$test_dir/state" \
+	--output-dir "$fallback" > /dev/null
+[ -f "$fallback/scheduler/scontrol.txt" ]
+[ ! -e "$fallback/scheduler/sacct.psv" ]
+python3 - "$fallback/summary.json" \
+	"$fallback/scheduler/status-source.json" <<'PY'
+import json
+import sys
+
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    summary = json.load(source)
+with open(sys.argv[2], encoding="utf-8") as source:
+    status = json.load(source)
+assert summary["schedulerEvidenceSource"] == "scontrol"
+assert status["source"] == "scontrol"
 PY
 
 if TEST_LOG="$test_dir/log" SACCT_COMMAND="$test_dir/fake-bin/sacct" \

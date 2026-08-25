@@ -44,7 +44,7 @@ assert "#SBATCH --nodes=2" in batch
 assert "#SBATCH --ntasks=2" in batch
 assert "#SBATCH --ntasks-per-node=1" in batch
 assert "#SBATCH --cpus-per-task=8" in batch
-assert "#SBATCH --mem=16G" in batch
+assert "#SBATCH --mem=" not in batch
 assert "#SBATCH --exclusive" in batch
 assert "--container-image=uib-training:test" in batch
 assert "--no-container-entrypoint" in batch
@@ -54,7 +54,7 @@ assert "/opt/uib/lib/libuibv.so" in batch
 assert "LD_LIBRARY_PATH=/opt/uib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" in batch
 assert "NCCL_IB_HCA='=uib0'" in batch
 assert "UIB_BIND_PORT=$((SLURM_UIB_BIND_PORT_BASE + LOCAL_RANK))" in batch
-assert 'UIB_BIND_IP=$(ip -o -4 addr show dev "$SLURM_UIB_DATA_INTERFACE"' in batch
+assert 'UIB_BIND_IP=$(/opt/uib/bin/ip -o -4 addr show dev "$SLURM_UIB_DATA_INTERFACE"' in batch
 assert "/opt/uib/bin/uib-preflight --library-only" in batch
 assert "export RANK=${SLURM_PROCID:-0}" in batch
 assert "/opt/uib-training/bin/train" in batch
@@ -131,6 +131,10 @@ render_training uib-slurm-uet --overlay protocol/uet-nscc \
 	> "$test_dir/uet.sbatch"
 grep -F 'export UIB_PROTOCOL=uet' "$test_dir/uet.sbatch" > /dev/null
 grep -F 'export UIB_UET_CC=nscc' "$test_dir/uet.sbatch" > /dev/null
+
+render_training uib-slurm-memory --set slurm.memory=12Gi \
+	> "$test_dir/memory.sbatch"
+grep -F '#SBATCH --mem=12G' "$test_dir/memory.sbatch" > /dev/null
 
 render_training uib-slurm-local \
 	--set workload.parallelism.processesPerNode=2 \
