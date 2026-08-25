@@ -25,6 +25,12 @@ DIGEST = re.compile(r"^\S+@sha256:[0-9a-f]{64}$")
 IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]*$")
 
 
+SQUASHFS = re.compile(
+	r"^/[A-Za-z0-9._+@=-]+(?:/[A-Za-z0-9._+@=-]+)*/"
+	r"[0-9a-f]{64}\.sqsh$"
+)
+
+
 class RenderError(Exception):
 	pass
 
@@ -41,6 +47,8 @@ def load_config(path):
 
 
 def validate_image(reference, allow_mutable_tags):
+	if isinstance(reference, str) and SQUASHFS.fullmatch(reference):
+		return
 	if not isinstance(reference, str) or not IMAGE.fullmatch(reference):
 		raise RenderError(f"invalid image reference: {reference}")
 	if not DIGEST.fullmatch(reference) and not allow_mutable_tags:

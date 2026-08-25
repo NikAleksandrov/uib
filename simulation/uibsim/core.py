@@ -40,7 +40,19 @@ DEFAULT_STATE_DIR = SIMULATION / ".artifacts" / "runs"
 DEFAULT_RESULT_DIR = SIMULATION / ".artifacts" / "results"
 
 
+DEFAULT_SLURM_IMAGE_CACHE = SIMULATION / ".artifacts" / "slurm-images"
+
+
 RUN_ID = re.compile(r"^[a-z](?:[a-z0-9-]{1,46}[a-z0-9])$")
+
+
+IMAGE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]*$")
+
+
+IMAGE_DIGEST = re.compile(r"^\S+@sha256:[0-9a-f]{64}$")
+
+
+HEX_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
 SLURM_TERMINAL_STATES = {

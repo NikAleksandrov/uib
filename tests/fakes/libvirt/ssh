@@ -12,6 +12,17 @@ case "$command" in
 'test -d /var/lib/uib/results/uib-libvirt-test')
 	exit 0
 	;;
+'sudo -n /usr/local/libexec/uib-stage-image check aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+	image=$LIBVIRT_REMOTE_ROOT/images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sqsh
+	[ -f "$image" ] || exit 3
+	printf '%s\n' /var/cache/uib/images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sqsh
+	;;
+'sudo -n /usr/local/libexec/uib-stage-image import aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'|\
+'sudo -n /usr/local/libexec/uib-stage-image install aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+	mkdir -p "$LIBVIRT_REMOTE_ROOT/images"
+	cat > "$LIBVIRT_REMOTE_ROOT/images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sqsh"
+	printf '%s\n' /var/cache/uib/images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sqsh
+	;;
 'sbatch --parsable')
 	cat > "$LIBVIRT_TEST_LOG/submitted.sbatch"
 	if [ "${REMOTE_SBATCH_FAIL:-0}" = 1 ]; then

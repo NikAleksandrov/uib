@@ -5,8 +5,8 @@ import sys
 
 
 with open(sys.argv[1], encoding="utf-8") as source:
-    summary = json.load(source)
-assert summary["schedulerEvidenceSource"] == "scontrol"
-assert summary["schedulerState"] == "COMPLETED"
-assert summary["workloadExitCode"] == 0
-assert summary["missingArtifacts"] == []
+    ledger = json.load(source)
+image = ledger["images"]["uib-training:test"]
+assert image["imageId"] == "sha256:" + "a" * 64
+assert image["path"] == "/var/cache/uib/images/" + "a" * 64 + ".sqsh"
+assert image["hostCacheKey"] == "a" * 64 + ".sqsh"

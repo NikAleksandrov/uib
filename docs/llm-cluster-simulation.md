@@ -87,6 +87,7 @@ topology.
 | `make diagnostic-gpu-test` | One NVIDIA GPU | No | CUDA visibility and a correctness-checked, single-rank NCCL collective |
 | `make simulation-kubernetes-uib-test` | CPU | No | Unchanged verbs programs exchange actual RC SEND/RECV and RDMA Write traffic through UIB between two Kind workers |
 | `make simulation-libvirt-e2e-test` | CPU with KVM | No | Disposable Slurm/Pyxis/Enroot controller/two-worker lifecycle, actual cross-VM RC payload traffic through UIB, and remote `run`/`status`/`collect`/`down` |
+| `make simulation-libvirt-training-e2e-test` | CPU with KVM | No | The same UIB gate plus real two-rank CPU DDP training in a staged local OCI filesystem through Slurm/Pyxis/Enroot; Gloo training is not UIB collective traffic |
 | `make nccl-test` | One NVIDIA GPU with local MPS support | No | Two local ranks send host-staged NCCL traffic through UIB |
 | `make training-uib-test` | One NVIDIA GPU with local MPS support | No | Unmodified two-rank PyTorch DDP sends gradient traffic through UIB |
 | UCX verbs transport gate | CPU | No | Two local processes exchange data through UCX's verbs transport and UIB, with TCP and shared-memory transports excluded |
@@ -1838,6 +1839,82 @@ The exact portable archive name is printed by its build target. On a shared
 cluster an administrator normally owns the runtime directory while users own
 their cache and result roots.
 
+### Staging a local image in the libvirt Slurm lab
+
+Pyxis accepts either an OCI reference or an absolute SquashFS path. A
+disposable VM cannot see a host-local development tag, so `load-image`
+converts that image once and returns the path visible on every lab worker:
+
+```text
+run_id=uib-slurm-training
+
+simulation/bin/uib-sim up --profile libvirt-slurm \
+    --run-id "$run_id"
+
+training_image=$(simulation/bin/uib-sim load-image \
+    --profile libvirt-slurm --run-id "$run_id" \
+    --image uib-training:test --allow-mutable-tags)
+
+simulation/bin/uib-sim run --profile libvirt-slurm \
+    --request simulation/requests/training-smoke.yaml \
+    --run-id "$run_id" --allow-mutable-tags \
+    --set "workload.image=$training_image"
+```
+
+`up` must complete before `load-image`. The local image must already exist in
+the selected Docker-compatible engine. References are digest-qualified by
+default; `--allow-mutable-tags` is required for a development tag and cannot
+be used for a reproducibility or promotion claim. `--image` is repeatable and
+prints one staged path per input in the same order. The returned absolute path
+is content-addressed and is the only SquashFS path shape accepted by the Slurm
+renderer; arbitrary host or guest paths are rejected.
+
+On the first use of one local image ID, the adapter:
+
+1. creates a stopped container without running image code;
+2. streams its applied root filesystem to the controller;
+3. builds an Enroot-compatible zstd SquashFS under
+   `/var/cache/uib/images` on the shared data path;
+4. copies that SquashFS into the ignored host cache and records its SHA-256;
+   and
+5. records the source reference, resolved image ID, cache key, and remote path
+   in the run-owned infrastructure ledger.
+
+A fresh lab hashes the complete host artifact before streaming it to the
+controller, where the staging helper validates the SquashFS again. The ignored
+cache defaults to `simulation/.artifacts/slurm-images`; `inventory.json`
+records every retained artifact without embedding a machine-specific absolute
+path. `SLURM_IMAGE_CACHE` selects another host cache directory, and
+`CONTAINER_ENGINE_COMMAND` selects one exact Docker-compatible executable.
+Neither value accepts a shell pipeline or embedded arguments. An incomplete,
+symbolic-link, malformed-checksum, or checksum-mismatched cache entry is a
+hard failure rather than an implicit replacement.
+
+The collected result bundle includes `staged-images.json` and points to it
+from `images.json`. The workload image filesystem is unchanged; Pyxis is
+already invoked with `--no-container-entrypoint`, and the request supplies the
+same explicit entry point and arguments used on a real cluster. OCI runtime
+configuration is therefore intentionally not part of the local SquashFS
+contract.
+
+On real Slurm hardware, push the same image to the site registry, replace only
+the infrastructure-specific path, and omit the mutable-tag opt-in:
+
+```text
+simulation/bin/uib-sim run --profile real-slurm \
+    --request simulation/requests/training-smoke.yaml \
+    --run-id uib-physical-training \
+    --set workload.image=registry.example/training@sha256:<digest> \
+    --set uib.bundle=registry.example/uib-runtime@sha256:<digest>
+```
+
+The request, training code, generated or downloaded data selection, rank
+layout, result schema, and application command do not change. Only the image
+delivery form and site paths change. A local CPU run remains L0 because its
+DDP backend is Gloo. Promotion to L1 requires the same request changed to CUDA
+on at least two physical GPU nodes, NCCL transport evidence through UIB, and a
+matching native-verbs baseline.
+
 Multiple local ranks are a configuration change, not a different request
 format:
 
@@ -3104,6 +3181,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge and rootless rendering, cached-image verification, generated OpenTofu and Ansible inputs, remote submit/status/collect/cancel transport, cleanup after a rejected pre-ID submission, exclusive ownership, and exact-state cleanup with fake standard commands |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, SSH/SCP, passt, NFS-capable Ubuntu guests, roughly 12 GiB memory for the default three VMs, and download access on the first run | Actual controller/two-worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, ordinary worker tasks, cross-VM standard RC payload through UIB, remote batch submission and status, two-rank pinned OCI execution with portable UIB preflight, result collection, state-based destruction, and domain/pool absence; no NCCL or GPU claim |
+| `make simulation-libvirt-training-e2e-test` | The libvirt gate requirements, the local training image or image-build access, 32 GiB guest disks, roughly 12 GiB host memory, and about 3 GiB ignored host cache space for the current image | Everything in the libvirt gate, content-addressed SquashFS creation or verified cache reuse, real two-worker CPU DDP training through Slurm/Pyxis/Enroot, collected training and image ledgers, and complete cleanup; the workload uses Gloo, while the separate provisioning gate supplies actual UIB traffic |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
 | `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, UET/NSCC, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
 | `make simulation-slurm-lifecycle-test` | The Slurm renderer requirements; no Slurm installation or container engine | Exclusive ignored run ledgers, shared-path preflight, exact `sbatch --parsable` submission, recorded numeric job ownership, read-only `sacct` status and `scontrol` fallback including an empty pending node list, exact-ID `scancel`, retained failures, and rejection of result/ledger reuse or ambiguous submission output using fake standard commands |
@@ -3190,6 +3268,17 @@ rootless networking, one controller, and two workers:
 make simulation-libvirt-e2e-test
 ```
 
+Run the real CPU training variant with:
+
+```text
+make simulation-libvirt-training-e2e-test
+```
+
+It builds `uib-training:test` only when that image is absent, uses a 32 GiB
+guest disk, stages the image into the lab, and runs the unchanged generated
+four-step request on two workers. No model or dataset is stored in the
+repository or downloaded for this default workload.
+
 The gate builds the verified portable UIB runtime rather than a host-native
 bundle, because the diagnostic container may have an older glibc than the
 development host. On its first run it downloads the digest-verified cloud
@@ -3208,10 +3297,15 @@ committed.
 | `LIBVIRT_WORKERS` | `2` | Positive worker count; two or more place the UIB traffic ranks on distinct VMs |
 | `LIBVIRT_CPUS` | `2` | Positive vCPU count per VM |
 | `LIBVIRT_MEMORY` | `4Gi` | Per-VM memory with `Mi`, `Gi`, or `Ti` suffix |
-| `LIBVIRT_DISK` | `16Gi` | Per-VM overlay capacity with `Mi`, `Gi`, or `Ti` suffix |
+| `LIBVIRT_DISK` | `16Gi`; training target sets `32Gi` | Per-VM overlay capacity with `Mi`, `Gi`, or `Ti` suffix; first-use image conversion needs room for the expanded root filesystem and SquashFS |
 | `LIBVIRT_E2E_RUN_ID` | Unique `uib-libvirt-e2e-<pid>` | Safe run ID used for all owned resources and state |
 | `LIBVIRT_E2E_RESULT_DIR` | `simulation/.artifacts/results/<run-id>` | New host directory that receives collected scheduler and workload evidence |
+| `LIBVIRT_E2E_WORKLOAD` | `lifecycle` | `lifecycle` or `training`; the dedicated training target sets `training` |
+| `LIBVIRT_E2E_IMAGE` | `uib-training:test` in training mode | Existing local OCI image to stage; ignored in lifecycle mode |
+| `LIBVIRT_E2E_JOB_TIMEOUT` | `180` for lifecycle, `900` for training | Integer of at least two seconds; bounds only the submitted workload, not provisioning or cleanup |
 | `SIMULATION_LIBVIRT_STATE_DIR` | `simulation/.artifacts/runs` | Private lifecycle-ledger root |
+| `CONTAINER_ENGINE_COMMAND` | `docker` | Exact Docker-compatible executable used to inspect, create, export, and remove the stopped staging container |
+| `SLURM_IMAGE_CACHE` | `simulation/.artifacts/slurm-images` | Ignored host directory containing verified SquashFS files, checksum sidecars, and `inventory.json` |
 | `TOFU_COMMAND` | `tofu` | Exact OpenTofu executable; the module requires version 1.12.3 |
 | `ANSIBLE_PLAYBOOK_COMMAND` | `ansible-playbook` | Exact Ansible playbook executable |
 | `LIBVIRTD_COMMAND` | Discovered `libvirtd` | Exact daemon executable used only when a session daemon is unavailable |
@@ -3223,6 +3317,20 @@ For a larger rootless functional lab:
 LIBVIRT_WORKERS=3 LIBVIRT_CPUS=4 LIBVIRT_MEMORY=8Gi \
 make simulation-libvirt-e2e-test
 ```
+
+Reuse a cache on a larger filesystem and allow a slower cold CPU launch:
+
+```text
+SLURM_IMAGE_CACHE=/srv/uib-sim-cache \
+LIBVIRT_E2E_JOB_TIMEOUT=1200 \
+make simulation-libvirt-training-e2e-test
+```
+
+`LIBVIRT_E2E_IMAGE` has an effect only with
+`LIBVIRT_E2E_WORKLOAD=training`. Do not combine the local mutable-tag workflow
+with promotion results; use a registry digest on real hardware. Do not point
+`SLURM_IMAGE_CACHE` at a shared directory whose contents can be modified by
+untrusted users, because a cache integrity failure deliberately stops the run.
 
 `LIBVIRT_WORKERS=1` is a resource-saving fallback. It still runs two processes
 through UIB, but both ranks share one worker VM and therefore cannot satisfy
@@ -3240,6 +3348,8 @@ Do not combine `rootless` with `qemu:///system`. Do not use the rootless gate
 for performance measurements. Command override variables name one executable,
 not a shell command with arguments. The gate's interrupt trap destroys only
 the run's OpenTofu state and removes a pool only when the gate created it.
+The lab configures a sticky node-local `/run/enroot` root so unattended Slurm
+jobs do not depend on a transient interactive-login directory.
 
 The congestion test creates a disposable network namespace, applies netem to
 its loopback interface, runs `tests/loopback`, and destroys the namespace. It

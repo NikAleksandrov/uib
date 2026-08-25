@@ -65,6 +65,7 @@ def main():
     load_image.add_argument(
         "--allow-mutable-tags", action="store_true",
         help="allow local development tags instead of immutable digests")
+    add_state_dir_arg(load_image)
     load_image.set_defaults(handler=command_load_image)
     render_workload = commands.add_parser(
         "render-workload", help="render scheduler resources for one workload")

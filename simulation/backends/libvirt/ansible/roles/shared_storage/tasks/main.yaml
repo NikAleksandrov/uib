@@ -41,6 +41,28 @@
       owner: root
       group: root
       mode: "0755"
+    - path: /var/cache/uib/images
+      owner: root
+      group: root
+      mode: "0755"
+
+- name: Create the local helper directory
+  when: inventory_hostname in groups['slurm_controller']
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the local OCI image staging helper
+  when: inventory_hostname in groups['slurm_controller']
+  ansible.builtin.copy:
+    src: uib-stage-image
+    dest: /usr/local/libexec/uib-stage-image
+    owner: root
+    group: root
+    mode: "0755"
 
 - name: Stage the portable UIB runtime once
   when:

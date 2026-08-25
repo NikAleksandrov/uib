@@ -1,0 +1,60 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+mode=${1:-}
+digest=${2:-}
+case "$digest" in
+????????????????????????????????????????????????????????????????)
+	case "$digest" in
+	*[!0-9a-f]*)
+		echo "invalid image digest" >&2
+		exit 2
+		;;
+	esac
+	;;
+*)
+	echo "invalid image digest" >&2
+	exit 2
+	;;
+esac
+
+image_root=/var/cache/uib/images
+image=$image_root/$digest.sqsh
+mkdir -p "$image_root"
+
+case "$mode" in
+check)
+	[ -f "$image" ] || exit 3
+	unsquashfs -s "$image" >/dev/null
+	printf '%s\n' "$image"
+	;;
+install)
+	temporary=$(mktemp "$image_root/.$digest.XXXXXX")
+	trap 'rm -f -- "$temporary"' EXIT INT TERM
+	cat > "$temporary"
+	unsquashfs -s "$temporary" >/dev/null
+	chmod 0644 "$temporary"
+	mv "$temporary" "$image"
+	trap - EXIT INT TERM
+	printf '%s\n' "$image"
+	;;
+import)
+	temporary=$(mktemp -d "$image_root/.$digest.XXXXXX")
+	trap 'rm -rf -- "$temporary"' EXIT INT TERM
+	mkdir "$temporary/rootfs"
+	tar --extract --file=- --directory="$temporary/rootfs" \
+		--numeric-owner --same-owner
+	mksquashfs "$temporary/rootfs" "$temporary/image.sqsh" \
+		-noappend -comp zstd -quiet -no-progress >/dev/null
+	chmod 0644 "$temporary/image.sqsh"
+	mv "$temporary/image.sqsh" "$image"
+	rm -rf -- "$temporary"
+	trap - EXIT INT TERM
+	printf '%s\n' "$image"
+	;;
+*)
+	echo "usage: uib-stage-image check|install|import DIGEST" >&2
+	exit 2
+	;;
+esac

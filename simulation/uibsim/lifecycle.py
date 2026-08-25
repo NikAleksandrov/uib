@@ -139,8 +139,15 @@ def command_kubeconfig(args):
 
 def command_load_image(args):
     from .config import resolve
+    from .images import stage_libvirt_image
 
     config = resolve(args)
+
+    if config["infrastructure"]["provider"] == "libvirt":
+        for reference in args.image:
+            print(stage_libvirt_image(args, reference,
+                                      args.allow_mutable_tags))
+        return 0
 
     def arguments(unused):
         command = ["load-image", "--name", args.run_id]
@@ -380,6 +387,7 @@ def command_collect(args):
 
     missing = []
     workload_status = None
+    staged_images = None
     try:
         for directory in ("logs", "metrics", "scheduler", "state", "traces"):
             (temporary / directory).mkdir()
@@ -390,6 +398,15 @@ def command_collect(args):
         copy_file(batch_path, temporary / "scheduler" / "workload.sbatch")
         copy_file(config_path, temporary / "resolved-values.json")
         copy_file(COMPATIBILITY, temporary / "compatibility-lock.json")
+        staged_path = run_dir / "infrastructure" / "images.json"
+        if staged_path.is_file() and not staged_path.is_symlink():
+            staged_images = read_json(staged_path, "staged image ledger")
+            if (staged_images.get("schemaVersion") != 1 or
+                    staged_images.get("runId") != args.run_id or
+                    not isinstance(staged_images.get("images"), dict)):
+                raise ConfigurationError(
+                    f"staged image ledger ownership mismatch: {staged_path}")
+            copy_file(staged_path, temporary / "staged-images.json")
         for name in ("render.stderr", "sbatch.stdout", "sbatch.stderr"):
             source = run_dir / name
             if source.is_file():
@@ -503,6 +520,8 @@ def command_collect(args):
             "schemaVersion": 1,
             "workload": config["workload"]["image"],
             "uibRuntime": config["uib"].get("bundle"),
+            "stagedImages": (
+                "staged-images.json" if staged_images is not None else None),
         })
         write_json(temporary / "versions.json", {
             "schemaVersion": 1,

@@ -17,6 +17,10 @@ case "$source" in
 		cp "$mapped" "$destination"
 	fi
 	;;
+/var/cache/uib/images/*)
+	name=${source#/var/cache/uib/images/}
+	cp "$LIBVIRT_REMOTE_ROOT/images/$name" "$destination"
+	;;
 *)
 	echo "unexpected remote path: $source" >&2
 	exit 2

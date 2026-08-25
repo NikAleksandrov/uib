@@ -1,0 +1,23 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+digest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+container=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+case "$1 $2" in
+'image inspect')
+	echo "sha256:$digest"
+	;;
+'create uib-training:test')
+	echo "$container"
+	;;
+'export '* )
+	printf '%s\n' fake-exported-rootfs
+	;;
+'rm '* )
+	printf '%s\n' "$2" > "$LIBVIRT_TEST_LOG/docker-removed"
+	;;
+*)
+	echo "unexpected container command: $*" >&2
+	exit 2
+	;;
+esac

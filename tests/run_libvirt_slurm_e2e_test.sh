@@ -4,7 +4,29 @@ set -eu
 
 project_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cli=$project_dir/simulation/bin/uib-sim
-request=$project_dir/simulation/requests/slurm-lifecycle-smoke.yaml
+workload=${LIBVIRT_E2E_WORKLOAD:-lifecycle}
+case $workload in
+lifecycle)
+	request=$project_dir/simulation/requests/slurm-lifecycle-smoke.yaml
+	image=
+	job_timeout=${LIBVIRT_E2E_JOB_TIMEOUT:-180}
+	;;
+training)
+	request=$project_dir/simulation/requests/training-smoke.yaml
+	image=${LIBVIRT_E2E_IMAGE:-uib-training:test}
+	job_timeout=${LIBVIRT_E2E_JOB_TIMEOUT:-900}
+	;;
+*)
+	echo "LIBVIRT_E2E_WORKLOAD must be lifecycle or training" >&2
+	exit 2
+	;;
+esac
+case $job_timeout in
+''|*[!0-9]*|0|1)
+	echo "LIBVIRT_E2E_JOB_TIMEOUT must be an integer of at least 2 seconds" >&2
+	exit 2
+	;;
+esac
 state_dir=${SIMULATION_LIBVIRT_STATE_DIR:-$project_dir/simulation/.artifacts/runs}
 run_id=${LIBVIRT_E2E_RUN_ID:-uib-libvirt-e2e-$$}
 result_dir=${LIBVIRT_E2E_RESULT_DIR:-$project_dir/simulation/.artifacts/results/$run_id}
@@ -101,9 +123,17 @@ grep -F 'TASK [Run a pinned image through Pyxis and Enroot]' \
 grep -F 'TASK [Preflight the shared UIB runtime inside Pyxis]' \
 	"$infra/lifecycle.log" >/dev/null
 
+workload_settings=
+if [ -n "$image" ]; then
+	staged_image=$("$cli" load-image --profile libvirt-slurm \
+		--run-id "$run_id" --state-dir "$state_dir" \
+		--image "$image" --allow-mutable-tags)
+	workload_settings="--set workload.image=$staged_image"
+fi
+
 job_id=$("$cli" run --profile libvirt-slurm --request "$request" \
 	--run-id "$run_id" --state-dir "$state_dir" --allow-mutable-tags \
-	$settings)
+	$settings $workload_settings)
 
 python3 - "$state_dir/$run_id/ledger.json" "$job_id" <<'PY'
 import json
@@ -119,7 +149,8 @@ PY
 
 status_file=$state_dir/$run_id/slurm-status.psv
 attempt=0
-while [ "$attempt" -lt 90 ]; do
+max_attempts=$((job_timeout / 2))
+while [ "$attempt" -lt "$max_attempts" ]; do
 	"$cli" status --profile libvirt-slurm --run-id "$run_id" \
 		--state-dir "$state_dir" $settings > "$status_file"
 	job_state=$(awk -F '|' -v job="$job_id" \
@@ -132,6 +163,11 @@ while [ "$attempt" -lt 90 ]; do
 	FAILED|CANCELLED|TIMEOUT|NODE_FAIL|OUT_OF_MEMORY|PREEMPTED|BOOT_FAIL|DEADLINE)
 		echo "Slurm job $job_id ended in $job_state" >&2
 		cat "$status_file" >&2
+		if "$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
+			--output-dir "$result_dir" >/dev/null 2>&1; then
+			find "$result_dir/logs" -maxdepth 1 -type f -print \
+				-exec tail -100 {} \; >&2
+		fi
 		exit 1
 		;;
 	esac
@@ -139,8 +175,13 @@ while [ "$attempt" -lt 90 ]; do
 	sleep 2
 done
 if [ "$job_state" != COMPLETED ]; then
-	echo "Slurm job $job_id did not complete in time" >&2
+	echo "Slurm job $job_id did not complete in $job_timeout seconds" >&2
 	cat "$status_file" >&2
+	if "$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
+		--output-dir "$result_dir" >/dev/null 2>&1; then
+		find "$result_dir/logs" -maxdepth 1 -type f -print \
+			-exec tail -100 {} \; >&2
+	fi
 	exit 1
 fi
 
@@ -148,7 +189,7 @@ reported=$("$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
 	--output-dir "$result_dir")
 [ "$reported" = "$result_dir" ]
 
-python3 - "$result_dir" "$run_id" "$job_id" <<'PY'
+python3 - "$result_dir" "$run_id" "$job_id" "$workload" <<'PY'
 import json
 import pathlib
 import sys
@@ -168,11 +209,28 @@ with (root / "topology.json").open(encoding="utf-8") as source:
     topology = json.load(source)
 assert topology["requestedNodes"] == 2
 assert len(topology["allocatedNodes"]) == 2
-for rank in range(2):
-    with (root / "workload" / f"rank-{rank}.json").open(
+if sys.argv[4] == "lifecycle":
+    for rank in range(2):
+        with (root / "workload" / f"rank-{rank}.json").open(
+                encoding="utf-8") as source:
+            result = json.load(source)
+        assert result == {"rank": rank, "worldSize": 2}
+else:
+    with (root / "workload" / sys.argv[2] / "result.json").open(
             encoding="utf-8") as source:
         result = json.load(source)
-    assert result == {"rank": rank, "worldSize": 2}
+    assert result["status"] == "passed"
+    assert result["runId"] == sys.argv[2]
+    assert result["worldSize"] == 2
+    assert result["device"] == "cpu"
+    assert result["strategy"] == "ddp"
+    assert result["completedSteps"] == 4
+    assert result["transport"]["distributedBackend"] == "gloo"
+    assert result["transport"]["uibEnabled"] is True
+    assert result["stack"]["ncclLibrary"] == "2.30.4"
+    with (root / "staged-images.json").open(encoding="utf-8") as source:
+        staged = json.load(source)
+    assert staged["runId"] == sys.argv[2]
 PY
 
 grep -F 'UIB runtime preflight: PASS' "$result_dir/logs/batch.out" >/dev/null
@@ -205,4 +263,4 @@ while [ "$worker" -le "${LIBVIRT_WORKERS:-2}" ]; do
 	worker=$((worker + 1))
 done
 
-echo "libvirt Slurm end-to-end test: PASS"
+echo "libvirt Slurm $workload end-to-end test: PASS"
