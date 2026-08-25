@@ -1,0 +1,19 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+
+- name: Restart Munge
+  ansible.builtin.service:
+    name: munge
+    state: restarted
+
+- name: Restart Slurm controller
+  when: inventory_hostname in groups['slurm_controller']
+  ansible.builtin.service:
+    name: slurmctld
+    state: restarted
+
+- name: Restart Slurm worker
+  when: inventory_hostname in groups['slurm_workers']
+  ansible.builtin.service:
+    name: slurmd
+    state: restarted

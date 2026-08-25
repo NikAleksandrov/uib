@@ -108,6 +108,34 @@ def validate_schema(config):
                              "\n  ".join(messages))
 
 
+def validate_infrastructure(config):
+    from .core import COMPATIBILITY, ConfigurationError
+    provider = config["infrastructure"]["provider"]
+    manager = config["cluster"]["manager"]
+    runtime = config["container"]["runtime"]
+    frontend = config["communication"]["frontend"]
+    gpu = config["nodes"]["gpus"]
+    uib = config["uib"]
+    storage = config["storage"]
+    if provider == "libvirt" and "libvirt" not in config:
+        raise ConfigurationError("libvirt requires provider settings")
+    if provider != "libvirt" and "libvirt" in config:
+        raise ConfigurationError(
+            "libvirt settings require infrastructure.provider=libvirt")
+    if provider == "libvirt" and config["nodes"]["controlPlane"] != 1:
+        raise ConfigurationError("libvirt currently requires one control plane")
+    if (provider == "libvirt" and
+            config["libvirt"]["networkMode"] == "rootless" and
+            config["libvirt"]["uri"] != "qemu:///session"):
+        raise ConfigurationError(
+            "libvirt rootless mode requires qemu:///session")
+    if (provider == "libvirt" and manager == "slurm" and
+            config["cluster"]["version"] != "23.11.4"):
+        raise ConfigurationError(
+            "libvirt Slurm provisioning requires version 23.11.4")
+
+
+
 def validate_scheduler(config):
     from .core import COMPATIBILITY, ConfigurationError
     provider = config["infrastructure"]["provider"]
@@ -226,6 +254,7 @@ def validate_workload(config):
 
 
 def validate_semantics(config):
+    validate_infrastructure(config)
     validate_scheduler(config)
     validate_communication(config)
     validate_workload(config)

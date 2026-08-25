@@ -1,0 +1,16 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+key=
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = -f ]; then
+		shift
+		key=$1
+		break
+	fi
+	shift
+done
+[ -n "$key" ]
+printf '%s\n' private-test-key > "$key"
+printf '%s\n' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest uib-test' > "$key.pub"
+chmod 600 "$key"

@@ -1,0 +1,11 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+printf '%s\n' "$*" >> "$LIBVIRT_TEST_LOG/tofu.args"
+case " $* " in
+*' destroy '*)
+	if [ "${TOFU_DESTROY_FAIL:-0}" = 1 ]; then
+		exit 9
+	fi
+	;;
+esac

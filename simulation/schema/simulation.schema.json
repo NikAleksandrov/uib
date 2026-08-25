@@ -33,6 +33,20 @@
         "allowExistingMutations": { "type": "boolean" }
       }
     },
+    "libvirt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "pool", "networkMode", "baseImage", "baseImageSha256", "sshUser", "diagnosticImage"],
+      "properties": {
+        "uri": { "type": "string", "minLength": 1 },
+        "pool": { "$ref": "#/$defs/slurmName" },
+        "networkMode": { "enum": ["bridge", "rootless"] },
+        "baseImage": { "type": "string", "pattern": "^https://\\S+$" },
+        "baseImageSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "sshUser": { "type": "string", "pattern": "^[a-z_][a-z0-9_-]{0,31}$" },
+        "diagnosticImage": { "type": "string", "pattern": "^\\S+@sha256:[0-9a-f]{64}$" }
+      }
+    },
     "cluster": {
       "type": "object",
       "additionalProperties": false,

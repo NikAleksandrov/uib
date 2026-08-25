@@ -61,10 +61,44 @@ def invoke_backend(config, arguments):
             raise ConfigurationError(f"cannot invoke Kind backend: {error}") from error
 
 
+def invoke_libvirt(config, arguments):
+    from .core import ConfigurationError, LIBVIRT_BACKEND
+
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
+                                     prefix="uib-sim-", suffix=".json") as output:
+        json.dump(config, output, indent=2, sort_keys=True)
+        output.flush()
+        try:
+            result = subprocess.run(
+                [str(LIBVIRT_BACKEND), *arguments(output.name)], check=False)
+        except OSError as error:
+            raise ConfigurationError(
+                f"cannot invoke libvirt backend: {error}") from error
+    return result.returncode
+
+
 def command_up(args):
     from .config import resolve
+    from .core import ConfigurationError
+    from .state import state_path
 
     config = resolve(args)
+
+    if config["infrastructure"]["provider"] == "libvirt":
+        if config["cluster"]["manager"] != "slurm":
+            raise ConfigurationError(
+                "libvirt Kubernetes provisioning is not implemented yet")
+
+        def libvirt_arguments(path):
+            command = [
+                "up", path, "--name", args.run_id,
+                "--state-dir", str(state_path(args) / "infrastructure"),
+            ]
+            if args.retain:
+                command.append("--retain")
+            return command
+
+        return invoke_libvirt(config, libvirt_arguments)
 
     def arguments(path):
         command = ["up", path, "--name", args.run_id, "--wait", args.wait]
@@ -80,8 +114,15 @@ def command_up(args):
 def command_status(args):
     from .config import resolve
     from .slurm import command_slurm_status
+    from .state import state_path
 
     config = resolve(args)
+    provider = config["infrastructure"]["provider"]
+    if provider == "libvirt" and not (state_path(args) / "ledger.json").is_file():
+        return invoke_libvirt(config, lambda unused: [
+            "status", "--name", args.run_id,
+            "--state-dir", str(state_path(args) / "infrastructure"),
+        ])
     if config["cluster"]["manager"] == "slurm":
         return command_slurm_status(args)
     return invoke_backend(
@@ -151,7 +192,22 @@ def command_run(args):
     run_dir = state_path(args)
     try:
         run_dir.parent.mkdir(parents=True, exist_ok=True)
-        run_dir.mkdir()
+        if run_dir.exists():
+            infrastructure = run_dir / "infrastructure" / "ledger.json"
+            with infrastructure.open(encoding="utf-8") as source:
+                infrastructure_ledger = json.load(source)
+            if (config["infrastructure"]["provider"] != "libvirt" or
+                    infrastructure_ledger.get("schemaVersion") != 1 or
+                    infrastructure_ledger.get("runId") != args.run_id or
+                    infrastructure_ledger.get("provider") != "libvirt" or
+                    infrastructure_ledger.get("state") != "ready" or
+                    (run_dir / "ledger.json").exists()):
+                raise FileExistsError
+        else:
+            run_dir.mkdir()
+    except (json.JSONDecodeError, IsADirectoryError) as error:
+        raise ConfigurationError(
+            f"invalid infrastructure state in {run_dir}") from error
     except FileExistsError as error:
         raise ConfigurationError(f"run state already exists: {run_dir}") from error
     except OSError as error:
@@ -476,8 +532,19 @@ def command_collect(args):
 def command_down(args):
     from .config import resolve
     from .slurm import command_slurm_down
+    from .state import state_path
 
     config = resolve(args)
+    if config["infrastructure"]["provider"] == "libvirt":
+        run_dir = state_path(args)
+        if (run_dir / "ledger.json").is_file():
+            result = command_slurm_down(args)
+            if result or not (run_dir / "infrastructure" / "ledger.json").is_file():
+                return result
+        return invoke_libvirt(config, lambda unused: [
+            "down", "--name", args.run_id,
+            "--state-dir", str(run_dir / "infrastructure"),
+        ])
     if config["cluster"]["manager"] == "slurm":
         return command_slurm_down(args)
     return invoke_backend(

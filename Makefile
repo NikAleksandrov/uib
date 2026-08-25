@@ -340,6 +340,12 @@ simulation-slurm-lifecycle-test:
 simulation-slurm-collect-test:
 	./tests/run_slurm_collect_test.sh
 
+simulation-libvirt-test:
+	./tests/run_libvirt_backend_test.sh
+
+simulation-libvirt-e2e-test: runtime-bundle-portable-test
+	./tests/run_libvirt_slurm_e2e_test.sh
+
 simulation-kubeflow-e2e-test:
 	./tests/run_kubeflow_e2e_test.sh
 
@@ -890,6 +896,8 @@ clean:
 	simulation-kind-test simulation-kind-e2e-test \
 	simulation-kubernetes-render-test simulation-slurm-render-test \
 	simulation-slurm-lifecycle-test simulation-slurm-collect-test \
+	simulation-libvirt-test \
+	simulation-libvirt-e2e-test \
 	simulation-kubeflow-e2e-test \
 	simulation-kubernetes-uib-test \
 	simulation-kuberay-e2e-test \

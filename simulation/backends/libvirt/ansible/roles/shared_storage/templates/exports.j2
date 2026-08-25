@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+{% for host in groups['slurm_workers'] %}
+/var/lib/uib {{ hostvars[host].uib_data_ip }}(rw,sync,no_subtree_check,no_root_squash)
+/var/cache/uib {{ hostvars[host].uib_data_ip }}(rw,sync,no_subtree_check,no_root_squash)
+{% endfor %}

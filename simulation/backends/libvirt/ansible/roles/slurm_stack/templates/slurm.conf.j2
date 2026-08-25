@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+ClusterName={{ uib_run_id }}
+SlurmctldHost={{ groups['slurm_controller'][0] }}({{ hostvars[groups['slurm_controller'][0]].uib_data_ip }})
+SlurmUser=slurm
+SlurmctldPort=6817
+SlurmdPort=6818
+AuthType=auth/munge
+CryptoType=crypto/munge
+StateSaveLocation=/var/spool/slurmctld
+SlurmdSpoolDir=/var/spool/slurmd
+SlurmctldLogFile=/var/log/slurm/slurmctld.log
+SlurmdLogFile=/var/log/slurm/slurmd.log
+SwitchType=switch/none
+MpiDefault=none
+ProctrackType=proctrack/cgroup
+TaskPlugin=task/cgroup,task/affinity
+SelectType=select/cons_tres
+SelectTypeParameters=CR_Core_Memory
+SchedulerType=sched/backfill
+ReturnToService=2
+AccountingStorageType=accounting_storage/none
+JobCompType=jobcomp/filetxt
+JobCompLoc=/var/log/slurm/jobcomp.log
+{% for host in groups['slurm_workers'] %}
+NodeName={{ host }} NodeAddr={{ hostvars[host].uib_data_ip }} CPUs={{ uib_node_cpu }} RealMemory={{ uib_node_memory_mib - 512 }} State=UNKNOWN
+{% endfor %}
+PartitionName={{ uib_slurm_partition }} Nodes={{ groups['slurm_workers'] | join(',') }} Default=YES MaxTime={{ uib_slurm_time_limit }} State=UP

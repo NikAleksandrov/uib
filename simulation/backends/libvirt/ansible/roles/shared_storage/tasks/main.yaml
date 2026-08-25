@@ -1,0 +1,116 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+
+- name: Install the NFS server on the controller
+  when: inventory_hostname in groups['slurm_controller']
+  ansible.builtin.apt:
+    name: nfs-kernel-server
+    state: present
+
+- name: Create the NFS export configuration directory
+  when: inventory_hostname in groups['slurm_controller']
+  ansible.builtin.file:
+    path: /etc/exports.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create shared storage on the controller
+  when: inventory_hostname in groups['slurm_controller']
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ uib_runtime_path }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ uib_model_cache_path }}"
+      owner: "{{ uib_ssh_user }}"
+      group: "{{ uib_ssh_user }}"
+      mode: "0755"
+    - path: "{{ uib_results_path }}"
+      owner: "{{ uib_ssh_user }}"
+      group: "{{ uib_ssh_user }}"
+      mode: "0755"
+    - path: /var/cache/uib/downloads
+      owner: root
+      group: root
+      mode: "0755"
+
+- name: Stage the portable UIB runtime once
+  when:
+    - inventory_hostname in groups['slurm_controller']
+    - uib_enabled | bool
+  ansible.builtin.copy:
+    src: "{{ uib_runtime_source }}/"
+    dest: "{{ uib_runtime_path }}/"
+    owner: root
+    group: root
+    mode: preserve
+
+- name: Export the shared roots only to lab workers
+  when: inventory_hostname in groups['slurm_controller']
+  ansible.builtin.template:
+    src: exports.j2
+    dest: "/etc/exports.d/uib-{{ uib_run_id }}.exports"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload NFS exports
+
+- name: Start the NFS server
+  when: inventory_hostname in groups['slurm_controller']
+  ansible.builtin.service:
+    name: nfs-kernel-server
+    state: started
+    enabled: true
+
+- name: Flush NFS export changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Create worker mount points
+  when: inventory_hostname in groups['slurm_workers']
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /var/lib/uib
+    - /var/cache/uib
+
+- name: Persist shared worker mounts
+  when: inventory_hostname in groups['slurm_workers']
+  ansible.builtin.blockinfile:
+    path: /etc/fstab
+    marker: "# {mark} UIB LIBVIRT {{ uib_run_id }}"
+    block: |
+      {{ hostvars[groups['slurm_controller'][0]].uib_data_ip }}:/var/lib/uib /var/lib/uib nfs4 rw,hard,_netdev 0 0
+      {{ hostvars[groups['slurm_controller'][0]].uib_data_ip }}:/var/cache/uib /var/cache/uib nfs4 rw,hard,_netdev 0 0
+
+- name: Mount shared worker roots
+  when: inventory_hostname in groups['slurm_workers']
+  ansible.builtin.command: "mount {{ item }}"
+  args:
+    creates: "{{ item }}/.uib-nfs-mounted"
+  loop:
+    - /var/lib/uib
+    - /var/cache/uib
+
+- name: Mark mounted shared roots
+  when: inventory_hostname in groups['slurm_workers']
+  ansible.builtin.file:
+    path: "{{ item }}/.uib-nfs-mounted"
+    state: touch
+    owner: root
+    group: root
+    mode: "0644"
+    modification_time: preserve
+    access_time: preserve
+  loop:
+    - /var/lib/uib
+    - /var/cache/uib

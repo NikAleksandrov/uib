@@ -47,7 +47,8 @@ def main():
     up.add_argument("--wait", default="120s", help="provider readiness timeout")
     up.add_argument("--kubeconfig", help="write a Kind kubeconfig to this path")
     up.add_argument("--retain", action="store_true",
-                    help="retain Kind nodes after create failure")
+                    help="retain provider resources after create failure")
+    add_state_dir_arg(up)
     up.set_defaults(handler=command_up)
     status = commands.add_parser("status", help="inspect selected infrastructure")
     add_lifecycle_args(status)

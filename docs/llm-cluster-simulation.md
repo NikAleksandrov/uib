@@ -34,6 +34,7 @@ configuration.
 - [Where transparent UIB is useful](#where-transparent-uib-is-useful)
 - [Kubernetes execution stack](#kubernetes-execution-stack)
 - [Slurm, Pyxis, and Enroot execution stack](#slurm-pyxis-and-enroot-execution-stack)
+- [Libvirt Slurm lifecycle](#libvirt-slurm-lifecycle)
 - [Training workloads](#training-workloads)
 - [Inference workloads](#inference-workloads)
 - [Network and failure simulation](#network-and-failure-simulation)
@@ -85,6 +86,7 @@ topology.
 | `make diagnostic-uib-preflight-test` | CPU | No | The common UIB runtime mounts into an independently built image |
 | `make diagnostic-gpu-test` | One NVIDIA GPU | No | CUDA visibility and a correctness-checked, single-rank NCCL collective |
 | `make simulation-kubernetes-uib-test` | CPU | No | Unchanged verbs programs exchange actual RC SEND/RECV and RDMA Write traffic through UIB between two Kind workers |
+| `make simulation-libvirt-e2e-test` | CPU with KVM | No | Disposable Slurm/Pyxis/Enroot controller/worker lifecycle and UIB library packaging; no UIB payload traffic |
 | `make nccl-test` | One NVIDIA GPU with local MPS support | No | Two local ranks send host-staged NCCL traffic through UIB |
 | `make training-uib-test` | One NVIDIA GPU with local MPS support | No | Unmodified two-rank PyTorch DDP sends gradient traffic through UIB |
 | UCX verbs transport gate | CPU | No | Two local processes exchange data through UCX's verbs transport and UIB, with TCP and shared-memory transports excluded |
@@ -350,24 +352,36 @@ relationships.
 ```yaml
 infrastructure:
   provider: libvirt
-  controlPlanes: 1
-  workers: 4
-  worker:
-    cpu: 16
-    memory: 64Gi
-    disk: 100Gi
+libvirt:
+  uri: qemu:///system
+  pool: default
+  networkMode: bridge
+  baseImage: https://cloud-images.ubuntu.com/releases/noble/release-20260814/ubuntu-24.04-server-cloudimg-amd64.img
+  baseImageSha256: 6e40c07ae715f744f84af0bec76415cc1987dd115b4b8de437818561f01a3733
+  sshUser: uib
+  diagnosticImage: docker.io/library/ubuntu@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc
 cluster:
-  manager: kubernetes
-  version: <pinned-version>
+  manager: slurm
+  version: "23.11.4"
 container:
-  runtime: containerd
+  runtime: enroot
+  integration: pyxis
 launcher:
-  training: kubeflow
-  inference: kuberay
+  training: slurm
+  inference: slurm-ray
+nodes:
+  controlPlane: 1
+  workers: 4
+  cpu: 16
+  memory: 64Gi
+  disk: 100Gi
 network:
-  managementCIDR: 192.0.2.0/24
-  dataCIDR: 198.51.100.0/24
+  dataInterface: eth1
 ```
+
+The checked-in profiles pin every downloaded image and software version.
+Change node capacity freely, but update a URL and its SHA-256 digest together.
+`rootless` mode is described under [Libvirt Slurm lifecycle](#libvirt-slurm-lifecycle).
 
 ### Network profile example
 
@@ -497,6 +511,13 @@ only one communication, protocol, and network-condition overlay.
 | `infrastructure.kernel` | Non-empty path | Kernel selected by a virtme profile |
 | `infrastructure.kubernetesContext` | Context name | Existing Kubernetes target |
 | `infrastructure.allowExistingMutations` | `true`, `false` | Permit explicitly requested shaping on existing hardware |
+| `libvirt.uri` | Libvirt connection URI | `qemu:///system` for bridge mode or `qemu:///session` for passwordless rootless mode |
+| `libvirt.pool` | Existing active storage-pool name | Pool in which run-owned overlays and cloud-init volumes are created |
+| `libvirt.networkMode` | `bridge`, `rootless` | Managed libvirt networks, or passt management plus an unprivileged multicast data plane |
+| `libvirt.baseImage` | HTTPS URL | Pinned Ubuntu cloud image downloaded once into the ignored cache |
+| `libvirt.baseImageSha256` | 64 lowercase hexadecimal digits | Required digest checked before the cached base image is used |
+| `libvirt.sshUser` | Linux user name | Cloud-init administrator used only through the run-owned SSH key |
+| `libvirt.diagnosticImage` | OCI reference with an `@sha256:` digest | Image used by the Pyxis/Enroot provisioning preflight |
 | `cluster.manager` | `kubernetes`, `slurm` | Scheduler/control plane |
 | `cluster.version` | Non-empty version | Kubernetes or Slurm version selected by the adapter |
 | `cluster.nodeImage` | OCI reference with an `@sha256:` digest | Reproducible Kind node image |
@@ -588,6 +609,9 @@ nodes * processesPerNode == data * tensor * pipeline * expert
 | Kubernetes with host storage paths | Kubernetes uses claims, cache images, or `emptyDir` volumes |
 | Slurm with Kubernetes claims or cache images | Slurm uses shared host paths visible on every allocated node |
 | Slurm without model-cache/result paths, or UIB without a runtime path/data interface | Pyxis cannot provide the common mount and address contract |
+| `libvirt.networkMode: rootless` without `qemu:///session` | Rootless mode is deliberately scoped to a per-user libvirt daemon |
+| `libvirt.networkMode: bridge` without permission to create libvirt networks | Managed bridge/tap networking needs the normal system-libvirt network privileges |
+| Rootless mode for network-performance conclusions | Passt and multicast tunnels are functional transports, not an accurate model of physical fabric performance |
 | RCCL without `nodes.gpus.vendor: amd` | RCCL requires AMD/ROCm hardware |
 | NCCL with `nodes.gpus.vendor: amd` | Select RCCL for the AMD profile |
 | `gpu-direct` while the compatibility lock says unvalidated | Prevents an L2 claim from an unsupported path |
@@ -723,8 +747,8 @@ simulation/bin/uib-sim render --profile virtme-slurm \
 | `virtme-kind` | One virtme guest with Kind | Kubernetes | containerd | Kubeflow/KubeRay | L0 |
 | `virtme-kubernetes` | Multiple virtme guests | k3s or kubeadm | containerd | Kubeflow/KubeRay | L0 |
 | `virtme-slurm` | Multiple virtme guests | Slurm | Pyxis/Enroot | `sbatch`/`srun` | L0 |
-| `libvirt-kubernetes` | OpenTofu/libvirt VMs | Kubernetes | containerd | Kubeflow/KubeRay | L0 or L1 with passthrough |
-| `libvirt-slurm` | OpenTofu/libvirt VMs | Slurm | Pyxis/Enroot | `sbatch`/`srun` | L0 or L1 with passthrough |
+| `libvirt-kubernetes` | OpenTofu/libvirt VMs | Kubernetes | containerd | Kubeflow/KubeRay | Planned |
+| `libvirt-slurm` | OpenTofu/libvirt VMs | Slurm | Pyxis/Enroot | `sbatch`/`srun` | L0 verified; L1 requires physical multi-node traffic |
 | `real-kubernetes` | Existing hardware | Kubernetes | site CRI | Kubeflow/KubeRay | L1-L3 |
 | `real-slurm` | Existing hardware | Slurm | Pyxis/Enroot | `sbatch`/`srun` | L1-L3 |
 
@@ -1646,7 +1670,8 @@ adapter.
 
 ### OpenTofu and libvirt Kubernetes
 
-This is the main realistic local Kubernetes lab:
+This planned composition is the main realistic local Kubernetes lab. The
+current OpenTofu/Ansible implementation provisions Slurm only:
 
 1. OpenTofu creates management and data networks, volumes, cloud-init data,
    one control-plane VM, and worker VMs.
@@ -1757,9 +1782,11 @@ srun \
 The implementation follows the [official Pyxis command-line contract](https://github.com/NVIDIA/pyxis#usage)
 and standard [Slurm batch options](https://slurm.schedmd.com/sbatch.html).
 It does not implement a private container runtime or scheduler protocol.
-The structural contract is recorded against Slurm 26.05, Pyxis 0.24.0, and
-Enroot 4.2.1; this is documentation compatibility, not a claim that those
-three packages have completed a real cluster run.
+The disposable VM contract uses the exact Ubuntu 24.04 Slurm package
+`23.11.4-1.2ubuntu5`, Pyxis 0.24.0, and Enroot 4.2.1. That combination passed
+an actual controller/worker lifecycle in the rootless libvirt lab described
+below. Existing clusters may use another compatible version, but must record
+it in their site evidence.
 
 Before the application starts, every rank:
 
@@ -1969,28 +1996,66 @@ test seams, each of which must name one executable rather than a shell command:
 Enroot, and Pyxis with Ansible, and shapes the compute data-plane taps. It is
 an L0 kernel and lifecycle test unless GPU passthrough is proven.
 
-### OpenTofu and libvirt Slurm
+## Libvirt Slurm lifecycle
 
-`libvirt-slurm` creates a realistic disposable Slurm lab. OpenTofu owns the
-VMs and networks; Ansible owns node configuration. The workload still runs
-through ordinary `sbatch`, `srun`, Pyxis, and Enroot.
+`libvirt-slurm` creates a disposable Slurm controller and one or more workers.
+`uib-sim up` verifies and caches the cloud image, creates an ephemeral SSH key,
+runs the pinned OpenTofu module, generates a private Ansible inventory, stages
+the portable UIB runtime once, and provisions standard Slurm, Munge, NFS,
+Enroot, and Pyxis components. The application-facing stack remains ordinary
+`sbatch`, `srun`, and Pyxis; no private scheduler or container protocol is
+introduced.
 
-After OpenTofu and Ansible provisioning lands, the scheduler-facing commands
-remain the same implemented Slurm lifecycle:
+Bridge mode is the closer local model of a conventional cluster. It creates
+run-owned management and isolated data networks through system libvirt:
 
 ```text
-tofu apply
-ansible-playbook site-slurm.yaml
-simulation/bin/uib-sim run --profile libvirt-slurm \
-    --request simulation/requests/training-smoke.yaml \
-    --run-id uib-slurm-smoke --state-dir /shared/uib/run-ledgers
-simulation/bin/uib-sim collect --run-id uib-slurm-smoke \
-    --state-dir /shared/uib/run-ledgers \
-    --output-dir /shared/uib/collected/uib-slurm-smoke
+simulation/bin/uib-sim up --profile libvirt-slurm \
+    --run-id uib-slurm-lab
+simulation/bin/uib-sim status --profile libvirt-slurm \
+    --run-id uib-slurm-lab
 simulation/bin/uib-sim down --profile libvirt-slurm \
-    --run-id uib-slurm-smoke --state-dir /shared/uib/run-ledgers
-tofu destroy
+    --run-id uib-slurm-lab
 ```
+
+The named `libvirt.pool` must already be active. The caller also needs normal
+permission to use the configured URI and create networks. Each run receives
+its own OpenTofu state, overlays, cloud-init volume, key, networks, domains,
+inventory, and lifecycle log under
+`simulation/.artifacts/runs/<run-id>/infrastructure/`.
+
+Rootless mode provides a passwordless functional path for development. It
+uses `qemu:///session`, passt management interfaces with deterministic
+loopback SSH forwards, and an unprivileged multicast tunnel for the private
+data plane. The repository gate starts a bounded per-user daemon when needed,
+creates an exact temporary storage pool, provisions two VMs by default, runs
+the preflights, destroys the OpenTofu state, and removes only that pool:
+
+```text
+make simulation-libvirt-e2e-test
+```
+
+The real gate confirms controller health, an idle worker, an ordinary remote
+Slurm task, a digest-pinned OCI image through Pyxis/Enroot, the shared NFSv4
+paths over the data network, and `/opt/uib/bin/uib-preflight --library-only`
+inside that container. The UIB check proves packaging and loading only. It
+does not send application data through UIB and is therefore L0 evidence.
+Passt and multicast networking are also unsuitable for throughput or latency
+claims; use bridge mode or physical hardware for those measurements.
+
+The NFS export is limited to the exact run-owned worker data addresses. It
+uses `no_root_squash` because Enroot container mounts need to populate the
+shared test paths. Do not apply this disposable-lab role to an existing or
+multi-user cluster. The multicast data tunnel is likewise intended only for a
+trusted development host. Existing clusters should supply their normal
+segmented network and secured shared storage instead.
+
+Infrastructure lifecycle and Slurm job lifecycle intentionally have separate
+ownership. `up`, infrastructure `status`, and infrastructure `down` work for
+the VM lab today. The current Slurm `run` command executes on its local
+submission host, so it is not yet wired to submit a workload remotely through
+the VM controller. Until that adapter is added, use the automated provisioning
+preflights for the VM lab and use `run` on an existing Slurm login node.
 
 ### Existing Slurm
 
@@ -2716,8 +2781,9 @@ from looking runnable.
 Configuration stays deliberately conventional: a small defaults file, one
 YAML profile, an optional YAML workload request, and standard JSON Schema
 validation. The thin `uib-sim` wrapper merges and validates configuration and
-delegates the implemented Kind lifecycle; it does not replace Kind, OpenTofu,
-Ansible, Helm, `kubectl`, Slurm, Pyxis, or Enroot.
+delegates the implemented Kind and libvirt/Slurm infrastructure lifecycles. It
+does not replace Kind, OpenTofu, Ansible, Helm, `kubectl`, Slurm, Pyxis, or
+Enroot.
 
 ```text
 simulation/bin/uib-sim render --profile kind-kubernetes
@@ -2746,7 +2812,7 @@ plug-ins, and shaping existing hardware without explicit permission.
 `make simulation-cli-test` to validate every checked-in profile. The wrapper
 requires Python, PyYAML, and jsonschema.
 
-Each backend will keep using its own normal configuration and state:
+Each backend keeps using its own normal configuration and state:
 
 - Kind configuration and cluster names;
 - OpenTofu state for libvirt resources;
@@ -2754,8 +2820,8 @@ Each backend will keep using its own normal configuration and state:
 - Helm values and Kubernetes labels/namespaces;
 - Slurm batch files, job IDs, Pyxis, and Enroot configuration.
 
-`uib-sim` delegates the Kind lifecycle now; the other planned adapters follow
-the same pattern:
+`uib-sim` delegates Kind and libvirt/Slurm infrastructure now. The remaining
+adapters follow the same standard-tool pattern:
 
 ```text
 simulation/bin/uib-sim doctor --profile <profile>
@@ -2766,17 +2832,17 @@ helm upgrade --install <release> <chart> -f <rendered-values>
 sbatch <rendered-job>
 ```
 
-`doctor` is read-only. Today it reports the selected profile, provider,
-manager, communication front end, and presence of their required command-line
-tools. Kernel, GPU/RDMA, scheduler-version, storage, and permission probes are
-planned preflight extensions.
+`doctor` is read-only. It reports the selected profile, provider, manager,
+communication front end, and presence of required command-line tools. The
+libvirt `up` path performs the deeper image, provisioning, scheduler, storage,
+Pyxis, Enroot, and UIB-runtime checks inside its disposable guests. Kernel,
+GPU/RDMA, and physical-fabric qualification remain separate promotion gates.
 
-The current Kind `up` adapter creates only the explicit `--run-id` cluster.
-Later providers follow the same ownership rule. For existing clusters the
-adapter performs no infrastructure changes.
-
-The later `deploy` adapter installs or detects scheduler components and stages images and UIB
-artifacts.
+Kind `up` creates only the explicit `--run-id` cluster. Libvirt `up` creates
+only resources recorded in that run's private OpenTofu state, and provisions
+Slurm through its generated inventory. For existing clusters the adapter
+performs no infrastructure changes. Libvirt/Kubernetes provisioning and the
+general `deploy` operation are not implemented yet.
 
 The Slurm `run` adapter resolves configuration, records its exact inputs,
 checks shared paths, renders the batch file, submits it, and records ownership.
@@ -2812,22 +2878,21 @@ uib-sim run --request collectives-smoke.yaml
 uib-sim down
 ```
 
-### Current NVIDIA-style Slurm submission
+### Disposable NVIDIA-style Slurm infrastructure
 
 ```text
-simulation/bin/uib-sim run --profile libvirt-slurm \
-    --request simulation/requests/training-smoke.yaml \
-    --run-id uib-slurm-smoke --allow-mutable-tags
+simulation/bin/uib-sim up --profile libvirt-slurm \
+    --run-id uib-slurm-smoke
 simulation/bin/uib-sim status --profile libvirt-slurm \
     --run-id uib-slurm-smoke
-simulation/bin/uib-sim collect --run-id uib-slurm-smoke
 simulation/bin/uib-sim down --profile libvirt-slurm \
     --run-id uib-slurm-smoke
 ```
 
-The profile currently assumes a separately provisioned Slurm/Pyxis lab and
-the shared paths documented above. OpenTofu/Ansible creation remains a later
-lifecycle phase.
+This provisions and validates the VM cluster automatically. It does not yet
+make the local Slurm `run` adapter submit remotely through the guest
+controller; see [Libvirt Slurm lifecycle](#libvirt-slurm-lifecycle). Use the
+`real-slurm` profile on a normal login node for current workload submission.
 
 ## Moving to real hardware
 
@@ -2993,7 +3058,9 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in network condition renders to the expected `tc netem` command; unsafe interfaces and invalid combinations are rejected; it does not modify a qdisc |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | UET SEND, RDMA read/write, and atomics complete with actual netem conditions and the selected built-in or plugin congestion algorithm |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
+| `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge and rootless rendering, cached-image verification, generated OpenTofu and Ansible inputs, exclusive ownership, command delegation, status, and exact-state cleanup with fake standard commands |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
+| `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, passt, NFS-capable Ubuntu guests, and download access on the first run | Actual controller/worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, an ordinary worker task, pinned OCI execution, portable UIB library preflight in Pyxis, state-based destruction, and domain/pool absence; no UIB traffic or GPU claim |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
 | `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, UET/NSCC, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
 | `make simulation-slurm-lifecycle-test` | The Slurm renderer requirements; no Slurm installation or container engine | Exclusive ignored run ledgers, shared-path preflight, exact `sbatch --parsable` submission, recorded numeric job ownership, read-only `sacct` status, exact-ID `scancel`, retained failures, and rejection of result/ledger reuse or ambiguous submission output using fake standard commands |
@@ -3003,13 +3070,14 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, admission, two-node torchrun rendezvous, distinct placement, UIB preflight, CPU DDP result, and complete run/operator/cluster cleanup; no UIB traffic |
 | `make simulation-kuberay-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, roughly 10 GB of image storage, four CPU cores and 8 GiB for the Ray head; network access for uncached images, source archives, chart, and model revision | Required actual two-worker UIB verbs traffic, portable-runtime compatibility, KubeRay v1.6.2 admission and Ray 2.58.0 readiness, offline cached SmolLM2 inference, four-result correctness, retained evidence, and complete cleanup; the single-rank inference portion itself sends no UIB traffic |
 
-Run the eight hardware-neutral gates:
+Run the nine hardware-neutral gates:
 
 ```text
 make simulation-cli-test
 make simulation-netem-test
 make simulation-congestion-test
 make simulation-kind-test
+make simulation-libvirt-test
 make simulation-kubernetes-render-test
 make simulation-slurm-render-test
 make simulation-slurm-lifecycle-test
@@ -3062,6 +3130,68 @@ SIMULATION_KIND_E2E_IMAGES='uib-training:test uib-inference:test' \
 SIMULATION_KIND_E2E_ALLOW_MUTABLE_TAGS=1 \
 make simulation-kind-e2e-test
 ```
+
+### Libvirt VM tests
+
+The structural libvirt gate uses fake executables and does not contact a
+daemon:
+
+```text
+make simulation-libvirt-test
+```
+
+The opt-in end-to-end gate defaults to a passwordless per-user daemon,
+rootless networking, one controller, and one worker:
+
+```text
+make simulation-libvirt-e2e-test
+```
+
+The gate builds the verified portable UIB runtime rather than a host-native
+bundle, because the diagnostic container may have an older glibc than the
+development host. On its first run it downloads the digest-verified cloud
+image, the pinned OpenTofu provider, Enroot and Pyxis sources, Ubuntu packages
+in the guests, and the diagnostic OCI image. Host downloads are retained under
+the ignored `simulation/.artifacts` cache. OCI and package-manager caches
+follow their normal host or guest behavior; model and dataset files are never
+committed.
+
+| Variable | Default | Syntax and meaning |
+|---|---|---|
+| `LIBVIRT_URI` | `qemu:///session` | Exact libvirt URI; rootless mode requires the session URI |
+| `LIBVIRT_NETWORK_MODE` | `rootless` | `rootless` for passt plus multicast, or `bridge` for managed networks |
+| `LIBVIRT_POOL` | Unique run ID | Active pool name; the gate creates and later removes a missing session pool |
+| `LIBVIRT_POOL_DIR` | Ignored run-specific path | Directory backing a session pool created by the gate; not used for a pre-existing pool |
+| `LIBVIRT_WORKERS` | `1` | Positive worker count; each worker is an independent VM |
+| `LIBVIRT_CPUS` | `2` | Positive vCPU count per VM |
+| `LIBVIRT_MEMORY` | `4Gi` | Per-VM memory with `Mi`, `Gi`, or `Ti` suffix |
+| `LIBVIRT_DISK` | `16Gi` | Per-VM overlay capacity with `Mi`, `Gi`, or `Ti` suffix |
+| `LIBVIRT_E2E_RUN_ID` | Unique `uib-libvirt-e2e-<pid>` | Safe run ID used for all owned resources and state |
+| `SIMULATION_LIBVIRT_STATE_DIR` | `simulation/.artifacts/runs` | Private lifecycle-ledger root |
+| `TOFU_COMMAND` | `tofu` | Exact OpenTofu executable; the module requires version 1.12.3 |
+| `ANSIBLE_PLAYBOOK_COMMAND` | `ansible-playbook` | Exact Ansible playbook executable |
+| `LIBVIRTD_COMMAND` | Discovered `libvirtd` | Exact daemon executable used only when a session daemon is unavailable |
+| `ANSIBLE_LOCAL_TEMP` | Ignored artifacts path | Controller-side Ansible temporary directory |
+
+For a larger rootless functional lab:
+
+```text
+LIBVIRT_WORKERS=2 LIBVIRT_CPUS=4 LIBVIRT_MEMORY=8Gi \
+make simulation-libvirt-e2e-test
+```
+
+For bridge mode, supply an active system pool and suitable libvirt network
+permissions. The gate never creates or removes a system pool:
+
+```text
+LIBVIRT_URI=qemu:///system LIBVIRT_NETWORK_MODE=bridge \
+LIBVIRT_POOL=default make simulation-libvirt-e2e-test
+```
+
+Do not combine `rootless` with `qemu:///system`. Do not use the rootless gate
+for performance measurements. Command override variables name one executable,
+not a shell command with arguments. The gate's interrupt trap destroys only
+the run's OpenTofu state and removes a pool only when the gate created it.
 
 The congestion test creates a disposable network namespace, applies netem to
 its loopback interface, runs `tests/loopback`, and destroys the namespace. It
@@ -3302,10 +3432,12 @@ Cleanup must remain safe after interruption during every lifecycle stage.
   Kubeflow training resources render and pass structural tests. Operator
   installation, server-side CRD/admission validation, and an actual two-worker
   CPU TrainJob passed. The run uses Gloo and validates UIB packaging but not
-  its data plane. The Slurm renderer passes structural and fake-command
-  execution tests, but no real Slurm/Pyxis/Enroot job has run yet. GPU/NCCL
-  Kubernetes execution, non-Kind infrastructure provisioning, DeepSpeed, and
-  Megatron-Core remain planned.
+  its data plane. A disposable libvirt controller/worker lab passed actual
+  Slurm, NFS, Enroot, Pyxis, pinned-container, UIB library-preflight, and exact
+  cleanup gates. That preflight is not UIB payload traffic, and remote Slurm
+  workload submission through the guest controller is not wired into
+  `uib-sim run` yet. GPU/NCCL Kubernetes execution, libvirt/Kubernetes,
+  DeepSpeed, and Megatron-Core remain planned.
 - The diagnostic image passed its hardware-neutral, UIB runtime-injection,
   CUDA `deviceQuery`, and single-GPU NCCL all-reduce gates. Its NCCL run has
   one rank and therefore does not send UIB traffic.

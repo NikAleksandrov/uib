@@ -1,0 +1,41 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+printf '%s\n' "$*" > "$LIBVIRT_TEST_LOG/ansible.args"
+inventory=
+playbook=
+extra=
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	-i)
+		shift
+		inventory=$1
+		;;
+	--extra-vars)
+		shift
+		extra=$1
+		;;
+	*.yaml)
+		playbook=$1
+		;;
+	esac
+	shift
+done
+[ -f "$inventory" ]
+[ -f "$playbook" ]
+grep -q '^    slurm_controller:' "$inventory"
+grep -q '^    slurm_workers:' "$inventory"
+python3 - "$extra" <<'PY'
+import json
+import sys
+
+
+values = json.loads(sys.argv[1])
+assert values["uib_run_id"] == "uib-libvirt-test"
+assert values["uib_enabled"] is True
+assert values["uib_data_interface"] == "eth1"
+assert values["uib_slurm_partition"] == "uib"
+assert values["uib_node_cpu"] == 2
+assert values["uib_node_memory_mib"] == 4096
+assert len(values["uib_stack_downloads"]) == 3
+PY

@@ -1,0 +1,95 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+
+- name: Prepare libvirt Slurm nodes
+  hosts: slurm_cluster
+  become: true
+  gather_facts: false
+  roles:
+    - common
+
+- name: Export shared simulation storage
+  hosts: slurm_controller
+  become: true
+  gather_facts: false
+  roles:
+    - shared_storage
+
+- name: Mount shared simulation storage
+  hosts: slurm_workers
+  become: true
+  gather_facts: false
+  roles:
+    - shared_storage
+
+- name: Configure Slurm, Enroot, and Pyxis
+  hosts: slurm_cluster
+  become: true
+  gather_facts: false
+  roles:
+    - slurm_stack
+
+- name: Validate the scheduler and container runtime
+  hosts: slurm_controller
+  become: true
+  become_user: "{{ uib_ssh_user }}"
+  gather_facts: false
+  tasks:
+    - name: Check controller health
+      ansible.builtin.command: scontrol ping
+      changed_when: false
+
+    - name: Check worker health
+      ansible.builtin.command:
+        argv:
+          - sinfo
+          - --noheader
+          - --nodes
+          - "{{ groups['slurm_workers'] | join(',') }}"
+          - --format=%N|%T
+      register: uib_sinfo
+      changed_when: false
+
+    - name: Require every worker to be idle
+      ansible.builtin.assert:
+        that:
+          - "'down' not in uib_sinfo.stdout"
+          - "'unknown' not in uib_sinfo.stdout"
+        fail_msg: "Slurm workers are not ready: {{ uib_sinfo.stdout }}"
+
+    - name: Run one ordinary Slurm task on every worker
+      ansible.builtin.command:
+        argv:
+          - srun
+          - "--nodes={{ groups['slurm_workers'] | length }}"
+          - "--ntasks={{ groups['slurm_workers'] | length }}"
+          - --ntasks-per-node=1
+          - /bin/hostname
+      changed_when: false
+
+    - name: Run a pinned image through Pyxis and Enroot
+      ansible.builtin.command:
+        argv:
+          - srun
+          - --nodes=1
+          - --ntasks=1
+          - "--container-image={{ uib_diagnostic_image }}"
+          - --no-container-mount-home
+          - --no-container-entrypoint
+          - /bin/true
+      changed_when: false
+
+    - name: Preflight the shared UIB runtime inside Pyxis
+      when: uib_enabled | bool
+      ansible.builtin.command:
+        argv:
+          - srun
+          - --nodes=1
+          - --ntasks=1
+          - "--container-image={{ uib_diagnostic_image }}"
+          - "--container-mounts={{ uib_runtime_path }}:/opt/uib:ro"
+          - --no-container-mount-home
+          - --no-container-entrypoint
+          - /opt/uib/bin/uib-preflight
+          - --library-only
+      changed_when: false
