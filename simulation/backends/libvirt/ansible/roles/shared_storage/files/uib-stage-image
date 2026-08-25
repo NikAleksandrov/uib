@@ -46,7 +46,8 @@ import)
 	tar --extract --file=- --directory="$temporary/rootfs" \
 		--numeric-owner --same-owner
 	mksquashfs "$temporary/rootfs" "$temporary/image.sqsh" \
-		-noappend -comp zstd -quiet -no-progress >/dev/null
+		-noappend -comp zstd -processors 1 -mem 512M \
+		-quiet -no-progress >/dev/null
 	chmod 0644 "$temporary/image.sqsh"
 	mv "$temporary/image.sqsh" "$image"
 	rm -rf -- "$temporary"

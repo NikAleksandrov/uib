@@ -281,3 +281,175 @@ def stage_libvirt_image(args, reference, allow_mutable_tags):
     record_slurm_image_cache(cache_root, reference, image_id, cache)
     record_staged_image(args, reference, image_id, remote_path, cache)
     return remote_path
+
+
+def validate_huggingface_cache(source):
+    from .core import ConfigurationError
+    from .state import path_is_within
+
+    source = source.expanduser()
+    if source.is_symlink() or not source.is_dir():
+        raise ConfigurationError(
+            f"Hugging Face cache is not a directory: {source}")
+    try:
+        root = source.resolve(strict=True)
+        entries = sorted(root.rglob("*"))
+    except OSError as error:
+        raise ConfigurationError(
+            f"cannot inspect Hugging Face cache {source}: {error}") from error
+    if not entries:
+        raise ConfigurationError(f"Hugging Face cache is empty: {source}")
+    for entry in entries:
+        if entry.is_symlink():
+            try:
+                target = entry.resolve(strict=True)
+            except OSError as error:
+                raise ConfigurationError(
+                    f"broken cache symbolic link: {entry}") from error
+            if not path_is_within(target, root):
+                raise ConfigurationError(
+                    f"cache symbolic link escapes its root: {entry}")
+        elif not entry.is_dir() and not entry.is_file():
+            raise ConfigurationError(
+                f"Hugging Face cache contains a special file: {entry}")
+    return root
+
+
+def create_cache_archive(source):
+    from .core import ConfigurationError
+    from .scheduler import command_executable
+
+    tar = command_executable("TAR_COMMAND", "tar")
+    try:
+        descriptor, name = tempfile.mkstemp(
+            prefix="uib-huggingface-", suffix=".tar")
+        os.close(descriptor)
+    except OSError as error:
+        raise ConfigurationError(
+            f"cannot create Hugging Face cache archive: {error}") from error
+    archive = pathlib.Path(name)
+    try:
+        created = subprocess.run([
+            tar, "--create", f"--file={archive}",
+            f"--directory={source}", ".",
+        ], text=True, capture_output=True, check=False)
+    except OSError as error:
+        archive.unlink(missing_ok=True)
+        raise ConfigurationError(f"cannot invoke tar: {error}") from error
+    if created.returncode:
+        archive.unlink(missing_ok=True)
+        if created.stderr:
+            print(created.stderr, file=sys.stderr, end="")
+        raise ConfigurationError("cannot archive the Hugging Face cache")
+    return archive, sha256_file(archive)
+
+
+def run_cache_helper(args, mode, digest, **kwargs):
+    from .core import ConfigurationError
+    from .scheduler import run_scheduler
+
+    result = run_scheduler(
+        args, "", "/usr/local/libexec/uib-stage-huggingface-cache",
+        [mode, digest], text=True, capture_output=True, **kwargs)
+    remote_path = "/var/cache/uib/models/huggingface"
+    if result.returncode == 0 and result.stdout.strip() != remote_path:
+        raise ConfigurationError(
+            "cache staging helper returned an invalid path: "
+            f"{result.stdout.strip()}")
+    return result, remote_path
+
+
+def record_staged_cache(args, source, digest, size, remote_path):
+    from .core import ConfigurationError
+    from .state import read_json, state_path, utc_now, write_json
+
+    path = state_path(args) / "infrastructure" / "caches.json"
+    if path.is_file():
+        record = read_json(path, "staged cache ledger")
+        if record.get("schemaVersion") != 1 or record.get("runId") != args.run_id:
+            raise ConfigurationError(
+                f"staged cache ledger ownership mismatch: {path}")
+    else:
+        record = {"schemaVersion": 1, "runId": args.run_id, "caches": {}}
+    caches = record.get("caches")
+    if not isinstance(caches, dict):
+        raise ConfigurationError(f"invalid staged cache ledger: {path}")
+    caches["huggingface"] = {
+        "archiveSha256": digest,
+        "archiveSize": size,
+        "path": remote_path,
+        "sourceKey": source.name,
+        "stagedAt": utc_now(),
+    }
+    write_json(path, record)
+
+
+def record_slurm_cache_inventory(source, digest, size):
+    from .core import ConfigurationError, DEFAULT_SLURM_CACHE_INVENTORY
+    from .state import read_json, utc_now, write_json
+
+    root = pathlib.Path(os.environ.get(
+        "SLURM_CACHE_INVENTORY", DEFAULT_SLURM_CACHE_INVENTORY)
+    ).expanduser().resolve()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise ConfigurationError(
+            f"cannot create Slurm cache inventory: {error}") from error
+    path = root / "inventory.json"
+    if path.is_file():
+        inventory = read_json(path, "Slurm cache inventory")
+        if inventory.get("schemaVersion") != 1:
+            raise ConfigurationError(
+                f"unsupported Slurm cache inventory: {path}")
+    else:
+        inventory = {"schemaVersion": 1, "caches": {}}
+    caches = inventory.get("caches")
+    if not isinstance(caches, dict):
+        raise ConfigurationError(f"invalid Slurm cache inventory: {path}")
+    caches["huggingface"] = {
+        "archiveSha256": digest,
+        "archiveSize": size,
+        "sourceKey": source.name,
+        "verifiedAt": utc_now(),
+    }
+    write_json(path, inventory)
+
+
+def stage_huggingface_cache(args, source):
+    from .core import ConfigurationError
+    from .scheduler import scheduler_remote
+
+    if not scheduler_remote(args):
+        raise ConfigurationError("libvirt infrastructure is not ready")
+    source = validate_huggingface_cache(source)
+    archive, digest = create_cache_archive(source)
+    try:
+        checked, remote_path = run_cache_helper(args, "check", digest)
+        if checked.returncode == 3:
+            try:
+                with archive.open("rb") as content:
+                    installed, remote_path = run_cache_helper(
+                        args, "install", digest, stdin=content)
+            except OSError as error:
+                raise ConfigurationError(
+                    f"cannot read Hugging Face cache archive: {error}") from error
+            if installed.returncode:
+                if installed.stderr:
+                    print(installed.stderr, file=sys.stderr, end="")
+                raise ConfigurationError("cannot stage Hugging Face cache")
+        elif checked.returncode:
+            if checked.stderr:
+                print(checked.stderr, file=sys.stderr, end="")
+            raise ConfigurationError(
+                "controller has a different Hugging Face cache")
+        try:
+            size = archive.stat().st_size
+        except OSError as error:
+            raise ConfigurationError(
+                f"cannot inspect Hugging Face cache archive: {error}") from error
+        record_slurm_cache_inventory(source, digest, size)
+        record_staged_cache(args, source, digest, size, remote_path)
+        return remote_path
+    finally:
+        archive.unlink(missing_ok=True)

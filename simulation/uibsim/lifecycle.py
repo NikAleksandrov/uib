@@ -160,6 +160,19 @@ def command_load_image(args):
     return invoke_backend(config, arguments)
 
 
+def command_load_cache(args):
+    from .config import resolve
+    from .core import ConfigurationError
+    from .images import stage_huggingface_cache
+
+    config = resolve(args)
+    if config["infrastructure"]["provider"] != "libvirt":
+        raise ConfigurationError(
+            "load-cache is currently implemented only for libvirt")
+    print(stage_huggingface_cache(args, pathlib.Path(args.source)))
+    return 0
+
+
 def command_render_workload(args):
     from .config import resolve
     from .core import ConfigurationError, KUBERNETES_RENDERER, SLURM_RENDERER
@@ -388,6 +401,7 @@ def command_collect(args):
     missing = []
     workload_status = None
     staged_images = None
+    staged_caches = None
     try:
         for directory in ("logs", "metrics", "scheduler", "state", "traces"):
             (temporary / directory).mkdir()
@@ -407,6 +421,15 @@ def command_collect(args):
                 raise ConfigurationError(
                     f"staged image ledger ownership mismatch: {staged_path}")
             copy_file(staged_path, temporary / "staged-images.json")
+        cache_path = run_dir / "infrastructure" / "caches.json"
+        if cache_path.is_file() and not cache_path.is_symlink():
+            staged_caches = read_json(cache_path, "staged cache ledger")
+            if (staged_caches.get("schemaVersion") != 1 or
+                    staged_caches.get("runId") != args.run_id or
+                    not isinstance(staged_caches.get("caches"), dict)):
+                raise ConfigurationError(
+                    f"staged cache ledger ownership mismatch: {cache_path}")
+            copy_file(cache_path, temporary / "staged-caches.json")
         for name in ("render.stderr", "sbatch.stdout", "sbatch.stderr"):
             source = run_dir / name
             if source.is_file():
@@ -522,6 +545,8 @@ def command_collect(args):
             "uibRuntime": config["uib"].get("bundle"),
             "stagedImages": (
                 "staged-images.json" if staged_images is not None else None),
+            "stagedCaches": (
+                "staged-caches.json" if staged_caches is not None else None),
         })
         write_json(temporary / "versions.json", {
             "schemaVersion": 1,

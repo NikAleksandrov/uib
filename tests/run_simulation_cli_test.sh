@@ -93,6 +93,11 @@ fi
 "$cli" render --profile libvirt-slurm \
 	--set nodes.memory=4Gi --set slurm.memory=3584Mi \
 	> "$test_dir/libvirt-memory.yaml"
+if "$cli" render --profile libvirt-slurm \
+	--set libvirt.sshPortBase=65534 > /dev/null 2>&1; then
+	echo "libvirt accepted an overflowing SSH port range" >&2
+	exit 1
+fi
 
 set +e
 "$cli" doctor --profile kind-kubernetes > "$test_dir/doctor.json"

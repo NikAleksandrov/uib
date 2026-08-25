@@ -16,8 +16,14 @@ training)
 	image=${LIBVIRT_E2E_IMAGE:-uib-training:test}
 	job_timeout=${LIBVIRT_E2E_JOB_TIMEOUT:-900}
 	;;
+inference)
+	request=$project_dir/simulation/requests/inference-smoke.yaml
+	image=${LIBVIRT_E2E_IMAGE:-uib-inference:test}
+	cache_source=${LIBVIRT_E2E_CACHE_SOURCE:-$project_dir/simulation/.artifacts/huggingface}
+	job_timeout=${LIBVIRT_E2E_JOB_TIMEOUT:-1200}
+	;;
 *)
-	echo "LIBVIRT_E2E_WORKLOAD must be lifecycle or training" >&2
+	echo "LIBVIRT_E2E_WORKLOAD must be lifecycle, training, or inference" >&2
 	exit 2
 	;;
 esac
@@ -35,11 +41,13 @@ network_mode=${LIBVIRT_NETWORK_MODE:-rootless}
 pool=${LIBVIRT_POOL:-$run_id}
 pool_dir=${LIBVIRT_POOL_DIR:-$project_dir/simulation/.artifacts/libvirt-pools/$pool}
 ansible_tmp=${ANSIBLE_LOCAL_TEMP:-$project_dir/simulation/.artifacts/ansible-tmp}
+ssh_port_base=${LIBVIRT_SSH_PORT_BASE:-$((30000 + $$ % 20000))}
 created_pool=0
 
 settings="--set libvirt.uri=$uri --set libvirt.pool=$pool"
 settings="$settings --set libvirt.networkMode=$network_mode"
 settings="$settings --set nodes.workers=${LIBVIRT_WORKERS:-2}"
+settings="$settings --set libvirt.sshPortBase=$ssh_port_base"
 settings="$settings --set nodes.cpu=${LIBVIRT_CPUS:-2}"
 settings="$settings --set nodes.memory=${LIBVIRT_MEMORY:-4Gi}"
 settings="$settings --set nodes.disk=${LIBVIRT_DISK:-16Gi}"
@@ -124,6 +132,10 @@ grep -F 'TASK [Preflight the shared UIB runtime inside Pyxis]' \
 	"$infra/lifecycle.log" >/dev/null
 
 workload_settings=
+if [ "$workload" = inference ]; then
+	"$cli" load-cache --profile libvirt-slurm --run-id "$run_id" \
+		--state-dir "$state_dir" --source "$cache_source" >/dev/null
+fi
 if [ -n "$image" ]; then
 	staged_image=$("$cli" load-image --profile libvirt-slurm \
 		--run-id "$run_id" --state-dir "$state_dir" \
@@ -207,15 +219,16 @@ assert summary["workloadExitCode"] == 0
 assert summary["uibEnabled"] is True
 with (root / "topology.json").open(encoding="utf-8") as source:
     topology = json.load(source)
-assert topology["requestedNodes"] == 2
-assert len(topology["allocatedNodes"]) == 2
+expected_nodes = 1 if sys.argv[4] == "inference" else 2
+assert topology["requestedNodes"] == expected_nodes
+assert len(topology["allocatedNodes"]) == expected_nodes
 if sys.argv[4] == "lifecycle":
     for rank in range(2):
         with (root / "workload" / f"rank-{rank}.json").open(
                 encoding="utf-8") as source:
             result = json.load(source)
         assert result == {"rank": rank, "worldSize": 2}
-else:
+elif sys.argv[4] == "training":
     with (root / "workload" / sys.argv[2] / "result.json").open(
             encoding="utf-8") as source:
         result = json.load(source)
@@ -231,6 +244,26 @@ else:
     with (root / "staged-images.json").open(encoding="utf-8") as source:
         staged = json.load(source)
     assert staged["runId"] == sys.argv[2]
+else:
+    with (root / "workload" / sys.argv[2] / "result.json").open(
+            encoding="utf-8") as source:
+        result = json.load(source)
+    assert result["status"] == "passed"
+    assert result["runId"] == sys.argv[2]
+    assert result["backend"] == "transformers"
+    assert result["requests"] == 4
+    assert result["outputTokens"] == 16
+    assert result["transport"]["uibEnabled"] is True
+    assert result["stack"]["vllm"] == "0.27.1"
+    assert result["stack"]["ray"] == "2.58.0"
+    assert result["stack"]["ncclLibrary"] == "2.30.7"
+    with (root / "workload" / sys.argv[2] / "request-trace.json").open(
+            encoding="utf-8") as source:
+        trace = json.load(source)
+    assert len(trace["requests"]) == 4
+    with (root / "staged-caches.json").open(encoding="utf-8") as source:
+        staged_cache = json.load(source)
+    assert staged_cache["runId"] == sys.argv[2]
 PY
 
 grep -F 'UIB runtime preflight: PASS' "$result_dir/logs/batch.out" >/dev/null

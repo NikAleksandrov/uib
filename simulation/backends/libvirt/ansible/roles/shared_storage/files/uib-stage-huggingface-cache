@@ -1,0 +1,60 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+mode=${1:-}
+digest=${2:-}
+case "$digest" in
+????????????????????????????????????????????????????????????????)
+	case "$digest" in
+	*[!0-9a-f]*)
+		echo "invalid cache digest" >&2
+		exit 2
+		;;
+	esac
+	;;
+*)
+	echo "invalid cache digest" >&2
+	exit 2
+	;;
+esac
+
+cache_root=/var/cache/uib/models
+cache=$cache_root/huggingface
+marker=$cache/.uib-archive-sha256
+
+case "$mode" in
+check)
+	[ -d "$cache" ] || exit 3
+	[ -f "$marker" ] || exit 4
+	[ "$(cat "$marker")" = "$digest" ] || exit 4
+	printf '%s\n' "$cache"
+	;;
+install)
+	[ ! -e "$cache" ] || {
+		echo "Hugging Face cache already exists with different contents" >&2
+		exit 4
+	}
+	temporary=$(mktemp -d "$cache_root/.huggingface.XXXXXX")
+	trap 'rm -rf -- "$temporary"' EXIT INT TERM
+	cat > "$temporary/cache.tar"
+	[ "$(sha256sum "$temporary/cache.tar" | cut -d ' ' -f 1)" = \
+		"$digest" ] || {
+		echo "Hugging Face cache archive failed checksum" >&2
+		exit 5
+	}
+	mkdir "$temporary/root"
+	tar --extract --file="$temporary/cache.tar" \
+		--directory="$temporary/root" --no-same-owner
+	printf '%s\n' "$digest" > "$temporary/root/.uib-archive-sha256"
+	rm "$temporary/cache.tar"
+	mv "$temporary/root" "$cache"
+	rmdir "$temporary"
+	trap - EXIT INT TERM
+	printf '%s\n' "$cache"
+	;;
+*)
+	echo "usage: uib-stage-huggingface-cache check|install DIGEST" >&2
+	exit 2
+	;;
+esac

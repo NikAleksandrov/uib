@@ -29,8 +29,8 @@ def add_state_dir_arg(parser):
 
 
 def main():
-    from .core import ConfigurationError
-    from .lifecycle import command_collect, command_doctor, command_down, command_kubeconfig, command_load_image, command_render, command_render_workload, command_run, command_status, command_up
+    from .core import ConfigurationError, DEFAULT_HUGGINGFACE_CACHE
+    from .lifecycle import command_collect, command_doctor, command_down, command_kubeconfig, command_load_cache, command_load_image, command_render, command_render_workload, command_run, command_status, command_up
 
     parser = argparse.ArgumentParser(
         description="resolve and inspect UIB simulation configuration")
@@ -67,6 +67,14 @@ def main():
         help="allow local development tags instead of immutable digests")
     add_state_dir_arg(load_image)
     load_image.set_defaults(handler=command_load_image)
+    load_cache = commands.add_parser(
+        "load-cache", help="stage the local Hugging Face cache")
+    add_lifecycle_args(load_cache)
+    load_cache.add_argument(
+        "--source", default=str(DEFAULT_HUGGINGFACE_CACHE),
+        help="local Hugging Face cache root")
+    add_state_dir_arg(load_cache)
+    load_cache.set_defaults(handler=command_load_cache)
     render_workload = commands.add_parser(
         "render-workload", help="render scheduler resources for one workload")
     add_lifecycle_args(render_workload)

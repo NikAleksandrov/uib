@@ -43,6 +43,12 @@ DEFAULT_RESULT_DIR = SIMULATION / ".artifacts" / "results"
 DEFAULT_SLURM_IMAGE_CACHE = SIMULATION / ".artifacts" / "slurm-images"
 
 
+DEFAULT_HUGGINGFACE_CACHE = SIMULATION / ".artifacts" / "huggingface"
+
+
+DEFAULT_SLURM_CACHE_INVENTORY = SIMULATION / ".artifacts" / "slurm-caches"
+
+
 RUN_ID = re.compile(r"^[a-z](?:[a-z0-9-]{1,46}[a-z0-9])$")
 
 

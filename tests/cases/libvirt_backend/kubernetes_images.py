@@ -6,7 +6,13 @@ import sys
 
 with open(sys.argv[1], encoding="utf-8") as source:
     ledger = json.load(source)
-image = ledger["images"]["uib-training:test"]
-assert image["imageId"] == "sha256:" + "a" * 64
-assert image["path"] == "/var/cache/uib/images/" + "a" * 64 + ".sqsh"
-assert image["hostCacheKey"] == "a" * 64 + ".sqsh"
+cache = ledger["caches"]["huggingface"]
+assert cache["path"] == "/var/cache/uib/models/huggingface"
+assert cache["sourceKey"] == "huggingface"
+assert cache["archiveSize"] > 0
+assert len(cache["archiveSha256"]) == 64
+with open(sys.argv[2], encoding="utf-8") as source:
+    inventory = json.load(source)
+assert inventory["caches"]["huggingface"]["archiveSha256"] == \
+    cache["archiveSha256"]
+assert "/" not in cache["sourceKey"]

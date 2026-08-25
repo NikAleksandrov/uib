@@ -23,6 +23,21 @@ case "$command" in
 	cat > "$LIBVIRT_REMOTE_ROOT/images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sqsh"
 	printf '%s\n' /var/cache/uib/images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sqsh
 	;;
+/usr/local/libexec/uib-stage-huggingface-cache\ check\ *)
+	digest=${command##* }
+	marker=$LIBVIRT_REMOTE_ROOT/models/huggingface/.uib-archive-sha256
+	[ -f "$marker" ] || exit 3
+	[ "$(cat "$marker")" = "$digest" ] || exit 4
+	printf '%s\n' /var/cache/uib/models/huggingface
+	;;
+/usr/local/libexec/uib-stage-huggingface-cache\ install\ *)
+	digest=${command##* }
+	mkdir -p "$LIBVIRT_REMOTE_ROOT/models/huggingface"
+	cat > "$LIBVIRT_REMOTE_ROOT/models/cache.tar"
+	printf '%s\n' "$digest" \
+		> "$LIBVIRT_REMOTE_ROOT/models/huggingface/.uib-archive-sha256"
+	printf '%s\n' /var/cache/uib/models/huggingface
+	;;
 'sbatch --parsable')
 	cat > "$LIBVIRT_TEST_LOG/submitted.sbatch"
 	if [ "${REMOTE_SBATCH_FAIL:-0}" = 1 ]; then

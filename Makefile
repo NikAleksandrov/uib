@@ -353,6 +353,14 @@ simulation-libvirt-training-e2e-test: runtime-bundle-portable-test
 	LIBVIRT_DISK=32Gi CONTAINER_ENGINE_COMMAND='$(TRAINING_CONTAINER_ENGINE)' \
 		./tests/run_libvirt_slurm_e2e_test.sh
 
+simulation-libvirt-inference-e2e-test: runtime-bundle-portable-test
+	@$(INFERENCE_CONTAINER_ENGINE) image inspect $(INFERENCE_IMAGE) >/dev/null 2>&1 || \
+		$(MAKE) inference-image
+	LIBVIRT_E2E_WORKLOAD=inference LIBVIRT_E2E_IMAGE='$(INFERENCE_IMAGE)' \
+	LIBVIRT_MEMORY=8Gi LIBVIRT_DISK=64Gi \
+	CONTAINER_ENGINE_COMMAND='$(INFERENCE_CONTAINER_ENGINE)' \
+		./tests/run_libvirt_slurm_e2e_test.sh
+
 simulation-kubeflow-e2e-test:
 	./tests/run_kubeflow_e2e_test.sh
 
@@ -906,6 +914,7 @@ clean:
 	simulation-libvirt-test \
 	simulation-libvirt-e2e-test \
 	simulation-libvirt-training-e2e-test \
+	simulation-libvirt-inference-e2e-test \
 	simulation-kubeflow-e2e-test \
 	simulation-kubernetes-uib-test \
 	simulation-kuberay-e2e-test \

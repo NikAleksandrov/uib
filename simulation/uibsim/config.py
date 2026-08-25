@@ -136,6 +136,10 @@ def validate_infrastructure(config):
     if provider == "libvirt" and config["nodes"]["controlPlane"] != 1:
         raise ConfigurationError("libvirt currently requires one control plane")
     if provider == "libvirt":
+        ssh_port_base = config["libvirt"].get("sshPortBase", 22000)
+        if ssh_port_base + config["nodes"]["workers"] > 65535:
+            raise ConfigurationError(
+                "libvirt SSH port range exceeds 65535")
         usable_memory = quantity_mib(config["nodes"]["memory"]) - 512
         if usable_memory < 1:
             raise ConfigurationError(

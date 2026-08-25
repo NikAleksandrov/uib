@@ -64,6 +64,15 @@
     group: root
     mode: "0755"
 
+- name: Install the Hugging Face cache staging helper
+  when: inventory_hostname in groups['slurm_controller']
+  ansible.builtin.copy:
+    src: uib-stage-huggingface-cache
+    dest: /usr/local/libexec/uib-stage-huggingface-cache
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Stage the portable UIB runtime once
   when:
     - inventory_hostname in groups['slurm_controller']

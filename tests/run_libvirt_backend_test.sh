@@ -40,6 +40,7 @@ python3 "$project_dir/tests/cases/libvirt_backend/ansible_extra_vars.py" "$test_
 "$cli" render --profile libvirt-slurm --format json \
 	--set libvirt.uri=qemu:///session \
 	--set libvirt.networkMode=rootless \
+	--set libvirt.sshPortBase=31000 \
 	--set "libvirt.baseImage=https://example.invalid/base.img" \
 	--set "libvirt.baseImageSha256=$image_sha" \
 	--set nodes.cpu=2 --set nodes.memory=4Gi --set nodes.disk=16Gi \
@@ -98,8 +99,27 @@ export SSH_COMMAND="$test_dir/bin/ssh"
 export SCP_COMMAND="$test_dir/bin/scp"
 export CONTAINER_ENGINE_COMMAND="$test_dir/bin/docker"
 export SLURM_IMAGE_CACHE="$test_dir/slurm-images"
+export SLURM_CACHE_INVENTORY="$test_dir/slurm-caches"
 export LIBVIRT_REMOTE_ROOT="$test_dir/remote"
 mkdir -p "$LIBVIRT_REMOTE_ROOT/results"
+
+mkdir -p "$test_dir/huggingface/blobs" "$test_dir/huggingface/snapshots"
+printf '%s\n' fake-model > "$test_dir/huggingface/blobs/model"
+ln -s ../blobs/model "$test_dir/huggingface/snapshots/model"
+mkdir "$test_dir/unsafe-huggingface"
+ln -s /etc/passwd "$test_dir/unsafe-huggingface/passwd"
+if "$cli" load-cache --profile libvirt-slurm \
+	--run-id uib-libvirt-test --state-dir "$test_dir/state" \
+	--source "$test_dir/unsafe-huggingface" >/dev/null 2>&1; then
+	echo "load-cache accepted an escaping symbolic link" >&2
+	exit 1
+fi
+staged_cache=$("$cli" load-cache --profile libvirt-slurm \
+	--run-id uib-libvirt-test --state-dir "$test_dir/state" \
+	--source "$test_dir/huggingface")
+[ "$staged_cache" = /var/cache/uib/models/huggingface ]
+python3 "$project_dir/tests/cases/libvirt_backend/kubernetes_images.py" "$test_dir/state/uib-libvirt-test/infrastructure/caches.json" \
+	"$SLURM_CACHE_INVENTORY/inventory.json"
 
 staged_image=$("$cli" load-image --profile libvirt-slurm \
 	--run-id uib-libvirt-test --state-dir "$test_dir/state" \
@@ -109,8 +129,8 @@ staged_image=$("$cli" load-image --profile libvirt-slurm \
 [ -f "$SLURM_IMAGE_CACHE/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sqsh.sha256" ]
 [ "$(cat "$test_dir/log/docker-removed")" = \
 	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ]
-python3 "$project_dir/tests/cases/libvirt_backend/kubernetes_images.py" "$test_dir/state/uib-libvirt-test/infrastructure/images.json"
-python3 "$project_dir/tests/cases/libvirt_backend/host_network.py" "$SLURM_IMAGE_CACHE/inventory.json"
+python3 "$project_dir/tests/cases/libvirt_backend/host_network.py" "$test_dir/state/uib-libvirt-test/infrastructure/images.json"
+python3 "$project_dir/tests/cases/libvirt_backend/oversubscription.py" "$SLURM_IMAGE_CACHE/inventory.json"
 rm "$LIBVIRT_REMOTE_ROOT/images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sqsh"
 rm "$test_dir/log/docker-removed"
 cached_image_path=$("$cli" load-image --profile libvirt-slurm \
@@ -176,7 +196,8 @@ if [ ! -f "$test_dir/collected/workload/result.json" ]; then
 fi
 [ -f "$test_dir/collected/logs/batch.out" ]
 [ -f "$test_dir/collected/staged-images.json" ]
-python3 "$project_dir/tests/cases/libvirt_backend/oversubscription.py" "$test_dir/collected/summary.json" \
+[ -f "$test_dir/collected/staged-caches.json" ]
+python3 "$project_dir/tests/cases/libvirt_backend/owned_ledger.py" "$test_dir/collected/summary.json" \
 	"$test_dir/collected/images.json"
 
 if "$cli" up --profile libvirt-slurm --run-id uib-libvirt-test \
@@ -194,7 +215,7 @@ fi
 	--set "libvirt.baseImageSha256=$image_sha"
 grep -F -- ' destroy -auto-approve ' "$test_dir/log/tofu.args" > /dev/null
 [ "$(cat "$test_dir/log/scancel.job")" = 7654 ]
-python3 "$project_dir/tests/cases/libvirt_backend/owned_ledger.py" "$infra/ledger.json"
+python3 "$project_dir/tests/cases/libvirt_backend/network_state.py" "$infra/ledger.json"
 
 before=$(wc -l < "$test_dir/log/tofu.args")
 "$cli" down --profile libvirt-slurm --run-id uib-libvirt-test \
@@ -221,6 +242,6 @@ fi
 	--state-dir "$test_dir/state" \
 	--set "libvirt.baseImage=https://example.invalid/base.img" \
 	--set "libvirt.baseImageSha256=$image_sha"
-python3 "$project_dir/tests/cases/libvirt_backend/network_state.py" "$test_dir/state/uib-libvirt-failed/infrastructure/ledger.json"
+python3 "$project_dir/tests/cases/libvirt_backend/status.py" "$test_dir/state/uib-libvirt-failed/infrastructure/ledger.json"
 
 echo "libvirt backend test: PASS"

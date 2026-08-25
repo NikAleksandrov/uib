@@ -41,6 +41,7 @@
         "uri": { "type": "string", "minLength": 1 },
         "pool": { "$ref": "#/$defs/slurmName" },
         "networkMode": { "enum": ["bridge", "rootless"] },
+        "sshPortBase": { "type": "integer", "minimum": 1024, "maximum": 65534 },
         "baseImage": { "type": "string", "pattern": "^https://\\S+$" },
         "baseImageSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "sshUser": { "type": "string", "pattern": "^[a-z_][a-z0-9_-]{0,31}$" },

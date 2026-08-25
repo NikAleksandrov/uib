@@ -23,12 +23,15 @@ def networks(config, node_count):
 
 
 def node_values(config, run_id):
-    from .core import mac_address, quantity
+    from .core import LibvirtError, mac_address, quantity
 
     names = [("controller", "controller", 0)]
     names.extend((f"worker-{index:02d}", "worker", index)
                  for index in range(1, config["nodes"]["workers"] + 1))
     management, data = networks(config, len(names))
+    ssh_port_base = config["libvirt"].get("sshPortBase", 22000)
+    if ssh_port_base + config["nodes"]["workers"] > 65535:
+        raise LibvirtError("libvirt SSH port range exceeds 65535")
     result = {}
     for name, role, index in names:
         address_index = 10 if role == "controller" else 20 + index
@@ -40,7 +43,7 @@ def node_values(config, run_id):
             "disk_bytes": quantity(config["nodes"]["disk"], "bytes"),
             "management_ip": str(management[address_index]),
             "management_mac": mac_address(run_id, name, "management"),
-            "ssh_port": 22000 + index,
+            "ssh_port": ssh_port_base + index,
             "data_ip": str(data[address_index]),
             "data_mac": mac_address(run_id, name, "data"),
         }

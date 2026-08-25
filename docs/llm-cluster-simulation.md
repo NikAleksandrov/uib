@@ -88,6 +88,7 @@ topology.
 | `make simulation-kubernetes-uib-test` | CPU | No | Unchanged verbs programs exchange actual RC SEND/RECV and RDMA Write traffic through UIB between two Kind workers |
 | `make simulation-libvirt-e2e-test` | CPU with KVM | No | Disposable Slurm/Pyxis/Enroot controller/two-worker lifecycle, actual cross-VM RC payload traffic through UIB, and remote `run`/`status`/`collect`/`down` |
 | `make simulation-libvirt-training-e2e-test` | CPU with KVM | No | The same UIB gate plus real two-rank CPU DDP training in a staged local OCI filesystem through Slurm/Pyxis/Enroot; Gloo training is not UIB collective traffic |
+| `make simulation-libvirt-inference-e2e-test` | CPU with KVM | No | The same UIB gate plus real offline SmolLM2 serving from a staged image and dynamic model cache through Slurm/Pyxis/Enroot; one serving task has no collective traffic |
 | `make nccl-test` | One NVIDIA GPU with local MPS support | No | Two local ranks send host-staged NCCL traffic through UIB |
 | `make training-uib-test` | One NVIDIA GPU with local MPS support | No | Unmodified two-rank PyTorch DDP sends gradient traffic through UIB |
 | UCX verbs transport gate | CPU | No | Two local processes exchange data through UCX's verbs transport and UIB, with TCP and shared-memory transports excluded |
@@ -515,6 +516,7 @@ only one communication, protocol, and network-condition overlay.
 | `libvirt.uri` | Libvirt connection URI | `qemu:///system` for bridge mode or `qemu:///session` for passwordless rootless mode |
 | `libvirt.pool` | Existing active storage-pool name | Pool in which run-owned overlays and cloud-init volumes are created |
 | `libvirt.networkMode` | `bridge`, `rootless` | Managed libvirt networks, or passt management plus an unprivileged multicast data plane |
+| `libvirt.sshPortBase` | Integer 1024-65534; default `22000` | First localhost SSH-forward port in rootless mode; the controller uses the base and workers use consecutive ports |
 | `libvirt.baseImage` | HTTPS URL | Pinned Ubuntu cloud image downloaded once into the ignored cache |
 | `libvirt.baseImageSha256` | 64 lowercase hexadecimal digits | Required digest checked before the cached base image is used |
 | `libvirt.sshUser` | Linux user name | Cloud-init administrator used only through the run-owned SSH key |
@@ -612,6 +614,7 @@ nodes * processesPerNode == data * tensor * pipeline * expert
 | Slurm with Kubernetes claims or cache images | Slurm uses shared host paths visible on every allocated node |
 | Slurm without model-cache/result paths, or UIB without a runtime path/data interface | Pyxis cannot provide the common mount and address contract |
 | `libvirt.networkMode: rootless` without `qemu:///session` | Rootless mode is deliberately scoped to a per-user libvirt daemon |
+| `libvirt.sshPortBase + nodes.workers` above 65535 | The controller and every worker need a valid consecutive forwarding port |
 | `libvirt.networkMode: bridge` without permission to create libvirt networks | Managed bridge/tap networking needs the normal system-libvirt network privileges |
 | Rootless mode for network-performance conclusions | Passt and multicast tunnels are functional transports, not an accurate model of physical fabric performance |
 | RCCL without `nodes.gpus.vendor: amd` | RCCL requires AMD/ROCm hardware |
@@ -1890,15 +1893,52 @@ Neither value accepts a shell pipeline or embedded arguments. An incomplete,
 symbolic-link, malformed-checksum, or checksum-mismatched cache entry is a
 hard failure rather than an implicit replacement.
 
+Inference additionally needs the dynamically downloaded model cache. Stage it
+after `up` and before `run`; the default source is the same ignored cache used
+by the container smoke tests:
+
+```text
+simulation/bin/uib-sim load-cache --profile libvirt-slurm \
+    --run-id "$run_id"
+
+# Or select an existing cache explicitly.
+simulation/bin/uib-sim load-cache --profile libvirt-slurm \
+    --run-id "$run_id" --source /srv/huggingface-cache
+```
+
+`load-cache` currently has one intentionally fixed contract: a Hugging Face
+cache root is transferred to `/var/cache/uib/models/huggingface`, which the
+workload sees as `HF_HOME=/cache/huggingface`. The source must be a nonempty
+directory containing only directories, regular files, and symbolic links that
+resolve inside that root. This preserves the normal Hugging Face blob/snapshot
+layout while rejecting sockets, devices, broken links, and escaping links.
+
+The adapter creates a temporary tar archive, sends it through the existing SSH
+controller transport, verifies the archive SHA-256 before extraction, and
+installs it atomically. The temporary archive is removed after the attempt; the
+original ignored cache remains available for later runs. An existing guest
+cache with a different digest is a hard failure. `TAR_COMMAND` selects one
+exact local `tar` executable.
+`SLURM_CACHE_INVENTORY` selects the ignored inventory directory, which defaults
+to `simulation/.artifacts/slurm-caches`. Its `inventory.json` and the run-owned
+`staged-caches.json` contain only the cache kind, source directory name,
+archive size, digest, guest path, and timestamps—not model contents or an
+absolute host path. The downloaded source remains in its normal ignored cache
+for later runs; no model or dataset is committed.
+
 The collected result bundle includes `staged-images.json` and points to it
-from `images.json`. The workload image filesystem is unchanged; Pyxis is
+from `images.json`; a staged model cache similarly adds `staged-caches.json`.
+The workload image filesystem is unchanged; Pyxis is
 already invoked with `--no-container-entrypoint`, and the request supplies the
 same explicit entry point and arguments used on a real cluster. OCI runtime
 configuration is therefore intentionally not part of the local SquashFS
 contract.
 
 On real Slurm hardware, push the same image to the site registry, replace only
-the infrastructure-specific path, and omit the mutable-tag opt-in:
+the infrastructure-specific path, and omit the mutable-tag opt-in. Populate
+the configured site model cache with the same pinned Hugging Face revision;
+`load-cache` is only needed for disposable libvirt labs whose shared cache
+starts empty:
 
 ```text
 simulation/bin/uib-sim run --profile real-slurm \
@@ -3182,6 +3222,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, SSH/SCP, passt, NFS-capable Ubuntu guests, roughly 12 GiB memory for the default three VMs, and download access on the first run | Actual controller/two-worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, ordinary worker tasks, cross-VM standard RC payload through UIB, remote batch submission and status, two-rank pinned OCI execution with portable UIB preflight, result collection, state-based destruction, and domain/pool absence; no NCCL or GPU claim |
 | `make simulation-libvirt-training-e2e-test` | The libvirt gate requirements, the local training image or image-build access, 32 GiB guest disks, roughly 12 GiB host memory, and about 3 GiB ignored host cache space for the current image | Everything in the libvirt gate, content-addressed SquashFS creation or verified cache reuse, real two-worker CPU DDP training through Slurm/Pyxis/Enroot, collected training and image ledgers, and complete cleanup; the workload uses Gloo, while the separate provisioning gate supplies actual UIB traffic |
+| `make simulation-libvirt-inference-e2e-test` | The libvirt gate requirements, the local inference image or build access, the downloaded SmolLM2 cache, 8 GiB per VM, 64 GiB guest disks, and about 8 GiB ignored host image-cache space | Everything in the libvirt gate, bounded-memory SquashFS staging, verified Hugging Face cache transfer, real offline four-request CPU serving through Slurm/Pyxis/Enroot, request trace and artifact ledgers, and cleanup; the one-task workload itself has no UIB traffic |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
 | `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, UET/NSCC, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
 | `make simulation-slurm-lifecycle-test` | The Slurm renderer requirements; no Slurm installation or container engine | Exclusive ignored run ledgers, shared-path preflight, exact `sbatch --parsable` submission, recorded numeric job ownership, read-only `sacct` status and `scontrol` fallback including an empty pending node list, exact-ID `scancel`, retained failures, and rejection of result/ledger reuse or ambiguous submission output using fake standard commands |
@@ -3279,6 +3320,21 @@ guest disk, stages the image into the lab, and runs the unchanged generated
 four-step request on two workers. No model or dataset is stored in the
 repository or downloaded for this default workload.
 
+Run the real CPU inference variant with:
+
+```text
+make simulation-libvirt-inference-e2e-test
+```
+
+The normal inference smoke test downloads the pinned SmolLM2 revision into the
+ignored Hugging Face cache once. The libvirt gate stages that cache and the
+same production-capable vLLM image, then uses its CPU Transformers backend for
+four offline requests. The target uses 8 GiB per VM and 64 GiB guest disks.
+The first image conversion can take tens of minutes; its verified SquashFS is
+retained in the ignored host image cache. Conversion intentionally uses one
+compressor and at most 512 MiB of SquashFS working memory so it cannot starve
+the controller VM while staging the production-capable image.
+
 The gate builds the verified portable UIB runtime rather than a host-native
 bundle, because the diagnostic container may have an older glibc than the
 development host. On its first run it downloads the digest-verified cloud
@@ -3297,15 +3353,19 @@ committed.
 | `LIBVIRT_WORKERS` | `2` | Positive worker count; two or more place the UIB traffic ranks on distinct VMs |
 | `LIBVIRT_CPUS` | `2` | Positive vCPU count per VM |
 | `LIBVIRT_MEMORY` | `4Gi` | Per-VM memory with `Mi`, `Gi`, or `Ti` suffix |
-| `LIBVIRT_DISK` | `16Gi`; training target sets `32Gi` | Per-VM overlay capacity with `Mi`, `Gi`, or `Ti` suffix; first-use image conversion needs room for the expanded root filesystem and SquashFS |
+| `LIBVIRT_DISK` | `16Gi`; training sets `32Gi`, inference sets `64Gi` | Per-VM overlay capacity with `Mi`, `Gi`, or `Ti` suffix; first-use image conversion needs room for the expanded root filesystem and SquashFS |
 | `LIBVIRT_E2E_RUN_ID` | Unique `uib-libvirt-e2e-<pid>` | Safe run ID used for all owned resources and state |
 | `LIBVIRT_E2E_RESULT_DIR` | `simulation/.artifacts/results/<run-id>` | New host directory that receives collected scheduler and workload evidence |
-| `LIBVIRT_E2E_WORKLOAD` | `lifecycle` | `lifecycle` or `training`; the dedicated training target sets `training` |
-| `LIBVIRT_E2E_IMAGE` | `uib-training:test` in training mode | Existing local OCI image to stage; ignored in lifecycle mode |
-| `LIBVIRT_E2E_JOB_TIMEOUT` | `180` for lifecycle, `900` for training | Integer of at least two seconds; bounds only the submitted workload, not provisioning or cleanup |
+| `LIBVIRT_E2E_WORKLOAD` | `lifecycle` | `lifecycle`, `training`, or `inference`; dedicated targets select the latter modes |
+| `LIBVIRT_E2E_IMAGE` | Mode-specific local image | Existing local training or inference OCI image to stage; ignored in lifecycle mode |
+| `LIBVIRT_E2E_CACHE_SOURCE` | Ignored `simulation/.artifacts/huggingface` | Existing Hugging Face cache root used only in inference mode |
+| `LIBVIRT_E2E_JOB_TIMEOUT` | `180` for lifecycle, `900` for training, `1200` for inference | Integer of at least two seconds; bounds only the submitted workload, not provisioning or cleanup |
+| `LIBVIRT_SSH_PORT_BASE` | PID-derived value from 30000 through 49999 | First localhost SSH-forward port for the disposable rootless gate; workers use consecutive ports |
 | `SIMULATION_LIBVIRT_STATE_DIR` | `simulation/.artifacts/runs` | Private lifecycle-ledger root |
 | `CONTAINER_ENGINE_COMMAND` | `docker` | Exact Docker-compatible executable used to inspect, create, export, and remove the stopped staging container |
 | `SLURM_IMAGE_CACHE` | `simulation/.artifacts/slurm-images` | Ignored host directory containing verified SquashFS files, checksum sidecars, and `inventory.json` |
+| `SLURM_CACHE_INVENTORY` | `simulation/.artifacts/slurm-caches` | Ignored directory containing model-cache transfer metadata, never model contents or an absolute source path |
+| `TAR_COMMAND` | `tar` | Exact local executable used to archive the validated Hugging Face cache |
 | `TOFU_COMMAND` | `tofu` | Exact OpenTofu executable; the module requires version 1.12.3 |
 | `ANSIBLE_PLAYBOOK_COMMAND` | `ansible-playbook` | Exact Ansible playbook executable |
 | `LIBVIRTD_COMMAND` | Discovered `libvirtd` | Exact daemon executable used only when a session daemon is unavailable |
@@ -3326,8 +3386,9 @@ LIBVIRT_E2E_JOB_TIMEOUT=1200 \
 make simulation-libvirt-training-e2e-test
 ```
 
-`LIBVIRT_E2E_IMAGE` has an effect only with
-`LIBVIRT_E2E_WORKLOAD=training`. Do not combine the local mutable-tag workflow
+`LIBVIRT_E2E_IMAGE` has an effect only with training or inference.
+`LIBVIRT_E2E_CACHE_SOURCE` has an effect only with inference. Do not combine
+the local mutable-tag workflow
 with promotion results; use a registry digest on real hardware. Do not point
 `SLURM_IMAGE_CACHE` at a shared directory whose contents can be modified by
 untrusted users, because a cache integrity failure deliberately stops the run.
