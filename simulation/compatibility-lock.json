@@ -130,11 +130,11 @@
           "make simulation-libvirt-test",
           "make simulation-libvirt-e2e-test"
         ],
-        "realClusterValidation": "passed-two-vm-rootless-cpu-l0",
+        "realClusterValidation": "passed-three-vm-rootless-cpu-uib-l0",
         "validatedOn": "2026-08-25"
       },
       "libvirt": {
-        "status": "validated-rootless-two-vm-lifecycle",
+        "status": "validated-rootless-three-vm-uib-lifecycle",
         "opentofu": "1.12.3",
         "provider": "dmacvicar/libvirt 0.9.8",
         "ansibleCore": "2.21.3",
@@ -229,16 +229,16 @@
       "slurm": "23.11.4-1.2ubuntu5",
       "enroot": "4.2.1",
       "pyxis": "0.24.0",
-      "topology": "one-controller-one-worker",
+      "topology": "one-controller-two-workers",
       "device": "cpu",
       "managementNetwork": "passt",
       "dataNetwork": "multicast-tunnel",
       "sharedStorage": "NFSv4-over-data-network",
-      "schedulerTask": "passed-on-worker",
+      "schedulerTask": "passed-on-every-worker",
       "pyxisPinnedImage": "passed-on-worker",
       "uibRuntimePreflight": "passed-inside-pyxis-container",
       "uibRuntimeBundle": "portable-glibc-2.34-ceiling",
-      "uibTraffic": "not-exercised-by-library-only-preflight",
+      "uibTraffic": "32x2051-byte multi-packet RoCEv2 RC messages passed between distinct worker VMs with unchanged ibv_rc_pingpong",
       "cleanup": "OpenTofu destroyed exact domains and volumes; test pool removed",
       "validationLevel": "L0",
       "testTarget": "make simulation-libvirt-e2e-test"

@@ -15,7 +15,7 @@ created_pool=0
 
 settings="--set libvirt.uri=$uri --set libvirt.pool=$pool"
 settings="$settings --set libvirt.networkMode=$network_mode"
-settings="$settings --set nodes.workers=${LIBVIRT_WORKERS:-1}"
+settings="$settings --set nodes.workers=${LIBVIRT_WORKERS:-2}"
 settings="$settings --set nodes.cpu=${LIBVIRT_CPUS:-2}"
 settings="$settings --set nodes.memory=${LIBVIRT_MEMORY:-4Gi}"
 settings="$settings --set nodes.disk=${LIBVIRT_DISK:-16Gi}"
@@ -88,6 +88,12 @@ PY
 
 grep -F 'TASK [Run one ordinary Slurm task on every worker]' \
 	"$infra/lifecycle.log" >/dev/null
+grep -F 'TASK [Verify the private data path between workers]' \
+	"$infra/lifecycle.log" >/dev/null
+grep -F 'TASK [Run actual UIB verbs traffic between Slurm tasks]' \
+	"$infra/lifecycle.log" >/dev/null
+grep -F 'TASK [Require an actual verbs payload result]' \
+	"$infra/lifecycle.log" >/dev/null
 grep -F 'TASK [Run a pinned image through Pyxis and Enroot]' \
 	"$infra/lifecycle.log" >/dev/null
 grep -F 'TASK [Preflight the shared UIB runtime inside Pyxis]' \
@@ -112,7 +118,7 @@ if virsh -c "$uri" dominfo "$run_id-controller" >/dev/null 2>&1; then
 	exit 1
 fi
 worker=1
-while [ "$worker" -le "${LIBVIRT_WORKERS:-1}" ]; do
+while [ "$worker" -le "${LIBVIRT_WORKERS:-2}" ]; do
 	worker_name=$(printf '%s-worker-%02d' "$run_id" "$worker")
 	if virsh -c "$uri" dominfo "$worker_name" >/dev/null 2>&1; then
 		echo "$worker_name domain survived cleanup" >&2

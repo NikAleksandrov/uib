@@ -1,0 +1,44 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+runtime=${UIB_RUNTIME_PATH:-/var/lib/uib/runtime}
+interface=${UIB_DATA_INTERFACE:-eth1}
+
+if [ "${SLURM_NTASKS:-0}" -ne 2 ]; then
+	echo "UIB verbs smoke test requires exactly two Slurm tasks" >&2
+	exit 2
+fi
+
+bind_ip=$(ip -o -4 address show dev "$interface" scope global |
+	awk 'NR == 1 { split($4, address, "/"); print address[1] }')
+server=$(scontrol show hostnames "$SLURM_JOB_NODELIST" | sed -n '1p')
+if [ -z "$bind_ip" ] || [ -z "$server" ]; then
+	echo "UIB verbs smoke test could not resolve its data endpoints" >&2
+	exit 2
+fi
+
+export LD_LIBRARY_PATH="$runtime/lib"
+export LD_PRELOAD="$runtime/lib/libuibv.so"
+export UIB_BIND_IP="$bind_ip"
+export UIB_BIND_PORT=$((4791 + ${SLURM_LOCALID:-0}))
+export UIB_PROTOCOL=rocev2
+export UIB_TRANSPORT_MODE=udp-sync
+export UIB_ZEROCOPY=off
+
+set -- timeout -k 1 45 "$runtime/bin/ibv_rc_pingpong" -d uib0 -g 0 \
+	-m 1024 -s 2051 \
+	-n 32 -c
+case ${SLURM_PROCID:-} in
+0)
+	exec "$@"
+	;;
+1)
+	sleep 2
+	exec "$@" "$server"
+	;;
+*)
+	echo "invalid Slurm rank: ${SLURM_PROCID:-unset}" >&2
+	exit 2
+	;;
+esac

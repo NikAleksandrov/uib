@@ -67,6 +67,44 @@
           - /bin/hostname
       changed_when: false
 
+    - name: Verify the private data path between workers
+      when: groups['slurm_workers'] | length > 1
+      ansible.builtin.command:
+        argv:
+          - srun
+          - --nodes=1
+          - --ntasks=1
+          - "--nodelist={{ groups['slurm_workers'][0] }}"
+          - ping
+          - -c
+          - "3"
+          - -W
+          - "2"
+          - "{{ hostvars[groups['slurm_workers'][1]].uib_data_ip }}"
+      changed_when: false
+
+    - name: Run actual UIB verbs traffic between Slurm tasks
+      when: uib_enabled | bool
+      ansible.builtin.command:
+        argv:
+          - srun
+          - "--nodes={{ [groups['slurm_workers'] | length, 2] | min }}"
+          - --ntasks=2
+          - "--ntasks-per-node={{ 1 if groups['slurm_workers'] | length > 1 else 2 }}"
+          - /usr/local/libexec/uib-verbs-smoke
+      environment:
+        UIB_RUNTIME_PATH: "{{ uib_runtime_path }}"
+        UIB_DATA_INTERFACE: "{{ uib_data_interface }}"
+      register: uib_verbs_smoke
+      changed_when: false
+
+    - name: Require an actual verbs payload result
+      when: uib_enabled | bool
+      ansible.builtin.assert:
+        that:
+          - "'bytes in' in uib_verbs_smoke.stdout"
+        fail_msg: "UIB verbs smoke test produced no payload evidence"
+
     - name: Run a pinned image through Pyxis and Enroot
       ansible.builtin.command:
         argv:

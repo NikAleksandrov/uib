@@ -487,6 +487,8 @@ static void arm_batched_rx(struct uib_udp_backend *be)
 		if (!sqe)
 			return;
 		slot->message.msg_namelen = sizeof(slot->source);
+		slot->message.msg_controllen = sizeof(slot->control.bytes);
+		slot->message.msg_flags = 0;
 		io_uring_prep_recvmsg(sqe, be->fd, &slot->message, 0);
 		io_uring_sqe_set_data(sqe, &slot->op);
 		slot->armed = 1;

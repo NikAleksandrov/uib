@@ -86,7 +86,7 @@ topology.
 | `make diagnostic-uib-preflight-test` | CPU | No | The common UIB runtime mounts into an independently built image |
 | `make diagnostic-gpu-test` | One NVIDIA GPU | No | CUDA visibility and a correctness-checked, single-rank NCCL collective |
 | `make simulation-kubernetes-uib-test` | CPU | No | Unchanged verbs programs exchange actual RC SEND/RECV and RDMA Write traffic through UIB between two Kind workers |
-| `make simulation-libvirt-e2e-test` | CPU with KVM | No | Disposable Slurm/Pyxis/Enroot controller/worker lifecycle and UIB library packaging; no UIB payload traffic |
+| `make simulation-libvirt-e2e-test` | CPU with KVM | No | Disposable Slurm/Pyxis/Enroot controller/two-worker lifecycle and actual cross-VM RC payload traffic through UIB |
 | `make nccl-test` | One NVIDIA GPU with local MPS support | No | Two local ranks send host-staged NCCL traffic through UIB |
 | `make training-uib-test` | One NVIDIA GPU with local MPS support | No | Unmodified two-rank PyTorch DDP sends gradient traffic through UIB |
 | UCX verbs transport gate | CPU | No | Two local processes exchange data through UCX's verbs transport and UIB, with TCP and shared-memory transports excluded |
@@ -1006,6 +1006,7 @@ simulation/.artifacts/
 |   |-- bin/
 |   |   |-- ibv_devices
 |   |   |-- ibv_devinfo
+|   |   |-- ibv_rc_pingpong
 |   |   `-- uib-preflight
 |   |-- lib/
 |   |   |-- libuib.so
@@ -1018,8 +1019,10 @@ simulation/.artifacts/
 `-- uib-runtime.tar.gz
 ```
 
-The abbreviated tree omits bundled diagnostic tools, dependency libraries,
-and their versioned symlinks. `runtime-manifest.json` records the UIB commit,
+The portable standard `ibv_rc_pingpong` binary is used unchanged by the Slurm
+VM traffic gate. The abbreviated tree omits other bundled diagnostic tools,
+dependency libraries, and their versioned symlinks. `runtime-manifest.json`
+records the UIB commit,
 tracked-source state, compiler, libc, minimum required glibc symbol version,
 detected build capabilities, dependency source paths, sizes, and hashes. The
 compatibility lock records validated NCCL/CUDA combinations and explicitly
@@ -2028,20 +2031,26 @@ Rootless mode provides a passwordless functional path for development. It
 uses `qemu:///session`, passt management interfaces with deterministic
 loopback SSH forwards, and an unprivileged multicast tunnel for the private
 data plane. The repository gate starts a bounded per-user daemon when needed,
-creates an exact temporary storage pool, provisions two VMs by default, runs
-the preflights, destroys the OpenTofu state, and removes only that pool:
+creates an exact temporary storage pool, provisions one controller and two
+worker VMs by default, runs the gates, destroys the OpenTofu state, and removes
+only that pool:
 
 ```text
 make simulation-libvirt-e2e-test
 ```
 
-The real gate confirms controller health, an idle worker, an ordinary remote
-Slurm task, a digest-pinned OCI image through Pyxis/Enroot, the shared NFSv4
-paths over the data network, and `/opt/uib/bin/uib-preflight --library-only`
-inside that container. The UIB check proves packaging and loading only. It
-does not send application data through UIB and is therefore L0 evidence.
-Passt and multicast networking are also unsuitable for throughput or latency
-claims; use bridge mode or physical hardware for those measurements.
+The real gate confirms controller health, two idle workers, NFSv4 and ICMP over
+the data network, and an ordinary Slurm task on every worker. It then places
+one unchanged `ibv_rc_pingpong` rank on each worker, preloads the portable
+`libuibv.so`, exchanges 32 correctness-checked 2051-byte multi-packet RC
+messages through UIB/RoCEv2, and requires the standard payload result. Finally,
+it runs a digest-pinned OCI image through Pyxis/Enroot and executes
+`uib-preflight --library-only` inside that container.
+
+This is actual cross-VM UIB traffic, but remains CPU L0 evidence. It is not an
+NCCL collective, a GPU path, or a performance model. Passt and multicast
+networking are unsuitable for throughput or latency claims; use bridge mode or
+physical hardware for those measurements.
 
 The NFS export is limited to the exact run-owned worker data addresses. It
 uses `no_root_squash` because Enroot container mounts need to populate the
@@ -3060,7 +3069,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge and rootless rendering, cached-image verification, generated OpenTofu and Ansible inputs, exclusive ownership, command delegation, status, and exact-state cleanup with fake standard commands |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
-| `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, passt, NFS-capable Ubuntu guests, and download access on the first run | Actual controller/worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, an ordinary worker task, pinned OCI execution, portable UIB library preflight in Pyxis, state-based destruction, and domain/pool absence; no UIB traffic or GPU claim |
+| `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, passt, NFS-capable Ubuntu guests, roughly 12 GiB memory for the default three VMs, and download access on the first run | Actual controller/two-worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, ordinary worker tasks, cross-VM standard RC payload through UIB, pinned OCI execution, portable UIB library preflight in Pyxis, state-based destruction, and domain/pool absence; no NCCL or GPU claim |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
 | `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, UET/NSCC, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
 | `make simulation-slurm-lifecycle-test` | The Slurm renderer requirements; no Slurm installation or container engine | Exclusive ignored run ledgers, shared-path preflight, exact `sbatch --parsable` submission, recorded numeric job ownership, read-only `sacct` status, exact-ID `scancel`, retained failures, and rejection of result/ledger reuse or ambiguous submission output using fake standard commands |
@@ -3141,7 +3150,7 @@ make simulation-libvirt-test
 ```
 
 The opt-in end-to-end gate defaults to a passwordless per-user daemon,
-rootless networking, one controller, and one worker:
+rootless networking, one controller, and two workers:
 
 ```text
 make simulation-libvirt-e2e-test
@@ -3162,7 +3171,7 @@ committed.
 | `LIBVIRT_NETWORK_MODE` | `rootless` | `rootless` for passt plus multicast, or `bridge` for managed networks |
 | `LIBVIRT_POOL` | Unique run ID | Active pool name; the gate creates and later removes a missing session pool |
 | `LIBVIRT_POOL_DIR` | Ignored run-specific path | Directory backing a session pool created by the gate; not used for a pre-existing pool |
-| `LIBVIRT_WORKERS` | `1` | Positive worker count; each worker is an independent VM |
+| `LIBVIRT_WORKERS` | `2` | Positive worker count; two or more place the UIB traffic ranks on distinct VMs |
 | `LIBVIRT_CPUS` | `2` | Positive vCPU count per VM |
 | `LIBVIRT_MEMORY` | `4Gi` | Per-VM memory with `Mi`, `Gi`, or `Ti` suffix |
 | `LIBVIRT_DISK` | `16Gi` | Per-VM overlay capacity with `Mi`, `Gi`, or `Ti` suffix |
@@ -3176,9 +3185,13 @@ committed.
 For a larger rootless functional lab:
 
 ```text
-LIBVIRT_WORKERS=2 LIBVIRT_CPUS=4 LIBVIRT_MEMORY=8Gi \
+LIBVIRT_WORKERS=3 LIBVIRT_CPUS=4 LIBVIRT_MEMORY=8Gi \
 make simulation-libvirt-e2e-test
 ```
+
+`LIBVIRT_WORKERS=1` is a resource-saving fallback. It still runs two processes
+through UIB, but both ranks share one worker VM and therefore cannot satisfy
+the cross-VM traffic claim.
 
 For bridge mode, supply an active system pool and suitable libvirt network
 permissions. The gate never creates or removes a system pool:
@@ -3432,10 +3445,11 @@ Cleanup must remain safe after interruption during every lifecycle stage.
   Kubeflow training resources render and pass structural tests. Operator
   installation, server-side CRD/admission validation, and an actual two-worker
   CPU TrainJob passed. The run uses Gloo and validates UIB packaging but not
-  its data plane. A disposable libvirt controller/worker lab passed actual
-  Slurm, NFS, Enroot, Pyxis, pinned-container, UIB library-preflight, and exact
-  cleanup gates. That preflight is not UIB payload traffic, and remote Slurm
-  workload submission through the guest controller is not wired into
+  its data plane. A disposable libvirt controller/two-worker lab passed actual
+  Slurm, NFS, cross-VM standard RC payload through UIB, Enroot, Pyxis,
+  pinned-container, UIB library-preflight, and exact cleanup gates. The UIB
+  gate uses a 2051-byte payload to exercise multi-packet RC transfers. Remote
+  Slurm workload submission through the guest controller is not wired into
   `uib-sim run` yet. GPU/NCCL Kubernetes execution, libvirt/Kubernetes,
   DeepSpeed, and Megatron-Core remain planned.
 - The diagnostic image passed its hardware-neutral, UIB runtime-injection,

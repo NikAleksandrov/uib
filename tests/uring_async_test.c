@@ -202,6 +202,14 @@ static void run_gso_batch(uint16_t sender_port, uint16_t receiver_port,
 	if (!sender || !receiver)
 		goto out;
 	destination = receiver->local_addr;
+	memset(packets[0], 0x5a, sizeof(packets[0]));
+	rc = uib_transport_send(sender, &destination, packets[0],
+				sizeof(packets[0]));
+	check("gso.warmup", !rc);
+	memset(&tx_stats, 0, sizeof(tx_stats));
+	memset(&rx_stats, 0, sizeof(rx_stats));
+	rc = wait_for_traffic(sender, receiver, &tx_stats, &rx_stats, 1);
+	check("gso.warmup_completion", !rc);
 	released = 0;
 	for (i = 0; i < TEST_GSO_PACKETS; i++) {
 		if (zerocopy) {
@@ -225,7 +233,7 @@ static void run_gso_batch(uint16_t sender_port, uint16_t receiver_port,
 	memset(&tx_stats, 0, sizeof(tx_stats));
 	memset(&rx_stats, 0, sizeof(rx_stats));
 	rc = wait_for_traffic(sender, receiver, &tx_stats, &rx_stats,
-			      TEST_GSO_PACKETS);
+			      TEST_GSO_PACKETS + 1);
 	if (rc) {
 		fprintf(stderr, "gso timeout: tx=%llu errors=%llu rx=%llu\n",
 			(unsigned long long)tx_stats.tx_completed,
@@ -238,8 +246,8 @@ static void run_gso_batch(uint16_t sender_port, uint16_t receiver_port,
 	check("gso.async_completion", !rc);
 	check("gso.release_callbacks", released == TEST_GSO_PACKETS);
 	check("gso.packet_counters",
-	      tx_stats.tx_completed == TEST_GSO_PACKETS &&
-	      rx_stats.rx_packets == TEST_GSO_PACKETS);
+	      tx_stats.tx_completed == TEST_GSO_PACKETS + 1 &&
+	      rx_stats.rx_packets == TEST_GSO_PACKETS + 1);
 	if (tx_stats.gso_enabled) {
 		check("gso.batch_counters", tx_stats.tx_gso_batches > 0 &&
 		      tx_stats.tx_gso_packets == TEST_GSO_PACKETS);

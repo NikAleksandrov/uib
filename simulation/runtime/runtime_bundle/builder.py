@@ -21,7 +21,8 @@ def prepare_inputs(args):
         PROJECT_DIR / "libuib-standalone.a",
     ]
     tools = [pathlib.Path(shutil.which(name) or "") for name in
-             ("ibv_devices", "ibv_devinfo", "rdma", "readelf", "sha256sum")]
+             ("ibv_devices", "ibv_devinfo", "ibv_rc_pingpong", "rdma",
+              "readelf", "sha256sum")]
     if any(not path.is_file() for path in required + tools):
         raise RuntimeError("UIB libraries and rdma-core tools must be built and installed")
     return required, tools
