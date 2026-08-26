@@ -404,7 +404,7 @@ def tools_for(config):
     if provider == "virtme" and config["virtme"]["mode"] == "multi-guest":
         tools.update({"ip", "ssh", "ssh-keygen"})
         if manager == "slurm":
-            tools.add("apt-get")
+            tools.update({"apt-get", "cc", "dpkg-deb", "make"})
     if manager == "slurm" and provider in {"libvirt", "virtme"}:
         tools.update({"scp", "ssh"})
     elif manager == "slurm":

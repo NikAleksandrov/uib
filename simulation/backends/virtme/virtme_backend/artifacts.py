@@ -6,6 +6,7 @@ import pathlib
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import urllib.request
 
@@ -109,7 +110,7 @@ def validate_slurm_packages(directory, verify_hashes):
         return None
     for name, (path, version, architecture) in packages.items():
         expected_version, digest = expected[name]
-        if version != expected_version or architecture != "amd64":
+        if version != expected_version or architecture not in {"amd64", "all"}:
             return None
         if verify_hashes and sha256_file(path) != digest:
             return None
@@ -176,13 +177,40 @@ def acquire_slurm_packages(cache):
         shutil.rmtree(temporary, ignore_errors=True)
 
 
+def patch_slurm_runtime(runtime):
+    from .core import VirtmeError
+
+    patchelf = runtime / "usr/bin/patchelf"
+    runpath = (
+        f"{runtime}/usr/lib/x86_64-linux-gnu/slurm-wlm:"
+        f"{runtime}/usr/lib/x86_64-linux-gnu")
+    for name in ("slurmctld-wlm", "slurmd-wlm", "slurmstepd-wlm"):
+        binary = runtime / "usr/sbin" / name
+        result = subprocess.run(
+            [str(patchelf), "--print-rpath", str(binary)],
+            text=True, capture_output=True, timeout=30, check=False)
+        if result.returncode:
+            raise VirtmeError(f"cannot inspect the {name} runtime search path")
+        if result.stdout.strip() == runpath:
+            continue
+        result = subprocess.run(
+            [str(patchelf), "--set-rpath", runpath, str(binary)],
+            timeout=30, check=False)
+        if result.returncode:
+            raise VirtmeError(f"cannot set the {name} runtime search path")
+
+
 def extract_slurm_runtime(packages, cache):
     from .core import SLURM_VERSION, VirtmeError, executable
 
     runtime = cache / f"slurm-{SLURM_VERSION}-runtime"
     required = [
+        runtime / "usr/bin/busybox",
+        runtime / "usr/bin/mksquashfs",
         runtime / "usr/bin/srun",
         runtime / "usr/bin/scontrol",
+        runtime / "usr/include/slurm/spank.h",
+        runtime / "usr/bin/patchelf",
         runtime / "usr/sbin/munged",
         runtime / "usr/sbin/slurmctld-wlm",
         runtime / "usr/sbin/slurmd-wlm",
@@ -195,6 +223,7 @@ def extract_slurm_runtime(packages, cache):
         "slurmstepd": "slurmstepd-wlm",
     }
     if all(path.is_file() for path in required):
+        patch_slurm_runtime(runtime)
         for name, target in commands.items():
             link = runtime / "usr/sbin" / name
             if not link.exists():
@@ -218,9 +247,134 @@ def extract_slurm_runtime(packages, cache):
         temporary.replace(runtime)
         if not all(path.is_file() for path in required):
             raise VirtmeError("extracted Slurm runtime is incomplete")
+        patch_slurm_runtime(runtime)
         for name, target in commands.items():
             (runtime / "usr/sbin" / name).symlink_to(target)
         return runtime
     finally:
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
+
+
+def acquire_container_artifacts(cache):
+    from .core import CONTAINER_ARTIFACTS, VirtmeError
+
+    directory = cache / "container-stack"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise VirtmeError(f"cannot create container artifact cache: {error}") \
+            from error
+    artifacts = []
+    for name, url, digest in CONTAINER_ARTIFACTS:
+        destination = directory / name
+        if destination.is_file() and sha256_file(destination) == digest:
+            artifacts.append(destination)
+            continue
+        temporary = directory / f".{name}.part"
+        temporary.unlink(missing_ok=True)
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response, \
+                    temporary.open("xb") as output:
+                shutil.copyfileobj(response, output)
+        except (OSError, urllib.error.URLError) as error:
+            temporary.unlink(missing_ok=True)
+            raise VirtmeError(
+                f"cannot download pinned container artifact {name}: {error}") \
+                from error
+        if sha256_file(temporary) != digest:
+            temporary.unlink(missing_ok=True)
+            raise VirtmeError(
+                f"downloaded container artifact failed SHA-256: {name}")
+        temporary.replace(destination)
+        artifacts.append(destination)
+    return artifacts
+
+
+def prepare_container_runtime(runtime, cache):
+    from .core import PYXIS_COMMIT, PYXIS_VERSION, VirtmeError, executable
+
+    enroot, pyxis = acquire_container_artifacts(cache)
+    enroot_binary = runtime / "usr/bin/enroot"
+    if not enroot_binary.is_file():
+        dpkg_deb = executable("DPKG_DEB_COMMAND", "dpkg-deb")
+        result = subprocess.run(
+            [dpkg_deb, "--extract", str(enroot), str(runtime)],
+            timeout=60, check=False)
+        if result.returncode or not enroot_binary.is_file():
+            raise VirtmeError("cannot extract the pinned Enroot runtime")
+
+    plugin = (runtime / "usr/lib/x86_64-linux-gnu/slurm-wlm" /
+              "spank_pyxis.so")
+    if plugin.is_file():
+        return runtime
+    try:
+        build = pathlib.Path(tempfile.mkdtemp(
+            prefix=f".pyxis-{PYXIS_VERSION}.", dir=cache))
+        with tarfile.open(pyxis, "r:gz") as archive:
+            archive.extractall(build, filter="data")
+        source = build / f"pyxis-{PYXIS_COMMIT}"
+        make = executable("MAKE_COMMAND", "make")
+        environment = os.environ.copy()
+        environment["CPPFLAGS"] = f"-I{runtime}/usr/include"
+        result = subprocess.run(
+            [make, "-j", str(max(1, os.cpu_count() or 1))], cwd=source,
+            env=environment, timeout=180, check=False)
+        if result.returncode:
+            raise VirtmeError("cannot build the pinned Pyxis plugin")
+        plugin.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / "spank_pyxis.so", plugin)
+    except (OSError, tarfile.TarError) as error:
+        raise VirtmeError(f"cannot prepare the Pyxis runtime: {error}") from error
+    finally:
+        if "build" in locals():
+            shutil.rmtree(build, ignore_errors=True)
+    return runtime
+
+
+def create_container_smoke_image(runtime, cache):
+    from .core import VirtmeError
+
+    image = cache / "virtme-pyxis-smoke.sqsh"
+    checksum = pathlib.Path(str(image) + ".sha256")
+    try:
+        expected = checksum.read_text(encoding="utf-8").strip()
+    except OSError:
+        expected = ""
+    if (image.is_file() and re.fullmatch(r"[0-9a-f]{64}", expected) and
+            sha256_file(image) == expected):
+        return image
+    try:
+        rootfs = pathlib.Path(tempfile.mkdtemp(
+            prefix=".pyxis-rootfs.", dir=cache))
+        (rootfs / "bin").mkdir()
+        (rootfs / "etc").mkdir()
+        (rootfs / "proc").mkdir()
+        (rootfs / "sys").mkdir()
+        (rootfs / "dev").mkdir()
+        (rootfs / "run").mkdir()
+        (rootfs / "tmp").mkdir(mode=0o1777)
+        shutil.copy2(runtime / "usr/bin/busybox", rootfs / "bin/busybox")
+        for name in ("sh", "true", "hostname"):
+            (rootfs / "bin" / name).symlink_to("busybox")
+        (rootfs / "etc/passwd").write_text(
+            "root:x:0:0:root:/root:/bin/sh\n", encoding="utf-8")
+        (rootfs / "etc/group").write_text("root:x:0:\n", encoding="utf-8")
+        temporary = pathlib.Path(str(image) + ".part")
+        temporary.unlink(missing_ok=True)
+        mksquashfs = runtime / "usr/bin/mksquashfs"
+        result = subprocess.run([
+            str(mksquashfs), str(rootfs), str(temporary), "-noappend",
+            "-comp", "gzip", "-no-progress",
+        ], stdout=subprocess.DEVNULL, timeout=60, check=False)
+        if result.returncode:
+            raise VirtmeError("cannot build the local Pyxis smoke image")
+        temporary.replace(image)
+        checksum.write_text(sha256_file(image) + "\n", encoding="utf-8")
+        return image
+    except OSError as error:
+        raise VirtmeError(f"cannot prepare the Pyxis smoke image: {error}") \
+            from error
+    finally:
+        if "rootfs" in locals():
+            shutil.rmtree(rootfs, ignore_errors=True)

@@ -191,10 +191,12 @@
         "clusterManagers": {
           "kubernetes": "validated-two-node-k3s-lifecycle",
           "slurm": {
-            "status": "validated-three-guest-munge-slurm-lifecycle",
+            "status": "validated-three-guest-slurm-pyxis-enroot-lifecycle",
             "version": "24.11.5-4",
             "munge": "0.5.16",
-            "containerLayer": "pending"
+            "enroot": "4.2.1",
+            "pyxis": "0.24.0",
+            "containerLayer": "validated-generated-squashfs"
           }
         },
         "testTargets": [
@@ -274,12 +276,14 @@
       "virtmeNg": "1.35",
       "slurm": "24.11.5-4",
       "munge": "0.5.16",
+      "enroot": "4.2.1",
+      "pyxis": "0.24.0",
       "topology": "one-controller-two-workers",
       "device": "cpu",
       "dataNetwork": "qemu-socket-ethernet",
       "schedulerTask": "passed-one-task-on-every-worker",
       "dataPath": "scheduled-worker-to-worker-icmp-passed",
-      "containerRuntime": "pending",
+      "containerRuntime": "generated-busybox-squashfs-passed-through-pyxis-enroot",
       "uibTraffic": "not-tested",
       "cleanup": "recorded guest processes terminated with PID start-time checks",
       "validationLevel": "L0",

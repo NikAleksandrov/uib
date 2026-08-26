@@ -45,7 +45,12 @@ with open(os.path.join(infrastructure, "ledger.json"), encoding="utf-8") as sour
 assert ledger["state"] == "ready"
 assert ledger["clusterManager"] == "slurm"
 assert ledger["slurmVersion"] == "24.11.5-4"
+assert ledger["enrootVersion"] == "4.2.1"
+assert ledger["pyxisVersion"] == "0.24.0"
 assert os.path.isfile(os.path.join(ledger["slurmRuntime"], "usr/bin/srun"))
+assert os.path.isfile(os.path.join(
+    ledger["slurmRuntime"], "usr/lib/x86_64-linux-gnu/slurm-wlm",
+    "spank_pyxis.so"))
 with open(os.path.join(infrastructure, "inventory.json"),
           encoding="utf-8") as source:
     inventory = json.load(source)

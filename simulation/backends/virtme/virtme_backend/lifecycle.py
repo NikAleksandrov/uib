@@ -26,8 +26,8 @@ def command_render(args):
 
 
 def command_up(args):
-    from .artifacts import acquire_k3s, acquire_slurm_packages, extract_slurm_runtime
-    from .core import SLURM_VERSION, VirtmeError, executable, load_config, validate_name, write_json
+    from .artifacts import acquire_k3s, acquire_slurm_packages, create_container_smoke_image, extract_slurm_runtime, prepare_container_runtime
+    from .core import ENROOT_VERSION, PYXIS_VERSION, SLURM_VERSION, VirtmeError, executable, load_config, validate_name, write_json
     from .kubernetes import inventory, provision_kubernetes, write_kubeconfig
     from .network import create_network, delete_network
     from .processes import launch_api_forward, launch_guest, terminate_process, wait_for_ssh
@@ -72,6 +72,7 @@ def command_up(args):
         ssh = executable("SSH_COMMAND", "ssh")
         k3s = None
         slurm_runtime = None
+        smoke_image = None
         if config["cluster"]["manager"] == "kubernetes":
             cache = pathlib.Path(args.cache_dir).expanduser().resolve()
             k3s = acquire_k3s(config, cache)
@@ -79,6 +80,8 @@ def command_up(args):
             cache = pathlib.Path(args.cache_dir).expanduser().resolve()
             packages = acquire_slurm_packages(cache)
             slurm_runtime = extract_slurm_runtime(packages, cache)
+            slurm_runtime = prepare_container_runtime(slurm_runtime, cache)
+            smoke_image = create_container_smoke_image(slurm_runtime, cache)
         network_created = create_network(topology_value["network"])
         logs = state / "logs"
         logs.mkdir()
@@ -115,9 +118,12 @@ def command_up(args):
             ledger["state"] = "provisioning"
             write_json(ledger_path, ledger)
             provision_slurm(
-                config, topology_value, ssh, key, slurm_runtime, state)
+                config, topology_value, ssh, key, slurm_runtime, smoke_image,
+                state)
             ledger["slurmVersion"] = SLURM_VERSION
             ledger["slurmRuntime"] = str(slurm_runtime)
+            ledger["enrootVersion"] = ENROOT_VERSION
+            ledger["pyxisVersion"] = PYXIS_VERSION
         ledger["state"] = "ready"
         ledger["topology"] = "topology.json"
         ledger["inventory"] = "inventory.json"

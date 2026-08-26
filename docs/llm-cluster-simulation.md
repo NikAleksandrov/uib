@@ -87,7 +87,7 @@ topology.
 | `make diagnostic-uib-preflight-test` | CPU | No | The common UIB runtime mounts into an independently built image |
 | `make diagnostic-gpu-test` | One NVIDIA GPU | No | CUDA visibility and a correctness-checked, single-rank NCCL collective |
 | `make simulation-kubernetes-uib-test` | CPU | No | Unchanged verbs programs exchange actual RC SEND/RECV and RDMA Write traffic through UIB between two Kind workers |
-| `make simulation-virtme-slurm-e2e-test` | CPU with KVM or QEMU emulation | No | Real controller/two-worker Munge and Slurm lifecycle, multi-node `srun`, data-path reachability, and exact cleanup; no UIB payload yet |
+| `make simulation-virtme-slurm-e2e-test` | CPU with KVM or QEMU emulation | No | Real controller/two-worker Slurm/Pyxis/Enroot lifecycle, multi-node `srun`, container execution, data-path reachability, and exact cleanup; no UIB payload yet |
 | `make simulation-libvirt-e2e-test` | CPU with KVM | No | Disposable Slurm/Pyxis/Enroot controller/two-worker lifecycle, actual cross-VM RC payload traffic through UIB, and remote `run`/`status`/`collect`/`down` |
 | `make simulation-libvirt-netem-e2e-test` | CPU with KVM | No | The same cross-VM UIB gate while a selected netem condition is active on both workers, with collected qdisc and version evidence |
 | `make simulation-libvirt-training-e2e-test` | CPU with KVM | No | The same UIB gate plus real two-rank CPU DDP training in a staged local OCI filesystem through Slurm/Pyxis/Enroot; Gloo training is not UIB collective traffic |
@@ -2223,17 +2223,19 @@ identity, and cleanup contracts as virtme Kubernetes. The application-facing
 commands are standard `sbatch`, `srun`, `sinfo`, and `scontrol` commands.
 
 The backend downloads the exact Debian 13 Slurm 24.11.5 and Munge 0.5.16
-packages once and verifies every package against a repository-pinned SHA-256
-digest. It extracts them into the ignored download cache instead of installing
-them on the host. This is necessary because unprivileged virtme root cannot
-modify the host account database and `virtme-init`, rather than systemd, is PID
-1. Each cluster receives its own Munge key, configuration, sockets, logs, and
-spool under `/run/uib-slurm`.
+packages, Enroot 4.2.1, and Pyxis 0.24.0 once. Every artifact is checked against
+a repository-pinned SHA-256 digest. It extracts the packages and builds Pyxis
+against the pinned Slurm headers in the ignored cache instead of installing
+anything on the host. This is necessary because unprivileged virtme root
+cannot modify the host account database and `virtme-init`, rather than systemd,
+is PID 1. Each cluster receives its own Munge key, configuration, sockets,
+logs, spool, and Enroot state under `/run`.
 
 During `up`, the backend discovers each worker's actual CPU and memory values,
 starts Munge and the Slurm daemons directly, waits for every worker to become
-idle, runs one ordinary Slurm task per worker, and schedules a data-network
-ping between workers. `status` checks both guest ownership and `slurmctld`.
+idle, runs one ordinary Slurm task per worker, verifies the worker data path,
+and runs a cached generated BusyBox squashfs through standard Pyxis/Enroot
+options. `status` checks both guest ownership and `slurmctld`.
 
 ```text
 simulation/bin/uib-sim up --profile virtme-slurm \
@@ -2244,11 +2246,11 @@ simulation/bin/uib-sim down --profile virtme-slurm \
     --run-id uib-virtme-slurm
 ```
 
-This is currently a real multi-kernel Slurm/Munge L0 gate. Enroot, Pyxis,
-shared UIB runtime injection, network shaping, and workload submission through
-`uib-sim run` are the next layer; use `libvirt-slurm` for the complete
-Slurm/Pyxis/Enroot workload lifecycle today. Neither virtme mode is GPU or
-physical-fabric evidence.
+This is currently a real multi-kernel Slurm/Pyxis/Enroot L0 gate. Shared UIB
+runtime injection, network shaping, and complete workload submission through
+`uib-sim run` are the next layer; use `libvirt-slurm` for that complete
+workload lifecycle today. Neither virtme mode is GPU or physical-fabric
+evidence.
 
 ## Libvirt Slurm lifecycle
 
@@ -3454,16 +3456,18 @@ make simulation-virtme-slurm-e2e-test
 ```
 
 The test requires an amd64 Debian 13-compatible userspace, `vng`, KVM or QEMU
-emulation, `ssh`, `ssh-keygen`, `apt-get`, and `dpkg-deb`. The first run needs
-network access to the configured signed Debian repositories. Later runs reuse
-the eight verified packages and their extracted runtime. The gate exercises
-Munge authentication, controller health, per-worker registration, multi-node
-`srun`, worker-to-worker data traffic, status, and exact process cleanup.
+emulation, `ssh`, `ssh-keygen`, `apt-get`, `dpkg-deb`, `make`, and a C compiler.
+The first run needs network access to the configured signed Debian repositories
+and the pinned NVIDIA release artifacts. Later runs reuse the verified
+downloads, extracted runtime, compiled Pyxis plugin, and generated smoke image.
+The gate exercises Munge authentication, controller health, per-worker
+registration, multi-node `srun`, worker-to-worker data traffic, Pyxis/Enroot
+container execution, status, and exact process cleanup.
 
 | Variable | Default | Syntax and meaning |
 |---|---|---|
 | `SIMULATION_STATE_DIR` | `simulation/.artifacts/runs` | Ignored or external run-ledger directory |
-| `VIRTME_DOWNLOAD_CACHE` | `simulation/.artifacts/downloads/virtme` | Reusable verified package and extracted-runtime cache |
+| `VIRTME_DOWNLOAD_CACHE` | `simulation/.artifacts/downloads/virtme` | Reusable verified package, source, runtime, plugin, and smoke-image cache |
 | `VIRTME_SSH_WAIT` | `90` | Positive seconds allowed for each guest SSH endpoint |
 | `VIRTME_SLURM_WAIT` | `60` | Positive seconds allowed for controller and worker readiness |
 | `APT_GET_COMMAND` | `apt-get` | Debian package downloader used only on a cold cache |

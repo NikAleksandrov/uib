@@ -23,6 +23,18 @@ def slurm_environment(runtime):
         f"PATH={binary_path}",
         f"LD_LIBRARY_PATH={library_path}",
         "SLURM_CONF=/run/uib-slurm/slurm.conf",
+        f"ENROOT_LIBRARY_PATH={runtime}/usr/lib/enroot",
+        "ENROOT_SYSCONF_PATH=/run/uib-enroot/etc",
+        "ENROOT_RUNTIME_PATH=/run/uib-enroot/runtime",
+        "ENROOT_CACHE_PATH=/run/uib-enroot/cache",
+        "ENROOT_DATA_PATH=/run/uib-enroot/data",
+        "ENROOT_CONFIG_PATH=/run/uib-enroot/config",
+        "ENROOT_ALLOW_SUPERUSER=yes",
+        "ENROOT_LOGIN_SHELL=no",
+        "XDG_CACHE_HOME=/run/uib-enroot/cache-home",
+        "XDG_CONFIG_HOME=/run/uib-enroot/config-home",
+        "XDG_DATA_HOME=/run/uib-enroot/data-home",
+        "XDG_RUNTIME_DIR=/run/uib-enroot/runtime-home",
     ]
 
 
@@ -145,15 +157,31 @@ def wait_for_slurm(ssh, key, controller, workers, runtime):
     raise VirtmeError(f"the virtme Slurm cluster did not become ready{suffix}")
 
 
-def provision_slurm(config, topology_value, ssh, key, runtime, state):
+def provision_slurm(config, topology_value, ssh, key, runtime, smoke_image,
+                    state):
     from .core import VirtmeError
     from .processes import remote_command, remote_write
 
     guests = topology_value["guests"]
     prepare = (
-        "install -d -m 0700 /run/uib-slurm; "
+        "set -eu; install -d -m 0700 /run/uib-slurm; "
         "install -d -m 0755 /run/uib-slurm/slurmctld "
-        "/run/uib-slurm/slurmd /run/munge")
+        "/run/uib-slurm/slurmd /run/munge; "
+        "install -d -m 0700 /run/uib-enroot /run/uib-enroot/cache "
+        "/run/uib-enroot/config /run/uib-enroot/data "
+        "/run/uib-enroot/runtime /run/uib-enroot/cache-home "
+        "/run/uib-enroot/config-home /run/uib-enroot/data-home "
+        "/run/uib-enroot/runtime-home; "
+        "install -d -m 0755 /run/uib-enroot/etc "
+        "/run/uib-enroot/etc/hooks.d /run/uib-enroot/etc/mounts.d "
+        "/run/uib-enroot/etc/environ.d; "
+        "if test -e /usr/lib/enroot; then "
+        f"test \"$(readlink -f /usr/lib/enroot)\" = {shlex.quote(str(runtime))}"
+        "/usr/lib/enroot; else "
+        f"ln -s {shlex.quote(str(runtime))}/usr/lib/enroot /usr/lib/enroot; fi; "
+        "if test -e /etc/enroot; then "
+        "test \"$(readlink -f /etc/enroot)\" = /run/uib-enroot/etc; else "
+        "ln -s /run/uib-enroot/etc /etc/enroot; fi")
     for guest in guests.values():
         remote_command(ssh, key, guest, prepare)
 
@@ -197,6 +225,11 @@ def provision_slurm(config, topology_value, ssh, key, runtime, state):
         remote_write(
             ssh, key, guest, "/run/uib-slurm/cgroup.conf",
             "CgroupPlugin=autodetect\nIgnoreSystemd=yes\n")
+        remote_write(
+            ssh, key, guest, "/run/uib-slurm/plugstack.conf",
+            ("required "
+             f"{runtime}/usr/lib/x86_64-linux-gnu/slurm-wlm/"
+             "spank_pyxis.so\n"))
 
     controller = guests["controller"]
     remote_command(
@@ -223,8 +256,28 @@ def provision_slurm(config, topology_value, ssh, key, runtime, state):
         "--ntasks-per-node=1", "/bin/hostname",
     ]), timeout=120)
     if len(workers) > 1:
-        remote_command(ssh, key, controller, slurm_command(runtime, "srun", [
-            "--nodes=1", "--ntasks=1",
-            f"--nodelist={workers[0]['hostname']}", "ping", "-c", "3",
-            "-W", "2", workers[1]["dataAddress"],
-        ]), timeout=120)
+        remote_command(ssh, key, workers[0], shlex.join([
+            "ping", "-c", "3", "-W", "2", workers[1]["dataAddress"],
+        ]), timeout=30)
+    container_command = slurm_command(runtime, "srun", [
+        "--nodes=1", "--ntasks=1", f"--container-image={smoke_image}",
+        "--no-container-mount-home", "--no-container-entrypoint",
+        "/bin/true",
+    ])
+    result = remote_command(
+        ssh, key, controller,
+        f"timeout 60s {container_command} > /run/uib-slurm/pyxis.log 2>&1",
+        check=False, timeout=70)
+    if result is None or result.returncode:
+        diagnostics = []
+        for guest in [controller, *workers]:
+            log = remote_command(
+                ssh, key, guest,
+                "tail -n 80 /run/uib-slurm/pyxis.log "
+                "/run/uib-slurm/slurmd.log 2>/dev/null",
+                capture=True, check=False)
+            if log is not None and log.stdout.strip():
+                diagnostics.append(log.stdout.strip())
+        detail = "\n".join(diagnostics)
+        suffix = f": {detail[-4000:]}" if detail else ""
+        raise VirtmeError(f"the Pyxis/Enroot smoke test failed{suffix}")

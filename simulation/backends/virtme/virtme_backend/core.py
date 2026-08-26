@@ -22,14 +22,20 @@ DEFAULT_CACHE = SIMULATION / ".artifacts" / "downloads" / "virtme"
 
 
 SLURM_PACKAGES = (
+    ("busybox-static", "1:1.37.0-6+b8",
+     "73efc773b070ea220c5d7cb2d12206ec235c46b03a9ad133d1f6a7ca62201e41"),
     ("libb64-0d", "1.2-5+b3",
      "2eef02f6402a649d692181afe0eb26fce7b00b64092348284f7018420f8fbcde"),
     ("libjwt2", "1.17.2-1",
      "56022ab5f880e47c8f086ac4b7cf78fff4734cb035a998b6b3d5200752887803"),
     ("liblua5.1-0", "5.1.5-11",
      "e98fb0eaa8d07fd24bbaefd3b2bd356b8c6df241865780c42adb08f7ebcf8563"),
+    ("libslurm-dev", "24.11.5-4",
+     "41cd011854b892f4322218be21476efe485167fb3fdaa777858c4b833ccff3f8"),
     ("munge", "0.5.16-1.1~deb13u1",
      "2e26ea38f9128984d258b0f4b8e0603db7848be92629c36409563b7fae8a0e73"),
+    ("patchelf", "0.18.0-1.4",
+     "1d39a7973504a4a5eb4101293cca142b83055a5a0f94e1d4286ded2563289b92"),
     ("slurm-client", "24.11.5-4",
      "480591cbcf2399066f47eccee35c541e3d923ec9acba90f6e0a4b70677fba86c"),
     ("slurmctld", "24.11.5-4",
@@ -38,10 +44,36 @@ SLURM_PACKAGES = (
      "08dadcd84880a7db37f2941336aed1f552a5bcaf6efcbdac4e047d3ac870c47b"),
     ("slurm-wlm-basic-plugins", "24.11.5-4",
      "eae21933a82aa3cd3fecd4feba388e392017f8daa5ce5d23bf0b69fb64eaf4fe"),
+    ("squashfs-tools", "1:4.6.1-1",
+     "0e185122f5858132bbc709e26228ba28cf7f0c41f6ed26e3f55f518f2a53b59d"),
 )
 
 
 SLURM_VERSION = "24.11.5-4"
+
+
+ENROOT_VERSION = "4.2.1"
+
+
+PYXIS_VERSION = "0.24.0"
+
+
+PYXIS_COMMIT = "107519944221822ea1dace4db8e7234b2eaa4cd5"
+
+
+CONTAINER_ARTIFACTS = (
+    (
+        "enroot_4.2.1-1_amd64.deb",
+        "https://github.com/NVIDIA/enroot/releases/download/"
+        "v4.2.1/enroot_4.2.1-1_amd64.deb",
+        "5955c51e88df0c5ed538d87abb5264609d4bad55fa8570745ed5d4ec66c8ab91",
+    ),
+    (
+        f"pyxis-{PYXIS_VERSION}.tar.gz",
+        f"https://codeload.github.com/NVIDIA/pyxis/tar.gz/{PYXIS_COMMIT}",
+        "32d0a56d506a3876dd59202e6a209fefae94af9803f4dd8b542e11ef2ead7907",
+    ),
+)
 
 
 class VirtmeError(Exception):

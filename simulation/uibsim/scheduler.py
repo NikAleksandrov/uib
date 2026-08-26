@@ -81,6 +81,18 @@ def scheduler_remote(args):
             (f"LD_LIBRARY_PATH={runtime}/usr/lib/x86_64-linux-gnu/slurm-wlm:"
              f"{runtime}/usr/lib/x86_64-linux-gnu"),
             "SLURM_CONF=/run/uib-slurm/slurm.conf",
+            f"ENROOT_LIBRARY_PATH={runtime}/usr/lib/enroot",
+            "ENROOT_SYSCONF_PATH=/run/uib-enroot/etc",
+            "ENROOT_RUNTIME_PATH=/run/uib-enroot/runtime",
+            "ENROOT_CACHE_PATH=/run/uib-enroot/cache",
+            "ENROOT_DATA_PATH=/run/uib-enroot/data",
+            "ENROOT_CONFIG_PATH=/run/uib-enroot/config",
+            "ENROOT_ALLOW_SUPERUSER=yes",
+            "ENROOT_LOGIN_SHELL=no",
+            "XDG_CACHE_HOME=/run/uib-enroot/cache-home",
+            "XDG_CONFIG_HOME=/run/uib-enroot/config-home",
+            "XDG_DATA_HOME=/run/uib-enroot/data-home",
+            "XDG_RUNTIME_DIR=/run/uib-enroot/runtime-home",
         ]
     return {
         "environment": environment,
