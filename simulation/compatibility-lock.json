@@ -184,19 +184,20 @@
         "validatedOn": "2026-08-25"
       },
       "virtme": {
-        "status": "validated-multi-guest-kubernetes-and-slurm-lifecycle",
+        "status": "validated-multi-guest-kubernetes-and-slurm-uib-lifecycle",
         "virtmeNg": "1.35",
         "networkModes": ["socket", "bridge"],
         "validatedMode": "rootless-qemu-socket-ethernet",
         "clusterManagers": {
           "kubernetes": "validated-two-node-k3s-lifecycle",
           "slurm": {
-            "status": "validated-three-guest-slurm-pyxis-enroot-lifecycle",
+            "status": "validated-three-guest-slurm-pyxis-enroot-uib-lifecycle",
             "version": "24.11.5-4",
             "munge": "0.5.16",
             "enroot": "4.2.1",
             "pyxis": "0.24.0",
-            "containerLayer": "validated-generated-squashfs"
+            "containerLayer": "validated-generated-squashfs",
+            "uibTraffic": "passed-direct-and-pyxis"
           }
         },
         "testTargets": [
@@ -283,8 +284,9 @@
       "dataNetwork": "qemu-socket-ethernet",
       "schedulerTask": "passed-one-task-on-every-worker",
       "dataPath": "scheduled-worker-to-worker-icmp-passed",
-      "containerRuntime": "generated-busybox-squashfs-passed-through-pyxis-enroot",
-      "uibTraffic": "not-tested",
+      "containerRuntime": "generated-busybox-glibc-squashfs-passed-through-pyxis-enroot",
+      "uibRuntimeBundle": "portable-glibc-2.34-ceiling",
+      "uibTraffic": "32x2051-byte multi-packet RoCEv2 RC messages passed directly and through Pyxis/Enroot between distinct virtme workers with unchanged ibv_rc_pingpong",
       "cleanup": "recorded guest processes terminated with PID start-time checks",
       "validationLevel": "L0",
       "testTarget": "make simulation-virtme-slurm-e2e-test"

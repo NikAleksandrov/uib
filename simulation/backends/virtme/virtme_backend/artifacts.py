@@ -11,6 +11,59 @@ import tempfile
 import urllib.request
 
 
+def configure_slurm_storage(config, topology_value, state):
+    from .core import DEFAULT_MODEL_CACHE, DEFAULT_RUNTIME, VirtmeError
+
+    runtime = pathlib.Path(os.environ.get(
+        "UIB_RUNTIME_SOURCE", str(DEFAULT_RUNTIME))).expanduser().resolve()
+    required = [
+        runtime / "bin/ibv_rc_pingpong",
+        runtime / "bin/uib-preflight",
+        runtime / "lib/libuibv.so",
+        runtime / "share/uib/runtime-manifest.json",
+    ]
+    if (config["uib"]["enabled"] and
+            not all(path.is_file() for path in required)):
+        raise VirtmeError(
+            "portable UIB runtime is missing or incomplete; run "
+            "make runtime-bundle-portable-test")
+    model_cache = pathlib.Path(os.environ.get(
+        "VIRTME_MODEL_CACHE", str(DEFAULT_MODEL_CACHE))).expanduser().resolve()
+    results = state / "shared" / "results"
+    try:
+        model_cache.mkdir(parents=True, exist_ok=True)
+        results.mkdir(parents=True)
+    except OSError as error:
+        raise VirtmeError(f"cannot prepare virtme shared storage: {error}") \
+            from error
+    mappings = {
+        "modelCache": {
+            "guest": config["storage"]["modelCachePath"],
+            "host": str(model_cache),
+            "mode": "read-write",
+        },
+        "results": {
+            "guest": config["storage"]["resultsPath"],
+            "host": str(results),
+            "mode": "read-write",
+        },
+    }
+    if config["uib"]["enabled"]:
+        mappings["uibRuntime"] = {
+            "guest": config["storage"]["uibRuntimePath"],
+            "host": str(runtime),
+            "mode": "read-only",
+        }
+    for guest in topology_value["guests"].values():
+        for mapping in mappings.values():
+            option = "--rodir" if mapping["mode"] == "read-only" else "--rwdir"
+            guest["command"].extend([
+                option, f"{mapping['guest']}={mapping['host']}",
+            ])
+    topology_value["sharedStorage"] = mappings
+    return runtime
+
+
 def sha256_file(path):
     from .core import VirtmeError
 
@@ -335,7 +388,7 @@ def prepare_container_runtime(runtime, cache):
 def create_container_smoke_image(runtime, cache):
     from .core import VirtmeError
 
-    image = cache / "virtme-pyxis-smoke.sqsh"
+    image = cache / "virtme-pyxis-smoke-v4.sqsh"
     checksum = pathlib.Path(str(image) + ".sha256")
     try:
         expected = checksum.read_text(encoding="utf-8").strip()
@@ -348,15 +401,31 @@ def create_container_smoke_image(runtime, cache):
         rootfs = pathlib.Path(tempfile.mkdtemp(
             prefix=".pyxis-rootfs.", dir=cache))
         (rootfs / "bin").mkdir()
+        (rootfs / "lib/x86_64-linux-gnu").mkdir(parents=True)
+        (rootfs / "lib64").mkdir()
         (rootfs / "etc").mkdir()
         (rootfs / "proc").mkdir()
         (rootfs / "sys").mkdir()
         (rootfs / "dev").mkdir()
         (rootfs / "run").mkdir()
         (rootfs / "tmp").mkdir(mode=0o1777)
-        shutil.copy2(runtime / "usr/bin/busybox", rootfs / "bin/busybox")
-        for name in ("sh", "true", "hostname"):
-            (rootfs / "bin" / name).symlink_to("busybox")
+        busybox = runtime / "usr/bin/busybox"
+        shutil.copy2(busybox, rootfs / "bin/busybox")
+        applets = subprocess.run(
+            [str(busybox), "--list"], text=True, capture_output=True,
+            timeout=30, check=False)
+        if applets.returncode:
+            raise VirtmeError("cannot inspect the pinned BusyBox runtime")
+        for name in applets.stdout.splitlines():
+            link = rootfs / "bin" / name
+            if name and name != "busybox" and not link.exists():
+                link.symlink_to("busybox")
+        libc = pathlib.Path("/lib/x86_64-linux-gnu/libc.so.6")
+        loader = pathlib.Path("/lib64/ld-linux-x86-64.so.2")
+        if not libc.is_file() or not loader.is_file():
+            raise VirtmeError("the amd64 glibc runtime is unavailable")
+        shutil.copy2(libc, rootfs / "lib/x86_64-linux-gnu/libc.so.6")
+        shutil.copy2(loader, rootfs / "lib64/ld-linux-x86-64.so.2")
         (rootfs / "etc/passwd").write_text(
             "root:x:0:0:root:/root:/bin/sh\n", encoding="utf-8")
         (rootfs / "etc/group").write_text("root:x:0:\n", encoding="utf-8")

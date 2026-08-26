@@ -87,7 +87,7 @@ topology.
 | `make diagnostic-uib-preflight-test` | CPU | No | The common UIB runtime mounts into an independently built image |
 | `make diagnostic-gpu-test` | One NVIDIA GPU | No | CUDA visibility and a correctness-checked, single-rank NCCL collective |
 | `make simulation-kubernetes-uib-test` | CPU | No | Unchanged verbs programs exchange actual RC SEND/RECV and RDMA Write traffic through UIB between two Kind workers |
-| `make simulation-virtme-slurm-e2e-test` | CPU with KVM or QEMU emulation | No | Real controller/two-worker Slurm/Pyxis/Enroot lifecycle, multi-node `srun`, container execution, data-path reachability, and exact cleanup; no UIB payload yet |
+| `make simulation-virtme-slurm-e2e-test` | CPU with KVM or QEMU emulation | No | Real controller/two-worker Slurm/Pyxis/Enroot lifecycle and 32-message, 2051-byte RC traffic through UIB both directly and inside Pyxis, with exact cleanup |
 | `make simulation-libvirt-e2e-test` | CPU with KVM | No | Disposable Slurm/Pyxis/Enroot controller/two-worker lifecycle, actual cross-VM RC payload traffic through UIB, and remote `run`/`status`/`collect`/`down` |
 | `make simulation-libvirt-netem-e2e-test` | CPU with KVM | No | The same cross-VM UIB gate while a selected netem condition is active on both workers, with collected qdisc and version evidence |
 | `make simulation-libvirt-training-e2e-test` | CPU with KVM | No | The same UIB gate plus real two-rank CPU DDP training in a staged local OCI filesystem through Slurm/Pyxis/Enroot; Gloo training is not UIB collective traffic |
@@ -2233,9 +2233,20 @@ logs, spool, and Enroot state under `/run`.
 
 During `up`, the backend discovers each worker's actual CPU and memory values,
 starts Munge and the Slurm daemons directly, waits for every worker to become
-idle, runs one ordinary Slurm task per worker, verifies the worker data path,
-and runs a cached generated BusyBox squashfs through standard Pyxis/Enroot
-options. `status` checks both guest ownership and `slurmctld`.
+idle, runs one ordinary Slurm task per worker, and verifies the worker data
+path. It then runs an unchanged `ibv_rc_pingpong` binary between the two
+workers through UIB, first directly and then inside a cached generated
+BusyBox/glibc squashfs through standard Pyxis/Enroot options. Both transfers
+send 32 2051-byte RC messages, so they exercise the multi-packet path rather
+than only loading the library. The container run also executes the portable
+runtime preflight. `status` checks both guest ownership and `slurmctld`.
+
+The portable UIB runtime is shared read-only at
+`storage.uibRuntimePath`. The model cache and result directory are separate
+read-write shares at `storage.modelCachePath` and `storage.resultsPath`.
+Changing those three profile values changes only their guest paths; the host
+runtime and cache can be selected with `UIB_RUNTIME_SOURCE` and
+`VIRTME_MODEL_CACHE`.
 
 ```text
 simulation/bin/uib-sim up --profile virtme-slurm \
@@ -2246,11 +2257,10 @@ simulation/bin/uib-sim down --profile virtme-slurm \
     --run-id uib-virtme-slurm
 ```
 
-This is currently a real multi-kernel Slurm/Pyxis/Enroot L0 gate. Shared UIB
-runtime injection, network shaping, and complete workload submission through
-`uib-sim run` are the next layer; use `libvirt-slurm` for that complete
-workload lifecycle today. Neither virtme mode is GPU or physical-fabric
-evidence.
+This is a real multi-kernel Slurm/Pyxis/Enroot UIB L0 gate. Guest-side network
+shaping and complete workload submission through `uib-sim run` remain for the
+virtme backend; use `libvirt-slurm` for that complete workload lifecycle
+today. Neither virtme mode is GPU or physical-fabric evidence.
 
 ## Libvirt Slurm lifecycle
 
@@ -3456,18 +3466,23 @@ make simulation-virtme-slurm-e2e-test
 ```
 
 The test requires an amd64 Debian 13-compatible userspace, `vng`, KVM or QEMU
-emulation, `ssh`, `ssh-keygen`, `apt-get`, `dpkg-deb`, `make`, and a C compiler.
-The first run needs network access to the configured signed Debian repositories
-and the pinned NVIDIA release artifacts. Later runs reuse the verified
-downloads, extracted runtime, compiled Pyxis plugin, and generated smoke image.
-The gate exercises Munge authentication, controller health, per-worker
-registration, multi-node `srun`, worker-to-worker data traffic, Pyxis/Enroot
-container execution, status, and exact process cleanup.
+emulation, `ssh`, `ssh-keygen`, `apt-get`, `dpkg-deb`, `make`, a C compiler,
+and a Docker-compatible engine for the portable runtime build. The first run
+needs network access to the configured signed Debian repositories, the pinned
+NVIDIA release artifacts, and the portable-runtime builder image. Later runs
+reuse the verified downloads, extracted runtime, compiled Pyxis plugin,
+generated smoke image, and portable UIB runtime. The gate exercises Munge
+authentication, controller health, per-worker registration, multi-node
+`srun`, direct and Pyxis-contained UIB traffic, portable-runtime preflight,
+status, and exact process cleanup.
 
 | Variable | Default | Syntax and meaning |
 |---|---|---|
 | `SIMULATION_STATE_DIR` | `simulation/.artifacts/runs` | Ignored or external run-ledger directory |
 | `VIRTME_DOWNLOAD_CACHE` | `simulation/.artifacts/downloads/virtme` | Reusable verified package, source, runtime, plugin, and smoke-image cache |
+| `UIB_RUNTIME_SOURCE` | `simulation/.artifacts/uib-runtime` | Host path to the complete portable runtime shared read-only with every guest |
+| `VIRTME_MODEL_CACHE` | `simulation/.artifacts/huggingface` | Host path shared read-write at `storage.modelCachePath` in every guest |
+| `PORTABLE_RUNTIME_CONTAINER_ENGINE` | `docker` | Docker-compatible engine used to build and verify the portable runtime dependency |
 | `VIRTME_SSH_WAIT` | `90` | Positive seconds allowed for each guest SSH endpoint |
 | `VIRTME_SLURM_WAIT` | `60` | Positive seconds allowed for controller and worker readiness |
 | `APT_GET_COMMAND` | `apt-get` | Debian package downloader used only on a cold cache |

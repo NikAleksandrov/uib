@@ -331,7 +331,7 @@ simulation-virtme-backend-test:
 simulation-virtme-kubernetes-e2e-test:
 	./tests/run_virtme_kubernetes_e2e_test.sh
 
-simulation-virtme-slurm-e2e-test:
+simulation-virtme-slurm-e2e-test: runtime-bundle-portable-test
 	./tests/run_virtme_slurm_e2e_test.sh
 
 simulation-kind-e2e-test:

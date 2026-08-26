@@ -21,6 +21,12 @@ SIMULATION = BACKEND.parents[1]
 DEFAULT_CACHE = SIMULATION / ".artifacts" / "downloads" / "virtme"
 
 
+DEFAULT_MODEL_CACHE = SIMULATION / ".artifacts" / "huggingface"
+
+
+DEFAULT_RUNTIME = SIMULATION / ".artifacts" / "uib-runtime"
+
+
 SLURM_PACKAGES = (
     ("busybox-static", "1:1.37.0-6+b8",
      "73efc773b070ea220c5d7cb2d12206ec235c46b03a9ad133d1f6a7ca62201e41"),

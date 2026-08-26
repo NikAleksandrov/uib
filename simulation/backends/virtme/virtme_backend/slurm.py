@@ -103,6 +103,55 @@ def slurm_configuration(config, topology_value, node_records, runtime):
     return "\n".join(lines) + "\n"
 
 
+def uib_verbs_smoke(config, server_address):
+    runtime = config["storage"]["uibRuntimePath"]
+    interface = config["network"]["dataInterface"]
+    port = config["uib"]["bindPort"]
+    protocol = config["uib"]["protocol"]
+    transport = config["uib"]["transport"]
+    congestion = config["uib"]["congestionControl"]["algorithm"]
+    congestion_variable = (
+        "UIB_UET_CC" if protocol == "uet" else "UIB_ROCEV2_CC")
+    return f"""#!/bin/sh
+set -eu
+
+runtime=${{UIB_RUNTIME_PATH:-{shlex.quote(runtime)}}}
+interface={shlex.quote(interface)}
+export LD_LIBRARY_PATH="$runtime/lib"
+address=$("$runtime/bin/ip" -o -4 address show dev "$interface" scope global)
+bind_ip=${{address#* inet }}
+bind_ip=${{bind_ip%%/*}}
+if test -z "$bind_ip"; then
+	echo "UIB verbs smoke test could not resolve its data address" >&2
+	exit 2
+fi
+
+export LD_PRELOAD="$runtime/lib/libuibv.so"
+export UIB_BIND_IP="$bind_ip"
+export UIB_BIND_PORT=$(({port} + ${{SLURM_LOCALID:-0}}))
+export UIB_PROTOCOL={shlex.quote(protocol)}
+export UIB_TRANSPORT_MODE={shlex.quote(transport)}
+export UIB_ZEROCOPY=off
+export {congestion_variable}={shlex.quote(congestion)}
+
+set -- timeout -k 1 45 "$runtime/bin/ibv_rc_pingpong" -d uib0 -g 0 \
+	-m 1024 -s 2051 -n 32 -c
+case ${{SLURM_PROCID:-}} in
+0)
+	exec "$@"
+	;;
+1)
+	sleep 2
+	exec "$@" {shlex.quote(server_address)}
+	;;
+*)
+	echo "invalid Slurm rank: ${{SLURM_PROCID:-unset}}" >&2
+	exit 2
+	;;
+esac
+"""
+
+
 def wait_for_slurm(ssh, key, controller, workers, runtime):
     from .core import VirtmeError
     from .processes import remote_command
@@ -217,6 +266,15 @@ def provision_slurm(config, topology_value, ssh, key, runtime, smoke_image,
             slurm_command(runtime, f"{runtime}/usr/sbin/slurmd", ["-C"]),
             capture=True)
         node_records.append(slurmd_node_record(report.stdout, guest))
+    workers = [guest for guest in guests.values() if guest["role"] == "worker"]
+    if config["uib"]["enabled"] and len(workers) < 2:
+        raise VirtmeError("virtme UIB validation requires at least two workers")
+    if config["uib"]["enabled"]:
+        smoke = uib_verbs_smoke(config, workers[0]["dataAddress"])
+        for guest in guests.values():
+            remote_write(
+                ssh, key, guest, "/run/uib-slurm/uib-verbs-smoke", smoke,
+                mode="0755")
     slurm_conf = slurm_configuration(
         config, topology_value, node_records, runtime)
     for guest in guests.values():
@@ -248,7 +306,6 @@ def provision_slurm(config, topology_value, ssh, key, runtime, smoke_image,
                             "-D", "-d", f"{runtime}/usr/sbin/slurmstepd",
                         ]),
                     "/run/uib-slurm/slurmd-console.log"))
-    workers = [guest for guest in guests.values() if guest["role"] == "worker"]
     worker_count = len(workers)
     wait_for_slurm(ssh, key, controller, workers, runtime)
     remote_command(ssh, key, controller, slurm_command(runtime, "srun", [
@@ -259,6 +316,17 @@ def provision_slurm(config, topology_value, ssh, key, runtime, smoke_image,
         remote_command(ssh, key, workers[0], shlex.join([
             "ping", "-c", "3", "-W", "2", workers[1]["dataAddress"],
         ]), timeout=30)
+    selected_workers = ",".join(worker["hostname"] for worker in workers[:2])
+    if config["uib"]["enabled"]:
+        direct = remote_command(
+            ssh, key, controller, slurm_command(runtime, "srun", [
+                "--nodes=2", "--ntasks=2", "--ntasks-per-node=1",
+                f"--nodelist={selected_workers}",
+                "/run/uib-slurm/uib-verbs-smoke",
+            ]), capture=True, timeout=90)
+        if "bytes in" not in direct.stdout:
+            raise VirtmeError(
+                "direct Slurm UIB smoke produced no payload evidence")
     container_command = slurm_command(runtime, "srun", [
         "--nodes=1", "--ntasks=1", f"--container-image={smoke_image}",
         "--no-container-mount-home", "--no-container-entrypoint",
@@ -281,3 +349,32 @@ def provision_slurm(config, topology_value, ssh, key, runtime, smoke_image,
         detail = "\n".join(diagnostics)
         suffix = f": {detail[-4000:]}" if detail else ""
         raise VirtmeError(f"the Pyxis/Enroot smoke test failed{suffix}")
+    if config["uib"]["enabled"]:
+        mounts = ",".join([
+            f"{config['storage']['uibRuntimePath']}:/opt/uib:ro",
+            ("/run/uib-slurm/uib-verbs-smoke:"
+             "/run/uib-verbs-smoke:ro"),
+            "/dev/null:/dev/infiniband/uib0",
+        ])
+        container_uib = remote_command(
+            ssh, key, controller, slurm_command(runtime, "srun", [
+                "--nodes=2", "--ntasks=2", "--ntasks-per-node=1",
+                f"--nodelist={selected_workers}",
+                f"--container-image={smoke_image}",
+                f"--container-mounts={mounts}",
+                "--no-container-mount-home", "--no-container-entrypoint",
+                "--export=ALL,UIB_RUNTIME_PATH=/opt/uib",
+                "/run/uib-verbs-smoke",
+            ]), capture=True, timeout=120)
+        if "bytes in" not in container_uib.stdout:
+            raise VirtmeError(
+                "Pyxis UIB smoke produced no payload evidence")
+        remote_command(
+            ssh, key, controller, slurm_command(runtime, "srun", [
+                "--nodes=1", "--ntasks=1",
+                f"--container-image={smoke_image}",
+                (f"--container-mounts="
+                 f"{config['storage']['uibRuntimePath']}:/opt/uib:ro"),
+                "--no-container-mount-home", "--no-container-entrypoint",
+                "/opt/uib/bin/uib-preflight", "--library-only",
+            ]), timeout=120)

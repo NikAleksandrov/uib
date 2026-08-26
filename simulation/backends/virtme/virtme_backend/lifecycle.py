@@ -26,7 +26,7 @@ def command_render(args):
 
 
 def command_up(args):
-    from .artifacts import acquire_k3s, acquire_slurm_packages, create_container_smoke_image, extract_slurm_runtime, prepare_container_runtime
+    from .artifacts import acquire_k3s, acquire_slurm_packages, configure_slurm_storage, create_container_smoke_image, extract_slurm_runtime, prepare_container_runtime
     from .core import ENROOT_VERSION, PYXIS_VERSION, SLURM_VERSION, VirtmeError, executable, load_config, validate_name, write_json
     from .kubernetes import inventory, provision_kubernetes, write_kubeconfig
     from .network import create_network, delete_network
@@ -59,6 +59,9 @@ def command_up(args):
     processes = []
     network_created = False
     try:
+        if config["cluster"]["manager"] == "slurm":
+            configure_slurm_storage(config, topology_value, state)
+            write_json(state / "topology.json", topology_value)
         key = state / "id_ed25519"
         keygen = executable("SSH_KEYGEN_COMMAND", "ssh-keygen")
         result = subprocess.run([
@@ -124,6 +127,9 @@ def command_up(args):
             ledger["slurmRuntime"] = str(slurm_runtime)
             ledger["enrootVersion"] = ENROOT_VERSION
             ledger["pyxisVersion"] = PYXIS_VERSION
+            ledger["uibTraffic"] = (
+                "passed-direct-and-pyxis" if config["uib"]["enabled"]
+                else "disabled")
         ledger["state"] = "ready"
         ledger["topology"] = "topology.json"
         ledger["inventory"] = "inventory.json"

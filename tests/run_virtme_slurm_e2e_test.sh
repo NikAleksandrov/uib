@@ -47,10 +47,25 @@ assert ledger["clusterManager"] == "slurm"
 assert ledger["slurmVersion"] == "24.11.5-4"
 assert ledger["enrootVersion"] == "4.2.1"
 assert ledger["pyxisVersion"] == "0.24.0"
+assert ledger["uibTraffic"] == "passed-direct-and-pyxis"
 assert os.path.isfile(os.path.join(ledger["slurmRuntime"], "usr/bin/srun"))
 assert os.path.isfile(os.path.join(
     ledger["slurmRuntime"], "usr/lib/x86_64-linux-gnu/slurm-wlm",
     "spank_pyxis.so"))
+with open(os.path.join(infrastructure, "topology.json"),
+          encoding="utf-8") as source:
+    topology = json.load(source)
+storage = topology["sharedStorage"]
+assert storage["uibRuntime"]["guest"] == "/var/lib/uib/runtime"
+assert storage["uibRuntime"]["mode"] == "read-only"
+assert os.path.isfile(os.path.join(
+    storage["uibRuntime"]["host"], "bin", "ibv_rc_pingpong"))
+assert storage["modelCache"]["guest"] == "/var/cache/uib/models"
+assert storage["modelCache"]["mode"] == "read-write"
+assert os.path.isdir(storage["modelCache"]["host"])
+assert storage["results"]["guest"] == "/var/lib/uib/results"
+assert storage["results"]["mode"] == "read-write"
+assert os.path.isdir(storage["results"]["host"])
 with open(os.path.join(infrastructure, "inventory.json"),
           encoding="utf-8") as source:
     inventory = json.load(source)
