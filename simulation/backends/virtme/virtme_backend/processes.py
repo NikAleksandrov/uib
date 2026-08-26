@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
 import os
 import pathlib
 import shlex
@@ -111,17 +112,28 @@ def remote_command(ssh, key, guest, command, capture=False, check=True,
         result = subprocess.run(
             ssh_command(ssh, key, guest["sshPort"], command),
             text=True, stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, timeout=timeout, check=False)
+            stderr=subprocess.PIPE, timeout=timeout, check=False)
     except (OSError, subprocess.TimeoutExpired) as error:
         if check:
             raise VirtmeError(
                 f"cannot run command on {guest['hostname']}: {error}") from error
         return None
     if check and result.returncode:
+        detail = result.stderr.strip()
+        suffix = f": {detail[-1000:]}" if detail else ""
         raise VirtmeError(
             f"remote command failed on {guest['hostname']} with status "
-            f"{result.returncode}")
+            f"{result.returncode}{suffix}")
     return result
+
+
+def remote_write(ssh, key, guest, path, value, mode="0644"):
+    encoded = base64.b64encode(value.encode()).decode()
+    destination = shlex.quote(path)
+    command = (
+        f"printf %s {shlex.quote(encoded)} | base64 --decode > {destination} && "
+        f"chmod {mode} {destination}")
+    remote_command(ssh, key, guest, command)
 
 
 def launch_guest(vng, config, guest, public_key, log):

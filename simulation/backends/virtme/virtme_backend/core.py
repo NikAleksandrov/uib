@@ -21,6 +21,29 @@ SIMULATION = BACKEND.parents[1]
 DEFAULT_CACHE = SIMULATION / ".artifacts" / "downloads" / "virtme"
 
 
+SLURM_PACKAGES = (
+    ("libb64-0d", "1.2-5+b3",
+     "2eef02f6402a649d692181afe0eb26fce7b00b64092348284f7018420f8fbcde"),
+    ("libjwt2", "1.17.2-1",
+     "56022ab5f880e47c8f086ac4b7cf78fff4734cb035a998b6b3d5200752887803"),
+    ("liblua5.1-0", "5.1.5-11",
+     "e98fb0eaa8d07fd24bbaefd3b2bd356b8c6df241865780c42adb08f7ebcf8563"),
+    ("munge", "0.5.16-1.1~deb13u1",
+     "2e26ea38f9128984d258b0f4b8e0603db7848be92629c36409563b7fae8a0e73"),
+    ("slurm-client", "24.11.5-4",
+     "480591cbcf2399066f47eccee35c541e3d923ec9acba90f6e0a4b70677fba86c"),
+    ("slurmctld", "24.11.5-4",
+     "477ca68c0cdda9e728ea2c91fb53e59ed4410914b64001add7aa98664479acec"),
+    ("slurmd", "24.11.5-4",
+     "08dadcd84880a7db37f2941336aed1f552a5bcaf6efcbdac4e047d3ac870c47b"),
+    ("slurm-wlm-basic-plugins", "24.11.5-4",
+     "eae21933a82aa3cd3fecd4feba388e392017f8daa5ce5d23bf0b69fb64eaf4fe"),
+)
+
+
+SLURM_VERSION = "24.11.5-4"
+
+
 class VirtmeError(Exception):
     pass
 
@@ -46,6 +69,10 @@ def load_config(path):
                 r"v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+",
                 config["cluster"].get("version", "")):
             raise VirtmeError("virtme k3s requires an exact release version")
+    if (config.get("cluster", {}).get("manager") == "slurm" and
+            config["cluster"].get("version") != SLURM_VERSION):
+        raise VirtmeError(
+            f"virtme Slurm requires the pinned {SLURM_VERSION} package set")
     network_mode = config["virtme"]["networkMode"]
     if network_mode == "bridge" and "bridgePrefix" not in config["virtme"]:
         raise VirtmeError("virtme bridge networking requires bridgePrefix")

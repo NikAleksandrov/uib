@@ -182,6 +182,27 @@
           }
         },
         "validatedOn": "2026-08-25"
+      },
+      "virtme": {
+        "status": "validated-multi-guest-kubernetes-and-slurm-lifecycle",
+        "virtmeNg": "1.35",
+        "networkModes": ["socket", "bridge"],
+        "validatedMode": "rootless-qemu-socket-ethernet",
+        "clusterManagers": {
+          "kubernetes": "validated-two-node-k3s-lifecycle",
+          "slurm": {
+            "status": "validated-three-guest-munge-slurm-lifecycle",
+            "version": "24.11.5-4",
+            "munge": "0.5.16",
+            "containerLayer": "pending"
+          }
+        },
+        "testTargets": [
+          "make simulation-virtme-backend-test",
+          "make simulation-virtme-kubernetes-e2e-test",
+          "make simulation-virtme-slurm-e2e-test"
+        ],
+        "validatedOn": "2026-08-26"
       }
     }
   },
@@ -247,6 +268,23 @@
     }
   },
   "validatedConfigurations": [
+    {
+      "id": "slurm-virtme-rootless-cpu",
+      "date": "2026-08-26",
+      "virtmeNg": "1.35",
+      "slurm": "24.11.5-4",
+      "munge": "0.5.16",
+      "topology": "one-controller-two-workers",
+      "device": "cpu",
+      "dataNetwork": "qemu-socket-ethernet",
+      "schedulerTask": "passed-one-task-on-every-worker",
+      "dataPath": "scheduled-worker-to-worker-icmp-passed",
+      "containerRuntime": "pending",
+      "uibTraffic": "not-tested",
+      "cleanup": "recorded guest processes terminated with PID start-time checks",
+      "validationLevel": "L0",
+      "testTarget": "make simulation-virtme-slurm-e2e-test"
+    },
     {
       "id": "slurm-pyxis-enroot-libvirt-rootless-cpu",
       "date": "2026-08-25",

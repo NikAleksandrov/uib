@@ -205,4 +205,89 @@ assert ledger["state"] == "preflight-failed"
 assert len(ledger["missingPaths"]) == 1
 PY
 
+cat > "$test_dir/fake-bin/ssh" <<'EOF'
+#!/bin/sh
+set -eu
+command=
+for argument in "$@"; do
+	command=$argument
+done
+printf '%s\n' "$command" >> "$TEST_LOG/ssh.commands"
+case "$command" in
+*'sbatch --parsable')
+	cat > "$TEST_LOG/remote.sbatch"
+	echo '8765;virtme-test'
+	;;
+esac
+EOF
+chmod +x "$test_dir/fake-bin/ssh"
+
+remote_id=uib-virtme-remote
+remote_dir=$test_dir/state/$remote_id
+infrastructure=$remote_dir/infrastructure
+slurm_runtime=$test_dir/virtme-slurm-runtime
+mkdir -p "$infrastructure" "$slurm_runtime/usr/bin"
+: > "$infrastructure/id_ed25519"
+: > "$slurm_runtime/usr/bin/sbatch"
+"$cli" render --profile virtme-slurm --format json \
+	> "$infrastructure/resolved-simulation.json"
+python3 - "$infrastructure" "$remote_id" "$slurm_runtime" <<'PY'
+import json
+import os
+import sys
+
+
+infrastructure, run_id, runtime = sys.argv[1:]
+key = os.path.join(infrastructure, "id_ed25519")
+with open(os.path.join(infrastructure, "ledger.json"), "w",
+          encoding="utf-8") as output:
+    json.dump({
+        "schemaVersion": 1,
+        "runId": run_id,
+        "provider": "virtme",
+        "clusterManager": "slurm",
+        "state": "ready",
+        "slurmRuntime": runtime,
+    }, output)
+with open(os.path.join(infrastructure, "inventory.json"), "w",
+          encoding="utf-8") as output:
+    json.dump({
+        "all": {
+            "vars": {
+                "ansible_user": "root",
+                "ansible_ssh_private_key_file": key,
+            },
+            "children": {
+                "slurm_controller": {"hosts": {"controller": {}}},
+                "slurm_cluster": {"hosts": {
+                    "controller": {
+                        "ansible_host": "127.0.0.1",
+                        "ansible_port": 23000,
+                    },
+                }},
+            },
+        },
+    }, output)
+PY
+
+job_id=$(TEST_LOG="$test_dir/log" SSH_COMMAND="$test_dir/fake-bin/ssh" \
+	"$cli" run --profile virtme-slurm --request "$request" \
+	--run-id "$remote_id" --state-dir "$test_dir/state" \
+	--allow-mutable-tags)
+[ "$job_id" = 8765 ]
+grep -F 'SLURM_CONF=/run/uib-slurm/slurm.conf' \
+	"$test_dir/log/ssh.commands" > /dev/null
+grep -F 'sbatch --parsable' "$test_dir/log/ssh.commands" > /dev/null
+test -s "$test_dir/log/remote.sbatch"
+python3 - "$remote_dir/ledger.json" <<'PY'
+import json
+import sys
+
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    ledger = json.load(source)
+assert ledger["jobId"] == "8765"
+assert ledger["schedulerTransport"] == "virtme-ssh"
+PY
+
 echo "Slurm workload lifecycle test: PASS"

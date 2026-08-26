@@ -402,8 +402,10 @@ def tools_for(config):
         "existing": {"kubectl"} if manager == "kubernetes" else {"srun"},
     }[provider])
     if provider == "virtme" and config["virtme"]["mode"] == "multi-guest":
-        tools.update({"ansible-playbook", "ip", "ssh"})
-    if manager == "slurm" and provider == "libvirt":
+        tools.update({"ip", "ssh", "ssh-keygen"})
+        if manager == "slurm":
+            tools.add("apt-get")
+    if manager == "slurm" and provider in {"libvirt", "virtme"}:
         tools.update({"scp", "ssh"})
     elif manager == "slurm":
         tools.update({"sacct", "sbatch", "scancel", "scontrol", "srun"})

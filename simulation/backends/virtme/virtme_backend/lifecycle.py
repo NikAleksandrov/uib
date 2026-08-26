@@ -26,11 +26,12 @@ def command_render(args):
 
 
 def command_up(args):
-    from .artifacts import acquire_k3s
-    from .core import VirtmeError, executable, load_config, validate_name, write_json
+    from .artifacts import acquire_k3s, acquire_slurm_packages, extract_slurm_runtime
+    from .core import SLURM_VERSION, VirtmeError, executable, load_config, validate_name, write_json
     from .kubernetes import inventory, provision_kubernetes, write_kubeconfig
     from .network import create_network, delete_network
     from .processes import launch_api_forward, launch_guest, terminate_process, wait_for_ssh
+    from .slurm import provision_slurm
     from .topology import topology
 
     validate_name(args.name)
@@ -70,9 +71,14 @@ def command_up(args):
         vng = executable("VNG_COMMAND", "vng")
         ssh = executable("SSH_COMMAND", "ssh")
         k3s = None
+        slurm_runtime = None
         if config["cluster"]["manager"] == "kubernetes":
             cache = pathlib.Path(args.cache_dir).expanduser().resolve()
             k3s = acquire_k3s(config, cache)
+        elif config["cluster"]["manager"] == "slurm":
+            cache = pathlib.Path(args.cache_dir).expanduser().resolve()
+            packages = acquire_slurm_packages(cache)
+            slurm_runtime = extract_slurm_runtime(packages, cache)
         network_created = create_network(topology_value["network"])
         logs = state / "logs"
         logs.mkdir()
@@ -105,6 +111,13 @@ def command_up(args):
             kubeconfig = write_kubeconfig(
                 state, kubeconfig_value, topology_value["kubernetesApiPort"])
             ledger["kubeconfig"] = kubeconfig.name
+        elif slurm_runtime:
+            ledger["state"] = "provisioning"
+            write_json(ledger_path, ledger)
+            provision_slurm(
+                config, topology_value, ssh, key, slurm_runtime, state)
+            ledger["slurmVersion"] = SLURM_VERSION
+            ledger["slurmRuntime"] = str(slurm_runtime)
         ledger["state"] = "ready"
         ledger["topology"] = "topology.json"
         ledger["inventory"] = "inventory.json"
@@ -128,8 +141,9 @@ def command_up(args):
 
 
 def command_status(args):
-    from .core import read_json, validate_name
-    from .processes import owned_process_alive
+    from .core import VirtmeError, executable, read_json, validate_name
+    from .processes import owned_process_alive, remote_command
+    from .slurm import slurm_command
 
     validate_name(args.name)
     state = pathlib.Path(args.state_dir).expanduser().resolve()
@@ -155,6 +169,20 @@ def command_status(args):
     }
     if needs_forward:
         report["kubernetesApiForward"] = forward_ready
+    if (ledger.get("clusterManager") == "slurm" and
+            ledger.get("state") == "ready" and live == expected):
+        runtime = ledger.get("slurmRuntime")
+        if not isinstance(runtime, str):
+            raise VirtmeError("virtme Slurm runtime is not recorded")
+        ssh = executable("SSH_COMMAND", "ssh")
+        result = remote_command(
+            ssh, state / "id_ed25519",
+            topology_value["guests"]["controller"],
+            slurm_command(runtime, "scontrol", ["ping"]),
+            capture=True, check=False)
+        report["slurmController"] = (
+            result is not None and result.returncode == 0)
+        forward_ready = report["slurmController"]
     if (ledger["state"] == "ready" and
             (len(guests) != expected or live != expected or not forward_ready)):
         report["state"] = "degraded"

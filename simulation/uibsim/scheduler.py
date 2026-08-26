@@ -22,16 +22,18 @@ def scheduler_remote(args):
     if not ledger_path.is_file():
         return None
     ledger = read_json(ledger_path, "infrastructure ledger")
+    provider = ledger.get("provider")
     if (ledger.get("schemaVersion") != 1 or
             ledger.get("runId") != args.run_id or
-            ledger.get("provider") != "libvirt"):
+            provider not in {"libvirt", "virtme"}):
         raise ConfigurationError(
             f"infrastructure ledger ownership mismatch: {ledger_path}")
     if ledger.get("state") != "ready":
         raise ConfigurationError(
-            f"libvirt infrastructure is not ready: {ledger.get('state')}")
+            f"{provider} infrastructure is not ready: {ledger.get('state')}")
 
-    inventory_path = infrastructure / "inventory.yaml"
+    inventory_name = "inventory.json" if provider == "virtme" else "inventory.yaml"
+    inventory_path = infrastructure / inventory_name
     inventory = load(inventory_path)
     try:
         all_hosts = inventory["all"]
@@ -50,22 +52,42 @@ def scheduler_remote(args):
             variables["ansible_ssh_private_key_file"]).resolve()
     except (KeyError, TypeError, StopIteration) as error:
         raise ConfigurationError(
-            f"invalid libvirt controller inventory: {inventory_path}") from error
+            f"invalid {provider} controller inventory: {inventory_path}") from error
     expected_key = (infrastructure / "id_ed25519").resolve()
     if key != expected_key or not key.is_file():
         raise ConfigurationError(
-            f"libvirt controller key ownership mismatch: {key}")
+            f"{provider} controller key ownership mismatch: {key}")
     if (not isinstance(user, str) or
             not re.fullmatch(r"[a-z_][a-z0-9_-]*", user) or
             not isinstance(host, str) or not host or
             isinstance(port, bool) or not isinstance(port, int) or
             port < 1 or port > 65535):
         raise ConfigurationError(
-            f"invalid libvirt controller endpoint: {inventory_path}")
+            f"invalid {provider} controller endpoint: {inventory_path}")
+    environment = []
+    if provider == "virtme":
+        runtime_value = ledger.get("slurmRuntime")
+        if not isinstance(runtime_value, str):
+            raise ConfigurationError(
+                "virtme infrastructure has no Slurm runtime")
+        runtime = pathlib.Path(runtime_value).resolve()
+        if not (runtime / "usr/bin/sbatch").is_file():
+            raise ConfigurationError(
+                f"virtme Slurm runtime is unavailable: {runtime}")
+        environment = [
+            "env",
+            (f"PATH={runtime}/usr/bin:{runtime}/usr/sbin:"
+             "/usr/bin:/usr/sbin"),
+            (f"LD_LIBRARY_PATH={runtime}/usr/lib/x86_64-linux-gnu/slurm-wlm:"
+             f"{runtime}/usr/lib/x86_64-linux-gnu"),
+            "SLURM_CONF=/run/uib-slurm/slurm.conf",
+        ]
     return {
+        "environment": environment,
         "host": host,
         "key": key,
         "port": port,
+        "provider": provider,
         "target": f"{user}@{host}",
     }
 
@@ -106,7 +128,8 @@ def run_scheduler(args, variable, program, arguments, **kwargs):
     remote = scheduler_remote(args)
     if remote:
         command = ssh_command(remote)
-        command.append(shlex.join([program, *arguments]))
+        command.append(shlex.join([
+            *remote["environment"], program, *arguments]))
     else:
         command = [slurm_command(variable, program), *arguments]
     try:
@@ -138,7 +161,7 @@ def copy_remote_path(args, source, destination, recursive=False):
 
     remote = scheduler_remote(args)
     if not remote:
-        raise ConfigurationError("remote copy requires libvirt infrastructure")
+        raise ConfigurationError("remote copy requires owned infrastructure")
     command = [
         command_executable("SCP_COMMAND", "scp"),
         "-q",

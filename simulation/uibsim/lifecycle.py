@@ -250,10 +250,11 @@ def command_run(args):
             infrastructure = run_dir / "infrastructure" / "ledger.json"
             with infrastructure.open(encoding="utf-8") as source:
                 infrastructure_ledger = json.load(source)
-            if (config["infrastructure"]["provider"] != "libvirt" or
+            provider = config["infrastructure"]["provider"]
+            if (provider not in {"libvirt", "virtme"} or
                     infrastructure_ledger.get("schemaVersion") != 1 or
                     infrastructure_ledger.get("runId") != args.run_id or
-                    infrastructure_ledger.get("provider") != "libvirt" or
+                    infrastructure_ledger.get("provider") != provider or
                     infrastructure_ledger.get("state") != "ready" or
                     (run_dir / "ledger.json").exists()):
                 raise FileExistsError
@@ -263,7 +264,7 @@ def command_run(args):
             if infrastructure_config.get("network") != config["network"]:
                 raise ConfigurationError(
                     "workload network configuration differs from the "
-                    "provisioned libvirt network")
+                    f"provisioned {provider} network")
         else:
             run_dir.mkdir()
     except (json.JSONDecodeError, IsADirectoryError) as error:
@@ -342,12 +343,13 @@ def command_run(args):
     ledger["state"] = "rendered"
     write_json(ledger_path, ledger)
     try:
-        if scheduler_remote(args):
+        remote = scheduler_remote(args)
+        if remote:
             submitted = run_scheduler(
                 args, "SBATCH_COMMAND", "sbatch", ["--parsable"],
                 input=batch_path.read_text(encoding="utf-8"), text=True,
                 capture_output=True)
-            ledger["schedulerTransport"] = "libvirt-ssh"
+            ledger["schedulerTransport"] = f"{remote['provider']}-ssh"
         else:
             submitted = run_scheduler(
                 args, "SBATCH_COMMAND", "sbatch",
@@ -692,6 +694,14 @@ def command_down(args):
         ])
     if config["infrastructure"]["provider"] == "virtme":
         run_dir = state_path(args)
+        if (run_dir / "ledger.json").is_file():
+            unused, ledger = load_ledger(args)
+            if ledger.get("jobId"):
+                result = command_slurm_down(args)
+                if result:
+                    return result
+            if not (run_dir / "infrastructure" / "ledger.json").is_file():
+                return 0
         return invoke_backend(config, lambda unused: [
             "down", "--name", args.run_id,
             "--state-dir", str(run_dir / "infrastructure"),

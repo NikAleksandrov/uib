@@ -16,11 +16,18 @@ trap 'rm -rf -- "$test_dir"' EXIT INT TERM
 
 python3 "$project_dir/tests/cases/virtme_backend/topology.py" "$test_dir/topology.json"
 
+"$cli" render --profile virtme-slurm --format json \
+	> "$test_dir/slurm-config.json"
+"$backend" render "$test_dir/slurm-config.json" --name uib-slurm-test \
+	> "$test_dir/slurm-topology.json"
+python3 "$project_dir/tests/cases/virtme_backend/slurm_topology.py" "$test_dir/slurm-config.json" \
+	"$test_dir/slurm-topology.json"
+
 "$cli" render --profile virtme-kubernetes --overlay virtme-bridge \
 	--format json > "$test_dir/bridge-config.json"
 "$backend" render "$test_dir/bridge-config.json" --name uib-bridge-test \
 	> "$test_dir/bridge-topology.json"
-python3 "$project_dir/tests/cases/virtme_backend/slurm_topology.py" "$test_dir/bridge-topology.json"
+python3 "$project_dir/tests/cases/virtme_backend/bridge_topology.py" "$test_dir/bridge-topology.json"
 
 "$cli" render --profile virtme-kubernetes --format json \
 	--set infrastructure.kernel=/boot/vmlinuz-test \
@@ -28,7 +35,7 @@ python3 "$project_dir/tests/cases/virtme_backend/slurm_topology.py" "$test_dir/b
 	> "$test_dir/kernel.json"
 "$backend" render "$test_dir/kernel.json" --name uib-kernel-test \
 	> "$test_dir/kernel-topology.json"
-python3 "$project_dir/tests/cases/virtme_backend/bridge_topology.py" "$test_dir/kernel-topology.json"
+python3 "$project_dir/tests/cases/virtme_backend/kernel_topology.py" "$test_dir/kernel-topology.json"
 
 mkdir "$test_dir/fakes"
 cp "$project_dir/tests/fakes/virtme/ssh-keygen" "$test_dir/fakes/ssh-keygen"
@@ -53,7 +60,7 @@ export VIRTME_API_FORWARD_CHECK_COMMAND=/bin/true
 	--state-dir "$test_dir/runs" > /dev/null
 "$cli" status --profile virtme-kubernetes --run-id virtme-lifecycle \
 	--state-dir "$test_dir/runs" > "$test_dir/status.json"
-python3 "$project_dir/tests/cases/virtme_backend/kernel_topology.py" "$test_dir/runs/virtme-lifecycle/infrastructure" \
+python3 "$project_dir/tests/cases/virtme_backend/lifecycle_status.py" "$test_dir/runs/virtme-lifecycle/infrastructure" \
 	"$test_dir/status.json"
 "$cli" kubeconfig --profile virtme-kubernetes --run-id virtme-lifecycle \
 	--state-dir "$test_dir/runs" > "$test_dir/exported-kubeconfig"
@@ -61,7 +68,7 @@ grep -q 'server: https://127.0.0.1:23003' \
 	"$test_dir/exported-kubeconfig"
 "$cli" down --profile virtme-kubernetes --run-id virtme-lifecycle \
 	--state-dir "$test_dir/runs"
-python3 "$project_dir/tests/cases/virtme_backend/lifecycle_status.py" "$test_dir/runs/virtme-lifecycle/infrastructure/ledger.json"
+python3 "$project_dir/tests/cases/virtme_backend/network_evidence.py" "$test_dir/runs/virtme-lifecycle/infrastructure/ledger.json"
 
 "$backend" up "$test_dir/bridge-config.json" --name virtme-bridge-life \
 	--state-dir "$test_dir/bridge-state" > /dev/null
@@ -84,6 +91,13 @@ fi
 if "$backend" render "$test_dir/config.json" --name INVALID \
 	> /dev/null 2>&1; then
 	echo "virtme accepted an unsafe run ID" >&2
+	exit 1
+fi
+if "$cli" render --profile virtme-slurm --format json \
+	--set cluster.version=24.11.6-1 > "$test_dir/bad-slurm.json" && \
+	"$backend" render "$test_dir/bad-slurm.json" --name bad-slurm \
+	> /dev/null 2>&1; then
+	echo "virtme accepted an unpinned Slurm package version" >&2
 	exit 1
 fi
 
