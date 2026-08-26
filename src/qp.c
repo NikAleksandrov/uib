@@ -30,6 +30,8 @@ struct uib_outstanding_pool {
 	int                 closing;
 };
 
+static int psn_cmp(uint32_t a, uint32_t b);
+
 static size_t outstanding_pool_capacity(uint8_t pool_class)
 {
 	static const size_t capacities[UIB_OUT_POOL_CLASSES] = {
@@ -243,6 +245,7 @@ static struct uib_outstanding *alloc_outstanding(struct uib_qp *qp,
 	out->is_final = 0;
 	out->indexed = 0;
 	out->congestion_inflight = 0;
+	out->sent = 0;
 	out->nominal_len = 0;
 	out->tx_time_ns = 0;
 	out->read_sgl = NULL;
@@ -308,7 +311,7 @@ static int rocev2_congestion_init(struct uib_qp *qp)
 		configuration = &config;
 	}
 	return uib_congestion_init(&qp->congestion, cc, configuration, mtu,
-				   now_ns());
+				   uib_now_ns());
 }
 
 int uib_rocev2_qp_init(struct uib_qp *qp)
@@ -767,7 +770,7 @@ static void enqueue_outstanding(struct uib_qp *qp, struct uib_outstanding *out)
 	}
 	out->next = NULL;
 	out->prev = *tail;
-	out->deadline_ns = uib_now_ns() + UIB_RTO_NS;
+	out->deadline_ns = 0;
 	if (*tail)
 		(*tail)->next = out;
 	else
@@ -775,23 +778,114 @@ static void enqueue_outstanding(struct uib_qp *qp, struct uib_outstanding *out)
 	*tail = out;
 	outstanding_index_add(qp, out);
 	qp->out_count++;
-	if (!qp->retry_scheduled ||
-	    out->deadline_ns < qp->retry_deadline_ns)
-		uib_qp_retry_schedule(qp, out->deadline_ns);
 }
 
 static void outstanding_retry_reschedule(struct uib_qp *qp)
 {
+	struct uib_outstanding *out;
 	uint64_t deadline = UINT64_MAX;
 
-	if (qp->out_head)
-		deadline = qp->out_head->deadline_ns;
-	if (qp->read_head && qp->read_head->deadline_ns < deadline)
-		deadline = qp->read_head->deadline_ns;
+	for (out = qp->out_head; out; out = out->next) {
+		if (out->sent && out->deadline_ns < deadline)
+			deadline = out->deadline_ns;
+	}
+	for (out = qp->read_head; out; out = out->next) {
+		if (out->sent && out->deadline_ns < deadline)
+			deadline = out->deadline_ns;
+	}
 	if (deadline != UINT64_MAX)
 		uib_qp_retry_schedule(qp, deadline);
 	else
 		uib_qp_retry_cancel(qp);
+}
+
+static struct uib_outstanding *first_unsent(struct uib_outstanding *out)
+{
+	while (out && out->sent)
+		out = out->next;
+	return out;
+}
+
+static struct uib_outstanding *rocev2_next_unsent(struct uib_qp *qp)
+{
+	struct uib_outstanding *read = first_unsent(qp->read_head);
+	struct uib_outstanding *send = first_unsent(qp->out_head);
+
+	if (!send)
+		return read;
+	if (!read)
+		return send;
+	return psn_cmp(send->psn, read->psn) <= 0 ? send : read;
+}
+
+static void rocev2_request_ack(struct uib_outstanding *out)
+{
+	struct uib_bth *bth = out->pkt;
+	uint32_t apsn = ntohl(bth->apsn) | UIB_BTH_ACK_REQ;
+	uint32_t crc;
+
+	bth->apsn = htonl(apsn);
+	crc = htonl(uib_icrc(out->pkt, out->pkt_len - UIB_ICRC_BYTES));
+	memcpy((uint8_t *)out->pkt + out->pkt_len - UIB_ICRC_BYTES, &crc,
+	       sizeof(crc));
+}
+
+static int rocev2_drain_locked(struct uib_qp *qp)
+{
+	struct uib_transport_ref refs[UIB_TX_BATCH_STACK];
+	struct uib_outstanding *outstanding[UIB_TX_BATCH_STACK];
+	struct uib_congestion congestion_before = qp->congestion;
+	struct uib_outstanding *out;
+	uint64_t transmit_time = uib_now_ns();
+	uint32_t count = 0;
+	uint32_t i;
+	int rc;
+
+	while (count < UIB_TX_BATCH_STACK) {
+		out = rocev2_next_unsent(qp);
+		if (!out || !uib_congestion_can_send(&qp->congestion,
+						       out->nominal_len))
+			break;
+		out->sent = 1;
+		out->tx_time_ns = transmit_time;
+		uib_congestion_on_send(&qp->congestion, out->nominal_len);
+		out->congestion_inflight = 1;
+		if (uib_congestion_ack_request(&qp->congestion,
+					       out->nominal_len))
+			rocev2_request_ack(out);
+		refs[count].dst = &out->dst;
+		refs[count].buf = out->pkt;
+		refs[count].release = free_outstanding;
+		refs[count].opaque = out;
+		refs[count].len = out->pkt_len;
+		refs[count].entropy = 0;
+		outstanding[count] = out;
+		__atomic_add_fetch(&out->refs, 1, __ATOMIC_RELAXED);
+		count++;
+	}
+	if (!count) {
+		if (rocev2_next_unsent(qp))
+			uib_qp_retry_schedule(qp, transmit_time + UIB_RTO_NS);
+		return 0;
+	}
+	rc = uib_transport_send_ref_batch(qp->ctx, refs, count);
+	if (rc < 0) {
+		qp->congestion = congestion_before;
+		for (i = 0; i < count; i++) {
+			outstanding[i]->sent = 0;
+			outstanding[i]->congestion_inflight = 0;
+		}
+		uib_qp_retry_schedule(qp, transmit_time + UIB_RTO_NS);
+		return rc;
+	}
+	for (i = 0; i < count; i++) {
+		outstanding[i]->deadline_ns = transmit_time + UIB_RTO_NS;
+		if (!qp->retry_scheduled ||
+		    outstanding[i]->deadline_ns < qp->retry_deadline_ns)
+			uib_qp_retry_schedule(qp,
+					      outstanding[i]->deadline_ns);
+	}
+	return 0;
 }
 
 static void send_ack(struct uib_qp *qp, const struct sockaddr_in *dst,
@@ -934,14 +1028,12 @@ static int send_one_packet(struct uib_qp *qp, struct uib_send_wr *wr,
 static int post_rdma_read(struct uib_qp *qp, struct uib_send_wr *wr,
 			  size_t total)
 {
-	struct uib_congestion congestion_before;
 	struct uib_outstanding *out;
 	struct sockaddr_in dst;
 	size_t packet_len;
 	uint32_t n_resp;
 	uint32_t mtu;
 	uint32_t psn;
-	uint32_t start_psn;
 	int rc;
 
 	mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
@@ -968,24 +1060,12 @@ static int post_rdma_read(struct uib_qp *qp, struct uib_send_wr *wr,
 	 * fast peer cannot ACK before the request becomes visible locally.
 	 */
 	pthread_mutex_lock(&qp->lock);
-	congestion_before = qp->congestion;
-	start_psn = qp->sq_psn;
 	out->nominal_len = rocev2_nominal_len(qp, packet_len);
-	if (!uib_congestion_can_send(&qp->congestion, out->nominal_len)) {
-		pthread_mutex_unlock(&qp->lock);
-		free_outstanding(out);
-		return -EAGAIN;
-	}
-	out->tx_time_ns = now_ns();
-	uib_congestion_on_send(&qp->congestion, out->nominal_len);
-	out->congestion_inflight = 1;
 	rc = send_one_packet(qp, wr, UIB_OP_RDMA_READ_REQ, 1, 1, NULL, 0,
 			     wr->rdma.remote_addr, wr->rdma.rkey,
 			     (uint32_t)total, out, out->pkt, out->pkt_len, &psn,
-			     &out->pkt_len, &dst, 0);
+			     &out->pkt_len, &dst, 1);
 	if (rc < 0) {
-		qp->congestion = congestion_before;
-		qp->sq_psn = start_psn;
 		pthread_mutex_unlock(&qp->lock);
 		free_outstanding(out);
 		return rc;
@@ -1000,6 +1080,7 @@ static int post_rdma_read(struct uib_qp *qp, struct uib_send_wr *wr,
 	out->wr_opcode = wr->opcode;
 	out->dst = dst;
 	enqueue_outstanding(qp, out);
+	rocev2_drain_locked(qp);
 	pthread_mutex_unlock(&qp->lock);
 	return 0;
 }
@@ -1051,7 +1132,6 @@ static uint8_t pick_opcode(enum uib_qp_type qpt, enum uib_wr_opcode op,
 
 static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 {
-	struct uib_congestion congestion_before;
 	struct uib_transport_ref stack_refs[UIB_TX_BATCH_STACK];
 	struct uib_transport_ref *refs;
 	struct uib_outstanding *out;
@@ -1162,7 +1242,6 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 	built = 0;
 	if (is_rc)
 		pthread_mutex_lock(&qp->lock);
-	congestion_before = qp->congestion;
 	start_psn = qp->sq_psn;
 	for (i = 0; i < n; i++) {
 		off = (size_t)i * mtu;
@@ -1197,16 +1276,6 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 		}
 		if (is_rc) {
 			out->nominal_len = rocev2_nominal_len(qp, packet_len);
-			if (!uib_congestion_can_send(&qp->congestion,
-						     out->nominal_len)) {
-				free_outstanding(out);
-				err = -EAGAIN;
-				break;
-			}
-			out->tx_time_ns = now_ns();
-			uib_congestion_on_send(&qp->congestion,
-					       out->nominal_len);
-			out->congestion_inflight = 1;
 			out->psn = psn;
 			out->wire_opcode = op;
 			out->signaled =
@@ -1228,21 +1297,12 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 	if (is_rc && !err) {
 		for (i = 0; i < built; i++) {
 			out = refs[i].opaque;
-			__atomic_add_fetch(&out->refs, 1, __ATOMIC_RELAXED);
+			enqueue_outstanding(qp, out);
 		}
-		rc = uib_transport_send_ref_batch(qp->ctx, refs, built);
-		if (rc < 0) {
-			err = rc;
-		} else {
-			for (i = 0; i < built; i++) {
-				out = refs[i].opaque;
-				enqueue_outstanding(qp, out);
-			}
-			built = 0;
-		}
+		built = 0;
+		rocev2_drain_locked(qp);
 	}
 	if (is_rc && err) {
-		qp->congestion = congestion_before;
 		qp->sq_psn = start_psn;
 	}
 	for (i = 0; i < built; i++) {
@@ -1474,7 +1534,7 @@ static int psn_cmp(uint32_t a, uint32_t b)
 static void ack_outstanding(struct uib_qp *qp, uint32_t ack_psn)
 {
 	struct uib_congestion_ack event = {
-		.ack_time_ns = now_ns(),
+		.ack_time_ns = uib_now_ns(),
 	};
 	struct uib_outstanding *next;
 	struct uib_outstanding *out;
@@ -1505,13 +1565,14 @@ static void ack_outstanding(struct uib_qp *qp, uint32_t ack_psn)
 	}
 	qp->last_acked_psn = ack_psn;
 	outstanding_retry_reschedule(qp);
+	rocev2_drain_locked(qp);
 	pthread_mutex_unlock(&qp->lock);
 }
 
 static void rocev2_congestion_cnp(struct uib_qp *qp)
 {
 	struct uib_congestion_ack event = {
-		.ack_time_ns = now_ns(),
+		.ack_time_ns = uib_now_ns(),
 		.ecn_marked = 1,
 	};
 	struct uib_outstanding *out;
@@ -1667,7 +1728,7 @@ static void detach_outstanding(struct uib_qp *qp,
 	if (target == qp->read_head || target->prev || target->next) {
 		if (target->congestion_inflight) {
 			struct uib_congestion_ack event = {
-				.ack_time_ns = now_ns(),
+				.ack_time_ns = uib_now_ns(),
 				.tx_time_ns = target->tx_time_ns,
 				.newly_received = target->nominal_len,
 				.tx_retries = target->retries,
@@ -1678,6 +1739,7 @@ static void detach_outstanding(struct uib_qp *qp,
 		}
 		outstanding_unlink(qp, target);
 		outstanding_retry_reschedule(qp);
+		rocev2_drain_locked(qp);
 	}
 	pthread_mutex_unlock(&qp->lock);
 }
@@ -1693,9 +1755,10 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 
 	const struct uib_bth *bth = (const struct uib_bth *)p;
 	uint8_t op;
+	int ack_request;
 	uint32_t dqpn, psn;
 
-	uib_bth_unpack(bth, &op, &dqpn, &psn, NULL);
+	uib_bth_unpack(bth, &op, &dqpn, &psn, &ack_request);
 	(void)dqpn;
 
 	const uint8_t *body = p + UIB_BTH_BYTES;
@@ -1795,9 +1858,9 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		qp->last_rx_psn = psn;
 		qp->last_rx_valid = 1;
 		qp->rq_psn = psn + 1;
-		if (is_rc && rc < 0)
-			send_ack(qp, src, psn,
-				 UIB_AETH_NAK_INV_REQ);
+		if (is_rc && (rc < 0 || ack_request))
+			send_ack(qp, src, psn, rc < 0 ? UIB_AETH_NAK_INV_REQ :
+				 UIB_AETH_ACK);
 		return rc;
 	}
 	case UIB_OP_SEND_MIDDLE: {
@@ -1813,9 +1876,9 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		qp->frag_recv_offset += (uint32_t)consumed;
 		qp->last_rx_psn = psn;
 		qp->rq_psn = psn + 1;
-		if (is_rc && rc < 0)
-			send_ack(qp, src, psn,
-				 UIB_AETH_NAK_INV_REQ);
+		if (is_rc && (rc < 0 || ack_request))
+			send_ack(qp, src, psn, rc < 0 ? UIB_AETH_NAK_INV_REQ :
+				 UIB_AETH_ACK);
 		return rc;
 	}
 	case UIB_OP_SEND_LAST:
@@ -1988,6 +2051,8 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		qp->last_rx_psn = psn;
 		qp->last_rx_valid = 1;
 		qp->rq_psn = psn + 1;
+		if (is_rc && ack_request)
+			send_ack(qp, src, psn, UIB_AETH_ACK);
 		return 0;
 	}
 	case UIB_OP_RDMA_WRITE_MIDDLE: {
@@ -2009,6 +2074,8 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		qp->frag_write_offset += (uint32_t)take;
 		qp->last_rx_psn = psn;
 		qp->rq_psn = psn + 1;
+		if (is_rc && ack_request)
+			send_ack(qp, src, psn, UIB_AETH_ACK);
 		return 0;
 	}
 	case UIB_OP_RDMA_WRITE_LAST:
@@ -2200,6 +2267,8 @@ static void rocev2_retransmit_list(struct uib_qp *qp,
 
 	for (out = head; out; out = next) {
 		next = out->next;
+		if (!out->sent)
+			continue;
 		if ((int64_t)(now - out->deadline_ns) >= 0) {
 			if (out->retries >= UIB_MAX_RETRIES) {
 				if (out->congestion_inflight)
@@ -2258,6 +2327,7 @@ void uib_rocev2_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 		uib_qp_retry_schedule(qp, next_deadline);
 	else
 		uib_qp_retry_cancel(qp);
+	rocev2_drain_locked(qp);
 	pthread_mutex_unlock(&qp->lock);
 }
 

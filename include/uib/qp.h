@@ -119,6 +119,7 @@ struct uib_outstanding {
 	uint8_t                 indexed;
 	uint8_t                 pool_class;
 	uint8_t                 congestion_inflight;
+	uint8_t                 sent;
 	uint32_t                nominal_len;
 	uint64_t                wr_id;
 	enum uib_wr_opcode      wr_opcode;

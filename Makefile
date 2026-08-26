@@ -655,7 +655,7 @@ rocev2-congestion-test: all $(TEST_BIN) $(CONGESTION_PLUGIN)
 		UIB_ROCEV2_CC=test-pass CONGESTION_PLUGIN_TEST=1 \
 		UIB_TEST_DROP_TX=1 ./$(TEST_BIN)
 	UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc \
-		UIB_ROCEV2_NSCC_MAX_WND=65536 ./$(TEST_BIN)
+		UIB_ROCEV2_NSCC_MAX_WND=5000 ./$(TEST_BIN)
 	@if UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc \
 		UIB_ROCEV2_NSCC_MAX_WND=1 ./$(TEST_BIN) >/dev/null 2>&1; then \
 		echo "invalid RoCEv2 NSCC window was accepted" >&2; \
