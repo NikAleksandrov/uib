@@ -53,6 +53,8 @@ assert values["uib_enabled"] is True
 assert values["uib_data_interface"] == "eth1"
 assert values["uib_network_shaping"] == {"enabled": False}
 assert values["uib_netem_source"].endswith("/simulation/network/netem")
+assert values["uib_stage_image_source"].endswith(
+    "/simulation/adapters/slurm/stage-image")
 assert values["uib_node_cpu"] == 2
 assert values["uib_node_memory_mib"] == 4096
 state = pathlib.Path(values["uib_run_state"])

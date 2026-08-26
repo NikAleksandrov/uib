@@ -208,10 +208,21 @@ def wait_for_slurm(ssh, key, controller, workers, runtime):
 
 def provision_slurm(config, topology_value, ssh, key, runtime, smoke_image,
                     state):
-    from .core import VirtmeError
+    from .core import SIMULATION, VirtmeError
     from .processes import remote_command, remote_write
 
     guests = topology_value["guests"]
+    controller = guests["controller"]
+    try:
+        image_helper = (
+            SIMULATION / "adapters/slurm/stage-image").read_text(
+                encoding="utf-8")
+    except OSError as error:
+        raise VirtmeError(
+            f"cannot read the Slurm image helper: {error}") from error
+    remote_write(
+        ssh, key, controller, "/run/uib-stage-image", image_helper,
+        mode="0755")
     prepare = (
         "set -eu; install -d -m 0700 /run/uib-slurm; "
         "install -d -m 0755 /run/uib-slurm/slurmctld "

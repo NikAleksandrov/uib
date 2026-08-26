@@ -13,6 +13,8 @@ def common_ansible_values(config, values, state, run_id):
         "uib_run_state": str(state),
         "uib_config": str(state / "resolved-simulation.json"),
         "uib_netem_source": str(SIMULATION / "network" / "netem"),
+        "uib_stage_image_source": str(
+            SIMULATION / "adapters" / "slurm" / "stage-image"),
         "uib_enabled": config["uib"]["enabled"],
         "uib_ssh_user": config["libvirt"]["sshUser"],
         "uib_data_interface": config["network"]["dataInterface"],

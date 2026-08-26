@@ -1971,11 +1971,12 @@ The exact portable archive name is printed by its build target. On a shared
 cluster an administrator normally owns the runtime directory while users own
 their cache and result roots.
 
-### Staging a local image in the libvirt Slurm lab
+### Staging an image in a disposable Slurm lab
 
-Pyxis accepts either an OCI reference or an absolute SquashFS path. A
-disposable VM cannot see a host-local development tag, so `load-image`
-converts that image once and returns the path visible on every lab worker:
+Pyxis accepts either an OCI reference or an absolute SquashFS path. Disposable
+libvirt VMs and virtme guests cannot use a host-local development tag directly,
+so `load-image` converts an image once and returns the path visible on every
+lab worker:
 
 ```text
 run_id=uib-slurm-training
@@ -1993,16 +1994,20 @@ simulation/bin/uib-sim run --profile libvirt-slurm \
     --set "workload.image=$training_image"
 ```
 
-`up` must complete before `load-image`. The local image must already exist in
-the selected Docker-compatible engine. References are digest-qualified by
-default; `--allow-mutable-tags` is required for a development tag and cannot
-be used for a reproducibility or promotion claim. `--image` is repeatable and
-prints one staged path per input in the same order. The returned absolute path
-is content-addressed and is the only SquashFS path shape accepted by the Slurm
-renderer; arbitrary host or guest paths are rejected.
+Use the same commands with `--profile virtme-slurm` for the virtme lab.
 
-On first use, the adapter exports the image without running it, creates an
-Enroot SquashFS, verifies and caches it by image ID, and records its provenance.
+`up` must complete before `load-image`. The selected Docker-compatible engine
+is inspected first and pulls the requested reference only when it is absent.
+References are digest-qualified by default; `--allow-mutable-tags` is required
+for a development tag and cannot be used for a reproducibility or promotion
+claim. `--image` is repeatable and prints one staged path per input in the same
+order. The returned absolute path is content-addressed and is the only
+SquashFS path shape accepted by the Slurm renderer; arbitrary host or guest
+paths are rejected.
+
+On first use, the adapter exports the image without running it, feeds the tar
+stream directly to `mksquashfs` so ownership metadata is retained, verifies
+and caches the image by ID, and records its provenance.
 
 A fresh lab hashes the complete host artifact before streaming it to the
 controller, where the staging helper validates the SquashFS again. The ignored
@@ -2244,24 +2249,37 @@ runtime preflight. `status` checks both guest ownership and `slurmctld`.
 
 The portable UIB runtime is shared read-only at
 `storage.uibRuntimePath`. The model cache and result directory are separate
-read-write shares at `storage.modelCachePath` and `storage.resultsPath`.
-Changing those three profile values changes only their guest paths; the host
-runtime and cache can be selected with `UIB_RUNTIME_SOURCE` and
-`VIRTME_MODEL_CACHE`.
+read-write shares at `storage.modelCachePath` and `storage.resultsPath`. The
+content-addressed SquashFS cache is shared read-write at
+`/var/cache/uib/images`. Changing the three configurable storage values changes
+only their guest paths; the host runtime, model cache, and image cache can be
+selected with `UIB_RUNTIME_SOURCE`, `VIRTME_MODEL_CACHE`, and
+`SLURM_IMAGE_CACHE`.
 
 ```text
 simulation/bin/uib-sim up --profile virtme-slurm \
     --run-id uib-virtme-slurm
+
+image=$(simulation/bin/uib-sim load-image --profile virtme-slurm \
+    --run-id uib-virtme-slurm \
+    --image docker.io/library/ubuntu@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc)
+
+simulation/bin/uib-sim run --profile virtme-slurm \
+    --request simulation/requests/slurm-lifecycle-smoke.yaml \
+    --run-id uib-virtme-slurm --allow-mutable-tags \
+    --set "workload.image=$image"
 simulation/bin/uib-sim status --profile virtme-slurm \
     --run-id uib-virtme-slurm
+simulation/bin/uib-sim collect --run-id uib-virtme-slurm \
+    --output-dir simulation/.artifacts/results/uib-virtme-slurm
 simulation/bin/uib-sim down --profile virtme-slurm \
     --run-id uib-virtme-slurm
 ```
 
 This is a real multi-kernel Slurm/Pyxis/Enroot UIB L0 gate with optional
-guest-side network shaping. Complete workload submission through `uib-sim run`
-remains for the virtme backend; use `libvirt-slurm` for that complete workload
-lifecycle today. Neither virtme mode is GPU or physical-fabric evidence.
+guest-side network shaping and a complete remote
+`load-image`/`run`/`status`/`collect` lifecycle. Neither virtme mode is GPU or
+physical-fabric evidence.
 
 ## Libvirt Slurm lifecycle
 
@@ -2797,7 +2815,7 @@ the printed apply command, `tc -s` output, kernel release, iproute2 version,
 and whether a requested seed was accepted for every worker. Older
 netem releases without `seed` support omit that option, warn, and record
 `seedApplied: false`; they are functional but not packet-decision reproducible.
-The libvirt `collect` path validates and exports the record as
+The Slurm `collect` path validates and exports the record as
 `network-emulation.json`; the generated manifest covers it.
 The same network overlay must be supplied to `up` and `run`, and `uib-sim`
 rejects a workload whose resolved network differs from its existing libvirt
@@ -3363,8 +3381,8 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Rootless socket and optional bridge rendering, IPv4/MAC/SSH allocation, exact virtme-ng launch vectors, run-owned key/inventory creation, PID/start-time ownership, CLI `up/status/down`, bridge create/delete cleanup through fake standard commands, and invalid combination rejection |
 | `make simulation-virtme-kubernetes-e2e-test` | virtme-ng 1.35, SSH, kubectl, QEMU with KVM or TCG, about 4 GiB memory for the two reduced-size guests, and download access for the pinned k3s binary on first use | A real controller and worker under separate virtme kernels, rootless socket data traffic, pinned k3s/containerd startup without systemd PID 1, both nodes Ready, host API access through an owned SSH forward, cached download reuse, and exact process cleanup |
-| `make simulation-virtme-slurm-e2e-test` | virtme-ng 1.35, SSH, QEMU with KVM or TCG, `jq`, `tc`, Slurm/Pyxis build tools, a Docker-compatible engine for the portable runtime, about 6 GiB memory, and download access on the first run | A real controller/two-worker Slurm/Pyxis/Enroot lifecycle, direct and containerized cross-worker UIB traffic, clean network evidence, portable-runtime preflight, and exact cleanup |
-| `make simulation-virtme-netem-e2e-test` | The virtme Slurm gate requirements | The selected condition is active on both worker data interfaces while direct and Pyxis-contained UIB traffic passes; exact qdisc/kernel/iproute2 evidence and cleanup are validated |
+| `make simulation-virtme-slurm-e2e-test` | virtme-ng 1.35, SSH/SCP, QEMU with KVM or TCG, `jq`, `tc`, Slurm/Pyxis build tools, a Docker-compatible engine for the portable runtime and workload image, about 6 GiB memory, and download access on the first run | A real controller/two-worker Slurm/Pyxis/Enroot lifecycle, direct and containerized cross-worker UIB traffic, automatic pinned-image staging, remote two-rank `run`/`status`/`collect`, clean network evidence, portable-runtime preflight, and exact cleanup |
+| `make simulation-virtme-netem-e2e-test` | The virtme Slurm gate requirements | The same complete workload lifecycle while the selected condition is active on both worker data interfaces; exact qdisc/kernel/iproute2 evidence and cleanup are validated |
 | `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge/rootless VM rendering; Slurm and bridge-only Kubernetes playbook selection; pinned k3s inputs, non-logged join token, kubeconfig export, cached-image verification, worker network evidence, Slurm remote lifecycle, exclusive ownership, and exact-state cleanup with fake standard commands |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, SSH/SCP, passt, NFS-capable Ubuntu guests, roughly 12 GiB memory for the default three VMs, and download access on the first run | Actual controller/two-worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, ordinary worker tasks, cross-VM standard RC payload through UIB, remote batch submission and status, two-rank pinned OCI execution with portable UIB preflight, result collection, state-based destruction, and domain/pool absence; no NCCL or GPU claim |
@@ -3491,7 +3509,8 @@ reuse the verified downloads, extracted runtime, compiled Pyxis plugin,
 generated smoke image, and portable UIB runtime. The gate exercises Munge
 authentication, controller health, per-worker registration, multi-node
 `srun`, direct and Pyxis-contained UIB traffic, portable-runtime preflight,
-status, and exact process cleanup.
+automatic pinned-image staging, remote workload submission/status/collection,
+and exact process cleanup.
 
 | Variable | Default | Syntax and meaning |
 |---|---|---|
@@ -3500,6 +3519,8 @@ status, and exact process cleanup.
 | `UIB_RUNTIME_SOURCE` | `simulation/.artifacts/uib-runtime` | Host path to the complete portable runtime shared read-only with every guest |
 | `VIRTME_MODEL_CACHE` | `simulation/.artifacts/huggingface` | Host path shared read-write at `storage.modelCachePath` in every guest |
 | `VIRTME_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty, `clean`, `datacenter`, `constrained`, `lossy`, `reordered`, or `ecn`; the selected overlay applies to every worker data-interface egress |
+| `VIRTME_SLURM_JOB_WAIT` | `120` | Positive seconds allowed for the end-to-end workload job to reach a terminal state |
+| `SLURM_IMAGE_CACHE` | `simulation/.artifacts/slurm-images` | Reusable verified host SquashFS cache shared with the virtme guests |
 | `PORTABLE_RUNTIME_CONTAINER_ENGINE` | `docker` | Docker-compatible engine used to build and verify the portable runtime dependency |
 | `VIRTME_SSH_WAIT` | `90` | Positive seconds allowed for each guest SSH endpoint |
 | `VIRTME_SLURM_WAIT` | `60` | Positive seconds allowed for controller and worker readiness |

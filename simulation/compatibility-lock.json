@@ -134,7 +134,7 @@
           "pyxis": "0.24.0",
           "enroot": "4.2.1"
         },
-        "status": "validated-libvirt-cpu-lifecycle",
+        "status": "validated-libvirt-and-virtme-cpu-lifecycle",
         "supportedWorkloads": [
           "multi-rank-training",
           "single-task-inference"
@@ -147,10 +147,11 @@
           "make simulation-slurm-lifecycle-test",
           "make simulation-slurm-collect-test",
           "make simulation-libvirt-test",
-          "make simulation-libvirt-e2e-test"
+          "make simulation-libvirt-e2e-test",
+          "make simulation-virtme-slurm-e2e-test"
         ],
-        "realClusterValidation": "passed-three-vm-rootless-cpu-uib-l0-and-remote-slurm-lifecycle",
-        "validatedOn": "2026-08-25"
+        "disposableClusterValidation": "passed-libvirt-vm-and-virtme-multi-kernel-cpu-uib-l0-remote-slurm-lifecycles",
+        "validatedOn": "2026-08-26"
       },
       "libvirt": {
         "status": "validated-rootless-slurm-and-implemented-kubernetes-lifecycle",
@@ -184,7 +185,7 @@
         "validatedOn": "2026-08-25"
       },
       "virtme": {
-        "status": "validated-multi-guest-kubernetes-slurm-uib-netem-lifecycle",
+        "status": "validated-multi-guest-kubernetes-slurm-workload-uib-netem-lifecycle",
         "virtmeNg": "1.35",
         "networkModes": ["socket", "bridge"],
         "validatedMode": "rootless-qemu-socket-ethernet",
@@ -198,7 +199,8 @@
             "pyxis": "0.24.0",
             "containerLayer": "validated-generated-squashfs",
             "uibTraffic": "passed-direct-and-pyxis",
-            "networkShaping": "validated-worker-egress-datacenter-netem"
+            "networkShaping": "validated-worker-egress-datacenter-netem",
+            "workloadLifecycle": "validated-load-image-run-status-collect"
           }
         },
         "testTargets": [
@@ -291,6 +293,8 @@
       "uibTraffic": "32x2051-byte multi-packet RoCEv2 RC messages passed directly and through Pyxis/Enroot between distinct virtme workers with unchanged ibv_rc_pingpong",
       "networkShaping": "datacenter condition passed on both worker data-interface egress qdiscs with nonzero traffic counters",
       "networkEvidence": "applied command, qdisc counters, iproute2, kernel, and seed acceptance recorded per worker",
+      "imageStaging": "pinned OCI image pulled on cache miss and converted directly from tar to shared content-addressed SquashFS",
+      "workloadLifecycle": "two-rank Pyxis job submitted and completed through virtme SSH; status and collected evidence validated",
       "cleanup": "recorded guest processes terminated with PID start-time checks",
       "validationLevel": "L0",
       "testTargets": [
@@ -514,7 +518,7 @@
     "ucxOverUib": "validated-local-ud-ucp-matrix",
     "libfabricOverUib": "validated-local-verbs-rxd-rdm",
     "rcclOverUib": "not-validated-amd-hardware-required",
-    "rocev2PluggableCongestion": "not-implemented",
+    "rocev2PluggableCongestion": "validated-local-none-and-registered; nscc-experimental-only",
     "collectives": {
       "allReduce": "validated",
       "allGather": "not-validated",

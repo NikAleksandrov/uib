@@ -21,6 +21,9 @@ SIMULATION = BACKEND.parents[1]
 DEFAULT_CACHE = SIMULATION / ".artifacts" / "downloads" / "virtme"
 
 
+DEFAULT_IMAGE_CACHE = SIMULATION / ".artifacts" / "slurm-images"
+
+
 DEFAULT_MODEL_CACHE = SIMULATION / ".artifacts" / "huggingface"
 
 

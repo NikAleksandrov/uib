@@ -58,7 +58,7 @@
 - name: Install the local OCI image staging helper
   when: inventory_hostname in groups['slurm_controller']
   ansible.builtin.copy:
-    src: uib-stage-image
+    src: "{{ uib_stage_image_source }}"
     dest: /usr/local/libexec/uib-stage-image
     owner: root
     group: root

@@ -42,10 +42,7 @@ install)
 import)
 	temporary=$(mktemp -d "$image_root/.$digest.XXXXXX")
 	trap 'rm -rf -- "$temporary"' EXIT INT TERM
-	mkdir "$temporary/rootfs"
-	tar --extract --file=- --directory="$temporary/rootfs" \
-		--numeric-owner --same-owner
-	mksquashfs "$temporary/rootfs" "$temporary/image.sqsh" \
+	mksquashfs - "$temporary/image.sqsh" -tar \
 		-noappend -comp zstd -processors 1 -mem 512M \
 		-quiet -no-progress >/dev/null
 	chmod 0644 "$temporary/image.sqsh"
@@ -55,7 +52,7 @@ import)
 	printf '%s\n' "$image"
 	;;
 *)
-	echo "usage: uib-stage-image check|install|import DIGEST" >&2
+	echo "usage: stage-image check|install|import DIGEST" >&2
 	exit 2
 	;;
 esac

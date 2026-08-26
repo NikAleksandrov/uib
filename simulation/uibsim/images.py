@@ -47,12 +47,19 @@ def cached_slurm_image(path):
 
 def run_image_helper(args, mode, digest, **kwargs):
     from .core import ConfigurationError
-    from .scheduler import run_scheduler
+    from .scheduler import run_scheduler, scheduler_remote
 
+    remote = scheduler_remote(args)
+    if remote and remote["provider"] == "virtme":
+        program = "/run/uib-stage-image"
+        arguments = [mode, digest]
+    else:
+        program = "sudo"
+        arguments = [
+            "-n", "/usr/local/libexec/uib-stage-image", mode, digest]
     result = run_scheduler(
-        args, "", "sudo",
-        ["-n", "/usr/local/libexec/uib-stage-image", mode, digest],
-        text=True, capture_output=True, **kwargs)
+        args, "", program, arguments, text=True, capture_output=True,
+        **kwargs)
     remote_path = f"/var/cache/uib/images/{digest}.sqsh"
     if result.returncode == 0 and result.stdout.strip() != remote_path:
         raise ConfigurationError(
@@ -156,11 +163,16 @@ def import_local_slurm_image(args, engine, reference, digest):
 
 def cache_remote_slurm_image(args, remote_path, cache):
     from .core import ConfigurationError
-    from .scheduler import copy_remote_path
+    from .scheduler import copy_remote_path, scheduler_remote
 
     checksum_path = cache.with_suffix(cache.suffix + ".sha256")
     try:
-        copy_remote_path(args, remote_path, cache)
+        remote = scheduler_remote(args)
+        if not remote or remote["provider"] != "virtme":
+            copy_remote_path(args, remote_path, cache)
+        elif not cache.is_file() or cache.is_symlink():
+            raise ConfigurationError(
+                f"virtme image cache did not produce a regular file: {cache}")
         checksum = sha256_file(cache)
         checksum_path.write_text(checksum + "\n", encoding="utf-8")
     except (ConfigurationError, OSError):
@@ -225,7 +237,7 @@ def record_slurm_image_cache(cache_root, reference, image_id, cache):
     write_json(inventory_path, inventory)
 
 
-def stage_libvirt_image(args, reference, allow_mutable_tags):
+def stage_slurm_image(args, reference, allow_mutable_tags):
     from .core import ConfigurationError, DEFAULT_SLURM_IMAGE_CACHE, HEX_DIGEST, IMAGE_DIGEST, IMAGE_REFERENCE
     from .scheduler import command_executable, scheduler_remote
 
@@ -237,7 +249,7 @@ def stage_libvirt_image(args, reference, allow_mutable_tags):
             "use --allow-mutable-tags only for local development images")
     remote = scheduler_remote(args)
     if not remote:
-        raise ConfigurationError("libvirt infrastructure is not ready")
+        raise ConfigurationError("owned Slurm infrastructure is not ready")
 
     engine = command_executable("CONTAINER_ENGINE_COMMAND", "docker")
     try:
@@ -247,6 +259,21 @@ def stage_libvirt_image(args, reference, allow_mutable_tags):
     except OSError as error:
         raise ConfigurationError(
             f"cannot invoke container engine: {error}") from error
+    if inspected.returncode:
+        try:
+            pulled = subprocess.run(
+                [engine, "pull", reference], text=True, capture_output=True,
+                check=False)
+            inspected = subprocess.run(
+                [engine, "image", "inspect", "--format={{.Id}}", reference],
+                text=True, capture_output=True, check=False)
+        except OSError as error:
+            raise ConfigurationError(
+                f"cannot pull container image: {error}") from error
+        if pulled.returncode:
+            if pulled.stderr:
+                print(pulled.stderr, file=sys.stderr, end="")
+            raise ConfigurationError(f"cannot pull image: {reference}")
     image_id = inspected.stdout.strip()
     if (inspected.returncode or not image_id.startswith("sha256:") or
             not HEX_DIGEST.fullmatch(image_id[7:])):

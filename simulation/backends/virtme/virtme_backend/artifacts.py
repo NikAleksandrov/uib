@@ -12,7 +12,7 @@ import urllib.request
 
 
 def configure_slurm_storage(config, topology_value, state):
-    from .core import DEFAULT_MODEL_CACHE, DEFAULT_RUNTIME, VirtmeError
+    from .core import DEFAULT_IMAGE_CACHE, DEFAULT_MODEL_CACHE, DEFAULT_RUNTIME, VirtmeError
 
     runtime = pathlib.Path(os.environ.get(
         "UIB_RUNTIME_SOURCE", str(DEFAULT_RUNTIME))).expanduser().resolve()
@@ -29,14 +29,22 @@ def configure_slurm_storage(config, topology_value, state):
             "make runtime-bundle-portable-test")
     model_cache = pathlib.Path(os.environ.get(
         "VIRTME_MODEL_CACHE", str(DEFAULT_MODEL_CACHE))).expanduser().resolve()
+    image_cache = pathlib.Path(os.environ.get(
+        "SLURM_IMAGE_CACHE", str(DEFAULT_IMAGE_CACHE))).expanduser().resolve()
     results = state / "shared" / "results"
     try:
+        image_cache.mkdir(parents=True, exist_ok=True)
         model_cache.mkdir(parents=True, exist_ok=True)
         results.mkdir(parents=True)
     except OSError as error:
         raise VirtmeError(f"cannot prepare virtme shared storage: {error}") \
             from error
     mappings = {
+        "images": {
+            "guest": "/var/cache/uib/images",
+            "host": str(image_cache),
+            "mode": "read-write",
+        },
         "modelCache": {
             "guest": config["storage"]["modelCachePath"],
             "host": str(model_cache),

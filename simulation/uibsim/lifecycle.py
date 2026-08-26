@@ -168,19 +168,20 @@ def command_kubeconfig(args):
 def command_load_image(args):
     from .config import resolve
     from .core import ConfigurationError
-    from .images import stage_libvirt_image
+    from .images import stage_slurm_image
 
     config = resolve(args)
 
-    if config["infrastructure"]["provider"] == "libvirt":
+    if config["infrastructure"]["provider"] in {"libvirt", "virtme"}:
         if config["cluster"]["manager"] != "slurm":
             raise ConfigurationError(
-                "libvirt Kubernetes image loading is not implemented; "
+                "Kubernetes image loading is not implemented for this "
+                "provider; "
                 "use a registry or an immutable image already present on "
                 "nodes")
         for reference in args.image:
-            print(stage_libvirt_image(args, reference,
-                                      args.allow_mutable_tags))
+            print(stage_slurm_image(args, reference,
+                                    args.allow_mutable_tags))
         return 0
 
     def arguments(unused):

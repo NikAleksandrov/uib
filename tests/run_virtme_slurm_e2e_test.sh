@@ -7,6 +7,18 @@ cli=$project_dir/simulation/bin/uib-sim
 run_id=uib-vslurm-$$
 state_dir=${SIMULATION_STATE_DIR:-$project_dir/simulation/.artifacts/runs}
 profile_args='--set nodes.cpu=2 --set nodes.memory=2Gi'
+result_dir=$state_dir/$run_id-results
+job_timeout=${VIRTME_SLURM_JOB_WAIT:-120}
+case $job_timeout in
+''|*[!0-9]*)
+	echo "VIRTME_SLURM_JOB_WAIT must be a positive integer" >&2
+	exit 2
+	;;
+esac
+if test "$job_timeout" -lt 2; then
+	echo "VIRTME_SLURM_JOB_WAIT must be at least 2" >&2
+	exit 2
+fi
 network_condition=${VIRTME_NETWORK_CONDITION:-}
 case $network_condition in
 '') ;;
@@ -74,6 +86,9 @@ assert storage["uibRuntime"]["guest"] == "/var/lib/uib/runtime"
 assert storage["uibRuntime"]["mode"] == "read-only"
 assert os.path.isfile(os.path.join(
     storage["uibRuntime"]["host"], "bin", "ibv_rc_pingpong"))
+assert storage["images"]["guest"] == "/var/cache/uib/images"
+assert storage["images"]["mode"] == "read-write"
+assert os.path.isdir(storage["images"]["host"])
 assert storage["modelCache"]["guest"] == "/var/cache/uib/models"
 assert storage["modelCache"]["mode"] == "read-write"
 assert os.path.isdir(storage["modelCache"]["host"])
@@ -104,6 +119,100 @@ with open(os.path.join(infrastructure, "inventory.json"),
           encoding="utf-8") as source:
     inventory = json.load(source)
 assert len(inventory["all"]["children"]["slurm_workers"]["hosts"]) == 2
+PY
+
+image='docker.io/library/ubuntu@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc'
+# shellcheck disable=SC2086
+staged_image=$("$cli" load-image --profile virtme-slurm \
+	--run-id "$run_id" --state-dir "$state_dir" --image "$image" \
+	$profile_args)
+case $staged_image in
+/var/cache/uib/images/*.sqsh) ;;
+*)
+	echo "virtme returned an invalid staged image path: $staged_image" >&2
+	exit 1
+	;;
+esac
+
+# shellcheck disable=SC2086
+job_id=$("$cli" run --profile virtme-slurm \
+	--request simulation/requests/slurm-lifecycle-smoke.yaml \
+	--run-id "$run_id" --state-dir "$state_dir" --allow-mutable-tags \
+	--set "workload.image=$staged_image" $profile_args)
+
+python3 - "$state_dir/$run_id/ledger.json" "$job_id" <<'PY'
+import json
+import sys
+
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    ledger = json.load(source)
+assert ledger["state"] == "submitted"
+assert ledger["jobId"] == sys.argv[2]
+assert ledger["schedulerTransport"] == "virtme-ssh"
+PY
+
+status_file=$state_dir/$run_id/slurm-status.psv
+attempt=0
+job_state=UNKNOWN
+while test "$attempt" -lt $((job_timeout / 2)); do
+	# shellcheck disable=SC2086
+	"$cli" status --profile virtme-slurm --run-id "$run_id" \
+		--state-dir "$state_dir" $profile_args > "$status_file"
+	job_state=$(awk -F '|' -v job="$job_id" \
+		'$1 == job { split($2, state, " "); sub(/[+]+$/, "", state[1]); print state[1]; exit }' \
+		"$status_file")
+	case $job_state in
+	COMPLETED) break ;;
+	FAILED|CANCELLED|TIMEOUT|NODE_FAIL|OUT_OF_MEMORY|PREEMPTED|BOOT_FAIL|DEADLINE)
+		echo "virtme Slurm job $job_id ended in $job_state" >&2
+		cat "$status_file" >&2
+		exit 1
+		;;
+	esac
+	attempt=$((attempt + 1))
+	sleep 2
+done
+if test "$job_state" != COMPLETED; then
+	echo "virtme Slurm job $job_id did not complete in $job_timeout seconds" >&2
+	cat "$status_file" >&2
+	exit 1
+fi
+
+reported=$("$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
+	--output-dir "$result_dir")
+test "$reported" = "$result_dir"
+
+python3 - "$result_dir" "$run_id" "$job_id" <<'PY'
+import json
+import pathlib
+import sys
+
+
+root = pathlib.Path(sys.argv[1])
+with (root / "summary.json").open(encoding="utf-8") as source:
+    summary = json.load(source)
+assert summary["runId"] == sys.argv[2]
+assert summary["jobId"] == sys.argv[3]
+assert summary["schedulerState"] == "COMPLETED"
+assert summary["schedulerExitCode"] == "0:0"
+assert summary["workloadStatusRecorded"] is True
+assert summary["workloadExitCode"] == 0
+assert summary["uibEnabled"] is True
+assert summary["networkEmulation"] == "network-emulation.json"
+with (root / "staged-images.json").open(encoding="utf-8") as source:
+    staged = json.load(source)
+assert staged["runId"] == sys.argv[2]
+assert len(staged["images"]) == 1
+with (root / "network-emulation.json").open(encoding="utf-8") as source:
+    network = json.load(source)
+assert network["runId"] == sys.argv[2]
+assert len(network["endpoints"]) == 2
+for rank in range(2):
+    with (root / "workload" / f"rank-{rank}.json").open(
+            encoding="utf-8") as source:
+        result = json.load(source)
+    assert result == {"rank": rank, "worldSize": 2}
 PY
 
 cleanup
