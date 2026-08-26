@@ -500,7 +500,7 @@ use a small YAML overlay for a group of related values.
 |---|---|
 | Infrastructure profiles | `kind-kubernetes`, `virtme-kind`, `virtme-kubernetes`, `virtme-slurm`, `libvirt-kubernetes`, `libvirt-slurm`, `real-kubernetes`, `real-slurm` |
 | Communication | `communication/nccl`, `communication/rccl`, `communication/ucx`, `communication/libfabric` |
-| Protocol and congestion | `protocol/rocev2`, `protocol/uet-nscc`, `protocol/uet-none` |
+| Protocol and congestion | `protocol/rocev2`, `protocol/rocev2-nscc-experimental`, `protocol/uet-nscc`, `protocol/uet-none` |
 | Network condition | `network/clean`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/reordered`, `network/ecn` |
 
 A later overlay from the same layer replaces the earlier layer settings. This
@@ -526,6 +526,10 @@ only one communication, protocol, and network-condition overlay.
 | `cluster.manager` | `kubernetes`, `slurm` | Scheduler/control plane |
 | `cluster.version` | Non-empty version | Kubernetes or Slurm version selected by the adapter |
 | `cluster.nodeImage` | OCI reference with an `@sha256:` digest | Reproducible Kind node image |
+| `kubernetes.distribution` | `k3s` | Multi-VM Kubernetes provisioner; Kind and existing clusters do not use this setting |
+| `kubernetes.podCIDR` | IPv4 or IPv6 CIDR | Pod overlay network; it must not overlap management, data, or service networks |
+| `kubernetes.serviceCIDR` | IPv4 or IPv6 CIDR | ClusterIP network; it must not overlap management, data, or pod networks |
+| `kubernetes.disable` | Any unique subset of `traefik`, `servicelb`, `local-storage`, `metrics-server` | Optional bundled k3s components to omit; the libvirt profile disables only Traefik and ServiceLB |
 | `container.runtime` | `containerd`, `enroot`, `apptainer` | OCI execution implementation |
 | `container.integration` | `none`, `pyxis` | Slurm/container integration |
 | `launcher.training` | `kubeflow`, `jobset`, `slurm` | Training submitter |
@@ -543,7 +547,7 @@ only one communication, protocol, and network-condition overlay.
 | `nodes.gpus.vendor` | `none`, `nvidia`, `amd` | Accelerator family |
 | `nodes.gpus.perWorker` | Integer 0-64 | GPUs available per worker |
 | `nodes.gpus.resourceName` | Scheduler resource name | For example `nvidia.com/gpu` |
-| `network.dataInterface` | Linux interface name, at most 15 characters | Interface from which each Slurm task derives `UIB_BIND_IP` |
+| `network.dataInterface` | Linux interface name, at most 15 characters | Slurm bind interface or the Kubernetes node/CNI data interface |
 
 ### UIB and communication values
 
@@ -613,11 +617,15 @@ nodes * processesPerNode == data * tensor * pipeline * expert
 | Slurm with containerd | Slurm profiles use Enroot/Pyxis or Apptainer |
 | Pyxis without Slurm and Enroot | Pyxis is the Enroot SPANK integration used by this adapter |
 | Kubernetes with host storage paths | Kubernetes uses claims, cache images, or `emptyDir` volumes |
+| `kubernetes.*` with Slurm | Kubernetes distribution and CIDR settings belong only to a Kubernetes manager |
+| libvirt Kubernetes without `distribution: k3s` or an exact `vX.Y.Z+k3sN` version | The implemented multi-VM provisioner is pinned k3s; unsupported distributions never fall through silently |
+| Overlapping Kubernetes pod, service, management, or data CIDRs | Nodes need four unambiguous address domains |
 | Slurm with Kubernetes claims or cache images | Slurm uses shared host paths visible on every allocated node |
 | Slurm without model-cache/result paths, or UIB without a runtime path/data interface | Pyxis cannot provide the common mount and address contract |
 | `libvirt.networkMode: rootless` without `qemu:///session` | Rootless mode is deliberately scoped to a per-user libvirt daemon |
 | `libvirt.sshPortBase + nodes.workers` above 65535 | The controller and every worker need a valid consecutive forwarding port |
 | `libvirt.networkMode: bridge` without permission to create libvirt networks | Managed bridge/tap networking needs the normal system-libvirt network privileges |
+| libvirt Kubernetes with `networkMode: rootless` | Per-guest passt management networks cannot form the required Kubernetes control plane; use bridge mode |
 | Rootless mode for network-performance conclusions | Passt and multicast tunnels are functional transports, not an accurate model of physical fabric performance |
 | RCCL without `nodes.gpus.vendor: amd` | RCCL requires AMD/ROCm hardware |
 | NCCL with `nodes.gpus.vendor: amd` | Select RCCL for the AMD profile |
@@ -1677,16 +1685,63 @@ adapter.
 
 ### OpenTofu and libvirt Kubernetes
 
-This planned composition is the main realistic local Kubernetes lab. The
-current OpenTofu/Ansible implementation provisions Slurm only:
+This is the realistic local Kubernetes lab. It uses the same OpenTofu VM and
+network module as the Slurm profile, then selects the Kubernetes Ansible
+playbook:
 
 1. OpenTofu creates management and data networks, volumes, cloud-init data,
    one control-plane VM, and worker VMs.
-2. Ansible installs containerd, kubeadm, the CNI, Helm, Kubeflow Trainer, and
-   KubeRay.
-3. Helm deploys the common workload.
-4. Link shaping occurs on dedicated data-plane taps.
-5. `tofu destroy` removes the explicitly recorded VM resources.
+2. Ansible installs the exact `cluster.version` k3s binary after checking its
+   release checksum, starts the server, and joins the workers. The default is
+   [k3s v1.35.5+k3s1](https://github.com/k3s-io/k3s/releases/tag/v1.35.5%2Bk3s1).
+3. k3s supplies Kubernetes and containerd. Flannel uses `eth1`, so worker
+   netem conditions affect the pod overlay rather than an unused interface.
+4. The backend waits for every node, verifies worker data addresses, records
+   qdisc/kernel/tool evidence, and fetches a host-usable kubeconfig.
+5. The normal Helm/Kubeflow/KubeRay layer deploys the same rendered workload
+   used by Kind and real clusters.
+6. `tofu destroy` removes only resources in the run's OpenTofu state.
+
+The default profile is intentionally small:
+
+```yaml
+cluster:
+  manager: kubernetes
+  version: v1.35.5+k3s1
+kubernetes:
+  distribution: k3s
+  podCIDR: 10.42.0.0/16
+  serviceCIDR: 10.43.0.0/16
+  disable: [traefik, servicelb]
+network:
+  dataInterface: eth1
+```
+
+Change node sizing, worker count, Kubernetes CIDRs, disabled bundled
+components, protocol, and network condition through `--set` or overlays. The
+four network CIDRs must not overlap. Only k3s is accepted by this adapter; an
+unsupported distribution is rejected instead of being treated as k3s.
+
+```text
+simulation/bin/uib-sim up --profile libvirt-kubernetes \
+  --run-id uib-k8s-lab --overlay network/datacenter
+simulation/bin/uib-sim status --profile libvirt-kubernetes \
+  --run-id uib-k8s-lab --overlay network/datacenter
+simulation/bin/uib-sim kubeconfig --profile libvirt-kubernetes \
+  --run-id uib-k8s-lab --overlay network/datacenter \
+  > /tmp/uib-k8s-lab.kubeconfig
+KUBECONFIG=/tmp/uib-k8s-lab.kubeconfig kubectl get nodes
+simulation/bin/uib-sim down --profile libvirt-kubernetes \
+  --run-id uib-k8s-lab --overlay network/datacenter
+```
+
+This profile requires `libvirt.networkMode: bridge`; rootless passt management
+networks isolate the guests from the controller endpoint. Its real VM
+lifecycle therefore needs a host allowed to use the configured system libvirt
+URI.
+The repository test covers configuration, playbook selection, inventory,
+secret handling, evidence, kubeconfig rewriting, status, and exact cleanup
+with mock standard-tool boundaries; it is not a substitute for that VM gate.
 
 ### Existing Kubernetes
 
@@ -2898,9 +2953,9 @@ from looking runnable.
 Configuration stays deliberately conventional: a small defaults file, one
 YAML profile, an optional YAML workload request, and standard JSON Schema
 validation. The thin `uib-sim` wrapper merges and validates configuration and
-delegates the implemented Kind and libvirt/Slurm infrastructure lifecycles. It
-does not replace Kind, OpenTofu, Ansible, Helm, `kubectl`, Slurm, Pyxis, or
-Enroot.
+delegates the implemented Kind and libvirt Kubernetes/Slurm infrastructure
+lifecycles. It does not replace Kind, OpenTofu, Ansible, Helm, `kubectl`,
+Slurm, Pyxis, or Enroot.
 
 ```text
 simulation/bin/uib-sim render --profile kind-kubernetes
@@ -2939,8 +2994,8 @@ Each backend keeps using its own normal configuration and state:
 - Helm values and Kubernetes labels/namespaces;
 - Slurm batch files, job IDs, Pyxis, and Enroot configuration.
 
-`uib-sim` delegates Kind and libvirt/Slurm infrastructure now. The remaining
-adapters follow the same standard-tool pattern:
+`uib-sim` delegates Kind and libvirt Kubernetes/Slurm infrastructure now. The
+remaining adapters follow the same standard-tool pattern:
 
 ```text
 simulation/bin/uib-sim doctor --profile <profile>
@@ -2953,15 +3008,16 @@ sbatch <rendered-job>
 
 `doctor` is read-only. It reports the selected profile, provider, manager,
 communication front end, and presence of required command-line tools. The
-libvirt `up` path performs the deeper image, provisioning, scheduler, storage,
-Pyxis, Enroot, and UIB-runtime checks inside its disposable guests. Kernel,
-GPU/RDMA, and physical-fabric qualification remain separate promotion gates.
+libvirt `up` path performs image and node provisioning plus manager-specific
+checks inside its disposable guests. The Slurm path also checks shared
+storage, Pyxis, Enroot, and the UIB runtime. Kernel, GPU/RDMA, and
+physical-fabric qualification remain separate promotion gates.
 
 Kind `up` creates only the explicit `--run-id` cluster. Libvirt `up` creates
-only resources recorded in that run's private OpenTofu state, and provisions
-Slurm through its generated inventory. For existing clusters the adapter
-performs no infrastructure changes. Libvirt/Kubernetes provisioning and the
-general `deploy` operation are not implemented yet.
+only resources recorded in that run's private OpenTofu state, then provisions
+the selected Kubernetes or Slurm manager through its generated inventory. For
+existing clusters the adapter performs no infrastructure changes. The general
+`deploy` operation is not implemented yet.
 
 The Slurm `run` adapter resolves configuration, records its exact inputs,
 checks shared paths, renders the batch file, submits it, and records ownership.
@@ -2983,7 +3039,8 @@ uib-sim kubeconfig --profile kind-kubernetes --run-id uib-lab
 uib-sim down --profile kind-kubernetes --run-id uib-lab
 ```
 
-These four Kind lifecycle operations are implemented. Slurm additionally
+These lifecycle operations are implemented for Kind and libvirt Kubernetes.
+Slurm additionally
 implements `run`, accounting-oriented `status`, evidence-only `collect`, and
 recorded-job `down`. `deploy`, Kubernetes collection, and Kubernetes workload
 submission remain planned.
@@ -3183,7 +3240,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in network condition renders to the expected `tc netem` command; unsafe interfaces and invalid combinations are rejected; it does not modify a qdisc |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | RoCEv2 and UET SEND and RDMA read/write complete with actual netem conditions and built-in or plugin congestion control; the UET cases also cover atomics |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
-| `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge and rootless rendering, cached-image verification, generated OpenTofu and Ansible inputs, per-worker network-evidence validation, provisioned/workload network matching, remote submit/status/collect/cancel transport, exclusive ownership, and exact-state cleanup with fake standard commands |
+| `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge/rootless VM rendering; Slurm and bridge-only Kubernetes playbook selection; pinned k3s inputs, non-logged join token, kubeconfig export, cached-image verification, worker network evidence, Slurm remote lifecycle, exclusive ownership, and exact-state cleanup with fake standard commands |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, SSH/SCP, passt, NFS-capable Ubuntu guests, roughly 12 GiB memory for the default three VMs, and download access on the first run | Actual controller/two-worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, ordinary worker tasks, cross-VM standard RC payload through UIB, remote batch submission and status, two-rank pinned OCI execution with portable UIB preflight, result collection, state-based destruction, and domain/pool absence; no NCCL or GPU claim |
 | `make simulation-libvirt-netem-e2e-test` | The libvirt gate requirements; guest iproute2 and `jq` are installed automatically | The selected checked-in condition is active on both worker data interfaces before actual cross-VM UIB traffic, exact qdisc/kernel/iproute2 evidence is collected, the Slurm lifecycle passes, and the VMs are removed; rootless timing and throughput are not physical-fabric measurements |
@@ -3640,9 +3697,12 @@ Cleanup must remain safe after interruption during every lifecycle stage.
   That lifecycle request is an orchestration probe; the preceding unchanged
   verbs gate is the actual UIB payload evidence. A named netem condition also
   passed on both worker data interfaces with qdisc/version collection while
-  that cross-VM payload gate was active. GPU/NCCL Kubernetes execution,
-  libvirt/Kubernetes, host-side tap shaping, DeepSpeed, and Megatron-Core
-  remain planned.
+  that cross-VM payload gate was active. The libvirt Kubernetes lifecycle,
+  pinned k3s/containerd provisioning, dedicated data interface, kubeconfig,
+  evidence, and cleanup paths pass mock lifecycle tests, but could not run
+  against the password-protected host libvirt daemon. GPU/NCCL Kubernetes
+  execution, host-side tap shaping, DeepSpeed, and Megatron-Core remain
+  planned.
 - The diagnostic image passed its hardware-neutral, UIB runtime-injection,
   CUDA `deviceQuery`, and single-GPU NCCL all-reduce gates. Its NCCL run has
   one rank and therefore does not send UIB traffic.
