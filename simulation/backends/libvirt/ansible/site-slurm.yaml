@@ -29,6 +29,13 @@
   roles:
     - slurm_stack
 
+- name: Shape the worker data plane
+  hosts: slurm_workers
+  become: true
+  gather_facts: false
+  roles:
+    - network_shaping
+
 - name: Validate the scheduler and container runtime
   hosts: slurm_controller
   become: true
@@ -131,3 +138,13 @@
           - /opt/uib/bin/uib-preflight
           - --library-only
       changed_when: false
+
+- name: Collect post-traffic worker network evidence
+  hosts: slurm_workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Collect the worker network evidence
+      ansible.builtin.include_role:
+        name: network_shaping
+        tasks_from: evidence

@@ -346,6 +346,10 @@ simulation-libvirt-test:
 simulation-libvirt-e2e-test: runtime-bundle-portable-test
 	./tests/run_libvirt_slurm_e2e_test.sh
 
+simulation-libvirt-netem-e2e-test: runtime-bundle-portable-test
+	LIBVIRT_NETWORK_CONDITION="$${LIBVIRT_NETWORK_CONDITION:-datacenter}" \
+		./tests/run_libvirt_slurm_e2e_test.sh
+
 simulation-libvirt-training-e2e-test: runtime-bundle-portable-test
 	@$(TRAINING_CONTAINER_ENGINE) image inspect $(TRAINING_IMAGE) >/dev/null 2>&1 || \
 		$(MAKE) training-image
@@ -913,6 +917,7 @@ clean:
 	simulation-slurm-lifecycle-test simulation-slurm-collect-test \
 	simulation-libvirt-test \
 	simulation-libvirt-e2e-test \
+	simulation-libvirt-netem-e2e-test \
 	simulation-libvirt-training-e2e-test \
 	simulation-libvirt-inference-e2e-test \
 	simulation-kubeflow-e2e-test \

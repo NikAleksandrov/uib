@@ -1,0 +1,69 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+
+- name: Read the post-traffic data-plane qdisc
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/uib-netem
+      - show
+      - "{{ uib_data_interface }}"
+  register: uib_netem_qdisc
+  changed_when: false
+
+- name: Read the applied netem command
+  ansible.builtin.slurp:
+    src: /run/uib-netem-command
+  register: uib_netem_command
+
+- name: Read the iproute2 version
+  ansible.builtin.command:
+    argv:
+      - tc
+      - -Version
+  register: uib_netem_iproute2
+  changed_when: false
+
+- name: Read the worker kernel release
+  ansible.builtin.command:
+    argv:
+      - uname
+      - -r
+  register: uib_netem_kernel
+  changed_when: false
+
+- name: Require the requested post-traffic qdisc state
+  ansible.builtin.assert:
+    that:
+      - >-
+        (uib_network_shaping.enabled | bool) ==
+        ('qdisc netem ' in uib_netem_qdisc.stdout)
+      - >-
+        not (uib_network_shaping.enabled | bool) or
+        (uib_netem_qdisc.stdout is regex('Sent [1-9][0-9]* bytes'))
+    fail_msg: >-
+      post-traffic data-plane qdisc does not match the requested shaping or
+      recorded no traffic: {{ uib_netem_qdisc.stdout }}
+
+- name: Write node-local network evidence
+  ansible.builtin.copy:
+    dest: /run/uib-netem-evidence.json
+    owner: root
+    group: root
+    mode: "0644"
+    content: >-
+      {{ {
+        'schemaVersion': 1,
+        'node': inventory_hostname,
+        'interface': uib_data_interface,
+        'shaping': uib_network_shaping,
+        'appliedCommand': uib_netem_command.content | b64decode | trim,
+        'qdisc': uib_netem_qdisc.stdout,
+        'iproute2': uib_netem_iproute2.stdout,
+        'kernel': uib_netem_kernel.stdout
+      } | to_nice_json }}
+
+- name: Fetch run-owned network evidence
+  ansible.builtin.fetch:
+    src: /run/uib-netem-evidence.json
+    dest: "{{ uib_run_state }}/network/{{ inventory_hostname }}.json"
+    flat: true

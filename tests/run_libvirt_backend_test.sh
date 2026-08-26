@@ -87,13 +87,15 @@ infra=$test_dir/state/uib-libvirt-test/infrastructure
 [ -f "$infra/inventory.yaml" ]
 [ -f "$infra/id_ed25519" ]
 [ -f "$infra/opentofu/main.tf" ]
+[ -f "$infra/network.json" ]
 python3 "$project_dir/tests/cases/libvirt_backend/rootless_topology.py" "$infra/ledger.json"
+python3 "$project_dir/tests/cases/libvirt_backend/kubernetes_status.py" "$infra/network.json"
 grep -F -- ' init -input=false' "$test_dir/log/tofu.args" > /dev/null
 grep -F -- ' apply -auto-approve ' "$test_dir/log/tofu.args" > /dev/null
 
 "$cli" status --profile libvirt-slurm --run-id uib-libvirt-test \
 	--state-dir "$test_dir/state" > "$test_dir/status.json"
-python3 "$project_dir/tests/cases/libvirt_backend/kubernetes_status.py" "$test_dir/status.json"
+python3 "$project_dir/tests/cases/libvirt_backend/kubernetes_images.py" "$test_dir/status.json"
 
 export SSH_COMMAND="$test_dir/bin/ssh"
 export SCP_COMMAND="$test_dir/bin/scp"
@@ -118,7 +120,7 @@ staged_cache=$("$cli" load-cache --profile libvirt-slurm \
 	--run-id uib-libvirt-test --state-dir "$test_dir/state" \
 	--source "$test_dir/huggingface")
 [ "$staged_cache" = /var/cache/uib/models/huggingface ]
-python3 "$project_dir/tests/cases/libvirt_backend/kubernetes_images.py" "$test_dir/state/uib-libvirt-test/infrastructure/caches.json" \
+python3 "$project_dir/tests/cases/libvirt_backend/host_network.py" "$test_dir/state/uib-libvirt-test/infrastructure/caches.json" \
 	"$SLURM_CACHE_INVENTORY/inventory.json"
 
 staged_image=$("$cli" load-image --profile libvirt-slurm \
@@ -129,8 +131,8 @@ staged_image=$("$cli" load-image --profile libvirt-slurm \
 [ -f "$SLURM_IMAGE_CACHE/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sqsh.sha256" ]
 [ "$(cat "$test_dir/log/docker-removed")" = \
 	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ]
-python3 "$project_dir/tests/cases/libvirt_backend/host_network.py" "$test_dir/state/uib-libvirt-test/infrastructure/images.json"
-python3 "$project_dir/tests/cases/libvirt_backend/oversubscription.py" "$SLURM_IMAGE_CACHE/inventory.json"
+python3 "$project_dir/tests/cases/libvirt_backend/oversubscription.py" "$test_dir/state/uib-libvirt-test/infrastructure/images.json"
+python3 "$project_dir/tests/cases/libvirt_backend/owned_ledger.py" "$SLURM_IMAGE_CACHE/inventory.json"
 rm "$LIBVIRT_REMOTE_ROOT/images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sqsh"
 rm "$test_dir/log/docker-removed"
 cached_image_path=$("$cli" load-image --profile libvirt-slurm \
@@ -156,6 +158,16 @@ cached_image_path=$("$cli" load-image --profile libvirt-slurm \
 	--run-id uib-libvirt-test --state-dir "$test_dir/state" \
 	--image uib-training:test --allow-mutable-tags)
 [ "$cached_image_path" = "$staged_image" ]
+
+if "$cli" run --profile libvirt-slurm \
+	--request "$project_dir/simulation/requests/training-smoke.yaml" \
+	--run-id uib-libvirt-test --state-dir "$test_dir/state" \
+	--overlay network/datacenter --allow-mutable-tags \
+	> /dev/null 2>&1; then
+	echo "a workload changed the provisioned libvirt network" >&2
+	exit 1
+fi
+[ ! -e "$test_dir/state/uib-libvirt-test/ledger.json" ]
 
 job_id=$("$cli" run --profile libvirt-slurm \
 	--request "$project_dir/simulation/requests/training-smoke.yaml" \
@@ -197,8 +209,10 @@ fi
 [ -f "$test_dir/collected/logs/batch.out" ]
 [ -f "$test_dir/collected/staged-images.json" ]
 [ -f "$test_dir/collected/staged-caches.json" ]
-python3 "$project_dir/tests/cases/libvirt_backend/owned_ledger.py" "$test_dir/collected/summary.json" \
-	"$test_dir/collected/images.json"
+[ -f "$test_dir/collected/network-emulation.json" ]
+python3 "$project_dir/tests/cases/libvirt_backend/network_state.py" "$test_dir/collected/summary.json" \
+	"$test_dir/collected/images.json" \
+	"$test_dir/collected/network-emulation.json"
 
 if "$cli" up --profile libvirt-slurm --run-id uib-libvirt-test \
 	--state-dir "$test_dir/state" \
@@ -215,7 +229,7 @@ fi
 	--set "libvirt.baseImageSha256=$image_sha"
 grep -F -- ' destroy -auto-approve ' "$test_dir/log/tofu.args" > /dev/null
 [ "$(cat "$test_dir/log/scancel.job")" = 7654 ]
-python3 "$project_dir/tests/cases/libvirt_backend/network_state.py" "$infra/ledger.json"
+python3 "$project_dir/tests/cases/libvirt_backend/status.py" "$infra/ledger.json"
 
 before=$(wc -l < "$test_dir/log/tofu.args")
 "$cli" down --profile libvirt-slurm --run-id uib-libvirt-test \
@@ -242,6 +256,6 @@ fi
 	--state-dir "$test_dir/state" \
 	--set "libvirt.baseImage=https://example.invalid/base.img" \
 	--set "libvirt.baseImageSha256=$image_sha"
-python3 "$project_dir/tests/cases/libvirt_backend/status.py" "$test_dir/state/uib-libvirt-failed/infrastructure/ledger.json"
+python3 "$project_dir/tests/cases/libvirt_backend/cache_inventory.py" "$test_dir/state/uib-libvirt-failed/infrastructure/ledger.json"
 
 echo "libvirt backend test: PASS"

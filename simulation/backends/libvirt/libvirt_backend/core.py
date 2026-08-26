@@ -103,6 +103,17 @@ def write_json(path, value):
         raise LibvirtError(f"cannot write {path}: {error}") from error
 
 
+def read_json(path, description):
+    try:
+        with path.open(encoding="utf-8") as source:
+            value = json.load(source)
+    except (OSError, json.JSONDecodeError) as error:
+        raise LibvirtError(f"cannot load {description} {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise LibvirtError(f"{description} {path} must contain an object")
+    return value
+
+
 def executable(variable, default):
     command = os.environ.get(variable, default)
     if os.path.sep in command:

@@ -87,6 +87,7 @@ topology.
 | `make diagnostic-gpu-test` | One NVIDIA GPU | No | CUDA visibility and a correctness-checked, single-rank NCCL collective |
 | `make simulation-kubernetes-uib-test` | CPU | No | Unchanged verbs programs exchange actual RC SEND/RECV and RDMA Write traffic through UIB between two Kind workers |
 | `make simulation-libvirt-e2e-test` | CPU with KVM | No | Disposable Slurm/Pyxis/Enroot controller/two-worker lifecycle, actual cross-VM RC payload traffic through UIB, and remote `run`/`status`/`collect`/`down` |
+| `make simulation-libvirt-netem-e2e-test` | CPU with KVM | No | The same cross-VM UIB gate while a selected netem condition is active on both workers, with collected qdisc and version evidence |
 | `make simulation-libvirt-training-e2e-test` | CPU with KVM | No | The same UIB gate plus real two-rank CPU DDP training in a staged local OCI filesystem through Slurm/Pyxis/Enroot; Gloo training is not UIB collective traffic |
 | `make simulation-libvirt-inference-e2e-test` | CPU with KVM | No | The same UIB gate plus real offline SmolLM2 serving from a staged image and dynamic model cache through Slurm/Pyxis/Enroot; one serving task has no collective traffic |
 | `make nccl-test` | One NVIDIA GPU with local MPS support | No | Two local ranks send host-staged NCCL traffic through UIB |
@@ -1304,22 +1305,9 @@ simulation/bin/uib-sim render-workload --profile kind-kubernetes \
     --run-id uib-smoke --allow-mutable-tags > /tmp/uib-smoke.yaml
 ```
 
-The output contains exactly four run-owned resources:
-
-1. namespace `uib-smoke`, which is the cleanup boundary;
-2. a ConfigMap containing the unchanged training JSON;
-3. a namespaced `TrainingRuntime` derived from Kubeflow's standard Torch
-   runtime; and
-4. a `TrainJob` that supplies the same image, underlying executable and
-   arguments, rank count, resources, and communication environment.
-
-Kubeflow Trainer supplies standard `PET_*` node-count, node-rank, and rendezvous
-variables but does not launch an arbitrary container command through
-`torchrun`. The adapter therefore adds a fixed `torchrun` launcher that consumes
-those variables and then executes the unchanged workload entry point and
-arguments with `--no-python`. Slurm supplies `RANK`, `LOCAL_RANK`, and
-`WORLD_SIZE` through `srun` instead; the executable beneath the scheduler's
-standard launcher remains identical.
+The output contains a run-owned namespace, workload ConfigMap,
+`TrainingRuntime`, and `TrainJob`. The adapter maps Kubeflow's standard rank
+variables to the unchanged workload entry point.
 
 The runtime uses one pod per requested node and required pod anti-affinity on
 `kubernetes.io/hostname`. When UIB is enabled, its first init container copies
@@ -1342,10 +1330,8 @@ simulation/bin/uib-sim render-workload --profile kind-kubernetes \
     --set uib.bundle=registry.example/uib-runtime@sha256:<digest>
 ```
 
-Images use `IfNotPresent`, so Kind/containerd and real nodes reuse their normal
-image cache. The generated smoke model requires no external artifact cache.
-The renderer uses per-pod `emptyDir` volumes by default. Public-model,
-checkpoint/restart, and durable-result runs name existing site claims:
+Images use the normal node cache. The generated smoke model needs no external
+artifacts; public-model and durable-result runs name existing site claims:
 
 ```text
 simulation/bin/uib-sim render-workload --profile real-kubernetes \
@@ -1357,11 +1343,8 @@ simulation/bin/uib-sim render-workload --profile real-kubernetes \
     --set uib.bundle=registry.example/uib-runtime@sha256:<digest>
 ```
 
-Multi-node jobs require claims that the site can mount read-write from all
-selected workers, normally `ReadWriteMany`. The adapter references but never
-creates or deletes these shared claims. Every workload writes below its run
-ID, preventing two runs from sharing a result directory. Kind's generated
-smoke request needs no persistent claim.
+Multi-node jobs need site-provided shared claims, normally `ReadWriteMany`.
+The adapter does not create or delete them, and each run writes below its ID.
 
 The native-verbs comparison keeps the image and workload identical and only
 turns off UIB injection while selecting an explicit physical HCA:
@@ -1420,15 +1403,9 @@ different workers. The image supplies the distribution's unmodified
 `LD_PRELOAD` and selects `-d uib0`. No source patch, wrapper binary, synthetic
 verbs implementation, or application rebuild is involved.
 
-The client connects to the server's real Pod IP. Its control connection and
-UIB packets therefore traverse the Kind CNI between the two worker containers.
-The gate tests RoCEv2 on port 4791 and UET on port 5432 by default. For each
-protocol it performs both RC SEND/RECV ping-pong and RDMA Write bandwidth
-operations. Every case must pass the full runtime probe in both pods, complete
-64 verbs exchanges, report transferred bytes or RDMA Write results, use
-distinct Pod IPs and distinct worker nodes, and exit successfully. The test
-then removes both pods, the namespace, and the Kind cluster; its trap also
-attempts cleanup after failure or interruption.
+The gate tests RC SEND/RECV and RDMA Write over RoCEv2 and UET between distinct
+Pod IPs and workers, requires payload evidence, and cleans up the namespace and
+cluster on success or failure.
 
 The normal path has no required configuration. The one common override is:
 
@@ -1474,13 +1451,8 @@ workers share one physical host and kernel, the program uses host memory, and
 no GPU collective runs. It does not replace the two-physical-node NCCL or RCCL
 promotion gate required for L1.
 
-Every run prints its evidence directory. It survives cluster cleanup and
-contains `request.json`, `summary.json`, client versions, the UIB runtime
-manifest, a Pod topology JSON file for every case, and separate preflight and
-verbs logs for both peers. `summary.json` states both what passed and which
-physical-node, GPU, collective, and performance claims remain untested. The
-default result root is ignored by Git; use a unique explicit cluster name when
-setting a shared result root.
+Every run prints its ignored evidence directory, containing the request,
+summary, versions, runtime manifest, topology, preflight, and verbs logs.
 
 ### Real Kind and Kubeflow L0 gate
 
@@ -1491,14 +1463,9 @@ two-node request rather than only inspecting YAML:
 make simulation-kubeflow-e2e-test
 ```
 
-It creates one control-plane and two Kind workers, loads the existing training
-and UIB runtime images, installs the pinned OCI chart, applies the namespace,
-ConfigMap, `TrainingRuntime`, and `TrainJob`, and waits for completion. Passing
-requires two successful trainer pods on two distinct Kind workers, a passing
-UIB runtime preflight in each pod, and a rank-zero result with CPU, Gloo, four
-completed steps, and `worldSize: 2`. It then deletes the run namespace,
-uninstalls the Helm release, and deletes the Kind cluster. Cleanup is attempted
-after failure or interruption as well.
+It installs the pinned operator in a disposable two-worker Kind cluster and
+runs the generated TrainJob. Passing requires distinct worker placement, UIB
+preflight in both pods, CPU/Gloo world size two, four steps, and cleanup.
 
 The validated local tool set is Kind v0.31.0, kubectl v1.35.0, Helm v3.21.3,
 Kubernetes v1.35.0, and Kubeflow Trainer v2.2.1. Required host resources are a
@@ -1532,8 +1499,8 @@ the passing UIB preflight proves library deployment only. It does not open
 
 ### KubeRay inference renderer
 
-The inference request uses the same resolver, runtime artifact, image policy,
-storage fields, and ownership labels as training:
+The inference request uses the same configuration and image/storage policy as
+training:
 
 ```text
 simulation/bin/uib-sim render-workload --profile kind-kubernetes \
@@ -1542,21 +1509,12 @@ simulation/bin/uib-sim render-workload --profile kind-kubernetes \
     > /tmp/inference-smoke.yaml
 ```
 
-`workload.kind: inference` selects KubeRay automatically; there is no second
-KubeRay configuration format. The output contains one namespace, one ConfigMap
-with the unchanged inference JSON, and one `ray.io/v1` `RayJob`. The RayJob
-uses Ray 2.58.0 from the workload image, starts the standard inference server,
-runs the deterministic probe, requests automatic cluster shutdown, and mounts
-the same model-cache, result, and UIB-runtime volumes in every Ray pod. UIB and
-NCCL selection comes from the common communication layer, and `UIB_BIND_IP`
-comes from each Pod IP.
+`workload.kind: inference` selects a `ray.io/v1` `RayJob`; there is no second
+KubeRay configuration format. It mounts the configured cache, results, and UIB
+runtime and uses the common communication settings.
 
-The checked-in CPU request deliberately has one Ray head and no worker. It
-tests the smallest real model/API shape and avoids presenting an idle worker
-as distributed inference. The workload image installs Ray's pinned `default`
-extra because KubeRay 1.6.2 probes Ray 2.58.0 through the dashboard agent HTTP
-endpoint. The image smoke test exercises that exact endpoint. A two-node shape
-changes only common fields:
+The checked-in CPU request has one Ray head and no worker, so it is not
+distributed inference. A two-node shape changes only common fields:
 
 ```text
 simulation/bin/uib-sim render-workload --profile kind-kubernetes \
@@ -1872,16 +1830,8 @@ prints one staged path per input in the same order. The returned absolute path
 is content-addressed and is the only SquashFS path shape accepted by the Slurm
 renderer; arbitrary host or guest paths are rejected.
 
-On the first use of one local image ID, the adapter:
-
-1. creates a stopped container without running image code;
-2. streams its applied root filesystem to the controller;
-3. builds an Enroot-compatible zstd SquashFS under
-   `/var/cache/uib/images` on the shared data path;
-4. copies that SquashFS into the ignored host cache and records its SHA-256;
-   and
-5. records the source reference, resolved image ID, cache key, and remote path
-   in the run-owned infrastructure ledger.
+On first use, the adapter exports the image without running it, creates an
+Enroot SquashFS, verifies and caches it by image ID, and records its provenance.
 
 A fresh lab hashes the complete host artifact before streaming it to the
 controller, where the staging helper validates the SquashFS again. The ignored
@@ -1913,12 +1863,9 @@ directory containing only directories, regular files, and symbolic links that
 resolve inside that root. This preserves the normal Hugging Face blob/snapshot
 layout while rejecting sockets, devices, broken links, and escaping links.
 
-The adapter creates a temporary tar archive, sends it through the existing SSH
-controller transport, verifies the archive SHA-256 before extraction, and
-installs it atomically. The temporary archive is removed after the attempt; the
-original ignored cache remains available for later runs. An existing guest
-cache with a different digest is a hard failure. `TAR_COMMAND` selects one
-exact local `tar` executable.
+The adapter transfers a temporary archive, verifies it before atomic
+installation, and retains the original ignored cache. A different existing
+guest cache is a hard failure. `TAR_COMMAND` selects the local `tar` executable.
 `SLURM_CACHE_INVENTORY` selects the ignored inventory directory, which defaults
 to `simulation/.artifacts/slurm-caches`. Its `inventory.json` and the run-owned
 `staged-caches.json` contain only the cache kind, source directory name,
@@ -2045,11 +1992,8 @@ missing, malformed,
 unparseable, or ownership-mismatched ledger, and never discovers jobs by user,
 name, partition, or wildcard.
 
-The run directory is exclusive: reusing a run ID fails before `sbatch`.
-Submission failure, render failure, missing shared paths, and the unusual case
-where `sbatch` succeeds without a parseable ID are retained as explicit ledger
-states. In the last case the CLI cannot safely cancel automatically; inspect
-`sbatch.stdout` and `sbatch.stderr` in that run directory.
+Run IDs are exclusive. Render, preflight, and submission failures remain in
+the ledger; inspect its captured stdout/stderr when submission is ambiguous.
 
 ### Collecting a Slurm result bundle
 
@@ -2077,30 +2021,11 @@ is the new ignored directory
 | `--output-dir` | A new directory; default `simulation/.artifacts/results/<run-id>` | Selects the complete exported bundle, not merely its parent |
 | `--allow-incomplete` | Flag; default off | Allows a diagnostic snapshot while scheduler state is nonterminal |
 
-Without `--allow-incomplete`, the accepted Slurm terminal states are
-`BOOT_FAIL`, `CANCELLED`, `COMPLETED`, `DEADLINE`, `FAILED`, `NODE_FAIL`,
-`OUT_OF_MEMORY`, `PREEMPTED`, `REVOKED`, and `TIMEOUT`. An incomplete snapshot
-is always marked non-promotable. The collector also refuses:
-
-- a missing or nonnumeric recorded job ID;
-- a scheduler response without the exact top-level job record;
-- a ledger input or artifact path that escapes its run-state directory;
-- an existing output directory;
-- output nested inside the live workload result directory;
-- a mismatched `runId`, scheduler, job ID, or noninteger exit code in the
-  workload status; and
-- symbolic links or special files in the run-owned workload result tree.
-
-This makes export non-destructive: it never cancels the job, deletes shared
-data, follows a result link, or overwrites earlier evidence. To take another
-snapshot, supply another new `--output-dir`. The bundle contains original
-inputs, resolved configuration, rendered batch file, submission diagnostics,
-normalized scheduler status, its declared source and raw source response,
-exact `%x-%j` logs, the complete run-owned workload subtree, topology and image
-metadata, a human and JSON summary, and a SHA-256 manifest. Missing optional
-artifacts are listed in `summary.json` rather than confused with successful
-evidence. `scheduler/status-source.json` says `sacct` or `scontrol`; the latter
-is transient scheduler state and is not presented as durable accounting.
+Without `--allow-incomplete`, collection requires a terminal Slurm state. It
+rejects ownership mismatches, escaping paths, symbolic links, malformed job
+records, and existing output directories. Export is non-destructive and
+includes inputs, scheduler records, logs, workload output, topology, metadata,
+summaries, and a SHA-256 manifest; missing artifacts are explicit.
 
 The collector deliberately sets `validationLevel` to `not-assigned`,
 `uibTrafficEvidence` to `not-evaluated`, and `promotionEligible` to false.
@@ -2181,37 +2106,27 @@ only that pool:
 make simulation-libvirt-e2e-test
 ```
 
-The real gate confirms controller health, two idle workers, NFSv4 and ICMP over
-the data network, and an ordinary Slurm task on every worker. It then places
-one unchanged `ibv_rc_pingpong` rank on each worker, preloads the portable
-`libuibv.so`, exchanges 32 correctness-checked 2051-byte multi-packet RC
-messages through UIB/RoCEv2, and requires the standard payload result. Finally,
-it runs a digest-pinned OCI image through Pyxis/Enroot and executes
-`uib-preflight --library-only` inside that container. It then submits the
-two-rank scheduler-neutral lifecycle request through the controller, derives
-each rank's data address with the portable runtime's `ip`, runs UIB preflight
-inside both Pyxis containers, collects both rank results and scheduler
-evidence, and removes the exact job and infrastructure state.
+The gate verifies controller and worker health, NFSv4, the private data
+network, ordinary Slurm tasks, and digest-pinned Pyxis/Enroot execution. Its
+UIB check places one unchanged `ibv_rc_pingpong` rank on each worker and
+exchanges 32 correctness-checked 2051-byte multi-packet RC messages through
+UIB/RoCEv2. It also runs the common UIB preflight in both containers, collects
+rank and scheduler evidence, and removes the exact job and infrastructure.
 
 This is actual cross-VM UIB traffic, but remains CPU L0 evidence. It is not an
 NCCL collective, a GPU path, or a performance model. Passt and multicast
 networking are unsuitable for throughput or latency claims; use bridge mode or
 physical hardware for those measurements.
 
-The NFS export is limited to the exact run-owned worker data addresses. It
-uses `no_root_squash` because Enroot container mounts need to populate the
-shared test paths. Do not apply this disposable-lab role to an existing or
-multi-user cluster. The multicast data tunnel is likewise intended only for a
-trusted development host. Existing clusters should supply their normal
-segmented network and secured shared storage instead.
+The disposable lab limits its NFS export to run-owned worker addresses and
+uses `no_root_squash` for Enroot. Do not apply that role or the rootless
+multicast tunnel to an existing multi-user cluster; use the site's secured
+shared storage and segmented network there.
 
-Infrastructure lifecycle and Slurm job lifecycle have separate ledgers under
-one run ID. If submission fails before Slurm returns an ID, `down` still
-destroys the owned infrastructure without inventing a cancellation target. If
-an ID was recorded, `down` cancels only that numeric ID before destroying the
-OpenTofu state. The disposable controller retains completed `scontrol` records
-for one hour so collection can finish without adding a database solely for an
-ephemeral test; production profiles continue to use site `sacct` accounting.
+Infrastructure and Slurm jobs have separate ownership ledgers under one run
+ID. `down` cancels only a recorded numeric job ID, then destroys the owned
+OpenTofu state. The disposable controller keeps completed `scontrol` records
+for collection; production profiles use site `sacct` accounting.
 
 ### Existing Slurm
 
@@ -2287,21 +2202,14 @@ make training-uib-preflight-test
 make training-uib-test       # opt-in; actual two-rank traffic through UIB
 ```
 
-The smoke target runs an unmodified two-rank `torchrun` DDP job over Gloo,
-runs an uninterrupted single-rank job, stops another job at step two, resumes
-it through step four, and requires the resumed and uninterrupted model
-checksums to match. It also loads `libnccl.so.2` and requires
-`ncclGetVersion()` to report 2.30.4. Set `TRAINING_SKIP_BUILD=1` to reuse an
-existing image or `TRAINING_IMAGE=registry/image@sha256:<digest>` to test a
-published image.
+The CPU smoke target checks two-rank DDP, checkpoint/restart equivalence, and
+the pinned NCCL ABI. Set `TRAINING_SKIP_BUILD=1` to reuse an existing image or
+`TRAINING_IMAGE=registry/image@sha256:<digest>` to test a published image.
 
-The opt-in GPU target selects `nvidia.com/gpu=all` through the standard CDI
-interface, initializes a real NCCL process, runs the FSDP code path, writes a
-full model/optimizer checkpoint at step two, and resumes through step four.
-Set `TRAINING_GPU_DEVICE` to another CDI device name when necessary. A
-single-GPU FSDP run uses PyTorch's `NO_SHARD` mode, so it validates CUDA, NCCL,
-FSDP wrapping, and FSDP checkpoint conversion but not multi-GPU sharding or
-network traffic.
+The opt-in GPU target uses standard CDI, initializes NCCL, and checks FSDP
+checkpoint/restart. Set `TRAINING_GPU_DEVICE` to another CDI device name when
+necessary. One GPU exercises `NO_SHARD` and therefore does not validate
+multi-GPU sharding or network traffic.
 
 On a multi-GPU node, select the local process count explicitly. The default
 strategy is FSDP; DDP uses the same gate and checkpoint comparison:
@@ -2311,36 +2219,23 @@ make TRAINING_GPU_PROCESSES=8 training-gpu-test
 make TRAINING_GPU_PROCESSES=8 TRAINING_GPU_STRATEGY=ddp training-gpu-test
 ```
 
-The test exposes the CDI device set, maps each `LOCAL_RANK` to one CUDA device,
-sets its generated global batch to two samples per rank, and requires the
-restarted model checksum to equal the uninterrupted run. The result records
-the actual world size. This machine has one GPU, so the checked-in result class
-records single-GPU validation; multi-GPU execution must pass on a suitable
-host before that limitation is removed.
+The result records the actual world size and requires the restarted model
+checksum to match the uninterrupted run. Multi-GPU support remains a
+hardware-required gate until it passes on a suitable host.
 
-The UIB preflight target rebuilds the common runtime artifact, mounts that
-exact tree read-only at `/opt/uib` in the training image, validates checksums,
-ELF dependencies, symbol versions, and the synthetic verbs library, and then
-runs the CPU workload gates. It proves that the two independently built image
-layers compose, but it does not send UIB traffic.
+The UIB preflight target mounts the common runtime artifact read-only at
+`/opt/uib`, validates it, and runs the CPU workload gates. It proves image
+composition but does not send UIB traffic.
 
-The opt-in `training-uib-test` is the data-plane gate. It starts two instances
-of the unchanged training entry point with distinct ranks and hostnames, uses
-an isolated NVIDIA MPS daemon so the local test can share one physical GPU,
-disables NCCL P2P and shared-memory paths, mounts the runtime artifact at
-`/opt/uib`, and selects `NCCL_NET=IB`, `uib0`, and
-`NCCL_IBVERBS_LIB=/opt/uib/lib/libuibv.so`. It requires NCCL's log to contain the
-IB plugin, `Using network IB`, and `via NET/IB/<device>`; any Socket network
-selection fails the test. It also requires the training evidence to report a
-two-rank CUDA DDP run through NCCL with UIB enabled.
+The opt-in `training-uib-test` runs two unchanged training ranks through NCCL
+and UIB, using NVIDIA MPS when one local GPU must be shared. It selects
+`NCCL_NET=IB`, `uib0`, and `NCCL_IBVERBS_LIB=/opt/uib/lib/libuibv.so`, requires
+NCCL's IB transport evidence, and rejects Socket fallback.
 
-The local container gate uses host networking, the host PID and IPC
-namespaces, and an unconfined container seccomp profile for UIB's io_uring
-operations. These settings are confined to disposable test containers and
-are not a production deployment recommendation. Configure the executable and
-ports with `TRAINING_CONTAINER_ENGINE`, `MPIEXEC`, `TRAINING_UIB_BIND_PORT`,
-`TRAINING_MASTER_PORT`, and `TRAINING_UIB_TIMEOUT`; select the exposed CDI
-device with `TRAINING_GPU_DEVICE`. For example:
+Configure the local gate with `TRAINING_CONTAINER_ENGINE`, `MPIEXEC`,
+`TRAINING_UIB_BIND_PORT`, `TRAINING_MASTER_PORT`, `TRAINING_UIB_TIMEOUT`, and
+`TRAINING_GPU_DEVICE`. It uses relaxed namespaces and seccomp only for its
+disposable local containers. For example:
 
 ```text
 make TRAINING_CONTAINER_ENGINE='sudo docker' \
@@ -2539,14 +2434,10 @@ make inference-smoke-test
 make inference-gpu-test       # opt-in; needs NVIDIA CDI and a GPU
 ```
 
-The mandatory smoke test runs a real local Ray task, starts the CPU backend,
-checks `/health` and `/v1/models`, sends warmup plus concurrent completions,
-repeats the workload through the streaming API, and records deterministic
-request traces and results. The GPU test starts the real vLLM OpenAI server,
-runs the same deterministic probe, and then runs the unmodified standard
-`vllm bench serve` load generator with fixed random input length, output
-length, concurrency, and seed. The standard benchmark JSON is saved beside
-the common result.
+The smoke target checks Ray plus the CPU backend's health, model, completion,
+and streaming paths. The GPU target applies the same deterministic probe to a
+real vLLM server and saves the unmodified `vllm bench serve` result beside the
+common evidence.
 
 ### Small default and production models
 
@@ -2638,10 +2529,11 @@ Configurable link features include:
 - deterministic random seed;
 - timed link degradation and recovery.
 
-`tc netem` is the default impairment mechanism. Kind applies qdiscs inside
-workload network namespaces. virtme and libvirt apply them to explicit tap or
-bridge data interfaces. A real-cluster profile normally disables shaping and
-records physical NIC and switch counters instead.
+`tc netem` is the default impairment mechanism. The implemented libvirt Slurm
+backend applies it to each disposable worker's data-interface egress. Kind,
+virtme, and host-side libvirt tap placement remain backend extensions. A
+real-cluster profile normally disables shaping and records physical NIC and
+switch counters instead.
 
 Faults can also terminate a pod, Slurm rank, virtme guest, or VM. Each fault is
 recorded with planned time, actual time, target, result, and recovery time.
@@ -2667,6 +2559,32 @@ replace an existing root `netem` qdisc, but refuses to replace a different
 root qdisc unless `--replace-existing` is explicitly supplied. `clear` deletes
 only a root qdisc whose kind is `netem`; it does not delete an unrelated qdisc.
 Set `NETEM_TC=/path/to/tc` when `tc` is outside `PATH`.
+
+The libvirt Slurm lifecycle applies the same adapter automatically after the
+scheduler stack is ready and before its actual cross-worker UIB traffic gate:
+
+```text
+make simulation-libvirt-netem-e2e-test
+
+LIBVIRT_NETWORK_CONDITION=constrained \
+make simulation-libvirt-netem-e2e-test
+```
+
+The target defaults to `datacenter`; accepted values are `clean`,
+`datacenter`, `constrained`, `lossy`, `reordered`, and `ecn`. The condition is
+applied symmetrically to the egress of every worker data interface. Because
+the VMs and their interfaces are run-owned, the lifecycle explicitly replaces
+their initial root qdisc. After the cross-worker UIB gate, it requires the
+requested `netem` state and nonzero qdisc traffic counters, then fetches a
+per-worker record containing the printed apply command, `tc -s` output, kernel
+release, iproute2 version, and whether a requested seed was accepted. Older
+netem releases without `seed` support omit that option, warn, and record
+`seedApplied: false`; they are functional but not packet-decision reproducible.
+`collect` validates and exports the record as
+`network-emulation.json`; the generated manifest covers it.
+The same network overlay must be supplied to `up` and `run`, and `uib-sim`
+rejects a workload whose resolved network differs from its existing libvirt
+lab. The provided end-to-end wrapper handles that invariant automatically.
 
 The checked-in conditions are intentionally small and readable:
 
@@ -2703,7 +2621,7 @@ the corresponding case variants.
 | `packetOverheadBytes` | Unset | Per-packet rate overhead; may be negative |
 | `cellSizeBytes`, `cellOverheadBytes` | Unset | Cell-based rate emulation |
 | `ecn` | `false` | Mark ECN-capable packets instead of dropping according to the loss model |
-| `seed` | Unset | Seed for reproducible random decisions |
+| `seed` | Unset | Seed for reproducible random decisions when the target netem supports it; otherwise evidence records `seedApplied: false` |
 
 Custom example with duplication and corruption:
 
@@ -3140,6 +3058,7 @@ results/<run-id>/
   topology.json
   images.json
   preflight.json
+  network-emulation.json      # when infrastructure supplied validated evidence
   manifest.json
   scheduler/
     workload.sbatch
@@ -3190,10 +3109,11 @@ The long-term common summary states:
 - correctness and performance outcomes.
 
 The current collector fills identity, scheduler outcome, requested and
-allocated topology, images, selected UIB layers, workload exit status, and
-missing artifacts. It does not infer transport use, correctness, performance,
-or a validation level from logs; those promotion checks remain explicit so a
-single-process or socket-fallback run cannot be mislabeled as UIB validation.
+allocated topology, images, selected UIB layers, workload exit status,
+validated libvirt qdisc evidence when available, and missing artifacts. It
+does not infer transport use, correctness, performance, or a validation level
+from logs; those promotion checks remain explicit so a single-process or
+socket-fallback run cannot be mislabeled as UIB validation.
 
 Training metrics include tokens per second, step time, collective time,
 checkpoint time, loss, GPU use, host use, network counters, retries, and fault
@@ -3218,9 +3138,10 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in network condition renders to the expected `tc netem` command; unsafe interfaces and invalid combinations are rejected; it does not modify a qdisc |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | UET SEND, RDMA read/write, and atomics complete with actual netem conditions and the selected built-in or plugin congestion algorithm |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
-| `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge and rootless rendering, cached-image verification, generated OpenTofu and Ansible inputs, remote submit/status/collect/cancel transport, cleanup after a rejected pre-ID submission, exclusive ownership, and exact-state cleanup with fake standard commands |
+| `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge and rootless rendering, cached-image verification, generated OpenTofu and Ansible inputs, per-worker network-evidence validation, provisioned/workload network matching, remote submit/status/collect/cancel transport, exclusive ownership, and exact-state cleanup with fake standard commands |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, SSH/SCP, passt, NFS-capable Ubuntu guests, roughly 12 GiB memory for the default three VMs, and download access on the first run | Actual controller/two-worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, ordinary worker tasks, cross-VM standard RC payload through UIB, remote batch submission and status, two-rank pinned OCI execution with portable UIB preflight, result collection, state-based destruction, and domain/pool absence; no NCCL or GPU claim |
+| `make simulation-libvirt-netem-e2e-test` | The libvirt gate requirements; guest iproute2 and `jq` are installed automatically | The selected checked-in condition is active on both worker data interfaces before actual cross-VM UIB traffic, exact qdisc/kernel/iproute2 evidence is collected, the Slurm lifecycle passes, and the VMs are removed; rootless timing and throughput are not physical-fabric measurements |
 | `make simulation-libvirt-training-e2e-test` | The libvirt gate requirements, the local training image or image-build access, 32 GiB guest disks, roughly 12 GiB host memory, and about 3 GiB ignored host cache space for the current image | Everything in the libvirt gate, content-addressed SquashFS creation or verified cache reuse, real two-worker CPU DDP training through Slurm/Pyxis/Enroot, collected training and image ledgers, and complete cleanup; the workload uses Gloo, while the separate provisioning gate supplies actual UIB traffic |
 | `make simulation-libvirt-inference-e2e-test` | The libvirt gate requirements, the local inference image or build access, the downloaded SmolLM2 cache, 8 GiB per VM, 64 GiB guest disks, and about 8 GiB ignored host image-cache space | Everything in the libvirt gate, bounded-memory SquashFS staging, verified Hugging Face cache transfer, real offline four-request CPU serving through Slurm/Pyxis/Enroot, request trace and artifact ledgers, and cleanup; the one-task workload itself has no UIB traffic |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
@@ -3309,6 +3230,12 @@ rootless networking, one controller, and two workers:
 make simulation-libvirt-e2e-test
 ```
 
+Run the cross-worker UIB gate with the default datacenter-like condition:
+
+```text
+make simulation-libvirt-netem-e2e-test
+```
+
 Run the real CPU training variant with:
 
 ```text
@@ -3348,6 +3275,7 @@ committed.
 |---|---|---|
 | `LIBVIRT_URI` | `qemu:///session` | Exact libvirt URI; rootless mode requires the session URI |
 | `LIBVIRT_NETWORK_MODE` | `rootless` | `rootless` for passt plus multicast, or `bridge` for managed networks |
+| `LIBVIRT_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty for the profile setting, or `clean`, `datacenter`, `constrained`, `lossy`, `reordered`, or `ecn`; applied to every worker data-interface egress |
 | `LIBVIRT_POOL` | Unique run ID | Active pool name; the gate creates and later removes a missing session pool |
 | `LIBVIRT_POOL_DIR` | Ignored run-specific path | Directory backing a session pool created by the gate; not used for a pre-existing pool |
 | `LIBVIRT_WORKERS` | `2` | Positive worker count; two or more place the UIB traffic ranks on distinct VMs |
@@ -3406,9 +3334,11 @@ LIBVIRT_POOL=default make simulation-libvirt-e2e-test
 ```
 
 Do not combine `rootless` with `qemu:///system`. Do not use the rootless gate
-for performance measurements. Command override variables name one executable,
-not a shell command with arguments. The gate's interrupt trap destroys only
-the run's OpenTofu state and removes a pool only when the gate created it.
+for performance measurements. A netem result describes the configured guest
+egress qdisc and functional UIB behavior, not physical switch congestion or
+line-rate accuracy. Command override variables name one executable, not a
+shell command with arguments. The gate's interrupt trap destroys only the
+run's OpenTofu state and removes a pool only when the gate created it.
 The lab configures a sticky node-local `/run/enroot` root so unattended Slurm
 jobs do not depend on a transient interactive-login directory.
 
@@ -3658,8 +3588,11 @@ Cleanup must remain safe after interruption during every lifecycle stage.
   public lifecycle also passed remote controller submission, exact-job status,
   two-rank Pyxis execution with UIB preflight, result collection, and cleanup.
   That lifecycle request is an orchestration probe; the preceding unchanged
-  verbs gate is the actual UIB payload evidence. GPU/NCCL Kubernetes execution,
-  libvirt/Kubernetes, DeepSpeed, and Megatron-Core remain planned.
+  verbs gate is the actual UIB payload evidence. A named netem condition also
+  passed on both worker data interfaces with qdisc/version collection while
+  that cross-VM payload gate was active. GPU/NCCL Kubernetes execution,
+  libvirt/Kubernetes, host-side tap shaping, DeepSpeed, and Megatron-Core
+  remain planned.
 - The diagnostic image passed its hardware-neutral, UIB runtime-injection,
   CUDA `deviceQuery`, and single-GPU NCCL all-reduce gates. Its NCCL run has
   one rank and therefore does not send UIB traffic.

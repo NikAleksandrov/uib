@@ -77,7 +77,9 @@ build_command()
 	fi
 
 	value=$(jq -r '.seed // empty' <<<"$shaping")
-	[ -z "$value" ] || command+=(seed "$value")
+	if [ -n "$value" ] && [ "${netem_seed_supported:-true}" = true ]; then
+		command+=(seed "$value")
+	fi
 }
 
 print_command()

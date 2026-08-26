@@ -19,6 +19,7 @@ def command_render(args):
 
 def command_up(args):
     from .core import LibvirtError, MODULE, PLAYBOOK, SIMULATION, executable, load_config, quantity, run_logged, validate_name, write_json
+    from .network import record_network_evidence
     from .tofu import acquire_base_image, destroy, tofu_environment, tofu_values
     from .topology import inventory
 
@@ -86,6 +87,7 @@ def command_up(args):
                 "uib_run_id": args.name,
                 "uib_run_state": str(state),
                 "uib_config": str(state / "resolved-simulation.json"),
+                "uib_netem_source": str(SIMULATION / "network" / "netem"),
                 "uib_runtime_source": str(runtime_source),
                 "uib_runtime_path": config["storage"].get(
                     "uibRuntimePath", "/var/lib/uib/runtime"),
@@ -94,6 +96,7 @@ def command_up(args):
                 "uib_enabled": config["uib"]["enabled"],
                 "uib_ssh_user": config["libvirt"]["sshUser"],
                 "uib_data_interface": config["network"]["dataInterface"],
+                "uib_network_shaping": config["network"]["shaping"],
                 "uib_network_mode": config["libvirt"]["networkMode"],
                 "uib_node_cpu": config["nodes"]["cpu"],
                 "uib_node_memory_mib": quantity(
@@ -129,8 +132,11 @@ def command_up(args):
                 ],
             }),
         ], log)
+        network_evidence = record_network_evidence(
+            state, config, values, args.name)
         ledger["state"] = "ready"
         ledger["baseImage"] = str(image)
+        ledger["networkEvidence"] = network_evidence.name
         write_json(ledger_path, ledger)
     except (LibvirtError, OSError) as error:
         ledger["state"] = "failed"

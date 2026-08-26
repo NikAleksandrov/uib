@@ -30,6 +30,14 @@ render|apply)
 	}
 	jq -e '.network.shaping.enabled | type == "boolean"' "$config" \
 		>/dev/null
+	netem_seed_supported=true
+	if [ "$action" = apply ] &&
+	   [ -n "$(jq -r '.network.shaping.seed // empty' "$config")" ] &&
+	   ! "$tc_command" qdisc add dev "$interface" root netem help 2>&1 | \
+		grep -Eq '(^|[[:space:]])seed([[:space:]]|$)'; then
+		netem_seed_supported=false
+		echo "warning: target netem has no seed support; omitting seed" >&2
+	fi
 	build_command "$config" "$interface"
 	print_command
 	if [ "$action" = render ]; then

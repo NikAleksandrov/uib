@@ -42,4 +42,37 @@ if "$netem" render "$test_dir/datacenter.json" 'bad;interface' \
 	exit 1
 fi
 
+mkdir "$test_dir/bin"
+cat > "$test_dir/bin/tc" <<'EOF'
+#!/bin/sh
+set -eu
+case "$*" in
+'qdisc add dev eth-test root netem help')
+	echo 'Usage: netem [ delay TIME ] [ rate RATE ]' >&2
+	exit 1
+	;;
+'qdisc show dev eth-test')
+	echo 'qdisc fq_codel 0: root refcnt 2'
+	;;
+qdisc\ replace\ dev\ eth-test\ root\ netem*)
+	printf '%s\n' "$*" > "$NETEM_TEST_APPLIED"
+	;;
+*)
+	echo "unexpected tc command: $*" >&2
+	exit 2
+	;;
+esac
+EOF
+chmod +x "$test_dir/bin/tc"
+NETEM_TC="$test_dir/bin/tc" NETEM_TEST_APPLIED="$test_dir/applied" \
+	"$netem" apply "$test_dir/datacenter.json" eth-test \
+	--replace-existing > "$test_dir/apply.out" 2> "$test_dir/apply.err"
+grep -F 'target netem has no seed support' "$test_dir/apply.err" >/dev/null
+if grep -F ' seed ' "$test_dir/apply.out" "$test_dir/applied" >/dev/null; then
+	echo "unsupported netem seed was applied" >&2
+	exit 1
+fi
+grep -F 'delay 100us 20us 10% distribution normal' \
+	"$test_dir/applied" >/dev/null
+
 echo "netem configuration test: PASS"

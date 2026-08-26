@@ -42,9 +42,22 @@ pool=${LIBVIRT_POOL:-$run_id}
 pool_dir=${LIBVIRT_POOL_DIR:-$project_dir/simulation/.artifacts/libvirt-pools/$pool}
 ansible_tmp=${ANSIBLE_LOCAL_TEMP:-$project_dir/simulation/.artifacts/ansible-tmp}
 ssh_port_base=${LIBVIRT_SSH_PORT_BASE:-$((30000 + $$ % 20000))}
+network_condition=${LIBVIRT_NETWORK_CONDITION:-}
+case $network_condition in
+'')
+	;;
+clean|datacenter|constrained|lossy|reordered|ecn)
+	;;
+*)
+	echo "LIBVIRT_NETWORK_CONDITION must be clean, datacenter, constrained, lossy, reordered, or ecn" >&2
+	exit 2
+	;;
+esac
 created_pool=0
 
 settings="--set libvirt.uri=$uri --set libvirt.pool=$pool"
+[ -z "$network_condition" ] || \
+	settings="$settings --overlay network/$network_condition"
 settings="$settings --set libvirt.networkMode=$network_mode"
 settings="$settings --set nodes.workers=${LIBVIRT_WORKERS:-2}"
 settings="$settings --set libvirt.sshPortBase=$ssh_port_base"
@@ -130,6 +143,10 @@ grep -F 'TASK [Run a pinned image through Pyxis and Enroot]' \
 	"$infra/lifecycle.log" >/dev/null
 grep -F 'TASK [Preflight the shared UIB runtime inside Pyxis]' \
 	"$infra/lifecycle.log" >/dev/null
+grep -F 'TASK [network_shaping : Apply worker data-plane network shaping]' \
+	"$infra/lifecycle.log" >/dev/null
+grep -F 'TASK [network_shaping : Require the requested post-traffic qdisc state]' \
+	"$infra/lifecycle.log" >/dev/null
 
 workload_settings=
 if [ "$workload" = inference ]; then
@@ -201,9 +218,11 @@ reported=$("$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
 	--output-dir "$result_dir")
 [ "$reported" = "$result_dir" ]
 
-python3 - "$result_dir" "$run_id" "$job_id" "$workload" <<'PY'
+python3 - "$result_dir" "$run_id" "$job_id" "$workload" \
+	"$network_condition" <<'PY'
 import json
 import pathlib
+import re
 import sys
 
 
@@ -217,6 +236,31 @@ assert summary["schedulerExitCode"] == "0:0"
 assert summary["workloadStatusRecorded"] is True
 assert summary["workloadExitCode"] == 0
 assert summary["uibEnabled"] is True
+assert summary["networkEmulation"] == "network-emulation.json"
+with (root / "network-emulation.json").open(encoding="utf-8") as source:
+    network = json.load(source)
+assert network["runId"] == sys.argv[2]
+assert network["scope"] == "worker-data-egress"
+assert network["interface"] == "eth1"
+expected_shaping = sys.argv[5] not in ("", "clean")
+assert network["shaping"]["enabled"] is expected_shaping
+assert sorted(network["endpoints"]) == ["worker-01", "worker-02"]
+for endpoint in network["endpoints"].values():
+    assert bool(endpoint["appliedCommand"])
+    assert bool(endpoint["iproute2"])
+    assert bool(endpoint["kernel"])
+    assert ("qdisc netem " in endpoint["qdisc"]) is expected_shaping
+    if "seed" in network["shaping"]:
+        assert isinstance(endpoint["seedApplied"], bool)
+    else:
+        assert endpoint["seedApplied"] is None
+    if expected_shaping:
+        assert re.search(r"Sent [1-9][0-9]* bytes", endpoint["qdisc"])
+if sys.argv[5] == "datacenter":
+    assert network["shaping"]["bandwidth"] == "25Gbit"
+    assert network["shaping"]["latency"] == "100us"
+    assert network["shaping"]["jitter"] == "20us"
+    assert network["shaping"]["queueLimit"] == 8192
 with (root / "topology.json").open(encoding="utf-8") as source:
     topology = json.load(source)
 expected_nodes = 1 if sys.argv[4] == "inference" else 2

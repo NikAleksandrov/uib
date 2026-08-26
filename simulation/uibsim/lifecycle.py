@@ -203,7 +203,7 @@ def command_run(args):
     from .config import resolve
     from .core import ConfigurationError, SLURM_RENDERER
     from .scheduler import remote_path_exists, run_scheduler, scheduler_remote
-    from .state import record_run_inputs, state_path, utc_now, write_json
+    from .state import read_json, record_run_inputs, state_path, utc_now, write_json
 
     config = resolve(args)
     if config["cluster"]["manager"] != "slurm":
@@ -223,6 +223,13 @@ def command_run(args):
                     infrastructure_ledger.get("state") != "ready" or
                     (run_dir / "ledger.json").exists()):
                 raise FileExistsError
+            infrastructure_config = read_json(
+                run_dir / "infrastructure" / "resolved-simulation.json",
+                "infrastructure configuration")
+            if infrastructure_config.get("network") != config["network"]:
+                raise ConfigurationError(
+                    "workload network configuration differs from the "
+                    "provisioned libvirt network")
         else:
             run_dir.mkdir()
     except (json.JSONDecodeError, IsADirectoryError) as error:
@@ -402,6 +409,7 @@ def command_collect(args):
     workload_status = None
     staged_images = None
     staged_caches = None
+    network_emulation = None
     try:
         for directory in ("logs", "metrics", "scheduler", "state", "traces"):
             (temporary / directory).mkdir()
@@ -430,6 +438,20 @@ def command_collect(args):
                 raise ConfigurationError(
                     f"staged cache ledger ownership mismatch: {cache_path}")
             copy_file(cache_path, temporary / "staged-caches.json")
+        network_path = run_dir / "infrastructure" / "network.json"
+        if network_path.is_file() and not network_path.is_symlink():
+            network_emulation = read_json(
+                network_path, "network-emulation evidence")
+            if (network_emulation.get("schemaVersion") != 1 or
+                    network_emulation.get("runId") != args.run_id or
+                    network_emulation.get("interface") !=
+                    config["network"]["dataInterface"] or
+                    network_emulation.get("shaping") !=
+                    config["network"]["shaping"] or
+                    not isinstance(network_emulation.get("endpoints"), dict)):
+                raise ConfigurationError(
+                    f"network-emulation evidence mismatch: {network_path}")
+            copy_file(network_path, temporary / "network-emulation.json")
         for name in ("render.stderr", "sbatch.stdout", "sbatch.stderr"):
             source = run_dir / name
             if source.is_file():
@@ -585,6 +607,9 @@ def command_collect(args):
             "communicationFrontend": config["communication"]["frontend"],
             "validationLevel": "not-assigned",
             "uibTrafficEvidence": "not-evaluated",
+            "networkEmulation": (
+                "network-emulation.json"
+                if network_emulation is not None else None),
             "promotionEligible": False,
             "missingArtifacts": missing,
         }

@@ -1,0 +1,37 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+
+- name: Install the common netem adapter
+  ansible.builtin.copy:
+    src: "{{ uib_netem_source }}"
+    dest: /usr/local/libexec/uib-netem
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the resolved network configuration
+  ansible.builtin.copy:
+    src: "{{ uib_config }}"
+    dest: /run/uib-simulation.json
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Apply worker data-plane network shaping
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/uib-netem
+      - apply
+      - /run/uib-simulation.json
+      - "{{ uib_data_interface }}"
+      - --replace-existing
+  register: uib_netem_apply
+  changed_when: uib_network_shaping.enabled | bool
+
+- name: Preserve the applied netem command for post-traffic evidence
+  ansible.builtin.copy:
+    dest: /run/uib-netem-command
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ uib_netem_apply.stdout | trim }}\n"

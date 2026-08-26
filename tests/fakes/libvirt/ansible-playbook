@@ -27,6 +27,7 @@ grep -q '^    slurm_controller:' "$inventory"
 grep -q '^    slurm_workers:' "$inventory"
 python3 - "$extra" <<'PY'
 import json
+import pathlib
 import sys
 
 
@@ -34,8 +35,26 @@ values = json.loads(sys.argv[1])
 assert values["uib_run_id"] in ("uib-libvirt-test", "uib-libvirt-failed")
 assert values["uib_enabled"] is True
 assert values["uib_data_interface"] == "eth1"
+assert values["uib_network_shaping"] == {"enabled": False}
+assert values["uib_netem_source"].endswith("/simulation/network/netem")
 assert values["uib_slurm_partition"] == "uib"
 assert values["uib_node_cpu"] == 2
 assert values["uib_node_memory_mib"] == 4096
 assert len(values["uib_stack_downloads"]) == 3
+state = pathlib.Path(values["uib_run_state"])
+(state / "network").mkdir()
+for node in ("worker-01", "worker-02"):
+    evidence = {
+        "schemaVersion": 1,
+        "node": node,
+        "interface": values["uib_data_interface"],
+        "shaping": values["uib_network_shaping"],
+        "appliedCommand": "tc qdisc del dev eth1 root",
+        "qdisc": "qdisc noqueue 0: root refcnt 2",
+        "iproute2": "tc utility, iproute2-test",
+        "kernel": "test-kernel",
+    }
+    with (state / "network" / f"{node}.json").open(
+            "w", encoding="utf-8") as output:
+        json.dump(evidence, output)
 PY
