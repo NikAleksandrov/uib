@@ -441,8 +441,9 @@ make ucx-libfabric-test
 network namespaces. `rxe-tools-test` runs the UIB preload provider against a
 kernel RXE peer in raw RoCEv2 mode. The RXE test needs the appropriate kernel
 modules and administrative network privileges. `ucx-libfabric-test` runs
-actual two-process UCX tag traffic over `ud_verbs` and libfabric RDM traffic
-over `verbs;ofi_rxd`, with payload checking and fallback rejection.
+actual two-process UCX tag, stream, UCP RMA, and UCP atomic traffic over
+`ud_verbs`, plus libfabric RDM traffic over `verbs;ofi_rxd`, with payload
+checking and fallback rejection.
 
 ## Verbs hooked by `libuibv.so`
 
