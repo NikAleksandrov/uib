@@ -12,6 +12,33 @@ trap 'rm -rf -- "$test_dir"' EXIT INT TERM
 mkdir -p "$test_dir/runtime" "$test_dir/cache" "$test_dir/results" \
 	"$test_dir/fake-bin" "$test_dir/fake-output"
 
+python3 - "$project_dir/simulation/adapters/slurm/render" <<'PY'
+import importlib.machinery
+import importlib.util
+import sys
+
+
+loader = importlib.machinery.SourceFileLoader("uib_slurm_render", sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+renderer = importlib.util.module_from_spec(spec)
+loader.exec_module(renderer)
+config = {
+    "communication": {"frontend": "libfabric"},
+    "storage": {
+        "modelCachePath": "/cache",
+        "uibRuntimePath": "/runtime",
+    },
+    "uib": {"enabled": True},
+}
+assert renderer.container_mounts(config) == [
+    "/runtime:/opt/uib:ro",
+    "/cache:/cache",
+    "/dev/null:/dev/infiniband/uib0",
+]
+config["uib"]["enabled"] = False
+assert renderer.container_mounts(config) == ["/cache:/cache"]
+PY
+
 render_training()
 {
 	run_id=$1

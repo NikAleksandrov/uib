@@ -60,6 +60,17 @@ def environment(config):
 	return values
 
 
+def container_mounts(config):
+	storage = config["storage"]
+	mounts = [f"{storage['modelCachePath']}:/cache"]
+
+	if config["uib"]["enabled"]:
+		mounts.insert(0, f"{storage['uibRuntimePath']}:/opt/uib:ro")
+		if config["communication"]["frontend"] in ("ucx", "libfabric"):
+			mounts.append("/dev/null:/dev/infiniband/uib0")
+	return mounts
+
+
 def directives(config, run_id):
 	from .core import slurm_memory
 

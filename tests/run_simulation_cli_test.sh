@@ -7,6 +7,17 @@ cli=$project_dir/simulation/bin/uib-sim
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-sim-cli-test.XXXXXX")
 trap 'rm -rf -- "$test_dir"' EXIT INT TERM
 
+sh -n "$project_dir/simulation/runtime/with-device-anchor"
+DEVICE_ANCHOR_PATH=/dev/null \
+	"$project_dir/simulation/runtime/with-device-anchor" true
+if DEVICE_ANCHOR_SOURCE="$test_dir/missing-device" \
+	DEVICE_ANCHOR_PATH=/dev/null \
+	"$project_dir/simulation/runtime/with-device-anchor" true \
+	> /dev/null 2>&1; then
+	echo "a non-character device anchor source was accepted" >&2
+	exit 1
+fi
+
 for profile in "$project_dir"/simulation/profiles/*.yaml; do
 	[ "$(basename "$profile")" != defaults.yaml ] || continue
 	"$cli" render --profile "$profile" --format json \

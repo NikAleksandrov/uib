@@ -6,12 +6,8 @@ import yaml
 
 
 with open(sys.argv[1], encoding="utf-8") as source:
-    runtime = list(yaml.safe_load_all(source))[2]
-pod = runtime["spec"]["template"]["spec"]["replicatedJobs"][0][
-    "template"
-]["spec"]["template"]["spec"]
-volumes = {volume["name"]: volume for volume in pod["volumes"]}
-assert volumes["model-cache"]["persistentVolumeClaim"]["claimName"] == \
-    "uib-model-cache"
-assert volumes["results"]["persistentVolumeClaim"]["claimName"] == \
-    "uib-results"
+    job = list(yaml.safe_load_all(source))[3]
+environment = {entry["name"]: entry for entry in job["spec"]["trainer"]["env"]}
+assert environment["UIB_PROTOCOL"]["value"] == "uet"
+assert environment["UIB_BIND_PORT"]["value"] == "5432"
+assert environment["UIB_UET_CC"]["value"] == "nscc"

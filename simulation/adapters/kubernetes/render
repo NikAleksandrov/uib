@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from kubernetes_renderer.cli import main
+from kubernetes_renderer.storage import needs_device_anchor
 from kubernetes_renderer.storage import volume_mounts
 from kubernetes_renderer.storage import volumes
 

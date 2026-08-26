@@ -631,7 +631,8 @@ rccl-test: all $(PROVIDER_CQ_EVENT_TEST) $(PROVIDER_NCCL_ABI_TEST)
 	./tests/run_rccl_test.sh
 
 ucx-libfabric-test: all
-	./tests/run_ucx_libfabric_test.sh
+	./simulation/runtime/with-device-anchor \
+		./tests/run_ucx_libfabric_test.sh
 else
 rxe-test-build rxe-test rxe-tools-test uib-tools-test uet-tools-test \
 provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test nccl-test \

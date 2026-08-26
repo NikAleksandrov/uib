@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from slurm_renderer.cli import main
+from slurm_renderer.environment import container_mounts
 
 
 if __name__ == "__main__":

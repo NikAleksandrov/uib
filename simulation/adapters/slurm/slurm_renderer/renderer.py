@@ -27,7 +27,7 @@ def workload_command(config):
 
 def render(config, run_id, allow_mutable_tags):
 	from .core import shell_assignment, validate_config
-	from .environment import directives, environment
+	from .environment import container_mounts, directives, environment
 	from .faults import task_wrapper
 
 	validate_config(config, run_id, allow_mutable_tags)
@@ -95,9 +95,7 @@ def render(config, run_id, allow_mutable_tags):
 			'fi',
 		])
 
-	mounts = [f"{storage['modelCachePath']}:/cache"]
-	if config["uib"]["enabled"]:
-		mounts.insert(0, f"{storage['uibRuntimePath']}:/opt/uib:ro")
+	mounts = container_mounts(config)
 	lines.extend([
 		"",
 		'MOUNTS=' + shlex.quote(",".join(mounts)),

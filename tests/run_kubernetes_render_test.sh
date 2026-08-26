@@ -9,10 +9,12 @@ inference_request=$project_dir/simulation/requests/inference-smoke.yaml
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-kubernetes-render.XXXXXX")
 trap 'rm -rf -- "$test_dir"' EXIT INT TERM
 
+python3 "$project_dir/tests/cases/kubernetes_render/device_anchor.py" "$project_dir/simulation/adapters/kubernetes/render"
+
 "$cli" render-workload --profile kind-kubernetes --request "$request" \
 	--run-id uib-smoke --allow-mutable-tags > "$test_dir/workload.yaml"
 
-python3 "$project_dir/tests/cases/kubernetes_render/device_anchor.py" "$test_dir/workload.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/training.py" "$test_dir/workload.yaml"
 
 if grep -Eq '[&*]id[0-9]+' "$test_dir/workload.yaml"; then
 	echo "rendered workload contains YAML aliases" >&2
@@ -65,23 +67,23 @@ fi
 	--run-id uib-native --allow-mutable-tags \
 	--set uib.enabled=false --set communication.nccl.hca==mlx5_0 \
 	> "$test_dir/native.yaml"
-python3 "$project_dir/tests/cases/kubernetes_render/training.py" "$test_dir/native.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/resources.py" "$test_dir/native.yaml"
 
 "$cli" render-workload --profile kind-kubernetes --request "$request" \
 	--run-id uib-uet --allow-mutable-tags --overlay protocol/uet-nscc \
 	> "$test_dir/uet.yaml"
-python3 "$project_dir/tests/cases/kubernetes_render/resources.py" "$test_dir/uet.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/native.py" "$test_dir/uet.yaml"
 
 "$cli" render-workload --profile kind-kubernetes --request "$request" \
 	--run-id uib-storage --allow-mutable-tags \
 	--set storage.modelCacheClaim=uib-model-cache \
 	--set storage.resultsClaim=uib-results > "$test_dir/storage.yaml"
-python3 "$project_dir/tests/cases/kubernetes_render/native.py" "$test_dir/storage.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/uet.py" "$test_dir/storage.yaml"
 
 "$cli" render-workload --profile kind-kubernetes \
 	--request "$inference_request" --run-id uib-inference \
 	--allow-mutable-tags > "$test_dir/inference.yaml"
-python3 "$project_dir/tests/cases/kubernetes_render/uet.py" "$test_dir/inference.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/rocev2_nscc.py" "$test_dir/inference.yaml"
 
 "$cli" render-workload --profile kind-kubernetes \
 	--request "$inference_request" --run-id uib-inference-two \
@@ -94,7 +96,7 @@ python3 "$project_dir/tests/cases/kubernetes_render/uet.py" "$test_dir/inference
 	--set nodes.gpus.vendor=nvidia --set nodes.gpus.perWorker=1 \
 	--set nodes.gpus.resourceName=nvidia.com/gpu \
 	> "$test_dir/inference-two.yaml"
-python3 "$project_dir/tests/cases/kubernetes_render/rocev2_nscc.py" "$test_dir/inference-two.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/rocev2_dcqcn.py" "$test_dir/inference-two.yaml"
 
 if "$cli" render-workload --profile kind-kubernetes \
 	--request "$inference_request" --run-id uib-inference-ranks \
@@ -117,7 +119,7 @@ fi
 	--allow-mutable-tags \
 	--set storage.modelCacheImage=uib-model-cache:test \
 	> "$test_dir/inference-cache.yaml"
-python3 "$project_dir/tests/cases/kubernetes_render/rocev2_dcqcn.py" "$test_dir/inference-cache.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/uet_rccc.py" "$test_dir/inference-cache.yaml"
 
 if "$cli" render-workload --profile kind-kubernetes \
 	--request "$inference_request" --run-id uib-inference-cache-conflict \

@@ -12,6 +12,11 @@ def storage_volume(name, storage, claim):
     return volume
 
 
+def needs_device_anchor(config):
+    return config["uib"]["enabled"] and \
+        config["communication"]["frontend"] in ("ucx", "libfabric")
+
+
 def volumes(config):
     storage = config["storage"]
     result = [
@@ -21,6 +26,11 @@ def volumes(config):
     ]
     if config["uib"]["enabled"]:
         result.append({"name": "uib-runtime", "emptyDir": {}})
+    if needs_device_anchor(config):
+        result.append({
+            "name": "uib-device-anchor",
+            "hostPath": {"path": "/dev/null", "type": "CharDevice"},
+        })
     return result
 
 
@@ -36,6 +46,11 @@ def volume_mounts(config):
     ]
     if config["uib"]["enabled"]:
         result.append({"name": "uib-runtime", "mountPath": "/opt/uib"})
+    if needs_device_anchor(config):
+        result.append({
+            "name": "uib-device-anchor",
+            "mountPath": "/dev/infiniband/uib0",
+        })
     return result
 
 
