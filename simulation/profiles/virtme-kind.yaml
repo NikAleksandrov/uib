@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 infrastructure:
   provider: virtme
+  kernel: running
+virtme:
+  mode: kind
+  bridgePrefix: uibv
+  sshPortBase: 23000
+  extraKernelArguments: []
 cluster:
   manager: kubernetes
 container:

@@ -134,6 +134,23 @@ def validate_infrastructure(config):
     if provider != "libvirt" and "libvirt" in config:
         raise ConfigurationError(
             "libvirt settings require infrastructure.provider=libvirt")
+    if provider == "virtme" and "virtme" not in config:
+        raise ConfigurationError("virtme requires provider settings")
+    if provider != "virtme" and "virtme" in config:
+        raise ConfigurationError(
+            "virtme settings require infrastructure.provider=virtme")
+    if provider == "virtme":
+        if config["nodes"]["controlPlane"] != 1:
+            raise ConfigurationError(
+                "virtme currently requires one control plane")
+        ssh_port_base = config["virtme"]["sshPortBase"]
+        if ssh_port_base + config["nodes"]["workers"] > 65535:
+            raise ConfigurationError(
+                "virtme SSH port range exceeds 65535")
+        if (config["virtme"]["mode"] == "multi-guest" and
+                not config["network"].get("dataInterface")):
+            raise ConfigurationError(
+                "multi-guest virtme requires network.dataInterface")
     if provider == "libvirt" and config["nodes"]["controlPlane"] != 1:
         raise ConfigurationError("libvirt currently requires one control plane")
     if manager == "kubernetes":
@@ -160,7 +177,9 @@ def validate_infrastructure(config):
                         raise ConfigurationError(
                             f"Kubernetes {name} and {other_name} networks "
                             "overlap")
-        elif provider == "libvirt":
+        elif (provider == "libvirt" or
+              (provider == "virtme" and
+               config["virtme"]["mode"] == "multi-guest")):
             raise ConfigurationError(
                 f"{provider} Kubernetes requires distribution settings")
         if (provider == "libvirt" and not re.fullmatch(
@@ -371,6 +390,8 @@ def tools_for(config):
         "libvirt": {"ansible-playbook", "tofu", "virsh"},
         "existing": {"kubectl"} if manager == "kubernetes" else {"srun"},
     }[provider])
+    if provider == "virtme" and config["virtme"]["mode"] == "multi-guest":
+        tools.update({"ansible-playbook", "ip", "ssh"})
     if manager == "slurm" and provider == "libvirt":
         tools.update({"scp", "ssh"})
     elif manager == "slurm":

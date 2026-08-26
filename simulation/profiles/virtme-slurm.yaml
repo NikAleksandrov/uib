@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 infrastructure:
   provider: virtme
+  kernel: running
+virtme:
+  mode: multi-guest
+  bridgePrefix: uibv
+  sshPortBase: 23000
+  extraKernelArguments: []
 cluster:
   manager: slurm
   version: "26.05"
@@ -19,7 +25,7 @@ nodes:
   controlPlane: 1
   workers: 2
 network:
-  dataInterface: eth1
+  dataInterface: eth0
 storage:
   uibRuntimePath: /var/lib/uib/runtime
   modelCachePath: /var/cache/uib/models

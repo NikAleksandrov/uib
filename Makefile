@@ -325,6 +325,9 @@ simulation-netem-test:
 simulation-kind-test:
 	./tests/run_kind_backend_test.sh
 
+simulation-virtme-backend-test:
+	./tests/run_virtme_backend_test.sh
+
 simulation-kind-e2e-test:
 	./tests/run_kind_e2e_test.sh
 
@@ -930,6 +933,7 @@ clean:
 	diagnostic-uib-preflight-test diagnostic-gpu-test \
 	simulation-cli-test simulation-netem-test simulation-congestion-test \
 	simulation-kind-test simulation-kind-e2e-test \
+	simulation-virtme-backend-test \
 	simulation-kubernetes-render-test simulation-slurm-render-test \
 	simulation-slurm-lifecycle-test simulation-slurm-collect-test \
 	simulation-libvirt-test \

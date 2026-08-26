@@ -48,6 +48,27 @@
         "diagnosticImage": { "type": "string", "pattern": "^\\S+@sha256:[0-9a-f]{64}$" }
       }
     },
+    "virtme": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "bridgePrefix", "sshPortBase", "extraKernelArguments"],
+      "properties": {
+        "mode": { "enum": ["kind", "multi-guest"] },
+        "bridgePrefix": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]{1,5}$"
+        },
+        "sshPortBase": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 65534
+        },
+        "extraKernelArguments": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "kubernetes": {
       "type": "object",
       "additionalProperties": false,

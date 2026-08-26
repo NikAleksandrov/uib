@@ -83,6 +83,14 @@
           "nodeImage": "kindest/node:v1.25.3@sha256:f52781bc0d7a19fb6c405c2af83abfeb311f130707a0e219175677e366cc45d1"
         }
       },
+      "virtme": {
+        "status": "single-guest-validated-multi-guest-topology-rendered",
+        "cliVersion": "1.35",
+        "singleGuestTestTarget": "make virtme-test",
+        "multiGuestTestTarget": "make simulation-virtme-backend-test",
+        "multiGuestControl": "pending-persistent-ssh-capability",
+        "intendedValidationLevel": "L0"
+      },
       "kubernetesOperators": {
         "kubeflowTrainer": {
           "version": "v2.2.1",
