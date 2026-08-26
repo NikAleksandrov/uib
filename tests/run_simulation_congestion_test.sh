@@ -8,21 +8,36 @@ netem=$project_dir/simulation/network/netem
 loopback=$project_dir/tests/loopback
 plugin=$project_dir/tests/congestion_plugin.so
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-congestion-sim.XXXXXX")
-matrix=${SIMULATION_CC_MATRIX:-'nscc:clean nscc:datacenter nscc:constrained nscc:lossy nscc:reordered none:constrained test-pass:datacenter'}
+matrix=${SIMULATION_CC_MATRIX:-}
+if [ -z "$matrix" ]; then
+	matrix='rocev2:nscc:clean rocev2:nscc:datacenter
+rocev2:nscc:lossy rocev2:none:constrained rocev2:test-pass:datacenter
+uet:nscc:clean uet:nscc:datacenter uet:nscc:constrained
+uet:nscc:lossy uet:nscc:reordered uet:none:constrained
+uet:test-pass:datacenter'
+fi
 timeout_seconds=${SIMULATION_CC_TIMEOUT:-60}
 max_window=${SIMULATION_CC_MAX_WINDOW:-65536}
 trap 'rm -rf -- "$test_dir"' EXIT INT TERM
 
 if [ "${1:-}" = inner ]; then
 	config=$2
-	algorithm=$3
-	use_plugin=$4
+	protocol=$3
+	algorithm=$4
+	use_plugin=$5
 	ip link set lo up
 	"$netem" apply "$config" lo --replace-existing
-	environment=(UIB_PROTOCOL=uet \
-		UIB_UET_CC="$algorithm" UIB_UET_NSCC_MAX_WND="$max_window" \
+	environment=(UIB_PROTOCOL="$protocol" \
 		UIB_TRANSPORT_MODE=udp-sync UIB_ZEROCOPY=off)
-	[ "$use_plugin" != 1 ] || environment+=(LD_PRELOAD="$plugin")
+	if [ "$protocol" = uet ]; then
+		environment+=(UIB_UET_CC="$algorithm"
+			UIB_UET_NSCC_MAX_WND="$max_window")
+	else
+		environment+=(UIB_ROCEV2_CC="$algorithm"
+			UIB_ROCEV2_NSCC_MAX_WND="$max_window")
+	fi
+	[ "$use_plugin" != 1 ] || environment+=(LD_PRELOAD="$plugin"
+		CONGESTION_PLUGIN_TEST=1)
 	timeout -k 5 "$timeout_seconds" env "${environment[@]}" "$loopback"
 	exit
 fi
@@ -47,22 +62,38 @@ else
 fi
 
 for entry in $matrix; do
-	algorithm=${entry%%:*}
-	condition=${entry#*:}
-	if [ "$algorithm" = "$condition" ]; then
+	protocol=${entry%%:*}
+	remainder=${entry#*:}
+	algorithm=${remainder%%:*}
+	condition=${remainder#*:}
+	if [ "$protocol" = "$remainder" ] || [ "$algorithm" = "$condition" ]; then
 		echo "invalid SIMULATION_CC_MATRIX entry: $entry" >&2
 		exit 2
 	fi
+	case $protocol in
+	rocev2|uet) ;;
+	*)
+		echo "unsupported protocol in SIMULATION_CC_MATRIX: $protocol" >&2
+		exit 2
+		;;
+	esac
+	use_plugin=0
 	case $algorithm in
-	nscc) protocol_overlay=protocol/uet-nscc; use_plugin=0 ;;
-	none) protocol_overlay=protocol/uet-none; use_plugin=0 ;;
-	test-pass) protocol_overlay=protocol/uet-none; use_plugin=1 ;;
+	nscc) protocol_overlay=protocol/$protocol-nscc; use_plugin=0 ;;
+	none|test-pass)
+		if [ "$protocol" = uet ]; then
+			protocol_overlay=protocol/uet-none
+		else
+			protocol_overlay=protocol/rocev2
+		fi
+		[ "$algorithm" != test-pass ] || use_plugin=1
+		;;
 	*)
 		echo "unsupported test algorithm in SIMULATION_CC_MATRIX: $algorithm" >&2
 		exit 2
 		;;
 	esac
-	config=$test_dir/$algorithm-$condition.json
+	config=$test_dir/$protocol-$algorithm-$condition.json
 	render=("$cli" render --profile kind-kubernetes \
 		--overlay "$protocol_overlay" --overlay "network/$condition" \
 		--format json)
@@ -70,8 +101,9 @@ for entry in $matrix; do
 		render+=(--set uib.congestionControl.algorithm=test-pass)
 	fi
 	"${render[@]}" > "$config"
-	echo "congestion simulation: algorithm=$algorithm network=$condition"
-	"${runner[@]}" "$0" inner "$config" "$algorithm" "$use_plugin"
+	echo "congestion simulation: protocol=$protocol algorithm=$algorithm network=$condition"
+	"${runner[@]}" "$0" inner "$config" "$protocol" "$algorithm" \
+		"$use_plugin"
 done
 
 echo "congestion-control network simulation test: PASS"

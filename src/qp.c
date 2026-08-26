@@ -291,12 +291,17 @@ static int rocev2_congestion_init(struct uib_qp *qp)
 	mtu = rocev2_congestion_mtu(qp);
 	if (!strcmp(cc, "nscc")) {
 		const char *max_wnd;
+		char *end;
 		unsigned long long value;
 
 		uib_uet_nscc_config_default(&config, mtu);
 		max_wnd = getenv(UIB_ENV_ROCEV2_NSCC_MAX_WND);
-		value = max_wnd ? strtoull(max_wnd, NULL, 0) : 0;
-		if (value >= mtu && value <= UINT32_MAX) {
+		if (max_wnd) {
+			errno = 0;
+			value = strtoull(max_wnd, &end, 0);
+			if (errno || end == max_wnd || *end || value < mtu ||
+			    value > UINT32_MAX)
+				return -EINVAL;
 			config.max_wnd = (uint32_t)value;
 			config.bdp = config.max_wnd;
 		}

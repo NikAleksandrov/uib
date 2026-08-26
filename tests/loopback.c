@@ -5,8 +5,10 @@
 #include <stdint.h>
 #include <errno.h>
 #include <time.h>
+#include <dlfcn.h>
 
 #include "uib/uib.h"
+#include "congestion_plugin.h"
 
 #define PORT_A 18515
 #define PORT_B 18516
@@ -85,6 +87,36 @@ static void check_bytes(const char *tag, const void *a, const void *b, size_t n)
 	int ok = memcmp(a, b, n) == 0;
 
 	printf("%-18s %s (%zu bytes)\n", tag, ok ? "MATCH" : "MISMATCH", n);
+	if (!ok)
+		g_fail = 1;
+}
+
+static void check_congestion_plugin(void)
+{
+	void (*get_stats)(struct uib_test_congestion_stats *stats);
+	struct uib_test_congestion_stats stats = {0};
+	int ok;
+
+	if (!getenv("CONGESTION_PLUGIN_TEST"))
+		return;
+	get_stats = dlsym(RTLD_DEFAULT, "uib_test_congestion_get_stats");
+	if (!get_stats) {
+		printf("congestion.plugin  MISSING\n");
+		g_fail = 1;
+		return;
+	}
+	get_stats(&stats);
+	ok = stats.initializations >= 2 && stats.admissions && stats.sends &&
+		stats.acknowledgements;
+	if (getenv("UIB_TEST_DROP_TX"))
+		ok = ok && stats.losses;
+	printf("congestion.plugin  %s (init=%llu admit=%llu send=%llu ack=%llu loss=%llu)\n",
+	       ok ? "PASS" : "FAIL",
+	       (unsigned long long)stats.initializations,
+	       (unsigned long long)stats.admissions,
+	       (unsigned long long)stats.sends,
+	       (unsigned long long)stats.acknowledgements,
+	       (unsigned long long)stats.losses);
 	if (!ok)
 		g_fail = 1;
 }
@@ -339,6 +371,10 @@ int main(void)
 	ia.max_send_sge = 1;
 	ia.max_recv_sge = 1;
 	qpB = uib_create_qp(pdB, &ia);
+	if (!qpA || !qpB) {
+		printf("create_qp failed: %s\n", strerror(errno));
+		return 2;
+	}
 
 	if (connect_qp(qpA, qpB->qp_num, ctxB->local_addr) < 0 ||
 	    connect_qp(qpB, qpA->qp_num, ctxA->local_addr) < 0) {
@@ -420,6 +456,7 @@ int main(void)
 				g_fail = 1;
 		}
 	}
+	check_congestion_plugin();
 
 	uib_destroy_qp(qpA);
 	uib_destroy_qp(qpB);

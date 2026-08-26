@@ -3,19 +3,24 @@
 #include <stdint.h>
 
 #include "uib/congestion.h"
+#include "congestion_plugin.h"
 
 struct pass_state {
 	uint64_t transmitted;
 };
 
+static struct uib_test_congestion_stats plugin_stats;
+
 static int pass_init(void *state, const void *config, uint32_t mtu,
 		     uint64_t now_ns)
 {
+	__atomic_add_fetch(&plugin_stats.initializations, 1, __ATOMIC_RELAXED);
 	return 0;
 }
 
 static int pass_can_send(const void *state, size_t bytes)
 {
+	__atomic_add_fetch(&plugin_stats.admissions, 1, __ATOMIC_RELAXED);
 	return 1;
 }
 
@@ -29,19 +34,38 @@ static void pass_on_send(void *state, size_t bytes)
 	struct pass_state *pass = state;
 
 	pass->transmitted += bytes;
+	__atomic_add_fetch(&plugin_stats.sends, 1, __ATOMIC_RELAXED);
 }
 
 static void pass_on_ack(void *state, const struct uib_congestion_ack *ack)
 {
+	__atomic_add_fetch(&plugin_stats.acknowledgements, 1,
+			   __ATOMIC_RELAXED);
 }
 
 static void pass_on_loss(void *state, size_t bytes)
 {
+	__atomic_add_fetch(&plugin_stats.losses, 1, __ATOMIC_RELAXED);
 }
 
 static void pass_on_nack(void *state,
 			 const struct uib_congestion_nack *nack)
 {
+	__atomic_add_fetch(&plugin_stats.nacks, 1, __ATOMIC_RELAXED);
+}
+
+void uib_test_congestion_get_stats(struct uib_test_congestion_stats *stats)
+{
+	stats->initializations = __atomic_load_n(&plugin_stats.initializations,
+						 __ATOMIC_RELAXED);
+	stats->admissions = __atomic_load_n(&plugin_stats.admissions,
+					    __ATOMIC_RELAXED);
+	stats->sends = __atomic_load_n(&plugin_stats.sends, __ATOMIC_RELAXED);
+	stats->acknowledgements =
+		__atomic_load_n(&plugin_stats.acknowledgements,
+				__ATOMIC_RELAXED);
+	stats->losses = __atomic_load_n(&plugin_stats.losses, __ATOMIC_RELAXED);
+	stats->nacks = __atomic_load_n(&plugin_stats.nacks, __ATOMIC_RELAXED);
 }
 
 static const struct uib_congestion_ops pass_ops = {

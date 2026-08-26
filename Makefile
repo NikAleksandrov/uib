@@ -648,6 +648,20 @@ uet-loss-test: all
 rocev2-loss-test: all $(TEST_BIN)
 	UIB_TEST_DROP_TX=1 ./$(TEST_BIN)
 
+rocev2-congestion-test: all $(TEST_BIN) $(CONGESTION_PLUGIN)
+	LD_PRELOAD=$(CURDIR)/$(CONGESTION_PLUGIN) UIB_PROTOCOL=rocev2 \
+		UIB_ROCEV2_CC=test-pass CONGESTION_PLUGIN_TEST=1 ./$(TEST_BIN)
+	LD_PRELOAD=$(CURDIR)/$(CONGESTION_PLUGIN) UIB_PROTOCOL=rocev2 \
+		UIB_ROCEV2_CC=test-pass CONGESTION_PLUGIN_TEST=1 \
+		UIB_TEST_DROP_TX=1 ./$(TEST_BIN)
+	UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc \
+		UIB_ROCEV2_NSCC_MAX_WND=65536 ./$(TEST_BIN)
+	@if UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc \
+		UIB_ROCEV2_NSCC_MAX_WND=1 ./$(TEST_BIN) >/dev/null 2>&1; then \
+		echo "invalid RoCEv2 NSCC window was accepted" >&2; \
+		exit 1; \
+	fi
+
 uet-congestion-test: all $(TEST_BIN) $(NSCC_TEST) $(CONGESTION_TEST) \
 	$(CONGESTION_PLUGIN)
 	./$(CONGESTION_TEST)
@@ -827,6 +841,7 @@ guest-test: all rxe-test-build
 	$(MAKE) uet-tools-test
 	$(MAKE) uet-loss-test
 	$(MAKE) rocev2-loss-test
+	$(MAKE) rocev2-congestion-test
 	$(MAKE) uet-congestion-test
 	$(MAKE) uet-multipath-test
 	$(MAKE) dummy-reorder-test
