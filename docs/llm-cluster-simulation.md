@@ -1703,6 +1703,13 @@ port to every guest, records PID start times, and writes an Ansible inventory.
 Kernel, CPU, memory, addresses, and extra kernel arguments remain configuration
 values rather than script edits.
 
+The exact `cluster.version` k3s binary is downloaded once, verified against the
+release checksum, and retained in the ignored virtme download cache. Because
+virtme uses `virtme-init` rather than systemd as PID 1, the backend starts the
+k3s server and agents directly instead of pretending the libvirt systemd role
+is reusable. It waits for every node to become Ready and verifies the worker
+data addresses before reporting success.
+
 ```text
 simulation/bin/uib-sim render --profile virtme-kubernetes --format json \
   > /tmp/uib-virtme.json
@@ -1713,13 +1720,16 @@ simulation/bin/uib-sim up --profile virtme-kubernetes \
   --run-id uib-virtme-lab
 simulation/bin/uib-sim status --profile virtme-kubernetes \
   --run-id uib-virtme-lab
+simulation/bin/uib-sim kubeconfig --profile virtme-kubernetes \
+  --run-id uib-virtme-lab
 simulation/bin/uib-sim down --profile virtme-kubernetes \
   --run-id uib-virtme-lab
 ```
 
-These lifecycle commands currently prepare the multi-guest substrate; k3s
-provisioning is the next layer. `down` signals only PIDs whose recorded Linux
-start time still matches, preventing PID-reuse cleanup errors.
+The controller API is exposed through a run-owned SSH forward on
+`virtme.sshPortBase + nodes.workers + 1`; it does not add another guest NIC or
+another configuration value. `down` signals only guest and forward PIDs whose
+recorded Linux start time still matches, preventing PID-reuse cleanup errors.
 
 Use the optional bridge layer when host tap visibility or attachment to another
 host network matters:
@@ -1741,9 +1751,9 @@ for functional UIB and guest-side netem tests. Neither mode represents physical
 fabric performance.
 
 The installed virtme-ng 1.35 passes the one-shot tests, persistent TCP SSH with
-a run-owned key, and simultaneous two-guest socket networking. The lifecycle
-does not fall back to Kind or libvirt. Pinned k3s provisioning over the
-generated inventory remains a separate, unfinished layer.
+a run-owned key, simultaneous two-guest socket networking, pinned k3s node
+join, host kubeconfig access, and complete teardown. The lifecycle does not
+fall back to Kind or libvirt.
 
 ### OpenTofu and libvirt Kubernetes
 
@@ -3303,6 +3313,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | RoCEv2 and UET SEND and RDMA read/write complete with actual netem conditions and built-in or plugin congestion control; the UET cases also cover atomics |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Rootless socket and optional bridge rendering, IPv4/MAC/SSH allocation, exact virtme-ng launch vectors, run-owned key/inventory creation, PID/start-time ownership, CLI `up/status/down`, bridge create/delete cleanup through fake standard commands, and invalid combination rejection |
+| `make simulation-virtme-kubernetes-e2e-test` | virtme-ng 1.35, SSH, kubectl, QEMU with KVM or TCG, about 4 GiB memory for the two reduced-size guests, and download access for the pinned k3s binary on first use | A real controller and worker under separate virtme kernels, rootless socket data traffic, pinned k3s/containerd startup without systemd PID 1, both nodes Ready, host API access through an owned SSH forward, cached download reuse, and exact process cleanup |
 | `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge/rootless VM rendering; Slurm and bridge-only Kubernetes playbook selection; pinned k3s inputs, non-logged join token, kubeconfig export, cached-image verification, worker network evidence, Slurm remote lifecycle, exclusive ownership, and exact-state cleanup with fake standard commands |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, SSH/SCP, passt, NFS-capable Ubuntu guests, roughly 12 GiB memory for the default three VMs, and download access on the first run | Actual controller/two-worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, ordinary worker tasks, cross-VM standard RC payload through UIB, remote batch submission and status, two-rank pinned OCI execution with portable UIB preflight, result collection, state-based destruction, and domain/pool absence; no NCCL or GPU claim |
@@ -3379,6 +3390,29 @@ SIMULATION_KIND_E2E_IMAGES='uib-training:test uib-inference:test' \
 SIMULATION_KIND_E2E_ALLOW_MUTABLE_TAGS=1 \
 make simulation-kind-e2e-test
 ```
+
+### virtme Kubernetes test
+
+Run the real reduced-size controller/worker gate with:
+
+```text
+make simulation-virtme-kubernetes-e2e-test
+```
+
+The test always attempts `down`, including after a failed `up`. It retains the
+verified k3s binary and checksum sidecar under the ignored download cache, but
+does not retain QEMU processes or the SSH API forward.
+
+| Variable | Default | Syntax and meaning |
+|---|---|---|
+| `KUBECTL_COMMAND` | `kubectl` | kubectl executable used only for the host-facing node check |
+| `SIMULATION_STATE_DIR` | `simulation/.artifacts/runs` | Ignored or external run-ledger directory |
+| `VIRTME_DOWNLOAD_CACHE` | `simulation/.artifacts/downloads/virtme` | Reusable verified k3s download cache |
+| `VIRTME_SSH_WAIT` | `90` | Positive seconds allowed for each guest SSH endpoint |
+| `VIRTME_KUBERNETES_WAIT` | `300` | Positive seconds allowed for the API and node join |
+
+The test fixes one worker, two vCPUs, and 2 GiB per guest to keep the local gate
+small. Use normal `uib-sim up` with `--set nodes.*` for larger experiments.
 
 ### Libvirt VM tests
 
