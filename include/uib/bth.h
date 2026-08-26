@@ -34,6 +34,7 @@
 #define UIB_OP_ACKNOWLEDGE               0x11
 #define UIB_OP_UD_SEND_ONLY              0x64
 #define UIB_OP_UD_SEND_ONLY_WITH_IMM     0x65
+#define UIB_OP_CNP                       0x81
 
 #define UIB_PMTU 4096
 

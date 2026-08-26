@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <netinet/in.h>
+#include "uib/congestion.h"
 #include "uib/psn_index.h"
 #include "uib/types.h"
 
@@ -117,8 +118,11 @@ struct uib_outstanding {
 	uint8_t                 is_final;
 	uint8_t                 indexed;
 	uint8_t                 pool_class;
+	uint8_t                 congestion_inflight;
+	uint32_t                nominal_len;
 	uint64_t                wr_id;
 	enum uib_wr_opcode      wr_opcode;
+	uint64_t                tx_time_ns;
 	uint64_t                deadline_ns;
 	void                   *pkt;
 	size_t                  pkt_len;
@@ -148,6 +152,7 @@ struct uib_qp {
 	struct sockaddr_in  remote_addr;
 	uint32_t            access_flags;
 	void               *protocol_private;
+	struct uib_congestion congestion;
 
 	struct uib_rq_slot *rq;
 	uint32_t            rq_size;
@@ -228,6 +233,8 @@ void uib_qp_emit_recv_slot(struct uib_qp *qp, struct uib_rq_slot *slot,
 int uib_rocev2_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 			 struct uib_send_wr **bad);
 void uib_rocev2_qp_fini(struct uib_qp *qp);
+int uib_rocev2_qp_init(struct uib_qp *qp);
+void uib_rocev2_qp_modified(struct uib_qp *qp, int attr_mask);
 int uib_rocev2_handle_packet(struct uib_qp *qp,
 			    const struct sockaddr_in *src,
 			    const void *packet, size_t len);

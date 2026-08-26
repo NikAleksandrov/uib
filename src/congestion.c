@@ -149,6 +149,18 @@ static const struct uib_congestion_ops *congestion_find(const char *name)
 	return ops;
 }
 
+/**
+ * uib_congestion_register - Register an experimental congestion algorithm.
+ * @ops: Static operations table that remains valid until process exit
+ * @uib-api: Congestion control
+ *
+ * Make an algorithm available by name to protocol-specific selectors such as
+ * `UIB_ROCEV2_CC` and `UIB_UET_CC`. Register algorithms before creating UIB
+ * queue pairs.
+ *
+ * Return: 0 on success, `-EEXIST` for a duplicate name, `-ENOSPC` when the
+ * registry is full, or `-EINVAL` for an invalid operations table.
+ */
 int uib_congestion_register(const struct uib_congestion_ops *ops)
 {
 	size_t free_slot = UIB_CONGESTION_ALGORITHMS_MAX;

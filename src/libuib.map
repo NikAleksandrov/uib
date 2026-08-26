@@ -111,6 +111,8 @@ UIB_0.1 {
 		uib_rocev2_post_send;
 		uib_rocev2_protocol_ops;
 		uib_rocev2_qp_fini;
+		uib_rocev2_qp_init;
+		uib_rocev2_qp_modified;
 		uib_rocev2_retransmit_tick;
 		uib_tcp_devmem_ops;
 		uib_transport_deliver;
