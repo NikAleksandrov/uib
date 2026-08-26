@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+uib:
+  protocol: rocev2
+  bindPort: 4791
+  congestionControl:
+    algorithm: nscc
+    abi: 1
+    parameters: {}

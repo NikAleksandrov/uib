@@ -79,16 +79,28 @@ if "$cli" render --profile kind-kubernetes \
 	exit 1
 fi
 
-if "$cli" render --profile kind-kubernetes \
-	--set uib.congestionControl.algorithm=nscc > /dev/null 2>&1; then
-	echo "unimplemented RoCEv2 congestion control was accepted" >&2
-	exit 1
-fi
+"$cli" render --profile kind-kubernetes --format json \
+	--overlay protocol/rocev2-nscc \
+	--set uib.congestionControl.parameters.maxWindowBytes=262144 \
+	> "$test_dir/rocev2-nscc.json"
 "$cli" render --profile kind-kubernetes --format json \
 	--set uib.protocol=uet \
 	--set uib.congestionControl.algorithm=nscc \
 	--set uib.congestionControl.parameters.maxWindowBytes=262144 \
 	> "$test_dir/uet-nscc.json"
+if "$cli" render --profile kind-kubernetes \
+	--set uib.congestionControl.parameters.maxWindowBytes=65536 \
+	> /dev/null 2>&1; then
+	echo "NSCC parameters with the none algorithm were accepted" >&2
+	exit 1
+fi
+if "$cli" render --profile kind-kubernetes \
+	--overlay protocol/rocev2-nscc \
+	--set uib.congestionControl.parameters.unknown=1 \
+	> /dev/null 2>&1; then
+	echo "an unknown NSCC parameter was accepted" >&2
+	exit 1
+fi
 
 if "$cli" render --profile libvirt-slurm \
 	--set nodes.memory=512Mi > /dev/null 2>&1; then

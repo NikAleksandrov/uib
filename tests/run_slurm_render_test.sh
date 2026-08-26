@@ -159,6 +159,17 @@ render_training uib-slurm-uet --overlay protocol/uet-nscc \
 grep -F 'export UIB_PROTOCOL=uet' "$test_dir/uet.sbatch" > /dev/null
 grep -F 'export UIB_UET_CC=nscc' "$test_dir/uet.sbatch" > /dev/null
 
+render_training uib-slurm-rocev2-nscc \
+	--overlay protocol/rocev2-nscc \
+	--set uib.congestionControl.parameters.maxWindowBytes=65536 \
+	> "$test_dir/rocev2-nscc.sbatch"
+grep -F 'export UIB_PROTOCOL=rocev2' "$test_dir/rocev2-nscc.sbatch" \
+	> /dev/null
+grep -F 'export UIB_ROCEV2_CC=nscc' "$test_dir/rocev2-nscc.sbatch" \
+	> /dev/null
+grep -F 'export UIB_ROCEV2_NSCC_MAX_WND=65536' \
+	"$test_dir/rocev2-nscc.sbatch" > /dev/null
+
 render_training uib-slurm-memory --set slurm.memory=12Gi \
 	> "$test_dir/memory.sbatch"
 grep -F '#SBATCH --mem=12G' "$test_dir/memory.sbatch" > /dev/null

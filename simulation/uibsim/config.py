@@ -221,8 +221,21 @@ def validate_communication(config):
         if lock["limitations"]["gpuDirect"] != "validated":
             raise ConfigurationError("GPU-direct is not validated")
     cc = uib["congestionControl"]
-    if uib["protocol"] == "rocev2" and cc["algorithm"] != "none":
-        raise ConfigurationError("RoCEv2 congestion plug-ins are not implemented")
+    parameters = cc["parameters"]
+    if cc["algorithm"] == "nscc":
+        unknown = set(parameters) - {"maxWindowBytes"}
+        if unknown:
+            raise ConfigurationError(
+                f"unknown NSCC parameter: {sorted(unknown)[0]}")
+        maximum = parameters.get("maxWindowBytes")
+        if (maximum is not None and
+                (isinstance(maximum, bool) or not isinstance(maximum, int) or
+                 maximum < 1 or maximum > 4294967295)):
+            raise ConfigurationError(
+                "NSCC maxWindowBytes must be an integer from 1 to 4294967295")
+    elif parameters:
+        raise ConfigurationError(
+            "congestion-control parameters require algorithm=nscc")
     if provider == "existing" and config["network"]["shaping"]["enabled"]:
         if not config["infrastructure"]["allowExistingMutations"]:
             raise ConfigurationError(
