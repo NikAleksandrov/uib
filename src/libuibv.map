@@ -11,10 +11,12 @@ IBVERBS_1.1 {
 		ibv_alloc_pd;
 		ibv_close_device;
 		ibv_create_cq;
+		ibv_create_ah;
 		ibv_create_qp;
 		ibv_dealloc_pd;
 		ibv_dereg_mr;
 		ibv_destroy_cq;
+		ibv_destroy_ah;
 		ibv_destroy_qp;
 		ibv_event_type_str;
 		ibv_fork_init;
@@ -45,7 +47,18 @@ IBVERBS_1.8 {
 		ibv_reg_mr_iova2;
 } IBVERBS_1.7;
 
+IBVERBS_1.10 {
+	global:
+		ibv_query_ece;
+		ibv_set_ece;
+} IBVERBS_1.8;
+
 IBVERBS_1.12 {
 	global:
 		ibv_reg_dmabuf_mr;
-} IBVERBS_1.8;
+} IBVERBS_1.10;
+
+EFA_1.1 {
+	global:
+		efadv_query_device;
+};

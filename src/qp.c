@@ -1013,7 +1013,26 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 	owned_message = NULL;
 	mr = NULL;
 	if (total > 0) {
-		if (wr->num_sge == 1) {
+		if (wr->send_flags & UIB_SEND_INLINE) {
+			if (wr->num_sge == 1) {
+				message = (const uint8_t *)(uintptr_t)
+					wr->sg_list[0].addr;
+			} else {
+				size_t copied = 0;
+
+				owned_message = malloc(total);
+				if (!owned_message)
+					return -ENOMEM;
+				for (i = 0; i < (uint32_t)wr->num_sge; i++) {
+					memcpy(owned_message + copied,
+					       (const void *)(uintptr_t)
+					       wr->sg_list[i].addr,
+					       wr->sg_list[i].length);
+					copied += wr->sg_list[i].length;
+				}
+				message = owned_message;
+			}
+		} else if (wr->num_sge == 1) {
 			mr = uib_mr_lookup_local(
 				qp->pd, wr->sg_list[0].lkey,
 				(const void *)(uintptr_t)wr->sg_list[0].addr,
