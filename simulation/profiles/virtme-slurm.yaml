@@ -4,7 +4,7 @@ infrastructure:
   kernel: running
 virtme:
   mode: multi-guest
-  bridgePrefix: uibv
+  networkMode: socket
   sshPortBase: 23000
   extraKernelArguments: []
 cluster:
@@ -25,7 +25,7 @@ nodes:
   controlPlane: 1
   workers: 2
 network:
-  dataInterface: eth0
+  dataInterface: eth1
 storage:
   uibRuntimePath: /var/lib/uib/runtime
   modelCachePath: /var/cache/uib/models

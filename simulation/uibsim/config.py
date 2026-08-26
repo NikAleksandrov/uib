@@ -151,6 +151,14 @@ def validate_infrastructure(config):
                 not config["network"].get("dataInterface")):
             raise ConfigurationError(
                 "multi-guest virtme requires network.dataInterface")
+        if config["virtme"]["mode"] == "multi-guest":
+            expected_interface = (
+                "eth1" if config["virtme"]["networkMode"] == "socket"
+                else "eth0")
+            if config["network"]["dataInterface"] != expected_interface:
+                raise ConfigurationError(
+                    f"virtme {config['virtme']['networkMode']} networking "
+                    f"requires network.dataInterface={expected_interface}")
     if provider == "libvirt" and config["nodes"]["controlPlane"] != 1:
         raise ConfigurationError("libvirt currently requires one control plane")
     if manager == "kubernetes":

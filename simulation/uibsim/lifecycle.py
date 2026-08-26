@@ -43,10 +43,14 @@ def command_doctor(args):
 
 
 def invoke_backend(config, arguments):
-    from .core import ConfigurationError, KIND_BACKEND
+    from .core import ConfigurationError, KIND_BACKEND, VIRTME_BACKEND
 
     provider = config["infrastructure"]["provider"]
-    if provider != "kind":
+    backends = {
+        "kind": KIND_BACKEND,
+        "virtme": VIRTME_BACKEND,
+    }
+    if provider not in backends:
         raise ConfigurationError(
             f"lifecycle is not implemented for provider: {provider}")
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
@@ -55,10 +59,11 @@ def invoke_backend(config, arguments):
         output.flush()
         try:
             result = subprocess.run(
-                [str(KIND_BACKEND), *arguments(output.name)], check=False)
+                [str(backends[provider]), *arguments(output.name)], check=False)
             return result.returncode
         except OSError as error:
-            raise ConfigurationError(f"cannot invoke Kind backend: {error}") from error
+            raise ConfigurationError(
+                f"cannot invoke {provider} backend: {error}") from error
 
 
 def invoke_libvirt(config, arguments):
@@ -95,6 +100,18 @@ def command_up(args):
 
         return invoke_libvirt(config, libvirt_arguments)
 
+    if config["infrastructure"]["provider"] == "virtme":
+        def virtme_arguments(path):
+            command = [
+                "up", path, "--name", args.run_id,
+                "--state-dir", str(state_path(args) / "infrastructure"),
+            ]
+            if args.retain:
+                command.append("--retain")
+            return command
+
+        return invoke_backend(config, virtme_arguments)
+
     def arguments(path):
         command = ["up", path, "--name", args.run_id, "--wait", args.wait]
         if args.kubeconfig:
@@ -113,11 +130,16 @@ def command_status(args):
 
     config = resolve(args)
     provider = config["infrastructure"]["provider"]
-    if provider == "libvirt" and not (state_path(args) / "ledger.json").is_file():
-        return invoke_libvirt(config, lambda unused: [
-            "status", "--name", args.run_id,
-            "--state-dir", str(state_path(args) / "infrastructure"),
-        ])
+    if (provider in {"libvirt", "virtme"} and
+            not (state_path(args) / "ledger.json").is_file()):
+        def infrastructure_arguments(unused):
+            return [
+                "status", "--name", args.run_id,
+                "--state-dir", str(state_path(args) / "infrastructure"),
+            ]
+        if provider == "libvirt":
+            return invoke_libvirt(config, infrastructure_arguments)
+        return invoke_backend(config, infrastructure_arguments)
     if config["cluster"]["manager"] == "slurm":
         return command_slurm_status(args)
     return invoke_backend(
@@ -660,6 +682,12 @@ def command_down(args):
             if not (run_dir / "infrastructure" / "ledger.json").is_file():
                 return 0
         return invoke_libvirt(config, lambda unused: [
+            "down", "--name", args.run_id,
+            "--state-dir", str(run_dir / "infrastructure"),
+        ])
+    if config["infrastructure"]["provider"] == "virtme":
+        run_dir = state_path(args)
+        return invoke_backend(config, lambda unused: [
             "down", "--name", args.run_id,
             "--state-dir", str(run_dir / "infrastructure"),
         ])

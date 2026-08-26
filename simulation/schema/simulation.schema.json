@@ -51,9 +51,10 @@
     "virtme": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mode", "bridgePrefix", "sshPortBase", "extraKernelArguments"],
+      "required": ["mode", "networkMode", "sshPortBase", "extraKernelArguments"],
       "properties": {
         "mode": { "enum": ["kind", "multi-guest"] },
+        "networkMode": { "enum": ["socket", "bridge"] },
         "bridgePrefix": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9]{1,5}$"
@@ -67,7 +68,16 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "networkMode": { "const": "bridge" } },
+            "required": ["networkMode"]
+          },
+          "then": { "required": ["bridgePrefix"] }
+        }
+      ]
     },
     "kubernetes": {
       "type": "object",

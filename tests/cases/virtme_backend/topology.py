@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
-import re
 import sys
 
 
@@ -11,15 +10,11 @@ assert topology["schemaVersion"] == 1
 assert topology["runId"] == "uib-virtme-test"
 assert topology["provider"] == "virtme"
 assert topology["state"] == "rendered"
-bridge = topology["bridge"]
-assert re.fullmatch(r"uibv-[0-9a-f]{8}", bridge["name"])
-assert len(bridge["name"]) <= 15
-assert bridge["address"] == "198.51.100.1"
-assert bridge["prefix"] == 24
-assert bridge["create"][0] == [
-    "ip", "link", "add", "name", bridge["name"], "type", "bridge"]
-assert bridge["delete"] == [
-    "ip", "link", "delete", "dev", bridge["name"], "type", "bridge"]
+network = topology["network"]
+assert network["type"] == "qemu-socket"
+assert network["multicastAddress"].startswith("239.255.")
+assert 30000 <= network["multicastPort"] < 50000
+assert network["dataInterface"] == "eth1"
 guests = topology["guests"]
 assert sorted(guests) == ["controller", "worker-01", "worker-02"]
 assert guests["controller"]["dataAddress"] == "198.51.100.10"
@@ -33,11 +28,13 @@ for guest in guests.values():
     assert command[:2] == ["vng", "--run"]
     assert command[command.index("--cpus") + 1] == "2"
     assert command[command.index("--memory") + 1] == "4096M"
-    assert command[command.index("--network") + 1] == \
-        "bridge=" + bridge["name"]
     assert command[command.index("--ssh") + 1] == str(guest["sshPort"])
+    assert "--ssh-tcp" in command
+    qemu = next(item for item in command if item.startswith("--qemu-opts="))
+    assert "-netdev socket,id=data,mcast=" in qemu
+    assert guest["dataMac"] in qemu
 assert topology["ownership"] == {
-    "bridges": [bridge["name"]],
+    "bridges": [],
     "processes": [],
     "taps": [],
     "temporaryRoots": [],

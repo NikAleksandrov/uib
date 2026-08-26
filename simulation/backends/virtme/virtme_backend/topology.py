@@ -44,7 +44,46 @@ def nodes(config, run_id):
     return result
 
 
-def vng_command(config, bridge, node):
+def network_topology(config, run_id, node_count):
+    from .core import bridge_name, socket_endpoint
+
+    mode = config["virtme"]["networkMode"]
+    if mode == "socket":
+        address, port = socket_endpoint(run_id)
+        return {
+            "type": "qemu-socket",
+            "multicastAddress": address,
+            "multicastPort": port,
+            "dataInterface": "eth1",
+        }
+    network = data_network(config, node_count)
+    name = bridge_name(config, run_id)
+    gateway = str(network[1])
+    return {
+        "type": "linux-bridge",
+        "name": name,
+        "address": gateway,
+        "prefix": network.prefixlen,
+        "dataInterface": "eth0",
+        "create": [
+            ["ip", "link", "add", "name", name, "type", "bridge"],
+            ["ip", "address", "add", f"{gateway}/{network.prefixlen}",
+             "dev", name],
+            ["ip", "link", "set", "dev", name, "up"],
+        ],
+        "delete": [
+            "ip", "link", "delete", "dev", name, "type", "bridge"],
+    }
+
+
+def qemu_network_options(network, node):
+    return (
+        f"-device virtio-net-pci,netdev=data,mac={node['dataMac']} "
+        "-netdev socket,id=data,mcast="
+        f"{network['multicastAddress']}:{network['multicastPort']}")
+
+
+def vng_command(config, network, node):
     from .core import quantity_mib
 
     command = ["vng", "--run"]
@@ -52,13 +91,20 @@ def vng_command(config, bridge, node):
     if kernel != "running":
         command.append(kernel)
     command.extend([
-        "--user", "root",
         "--name", node["hostname"],
         "--cpus", str(config["nodes"]["cpu"]),
         "--memory", f"{quantity_mib(config['nodes']['memory'])}M",
-        "--network", f"bridge={bridge}",
-        "--net-mac-address", node["dataMac"],
+    ])
+    if network["type"] == "qemu-socket":
+        command.append(f"--qemu-opts={qemu_network_options(network, node)}")
+    else:
+        command.extend([
+            "--network", f"bridge={network['name']}",
+            "--net-mac-address", node["dataMac"],
+        ])
+    command.extend([
         "--ssh", str(node["sshPort"]),
+        "--ssh-tcp",
         "--quiet",
     ])
     for argument in config["virtme"]["extraKernelArguments"]:
@@ -67,39 +113,24 @@ def vng_command(config, bridge, node):
 
 
 def topology(config, run_id):
-    from .core import bridge_name
-
-    bridge = bridge_name(config, run_id)
     guests = nodes(config, run_id)
-    network = data_network(config, len(guests))
-    gateway = str(network[1])
+    network = network_topology(config, run_id, len(guests))
+    bridges = [network["name"]] if network["type"] == "linux-bridge" else []
     return {
         "schemaVersion": 1,
         "runId": run_id,
         "provider": "virtme",
         "state": "rendered",
         "kernel": config["infrastructure"]["kernel"],
-        "bridge": {
-            "name": bridge,
-            "address": gateway,
-            "prefix": network.prefixlen,
-            "create": [
-                ["ip", "link", "add", "name", bridge, "type", "bridge"],
-                ["ip", "address", "add", f"{gateway}/{network.prefixlen}",
-                 "dev", bridge],
-                ["ip", "link", "set", "dev", bridge, "up"],
-            ],
-            "delete": [
-                "ip", "link", "delete", "dev", bridge, "type", "bridge"],
-        },
+        "network": network,
         "guests": {
-            name: {**node, "command": vng_command(config, bridge, node)}
+            name: {**node, "command": vng_command(config, network, node)}
             for name, node in guests.items()
         },
         "ownership": {
             "processes": [],
             "taps": [],
-            "bridges": [bridge],
+            "bridges": bridges,
             "temporaryRoots": [],
         },
     }

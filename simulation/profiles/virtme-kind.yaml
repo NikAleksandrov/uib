@@ -4,7 +4,7 @@ infrastructure:
   kernel: running
 virtme:
   mode: kind
-  bridgePrefix: uibv
+  networkMode: socket
   sshPortBase: 23000
   extraKernelArguments: []
 cluster:

@@ -84,11 +84,13 @@
         }
       },
       "virtme": {
-        "status": "single-guest-validated-multi-guest-topology-rendered",
+        "status": "single-guest-and-rootless-multi-guest-data-plane-validated",
         "cliVersion": "1.35",
         "singleGuestTestTarget": "make virtme-test",
         "multiGuestTestTarget": "make simulation-virtme-backend-test",
-        "multiGuestControl": "pending-persistent-ssh-capability",
+        "multiGuestControl": "validated-tcp-ssh-with-run-owned-key",
+        "rootlessDataPlane": "validated-two-guest-qemu-socket-ping",
+        "bridgeDataPlane": "rendered-and-mocked-lifecycle",
         "intendedValidationLevel": "L0"
       },
       "kubernetesOperators": {

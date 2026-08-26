@@ -25,6 +25,9 @@ COMPATIBILITY = SIMULATION / "compatibility-lock.json"
 KIND_BACKEND = SIMULATION / "backends" / "kind" / "cluster"
 
 
+VIRTME_BACKEND = SIMULATION / "backends" / "virtme" / "cluster"
+
+
 LIBVIRT_BACKEND = SIMULATION / "backends" / "libvirt" / "cluster"
 
 

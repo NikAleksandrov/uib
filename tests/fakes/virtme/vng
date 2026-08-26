@@ -1,0 +1,8 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+printf '%s\n' "$*" >> "$VIRTME_TEST_VNG_LOG"
+trap 'exit 0' INT TERM
+while :; do
+	sleep 1
+done

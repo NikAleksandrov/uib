@@ -1,0 +1,4 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+printf '%s\n' "$*" >> "$VIRTME_TEST_IP_LOG"
