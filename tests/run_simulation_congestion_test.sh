@@ -79,7 +79,13 @@ for entry in $matrix; do
 	esac
 	use_plugin=0
 	case $algorithm in
-	nscc) protocol_overlay=protocol/$protocol-nscc; use_plugin=0 ;;
+	nscc)
+		if [ "$protocol" = rocev2 ]; then
+			protocol_overlay=protocol/rocev2-nscc-experimental
+		else
+			protocol_overlay=protocol/uet-nscc
+		fi
+		;;
 	none|test-pass)
 		if [ "$protocol" = uet ]; then
 			protocol_overlay=protocol/uet-none
@@ -101,7 +107,9 @@ for entry in $matrix; do
 		render+=(--set uib.congestionControl.algorithm=test-pass)
 	fi
 	"${render[@]}" > "$config"
-	echo "congestion simulation: protocol=$protocol algorithm=$algorithm network=$condition"
+	label=
+	[ "$protocol:$algorithm" != rocev2:nscc ] || label=' experimental=true'
+	echo "congestion simulation: protocol=$protocol algorithm=$algorithm network=$condition$label"
 	"${runner[@]}" "$0" inner "$config" "$protocol" "$algorithm" \
 		"$use_plugin"
 done

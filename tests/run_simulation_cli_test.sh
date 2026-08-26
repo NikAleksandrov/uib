@@ -80,7 +80,7 @@ if "$cli" render --profile kind-kubernetes \
 fi
 
 "$cli" render --profile kind-kubernetes --format json \
-	--overlay protocol/rocev2-nscc \
+	--overlay protocol/rocev2-nscc-experimental \
 	--set uib.congestionControl.parameters.maxWindowBytes=262144 \
 	> "$test_dir/rocev2-nscc.json"
 "$cli" render --profile kind-kubernetes --format json \
@@ -95,7 +95,7 @@ if "$cli" render --profile kind-kubernetes \
 	exit 1
 fi
 if "$cli" render --profile kind-kubernetes \
-	--overlay protocol/rocev2-nscc \
+	--overlay protocol/rocev2-nscc-experimental \
 	--set uib.congestionControl.parameters.unknown=1 \
 	> /dev/null 2>&1; then
 	echo "an unknown NSCC parameter was accepted" >&2

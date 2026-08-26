@@ -649,12 +649,16 @@ simulation/bin/uib-sim render --profile virtme-kubernetes \
   --overlay protocol/uet-nscc --overlay network/datacenter
 ```
 
-The same algorithm with RoCEv2:
+Experimental NSCC comparison with RoCEv2:
 
 ```text
 simulation/bin/uib-sim render --profile virtme-kubernetes \
-  --overlay protocol/rocev2-nscc --overlay network/datacenter
+  --overlay protocol/rocev2-nscc-experimental --overlay network/datacenter
 ```
+
+NSCC was engineered for Ultra Ethernet. This overlay exists only to exercise
+the protocol-neutral plug-in ABI and enable controlled cross-protocol research;
+it is not a recommended RoCEv2 configuration. RoCEv2 defaults to `none`.
 
 Change only the NSCC initial window:
 
@@ -887,7 +891,8 @@ NCCL / RCCL / UCX / libfabric
                 |
        +--------+---------+
        | congestion ops   |
-       | nscc | none | X  |
+       | nscc (UET)       |
+       | none | plug-in X |
        +------------------+
 ```
 
@@ -899,7 +904,8 @@ comparison baseline for congestion experiments:
 UIB_PROTOCOL=uet UIB_UET_CC=nscc app
 UIB_PROTOCOL=uet UIB_UET_CC=none app
 UIB_PROTOCOL=uet UIB_UET_CC=my_algorithm app
-UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc app
+# Experimental only: NSCC was not designed for RoCEv2.
+UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc unchanged-application
 UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=my_algorithm app
 ```
 
@@ -937,7 +943,9 @@ ACKs when the selected algorithm needs them and translates cumulative ACKs,
 read responses, retry loss, and received CNP packets into the common events.
 UIB recognizes CNP on the wire; the current UDP receive path does not yet
 synthesize CNP from an IP ECN mark, so physical ECN/CNP interoperation remains
-a hardware promotion test.
+a hardware promotion test. The shared ABI does not imply that every algorithm
+is suitable for every protocol: NSCC remains a UET algorithm, and its RoCEv2
+selector is experimental only.
 
 The common request form is independent of UET-specific environment names:
 
@@ -945,12 +953,13 @@ The common request form is independent of UET-specific environment names:
 uib:
   protocol: rocev2
   congestionControl:
+    # Experimental only: NSCC was designed for Ultra Ethernet.
     algorithm: nscc
     parameters:
       maxWindowBytes: 262144
 ```
 
-The adapter renders the example to `UIB_ROCEV2_CC=nscc` and
+The adapter renders the experimental example to `UIB_ROCEV2_CC=nscc` and
 `UIB_ROCEV2_NSCC_MAX_WND=262144`; UET uses the corresponding `UIB_UET_*`
 names. `maxWindowBytes` is valid only with `algorithm: nscc`. It must be an
 integer from 1 through 4294967295, and the runtime rejects a value smaller than
@@ -2907,10 +2916,12 @@ simulation/bin/uib-sim render \
 
 Overlays are repeatable and correspond to replaceable layers. For example,
 change only `communication/ucx` to `communication/libfabric`, or only
-`protocol/uet-nscc` to `protocol/rocev2-nscc`. A site can pass a YAML file
-path instead of a checked-in overlay. The rendered file is ordinary YAML that
-can be inspected, versioned, and translated directly to Helm values, OpenTofu
-variables, an Ansible inventory, or Slurm environment settings.
+`protocol/uet-nscc` to `protocol/rocev2-nscc-experimental`. The latter is an
+explicitly experimental cross-protocol comparison, not a RoCEv2 deployment
+recommendation. A site can pass a YAML file path instead of a checked-in
+overlay. The rendered file is ordinary YAML that can be inspected, versioned,
+and translated directly to Helm values, OpenTofu variables, an Ansible
+inventory, or Slurm environment settings.
 
 The schema rejects unknown keys and malformed units. A few cross-field checks
 reject impossible rank products, incompatible scheduler/runtime choices,
@@ -3382,7 +3393,7 @@ never changes the host root qdisc. Its options are:
 
 | Variable | Default | Syntax and values |
 |---|---|---|
-| `SIMULATION_CC_MATRIX` | RoCEv2 clean/datacenter/lossy NSCC, constrained `none`, and plugin cases; UET clean/datacenter/constrained/lossy/reordered NSCC, constrained `none`, and plugin cases | Space-separated `protocol:algorithm:condition` entries. Protocol is `rocev2` or `uet`; test algorithms are `nscc`, `none`, and `test-pass`; condition is any checked-in network overlay such as `clean`, `datacenter`, `constrained`, `lossy`, `reordered`, or `ecn` |
+| `SIMULATION_CC_MATRIX` | Experimental RoCEv2 clean/datacenter/lossy NSCC, constrained `none`, and plugin cases; UET clean/datacenter/constrained/lossy/reordered NSCC, constrained `none`, and plugin cases | Space-separated `protocol:algorithm:condition` entries. Protocol is `rocev2` or `uet`; test algorithms are `nscc`, `none`, and `test-pass`; RoCEv2+NSCC entries are experimental only; condition is any checked-in network overlay such as `clean`, `datacenter`, `constrained`, `lossy`, `reordered`, or `ecn` |
 | `SIMULATION_CC_TIMEOUT` | `60` | Positive timeout in seconds for each matrix entry |
 | `SIMULATION_CC_MAX_WINDOW` | `65536` | NSCC maximum window in bytes |
 | `SIMULATION_NETNS_PRIVILEGE` | Unset | Optional command prefix used only to execute `unshare --net` when root and unprivileged user namespaces are unavailable |
@@ -3646,7 +3657,9 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 - The common congestion-control registry is implemented for RoCEv2 and UET.
   The local matrix covers NSCC, `none`, a registered plug-in, constrained
   pending-send admission, deterministic retry loss, and named netem profiles.
-  Physical ECN/CNP behavior remains a hardware promotion gate.
+  NSCC is native to UET and its RoCEv2 cases are experimental ABI research,
+  not a RoCEv2 recommendation. Physical ECN/CNP behavior remains a hardware
+  promotion gate.
 - Kind and CPU-only virtme/libvirt profiles do not validate real GPU
   collectives or performance.
 - The training image passed CPU DDP, checkpoint/restart, public tiny-model,

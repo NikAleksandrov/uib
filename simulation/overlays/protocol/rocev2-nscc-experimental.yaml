@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+# NSCC targets Ultra Ethernet; this overlay is only for cross-protocol research.
 uib:
   protocol: rocev2
   bindPort: 4791

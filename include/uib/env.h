@@ -319,6 +319,19 @@
 
 #define UIB_ENV_ROCEV2_CC "UIB_ROCEV2_CC"
 
+/**
+ * DOC: UIB_ROCEV2_NSCC_MAX_WND
+ * @uib-env: RoCEv2
+ * @default: The maximum window calculated by NSCC configuration.
+ * @values: A byte count no smaller than the active MTU plus wire overhead.
+ *
+ * Cap the initial NSCC congestion window for experimental RoCEv2 comparison
+ * runs. NSCC was designed for Ultra Ethernet; its use with RoCEv2 is
+ * experimental only and is not a production congestion-control recommendation.
+ *
+ * Example:
+ * UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc UIB_ROCEV2_NSCC_MAX_WND=65536 app
+ */
 #define UIB_ENV_ROCEV2_NSCC_MAX_WND "UIB_ROCEV2_NSCC_MAX_WND"
 
 /**

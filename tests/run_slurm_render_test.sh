@@ -160,7 +160,7 @@ grep -F 'export UIB_PROTOCOL=uet' "$test_dir/uet.sbatch" > /dev/null
 grep -F 'export UIB_UET_CC=nscc' "$test_dir/uet.sbatch" > /dev/null
 
 render_training uib-slurm-rocev2-nscc \
-	--overlay protocol/rocev2-nscc \
+	--overlay protocol/rocev2-nscc-experimental \
 	--set uib.congestionControl.parameters.maxWindowBytes=65536 \
 	> "$test_dir/rocev2-nscc.sbatch"
 grep -F 'export UIB_PROTOCOL=rocev2' "$test_dir/rocev2-nscc.sbatch" \

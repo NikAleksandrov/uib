@@ -2364,16 +2364,16 @@ Example: \fBUIB_PROTOCOL=uet UIB_UET_DEBUG=1 ./tests/loopback\fP
 .SS "RoCEv2"
 .TP
 .B UIB_ROCEV2_CC
-Select the congestion\-control algorithm for RoCEv2 RC queue pairs. Use none for the traditional unlimited sender baseline.
+Select the congestion\-control algorithm for RoCEv2 RC queue pairs. NSCC was designed for Ultra Ethernet, not RoCEv2; selecting it here is an experimental\-only cross\-protocol research mode, not a deployment default or recommendation. RoCEv2 defaults to none.
 .br
 Default: none
 .br
-Accepted values: nscc, none, or a name registered with uib_congestion_register()
+Accepted values: none, a registered name, or experimental nscc
 .br
 Example: \fBUIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc app\fP
 .TP
 .B UIB_ROCEV2_NSCC_MAX_WND
-Cap the initial NSCC congestion window for RoCEv2 experiments.
+Cap the initial NSCC congestion window for experimental RoCEv2 comparison runs. NSCC was designed for Ultra Ethernet; its use with RoCEv2 is experimental only and is not a production congestion\-control recommendation.
 .br
 Default: The maximum window calculated by NSCC configuration.
 .br

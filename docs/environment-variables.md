@@ -84,8 +84,8 @@ when the relevant context, transport, benchmark, or test is created.
 
 | Variable | Default | Accepted values | Description | Example |
 |---|---|---|---|---|
-| <code>UIB_ROCEV2_CC</code> | `none` | `nscc`, `none`, or a name registered with `uib_congestion_register()` | Select the congestion-control algorithm for RoCEv2 RC queue pairs. Use `none` for the traditional unlimited sender baseline. | <code>UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc app</code> |
-| <code>UIB_ROCEV2_NSCC_MAX_WND</code> | The maximum window calculated by NSCC configuration. | A byte count no smaller than the active MTU plus wire overhead. | Cap the initial NSCC congestion window for RoCEv2 experiments. | <code>UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc UIB_ROCEV2_NSCC_MAX_WND=65536 app</code> |
+| <code>UIB_ROCEV2_CC</code> | `none` | `none`, a registered name, or experimental `nscc` | Select the congestion-control algorithm for RoCEv2 RC queue pairs. NSCC was designed for Ultra Ethernet, not RoCEv2; selecting it here is an experimental-only cross-protocol research mode, not a deployment default or recommendation. RoCEv2 defaults to `none`. | <code>UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc app</code> |
+| <code>UIB_ROCEV2_NSCC_MAX_WND</code> | The maximum window calculated by NSCC configuration. | A byte count no smaller than the active MTU plus wire overhead. | Cap the initial NSCC congestion window for experimental RoCEv2 comparison runs. NSCC was designed for Ultra Ethernet; its use with RoCEv2 is experimental only and is not a production congestion-control recommendation. | <code>UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc UIB_ROCEV2_NSCC_MAX_WND=65536 app</code> |
 
 ## Stress benchmark executable
 

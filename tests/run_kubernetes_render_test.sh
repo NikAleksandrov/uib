@@ -76,7 +76,7 @@ python3 "$project_dir/tests/cases/kubernetes_render/native.py" "$test_dir/uet.ya
 
 "$cli" render-workload --profile kind-kubernetes --request "$request" \
 	--run-id uib-rocev2-nscc --allow-mutable-tags \
-	--overlay protocol/rocev2-nscc \
+	--overlay protocol/rocev2-nscc-experimental \
 	--set uib.congestionControl.parameters.maxWindowBytes=65536 \
 	> "$test_dir/rocev2-nscc.yaml"
 python3 "$project_dir/tests/cases/kubernetes_render/uet.py" "$test_dir/rocev2-nscc.yaml"
