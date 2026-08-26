@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=Lightweight Kubernetes Agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+KillMode=process
+Delegate=yes
+LimitNOFILE=1048576
+ExecStart=/usr/local/bin/k3s agent --config /etc/rancher/k3s/config.yaml
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

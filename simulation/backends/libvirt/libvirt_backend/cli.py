@@ -7,7 +7,7 @@ import sys
 
 def main():
     from .core import DEFAULT_CACHE, LibvirtError
-    from .lifecycle import command_down, command_render, command_status, command_up
+    from .lifecycle import command_down, command_kubeconfig, command_render, command_status, command_up
 
     parser = argparse.ArgumentParser(
         description="render and invoke an owned OpenTofu/libvirt lab")
@@ -34,6 +34,12 @@ def main():
     status.add_argument("--name", required=True)
     status.add_argument("--state-dir", required=True)
     status.set_defaults(handler=command_status)
+
+    kubeconfig = commands.add_parser(
+        "kubeconfig", help="print the owned Kubernetes configuration")
+    kubeconfig.add_argument("--name", required=True)
+    kubeconfig.add_argument("--state-dir", required=True)
+    kubeconfig.set_defaults(handler=command_kubeconfig)
 
     down = commands.add_parser("down", help="destroy the owned OpenTofu state")
     down.add_argument("--name", required=True)

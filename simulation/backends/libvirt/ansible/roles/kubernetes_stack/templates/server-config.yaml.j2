@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+token: "{{ uib_k3s_token }}"
+node-ip: "{{ uib_data_ip }}"
+advertise-address: "{{ uib_management_ip }}"
+tls-san:
+  - "{{ uib_management_ip }}"
+flannel-iface: "{{ uib_data_interface }}"
+cluster-cidr: "{{ uib_kubernetes_pod_cidr }}"
+service-cidr: "{{ uib_kubernetes_service_cidr }}"
+write-kubeconfig-mode: "0600"
+node-taint:
+  - "node-role.kubernetes.io/control-plane=true:NoSchedule"
+{% if uib_kubernetes_disable %}
+disable:
+{% for component in uib_kubernetes_disable %}
+  - "{{ component }}"
+{% endfor %}
+{% endif %}

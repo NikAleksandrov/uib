@@ -1,0 +1,27 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+
+- name: Install the pinned k3s binary
+  ansible.builtin.get_url:
+    url: "{{ uib_k3s_url }}"
+    dest: /usr/local/bin/k3s
+    owner: root
+    group: root
+    mode: "0755"
+    checksum: "sha256:{{ uib_k3s_checksum_url }}"
+
+- name: Create the k3s configuration directory
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Record the pinned k3s version
+  ansible.builtin.copy:
+    dest: /etc/rancher/k3s/uib-version
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ uib_k3s_version }}\n"

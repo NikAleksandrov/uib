@@ -48,6 +48,23 @@
         "diagnosticImage": { "type": "string", "pattern": "^\\S+@sha256:[0-9a-f]{64}$" }
       }
     },
+    "kubernetes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["distribution", "podCIDR", "serviceCIDR", "disable"],
+      "properties": {
+        "distribution": { "enum": ["k3s"] },
+        "podCIDR": { "$ref": "#/$defs/cidr" },
+        "serviceCIDR": { "$ref": "#/$defs/cidr" },
+        "disable": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": ["traefik", "servicelb", "local-storage", "metrics-server"]
+          }
+        }
+      }
+    },
     "cluster": {
       "type": "object",
       "additionalProperties": false,

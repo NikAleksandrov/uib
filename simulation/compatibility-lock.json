@@ -141,7 +141,7 @@
         "validatedOn": "2026-08-25"
       },
       "libvirt": {
-        "status": "validated-rootless-three-vm-uib-lifecycle",
+        "status": "validated-rootless-slurm-and-implemented-kubernetes-lifecycle",
         "opentofu": "1.12.3",
         "provider": "dmacvicar/libvirt 0.9.8",
         "ansibleCore": "2.21.3",
@@ -158,6 +158,17 @@
           "make simulation-libvirt-test",
           "make simulation-libvirt-e2e-test"
         ],
+        "clusterManagers": {
+          "slurm": "validated-rootless-three-vm-uib-lifecycle",
+          "kubernetes": {
+            "status": "implemented-and-mock-lifecycle-validated",
+            "distribution": "k3s",
+            "version": "v1.35.5+k3s1",
+            "containerRuntime": "containerd",
+            "implementedOn": "2026-08-26",
+            "physicalLifecycle": "pending-libvirt-access"
+          }
+        },
         "validatedOn": "2026-08-25"
       }
     }

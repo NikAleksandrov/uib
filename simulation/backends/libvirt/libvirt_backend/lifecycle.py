@@ -18,16 +18,15 @@ def command_render(args):
 
 
 def command_up(args):
-    from .core import LibvirtError, MODULE, PLAYBOOK, SIMULATION, executable, load_config, quantity, run_logged, validate_name, write_json
+    from .ansible import common_ansible_values, finalize_kubeconfig, kubernetes_ansible_values, slurm_ansible_values
+    from .core import LibvirtError, MODULE, PLAYBOOKS, SIMULATION, executable, load_config, run_logged, validate_name, write_json
     from .network import record_network_evidence
     from .tofu import acquire_base_image, destroy, tofu_environment, tofu_values
     from .topology import inventory
 
     validate_name(args.name)
     config = load_config(args.config)
-    if config["cluster"]["manager"] != "slurm":
-        raise LibvirtError(
-            "libvirt Kubernetes provisioning is not implemented yet")
+    manager = config["cluster"]["manager"]
     state = pathlib.Path(args.state_dir).expanduser().resolve()
     cache = pathlib.Path(args.cache_dir).expanduser().resolve()
     try:
@@ -58,12 +57,14 @@ def command_up(args):
         public_key = key.with_suffix(".pub").read_text(encoding="utf-8")
         values = tofu_values(config, args.name, image, public_key)
         runtime_source = SIMULATION / ".artifacts" / "uib-runtime"
-        if config["uib"]["enabled"] and not runtime_source.is_dir():
+        if (manager == "slurm" and config["uib"]["enabled"] and
+                not runtime_source.is_dir()):
             raise LibvirtError(
                 "portable UIB runtime is missing; run make runtime-bundle")
         write_json(state / "terraform.tfvars.json", values)
         with (state / "inventory.yaml").open("x", encoding="utf-8") as output:
-            yaml.safe_dump(inventory(values, key), output, sort_keys=False)
+            yaml.safe_dump(inventory(values, key, manager), output,
+                           sort_keys=False)
         shutil.copytree(MODULE, state / "opentofu")
 
         tofu = executable("TOFU_COMMAND", "tofu")
@@ -81,62 +82,27 @@ def command_up(args):
         write_json(ledger_path, ledger)
 
         ansible = executable("ANSIBLE_PLAYBOOK_COMMAND", "ansible-playbook")
+        extra_vars = common_ansible_values(config, values, state, args.name)
+        if manager == "slurm":
+            extra_vars.update(slurm_ansible_values(config))
+        else:
+            extra_vars.update(kubernetes_ansible_values(config))
+        extra_vars_path = state / "ansible-vars.json"
+        write_json(extra_vars_path, extra_vars)
+        extra_vars_path.chmod(0o600)
         run_logged([
-            ansible, "-i", str(state / "inventory.yaml"), str(PLAYBOOK),
-            "--extra-vars", json.dumps({
-                "uib_run_id": args.name,
-                "uib_run_state": str(state),
-                "uib_config": str(state / "resolved-simulation.json"),
-                "uib_netem_source": str(SIMULATION / "network" / "netem"),
-                "uib_runtime_source": str(runtime_source),
-                "uib_runtime_path": config["storage"].get(
-                    "uibRuntimePath", "/var/lib/uib/runtime"),
-                "uib_model_cache_path": config["storage"]["modelCachePath"],
-                "uib_results_path": config["storage"]["resultsPath"],
-                "uib_enabled": config["uib"]["enabled"],
-                "uib_ssh_user": config["libvirt"]["sshUser"],
-                "uib_data_interface": config["network"]["dataInterface"],
-                "uib_network_shaping": config["network"]["shaping"],
-                "uib_network_mode": config["libvirt"]["networkMode"],
-                "uib_node_cpu": config["nodes"]["cpu"],
-                "uib_node_memory_mib": quantity(
-                    config["nodes"]["memory"], "mib"),
-                "uib_slurm_partition": config["slurm"]["partition"],
-                "uib_slurm_time_limit": config["slurm"]["timeLimit"],
-                "uib_diagnostic_image": config["libvirt"]["diagnosticImage"],
-                "uib_slurm_packages": [
-                    "libslurm-dev=23.11.4-1.2ubuntu5",
-                    "slurm-client=23.11.4-1.2ubuntu5",
-                    "slurm-wlm-basic-plugins=23.11.4-1.2ubuntu5",
-                    ("slurmctld=23.11.4-1.2ubuntu5"
-                     if config["cluster"]["manager"] == "slurm" else ""),
-                    ("slurmd=23.11.4-1.2ubuntu5"
-                     if config["cluster"]["manager"] == "slurm" else ""),
-                ],
-                "uib_stack_downloads": [
-                    {
-                        "name": "enroot_4.2.1-1_amd64.deb",
-                        "url": "https://github.com/NVIDIA/enroot/releases/download/v4.2.1/enroot_4.2.1-1_amd64.deb",
-                        "sha256": "5955c51e88df0c5ed538d87abb5264609d4bad55fa8570745ed5d4ec66c8ab91",
-                    },
-                    {
-                        "name": "enroot+caps_4.2.1-1_amd64.deb",
-                        "url": "https://github.com/NVIDIA/enroot/releases/download/v4.2.1/enroot+caps_4.2.1-1_amd64.deb",
-                        "sha256": "ca22652dcbdd3ebb6e2c68df781ef4301647c79dd7a41ed62899c2fd0f692750",
-                    },
-                    {
-                        "name": "pyxis-0.24.0.tar.gz",
-                        "url": "https://codeload.github.com/NVIDIA/pyxis/tar.gz/107519944221822ea1dace4db8e7234b2eaa4cd5",
-                        "sha256": "32d0a56d506a3876dd59202e6a209fefae94af9803f4dd8b542e11ef2ead7907",
-                    },
-                ],
-            }),
+            ansible, "-i", str(state / "inventory.yaml"),
+            str(PLAYBOOKS[manager]), "--extra-vars", f"@{extra_vars_path}",
         ], log)
         network_evidence = record_network_evidence(
             state, config, values, args.name)
         ledger["state"] = "ready"
         ledger["baseImage"] = str(image)
         ledger["networkEvidence"] = network_evidence.name
+        if manager == "kubernetes":
+            kubeconfig = finalize_kubeconfig(
+                state, extra_vars["uib_controller_management_ip"])
+            ledger["kubeconfig"] = kubeconfig.name
         write_json(ledger_path, ledger)
     except (LibvirtError, OSError) as error:
         ledger["state"] = "failed"
@@ -168,6 +134,25 @@ def command_status(args):
     }
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if ledger["state"] == "ready" else 1
+
+
+def command_kubeconfig(args):
+    from .core import LibvirtError, load_ledger, validate_name
+
+    validate_name(args.name)
+    state = pathlib.Path(args.state_dir).expanduser().resolve()
+    unused, ledger = load_ledger(state, args.name)
+    if ledger.get("clusterManager") != "kubernetes":
+        raise LibvirtError("the owned libvirt lab is not a Kubernetes cluster")
+    if (ledger.get("state") != "ready" or
+            ledger.get("kubeconfig") != "kubeconfig"):
+        raise LibvirtError("the owned Kubernetes cluster is not ready")
+    path = state / "kubeconfig"
+    try:
+        print(path.read_text(encoding="utf-8"), end="")
+    except OSError as error:
+        raise LibvirtError(
+            f"cannot read Kubernetes configuration: {error}") from error
 
 
 def command_down(args):

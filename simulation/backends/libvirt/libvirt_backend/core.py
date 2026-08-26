@@ -19,7 +19,10 @@ SIMULATION = BACKEND.parents[1]
 MODULE = BACKEND / "opentofu"
 
 
-PLAYBOOK = BACKEND / "ansible" / "site-slurm.yaml"
+PLAYBOOKS = {
+    "kubernetes": BACKEND / "ansible" / "site-kubernetes.yaml",
+    "slurm": BACKEND / "ansible" / "site-slurm.yaml",
+}
 
 
 DEFAULT_CACHE = SIMULATION / ".artifacts" / "downloads" / "libvirt"
@@ -53,6 +56,16 @@ def load_config(path):
     if (config.get("cluster", {}).get("manager") == "slurm" and
             config["cluster"].get("version") != "23.11.4"):
         raise LibvirtError("Slurm provisioning requires version 23.11.4")
+    if config.get("cluster", {}).get("manager") == "kubernetes":
+        kubernetes = config.get("kubernetes", {})
+        if kubernetes.get("distribution") != "k3s":
+            raise LibvirtError("libvirt Kubernetes requires k3s")
+        if config["libvirt"]["networkMode"] != "bridge":
+            raise LibvirtError(
+                "libvirt Kubernetes currently requires bridge networking")
+        if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+",
+                            config["cluster"].get("version", "")):
+            raise LibvirtError("libvirt k3s requires an exact release version")
     return config
 
 

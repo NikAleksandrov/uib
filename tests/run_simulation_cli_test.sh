@@ -121,6 +121,22 @@ if "$cli" render --profile libvirt-slurm \
 	echo "libvirt accepted an overflowing SSH port range" >&2
 	exit 1
 fi
+if "$cli" render --profile libvirt-kubernetes \
+	--set cluster.version=v1.35 > /dev/null 2>&1; then
+	echo "libvirt Kubernetes accepted an unpinned k3s version" >&2
+	exit 1
+fi
+if "$cli" render --profile libvirt-kubernetes \
+	--set kubernetes.podCIDR=198.51.100.0/24 > /dev/null 2>&1; then
+	echo "libvirt Kubernetes accepted overlapping pod and data networks" >&2
+	exit 1
+fi
+if "$cli" render --profile libvirt-kubernetes \
+	--set libvirt.uri=qemu:///session \
+	--set libvirt.networkMode=rootless > /dev/null 2>&1; then
+	echo "libvirt Kubernetes accepted isolated rootless management networks" >&2
+	exit 1
+fi
 
 set +e
 "$cli" doctor --profile kind-kubernetes > "$test_dir/doctor.json"

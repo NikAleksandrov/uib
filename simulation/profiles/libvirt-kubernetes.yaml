@@ -11,6 +11,12 @@ libvirt:
   diagnosticImage: docker.io/library/ubuntu@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc
 cluster:
   manager: kubernetes
+  version: v1.35.5+k3s1
+kubernetes:
+  distribution: k3s
+  podCIDR: 10.42.0.0/16
+  serviceCIDR: 10.43.0.0/16
+  disable: [traefik, servicelb]
 container:
   runtime: containerd
 nodes:
@@ -19,3 +25,5 @@ nodes:
   cpu: 8
   memory: 16Gi
   disk: 64Gi
+network:
+  dataInterface: eth1

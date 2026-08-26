@@ -1,0 +1,82 @@
+---
+# SPDX-License-Identifier: Apache-2.0
+
+- name: Prepare libvirt Kubernetes nodes
+  hosts: kubernetes_cluster
+  become: true
+  gather_facts: false
+  roles:
+    - common
+    - kubernetes_stack
+
+- name: Start the Kubernetes control plane
+  hosts: kubernetes_controller
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Configure the k3s server
+      ansible.builtin.include_role:
+        name: kubernetes_stack
+        tasks_from: server
+
+- name: Join Kubernetes workers
+  hosts: kubernetes_workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Configure the k3s agent
+      ansible.builtin.include_role:
+        name: kubernetes_stack
+        tasks_from: agent
+
+- name: Shape the worker data plane
+  hosts: kubernetes_workers
+  become: true
+  gather_facts: false
+  roles:
+    - network_shaping
+
+- name: Validate Kubernetes and the private data path
+  hosts: kubernetes_controller
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Wait for every Kubernetes node
+      ansible.builtin.command:
+        argv:
+          - k3s
+          - kubectl
+          - wait
+          - --for=condition=Ready
+          - nodes
+          - --all
+          - --timeout=300s
+      changed_when: false
+
+    - name: Verify every worker data address
+      ansible.builtin.command:
+        argv:
+          - ping
+          - -c
+          - "3"
+          - -W
+          - "2"
+          - "{{ hostvars[item].uib_data_ip }}"
+      loop: "{{ groups['kubernetes_workers'] }}"
+      changed_when: false
+
+    - name: Fetch the administrator Kubernetes configuration
+      ansible.builtin.fetch:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "{{ uib_run_state }}/kubeconfig"
+        flat: true
+
+- name: Collect post-traffic worker network evidence
+  hosts: kubernetes_workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Collect the worker network evidence
+      ansible.builtin.include_role:
+        name: network_shaping
+        tasks_from: evidence

@@ -79,16 +79,11 @@ def invoke_libvirt(config, arguments):
 
 def command_up(args):
     from .config import resolve
-    from .core import ConfigurationError
     from .state import state_path
 
     config = resolve(args)
 
     if config["infrastructure"]["provider"] == "libvirt":
-        if config["cluster"]["manager"] != "slurm":
-            raise ConfigurationError(
-                "libvirt Kubernetes provisioning is not implemented yet")
-
         def libvirt_arguments(path):
             command = [
                 "up", path, "--name", args.run_id,
@@ -131,19 +126,31 @@ def command_status(args):
 
 def command_kubeconfig(args):
     from .config import resolve
+    from .state import state_path
 
     config = resolve(args)
+    if config["infrastructure"]["provider"] == "libvirt":
+        return invoke_libvirt(config, lambda unused: [
+            "kubeconfig", "--name", args.run_id,
+            "--state-dir", str(state_path(args) / "infrastructure"),
+        ])
     return invoke_backend(
         config, lambda unused: ["kubeconfig", "--name", args.run_id])
 
 
 def command_load_image(args):
     from .config import resolve
+    from .core import ConfigurationError
     from .images import stage_libvirt_image
 
     config = resolve(args)
 
     if config["infrastructure"]["provider"] == "libvirt":
+        if config["cluster"]["manager"] != "slurm":
+            raise ConfigurationError(
+                "libvirt Kubernetes image loading is not implemented; "
+                "use a registry or an immutable image already present on "
+                "nodes")
         for reference in args.image:
             print(stage_libvirt_image(args, reference,
                                       args.allow_mutable_tags))

@@ -19,34 +19,32 @@
       - ansible_facts.distribution == "Ubuntu"
       - ansible_facts.distribution_version is version('24.04', '>=')
       - ansible_facts.distribution_version is version('25.04', '<')
-    fail_msg: "The libvirt Slurm adapter requires Ubuntu 24.04"
+    fail_msg: "The libvirt cluster adapter requires Ubuntu 24.04"
 
 - name: Install common cluster packages
   ansible.builtin.apt:
-    name:
-      - build-essential
-      - ca-certificates
-      - curl
-      - git
-      - iproute2
-      - jq
-      - libcap2-bin
-      - make
-      - munge
-      - nfs-common
-      - python3
-      - qemu-guest-agent
-      - squashfs-tools
+    name: "{{ uib_common_packages + (uib_manager_packages | default([])) }}"
     state: present
     update_cache: true
     cache_valid_time: 3600
+  vars:
+    uib_common_packages:
+      - ca-certificates
+      - conntrack
+      - curl
+      - iproute2
+      - iptables
+      - jq
+      - libcap2-bin
+      - python3
+      - qemu-guest-agent
 
 - name: Record every cluster node in hosts file
   ansible.builtin.blockinfile:
     path: /etc/hosts
     marker: "# {mark} UIB LIBVIRT {{ uib_run_id }}"
     block: |
-      {% for host in groups['slurm_cluster'] %}
+      {% for host in groups[uib_cluster_group] %}
       {{ hostvars[host].uib_data_ip }} {{ host }}
       {% endfor %}
 

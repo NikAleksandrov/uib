@@ -56,6 +56,7 @@ def main():
     status.set_defaults(handler=command_status)
     kubeconfig = commands.add_parser("kubeconfig", help="print provider kubeconfig")
     add_lifecycle_args(kubeconfig)
+    add_state_dir_arg(kubeconfig)
     kubeconfig.set_defaults(handler=command_kubeconfig)
     load_image = commands.add_parser(
         "load-image", help="stage explicit images in selected infrastructure")

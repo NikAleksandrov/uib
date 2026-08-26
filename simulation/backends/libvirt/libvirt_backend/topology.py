@@ -50,7 +50,7 @@ def node_values(config, run_id):
     return result
 
 
-def inventory(values, private_key):
+def inventory(values, private_key, manager):
     hosts = {}
     for name, node in values["nodes"].items():
         hosts[name] = {
@@ -61,12 +61,18 @@ def inventory(values, private_key):
                 node["ssh_port"] if values["network_mode"] == "rootless"
                 else 22),
             "uib_data_ip": node["data_ip"],
+            "uib_management_ip": node["management_ip"],
             "uib_role": node["role"],
         }
     controller = {name: {} for name, node in values["nodes"].items()
                   if node["role"] == "controller"}
     workers = {name: {} for name, node in values["nodes"].items()
                if node["role"] == "worker"}
+    children = {
+        f"{manager}_controller": {"hosts": controller},
+        f"{manager}_workers": {"hosts": workers},
+        f"{manager}_cluster": {"hosts": hosts},
+    }
     return {
         "all": {
             "vars": {
@@ -76,10 +82,6 @@ def inventory(values, private_key):
                     "-o StrictHostKeyChecking=no "
                     "-o UserKnownHostsFile=/dev/null"),
             },
-            "children": {
-                "slurm_controller": {"hosts": controller},
-                "slurm_workers": {"hosts": workers},
-                "slurm_cluster": {"hosts": hosts},
-            },
+            "children": children,
         },
     }

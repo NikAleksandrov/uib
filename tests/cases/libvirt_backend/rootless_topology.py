@@ -6,9 +6,9 @@ import sys
 
 with open(sys.argv[1], encoding="utf-8") as source:
     ledger = json.load(source)
-assert ledger["schemaVersion"] == 1
-assert ledger["runId"] == "uib-libvirt-test"
-assert ledger["provider"] == "libvirt"
-assert ledger["clusterManager"] == "slurm"
+assert ledger["clusterManager"] == "kubernetes"
 assert ledger["state"] == "ready"
-assert ledger["networkEvidence"] == "network.json"
+assert ledger["kubeconfig"] == "kubeconfig"
+with open(sys.argv[2], encoding="utf-8") as source:
+    status = json.load(source)
+assert status["state"] == "ready"

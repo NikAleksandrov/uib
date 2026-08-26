@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
+import ipaddress
 import json
 import pathlib
 import re
@@ -135,6 +136,45 @@ def validate_infrastructure(config):
             "libvirt settings require infrastructure.provider=libvirt")
     if provider == "libvirt" and config["nodes"]["controlPlane"] != 1:
         raise ConfigurationError("libvirt currently requires one control plane")
+    if manager == "kubernetes":
+        if "kubernetes" in config:
+            kubernetes = config["kubernetes"]
+            if kubernetes["distribution"] != "k3s":
+                raise ConfigurationError(
+                    "only the k3s Kubernetes distribution is implemented")
+            networks = {
+                "management": config["network"]["managementCIDR"],
+                "data": config["network"]["dataCIDR"],
+                "pods": kubernetes["podCIDR"],
+                "services": kubernetes["serviceCIDR"],
+            }
+            try:
+                parsed = {name: ipaddress.ip_network(value, strict=True)
+                          for name, value in networks.items()}
+            except ValueError as error:
+                raise ConfigurationError(
+                    f"invalid Kubernetes network: {error}") from error
+            for name, network in parsed.items():
+                for other_name, other in parsed.items():
+                    if name < other_name and network.overlaps(other):
+                        raise ConfigurationError(
+                            f"Kubernetes {name} and {other_name} networks "
+                            "overlap")
+        elif provider == "libvirt":
+            raise ConfigurationError(
+                f"{provider} Kubernetes requires distribution settings")
+        if (provider == "libvirt" and not re.fullmatch(
+                r"v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+",
+                config["cluster"]["version"])):
+            raise ConfigurationError(
+                "libvirt k3s requires an exact vX.Y.Z+k3sN version")
+        if (provider == "libvirt" and
+                config["libvirt"]["networkMode"] != "bridge"):
+            raise ConfigurationError(
+                "libvirt Kubernetes currently requires bridge networking")
+    elif "kubernetes" in config:
+        raise ConfigurationError(
+            "Kubernetes settings require cluster.manager=kubernetes")
     if provider == "libvirt":
         ssh_port_base = config["libvirt"].get("sshPortBase", 22000)
         if ssh_port_base + config["nodes"]["workers"] > 65535:
