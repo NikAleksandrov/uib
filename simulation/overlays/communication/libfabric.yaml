@@ -2,6 +2,6 @@
 communication:
   frontend: libfabric
   fallbackPolicy: fail
-  transportAllowlist: ["ofi_rxm;verbs"]
+  transportAllowlist: ["verbs;ofi_rxd"]
   libfabric:
-    provider: "ofi_rxm;verbs"
+    provider: "verbs;ofi_rxd"

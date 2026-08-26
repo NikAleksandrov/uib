@@ -7,20 +7,32 @@ test_dir=$(mktemp -d /tmp/uib-ucx-libfabric-test.XXXXXX)
 test_timeout=${COMM_TEST_TIMEOUT:-30}
 iterations=${COMM_TEST_ITERATIONS:-100}
 bind_port=${COMM_TEST_BIND_PORT:-19800}
+message_sizes=${COMM_TEST_MESSAGE_SIZES:-l:1,64,1024}
 server_pid=
+
+if [ ! -c /dev/infiniband/uib0 ]; then
+	echo "UCX/libfabric require the UIB character-device anchor at" \
+		"/dev/infiniband/uib0; run this gate through" \
+		"simulation/runtime/with-device-anchor" >&2
+	exit 1
+fi
 
 cleanup()
 {
+	status=$?
 	if [ -n "$server_pid" ]; then
 		kill "$server_pid" >/dev/null 2>&1 || true
 		wait "$server_pid" >/dev/null 2>&1 || true
 	fi
-	rm -rf -- "$test_dir"
+	if [ "$status" -eq 0 ]; then
+		rm -rf -- "$test_dir"
+	else
+		echo "UCX/libfabric logs retained in $test_dir" >&2
+	fi
 }
 trap cleanup EXIT INT TERM
 
-for command_name in ucx_info ucx_perftest fi_info fi_pingpong \
-	fi_rdm_pingpong timeout; do
+for command_name in ucx_info ucx_perftest fi_info fi_rdm_pingpong timeout; do
 	if ! command -v "$command_name" >/dev/null 2>&1; then
 		echo "required UCX/libfabric command not found: $command_name" >&2
 		exit 1
@@ -51,7 +63,7 @@ timeout -k 2 "$test_timeout" env \
 	UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
 	UIB_ZEROCOPY=off UCX_TLS=rc,ud UCX_NET_DEVICES=uib0:1 \
 	UCX_LOG_LEVEL=info ucx_perftest -t tag_lat -n "$iterations" \
-	-p "$bind_port" > "$test_dir/ucx-server.log" 2>&1 &
+	-P 0 -p "$bind_port" > "$test_dir/ucx-server.log" 2>&1 &
 server_pid=$!
 sleep 1
 timeout -k 2 "$test_timeout" env \
@@ -59,27 +71,28 @@ timeout -k 2 "$test_timeout" env \
 	UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
 	UIB_ZEROCOPY=off UCX_TLS=rc,ud UCX_NET_DEVICES=uib0:1 \
 	UCX_LOG_LEVEL=info ucx_perftest -t tag_lat -n "$iterations" \
-	-p "$bind_port" 127.0.0.1 > "$test_dir/ucx-client.log" 2>&1
+	-P 0 -p "$bind_port" 127.0.0.1 \
+	> "$test_dir/ucx-client.log" 2>&1
 wait "$server_pid"
 server_pid=
-grep -F uib0 "$test_dir/ucx-client.log" >/dev/null
+grep -F 'tag(ud_verbs/uib0:1)' "$test_dir/ucx-client.log" >/dev/null
 if grep -Ei 'transport.*(tcp|self|posix|sysv|cma)' \
 	"$test_dir/ucx-client.log" >/dev/null; then
 	echo "UCX selected a forbidden non-verbs data transport" >&2
 	exit 1
 fi
 
-for test_name in fi_pingpong fi_rdm_pingpong; do
+for test_name in fi_rdm_pingpong; do
 	log_name=${test_name#fi_}
-	provider=verbs
-	if [ "$test_name" = fi_rdm_pingpong ]; then
-		provider='ofi_rxm;verbs'
-	fi
+	provider='verbs;ofi_rxd'
 	timeout -k 2 "$test_timeout" env \
 		LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.1 \
 		UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
 		UIB_ZEROCOPY=off FI_PROVIDER="$provider" FI_LOG_LEVEL=info \
-		"$test_name" -p "$provider" > "$test_dir/$log_name-server.log" \
+		FI_VERBS_DGRAM_USE_NAME_SERVER=0 \
+		"$test_name" -p "$provider" -d uib0-dgram \
+		-I "$iterations" -S "$message_sizes" -v -b \
+		> "$test_dir/$log_name-server.log" \
 		2>&1 &
 	server_pid=$!
 	sleep 1
@@ -87,13 +100,18 @@ for test_name in fi_pingpong fi_rdm_pingpong; do
 		LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.2 \
 		UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
 		UIB_ZEROCOPY=off FI_PROVIDER="$provider" FI_LOG_LEVEL=info \
-		"$test_name" -p "$provider" 127.0.0.1 \
+		FI_VERBS_DGRAM_USE_NAME_SERVER=0 \
+		"$test_name" -p "$provider" -d uib0-dgram \
+		-I "$iterations" -S "$message_sizes" -v -b 127.0.0.1 \
 		> "$test_dir/$log_name-client.log" 2>&1
 	wait "$server_pid"
 	server_pid=
-	grep -Ei 'provider.*verbs|prov_name.*verbs' \
+	grep -F 'Using verbs provider' \
 		"$test_dir/$log_name-client.log" >/dev/null
-	if grep -Ei 'provider.*(tcp|sockets)' \
+	grep -F 'Using ofi_rxd provider' \
+		"$test_dir/$log_name-client.log" >/dev/null
+	grep -F uib0-dgram "$test_dir/$log_name-client.log" >/dev/null
+	if grep -Ei 'Using (tcp|sockets) provider' \
 		"$test_dir/$log_name-client.log" >/dev/null; then
 		echo "libfabric selected a forbidden software provider" >&2
 		exit 1

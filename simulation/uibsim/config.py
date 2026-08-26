@@ -326,6 +326,6 @@ def tools_for(config):
         "nccl": {"all_reduce_perf", "mpirun"},
         "rccl": {"all_reduce_perf", "mpirun", "rocminfo"},
         "ucx": {"ucx_info", "ucx_perftest"},
-        "libfabric": {"fi_info", "fi_pingpong", "fi_rdm_pingpong"},
+        "libfabric": {"fi_info", "fi_rdm_pingpong"},
     }[frontend])
     return sorted(tools)

@@ -193,7 +193,7 @@
           "additionalProperties": false,
           "properties": {
             "version": { "type": "string" },
-            "provider": { "enum": ["verbs", "ofi_rxm;verbs"] }
+            "provider": { "enum": ["verbs", "verbs;ofi_rxd"] }
           }
         }
       }

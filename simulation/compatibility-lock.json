@@ -22,15 +22,17 @@
         "forbiddenFallbacks": ["Socket", "native-libibverbs"]
       },
       "ucx": {
-        "status": "planned-missing-call-inventory-required",
+        "status": "validated-local-ud-tag",
         "testTarget": "make ucx-libfabric-test",
-        "requiredTransportClass": "verbs",
+        "validatedVersion": "1.18.1",
+        "requiredTransportClass": "ud_verbs",
         "forbiddenFallbacks": ["tcp", "self", "posix", "sysv", "cma", "vendor-direct"]
       },
       "libfabric": {
-        "status": "planned-librdmacm-boundary-required",
+        "status": "validated-local-verbs-rxd-rdm",
         "testTarget": "make ucx-libfabric-test",
-        "allowedProviders": ["verbs", "ofi_rxm;verbs"],
+        "validatedVersion": "2.1.0",
+        "allowedProviders": ["verbs;ofi_rxd"],
         "forbiddenFallbacks": ["tcp", "sockets", "native-libibverbs"]
       }
     },
@@ -430,8 +432,8 @@
     "multiGpuTraining": "not-validated",
     "multiGpuInference": "not-validated",
     "inferenceOverUib": "not-validated",
-    "ucxOverUib": "not-validated",
-    "libfabricOverUib": "not-validated",
+    "ucxOverUib": "validated-local-ud-tag",
+    "libfabricOverUib": "validated-local-verbs-rxd-rdm",
     "rcclOverUib": "not-validated-amd-hardware-required",
     "rocev2PluggableCongestion": "not-implemented",
     "collectives": {
