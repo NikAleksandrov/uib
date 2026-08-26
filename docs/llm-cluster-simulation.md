@@ -622,7 +622,8 @@ nodes * processesPerNode == data * tensor * pipeline * expert
 | RCCL without `nodes.gpus.vendor: amd` | RCCL requires AMD/ROCm hardware |
 | NCCL with `nodes.gpus.vendor: amd` | Select RCCL for the AMD profile |
 | `gpu-direct` while the compatibility lock says unvalidated | Prevents an L2 claim from an unsupported path |
-| RoCEv2 with a congestion algorithm other than `none` | RoCEv2 pending admission and feedback are not implemented yet |
+| Congestion parameters with an algorithm other than `nscc` | Only NSCC consumes `maxWindowBytes`; registered algorithms currently receive no configuration map |
+| Unknown NSCC parameters or a non-integer/out-of-range `maxWindowBytes` | Prevents a setting from being accepted but ignored |
 | Network parameters while `shaping.enabled` is false | Prevents a condition that looks active but is not |
 | Jitter without latency; distribution without jitter | These netem options depend on the preceding delay options |
 | Reordering without latency | Netem needs delay for observable reordering |
@@ -646,6 +647,13 @@ UET/NSCC in an emulated data-center network:
 ```text
 simulation/bin/uib-sim render --profile virtme-kubernetes \
   --overlay protocol/uet-nscc --overlay network/datacenter
+```
+
+The same algorithm with RoCEv2:
+
+```text
+simulation/bin/uib-sim render --profile virtme-kubernetes \
+  --overlay protocol/rocev2-nscc --overlay network/datacenter
 ```
 
 Change only the NSCC initial window:
@@ -883,13 +891,16 @@ NCCL / RCCL / UCX / libfabric
        +------------------+
 ```
 
-UET currently uses this operations contract. `nscc` is the default and
-`none` is an unsafe comparison baseline:
+RoCEv2 and UET use this operations contract. UET defaults to `nscc`; RoCEv2
+defaults to `none` to preserve its original behavior. `none` is an unsafe
+comparison baseline for congestion experiments:
 
 ```text
 UIB_PROTOCOL=uet UIB_UET_CC=nscc app
 UIB_PROTOCOL=uet UIB_UET_CC=none app
 UIB_PROTOCOL=uet UIB_UET_CC=my_algorithm app
+UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc app
+UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=my_algorithm app
 ```
 
 The third form works after an experiment registers `my_algorithm` with
@@ -899,15 +910,15 @@ inferred-loss callbacks. State must fit `UIB_CONGESTION_STATE_SIZE`, the table
 must use `UIB_CONGESTION_ABI_VERSION`, and it must remain valid for the life of
 the process. A preloadable experiment module may register from a constructor,
 so the target application still requires no source change. The repository's
-`tests/congestion_plugin.c` and `make uet-congestion-test` provide a minimal
-working example of that path.
+`tests/congestion_plugin.c`, `make uet-congestion-test`, and
+`make rocev2-congestion-test` provide a minimal working example of that path.
 
 ```text
 cc -shared -fPIC -I/path/to/uib/include my_algorithm.c \
    -L/path/to/uib -Wl,-rpath,/opt/uib/lib -luib -o my_algorithm.so
 
 LD_PRELOAD=/opt/experiments/my_algorithm.so:/opt/uib/lib/libuibv.so \
-UIB_PROTOCOL=uet UIB_UET_CC=my_algorithm unchanged-application
+UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=my_algorithm unchanged-application
 ```
 
 The module and UIB must use the same ABI version. A run stores the module hash
@@ -920,29 +931,32 @@ adapter translates its ACK/NACK/ECN format into the common event structures.
 This separation allows the same algorithm to be compared across protocols
 where their feedback semantics are equivalent.
 
-RoCEv2 integration is the next step and is not yet implemented. It needs a
-pending-send queue so admission delays work requests instead of returning an
-application-visible error, plus explicit ECN/CNP feedback translation. A
-future selector such as `UIB_ROCEV2_CC=<name>` must not be documented as
-working until those data-path tests pass.
+The RoCEv2 adapter retains congestion-limited RC packets in PSN order and
+drains them as acknowledgements reopen the window. It requests intermediate
+ACKs when the selected algorithm needs them and translates cumulative ACKs,
+read responses, retry loss, and received CNP packets into the common events.
+UIB recognizes CNP on the wire; the current UDP receive path does not yet
+synthesize CNP from an IP ECN mark, so physical ECN/CNP interoperation remains
+a hardware promotion test.
 
 The common request form is independent of UET-specific environment names:
 
 ```yaml
 uib:
-  protocol: uet
+  protocol: rocev2
   congestionControl:
     algorithm: nscc
     parameters:
       maxWindowBytes: 262144
 ```
 
-The adapter renders this to `UIB_UET_CC=nscc` and
-`UIB_UET_NSCC_MAX_WND=262144`. Each result records the algorithm name, ABI,
-resolved parameters, UIB commit, protocol, topology, offered load, ECN/loss
-settings, throughput, tail latency, retransmissions, and fairness. Comparisons
-must include `none` only in an isolated simulation; it is not a deployment
-recommendation.
+The adapter renders the example to `UIB_ROCEV2_CC=nscc` and
+`UIB_ROCEV2_NSCC_MAX_WND=262144`; UET uses the corresponding `UIB_UET_*`
+names. `maxWindowBytes` is valid only with `algorithm: nscc`. It must be an
+integer from 1 through 4294967295, and the runtime rejects a value smaller than
+the active path MTU plus wire overhead. Other algorithms require an empty
+`parameters` map. Each result records the resolved algorithm, parameters,
+protocol, workload, and network condition.
 
 ## Transparent UIB injection
 
@@ -2893,15 +2907,15 @@ simulation/bin/uib-sim render \
 
 Overlays are repeatable and correspond to replaceable layers. For example,
 change only `communication/ucx` to `communication/libfabric`, or only
-`protocol/uet-nscc` to `protocol/rocev2`. A site can pass a YAML file path
-instead of a checked-in overlay. The rendered file is ordinary YAML that can
-be inspected, versioned, and translated directly to Helm values, OpenTofu
+`protocol/uet-nscc` to `protocol/rocev2-nscc`. A site can pass a YAML file
+path instead of a checked-in overlay. The rendered file is ordinary YAML that
+can be inspected, versioned, and translated directly to Helm values, OpenTofu
 variables, an Ansible inventory, or Slurm environment settings.
 
 The schema rejects unknown keys and malformed units. A few cross-field checks
 reject impossible rank products, incompatible scheduler/runtime choices,
-RCCL without AMD GPUs, unvalidated GPU-direct, premature RoCEv2 congestion
-plug-ins, and shaping existing hardware without explicit permission.
+RCCL without AMD GPUs, unvalidated GPU-direct, invalid congestion parameters,
+and shaping existing hardware without explicit permission.
 `doctor` is read-only and reports which standard tools are missing. Run
 `make simulation-cli-test` to validate every checked-in profile. The wrapper
 requires Python, PyYAML, and jsonschema.
@@ -3156,7 +3170,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 |---|---|---|
 | `make simulation-cli-test` | Python 3, PyYAML, and `jsonschema` | Every profile, named layer replacement, schema and semantic rejection, typed `--set`, and the read-only `doctor` report |
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in network condition renders to the expected `tc netem` command; unsafe interfaces and invalid combinations are rejected; it does not modify a qdisc |
-| `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | UET SEND, RDMA read/write, and atomics complete with actual netem conditions and the selected built-in or plugin congestion algorithm |
+| `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | RoCEv2 and UET SEND and RDMA read/write complete with actual netem conditions and built-in or plugin congestion control; the UET cases also cover atomics |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge and rootless rendering, cached-image verification, generated OpenTofu and Ansible inputs, per-worker network-evidence validation, provisioned/workload network matching, remote submit/status/collect/cancel transport, exclusive ownership, and exact-state cleanup with fake standard commands |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
@@ -3165,7 +3179,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-libvirt-training-e2e-test` | The libvirt gate requirements, the local training image or image-build access, 32 GiB guest disks, roughly 12 GiB host memory, and about 3 GiB ignored host cache space for the current image | Everything in the libvirt gate, content-addressed SquashFS creation or verified cache reuse, real two-worker CPU DDP training through Slurm/Pyxis/Enroot, collected training and image ledgers, and complete cleanup; the workload uses Gloo, while the separate provisioning gate supplies actual UIB traffic |
 | `make simulation-libvirt-inference-e2e-test` | The libvirt gate requirements, the local inference image or build access, the downloaded SmolLM2 cache, 8 GiB per VM, 64 GiB guest disks, and about 8 GiB ignored host image-cache space | Everything in the libvirt gate, bounded-memory SquashFS staging, verified Hugging Face cache transfer, real offline four-request CPU serving through Slurm/Pyxis/Enroot, request trace and artifact ledgers, and cleanup; the one-task workload itself has no UIB traffic |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
-| `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, UET/NSCC, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
+| `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, RoCEv2/UET congestion settings, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
 | `make simulation-slurm-lifecycle-test` | The Slurm renderer requirements; no Slurm installation or container engine | Exclusive ignored run ledgers, shared-path preflight, exact `sbatch --parsable` submission, recorded numeric job ownership, read-only `sacct` status and `scontrol` fallback including an empty pending node list, exact-ID `scancel`, retained failures, and rejection of result/ledger reuse or ambiguous submission output using fake standard commands |
 | `make simulation-slurm-collect-test` | The Slurm lifecycle requirements; no Slurm installation, container engine, or network access | Exact-ID `sacct` and `scontrol` evidence, terminal/incomplete policy, captured source inputs, scheduler/log/workload export, ownership validation, symlink rejection, non-overwrite behavior, honest nonpromotion labels, and every SHA-256 manifest entry using fake standard commands |
 | `make runtime-bundle-portable-test` | A Docker-compatible engine, network access for the pinned Ubuntu image and verified source archives on first use, and normal UIB build resources | Reproducible old-userspace build, GLIBC ceiling, portable feature set, provider/static artifacts, checksums, preflight, source dependency metadata, and copied licenses |
@@ -3368,7 +3382,7 @@ never changes the host root qdisc. Its options are:
 
 | Variable | Default | Syntax and values |
 |---|---|---|
-| `SIMULATION_CC_MATRIX` | `nscc:clean nscc:datacenter nscc:constrained nscc:lossy nscc:reordered none:constrained test-pass:datacenter` | Space-separated `algorithm:condition` pairs. Test algorithms are `nscc`, `none`, and the sample plugin `test-pass`; conditions are `clean`, `datacenter`, `constrained`, `lossy`, `reordered`, and `ecn` |
+| `SIMULATION_CC_MATRIX` | RoCEv2 clean/datacenter/lossy NSCC, constrained `none`, and plugin cases; UET clean/datacenter/constrained/lossy/reordered NSCC, constrained `none`, and plugin cases | Space-separated `protocol:algorithm:condition` entries. Protocol is `rocev2` or `uet`; test algorithms are `nscc`, `none`, and `test-pass`; condition is any checked-in network overlay such as `clean`, `datacenter`, `constrained`, `lossy`, `reordered`, or `ecn` |
 | `SIMULATION_CC_TIMEOUT` | `60` | Positive timeout in seconds for each matrix entry |
 | `SIMULATION_CC_MAX_WINDOW` | `65536` | NSCC maximum window in bytes |
 | `SIMULATION_NETNS_PRIVILEGE` | Unset | Optional command prefix used only to execute `unshare --net` when root and unprivileged user namespaces are unavailable |
@@ -3377,7 +3391,7 @@ never changes the host root qdisc. Its options are:
 For example:
 
 ```text
-SIMULATION_CC_MATRIX='nscc:ecn none:lossy' \
+SIMULATION_CC_MATRIX='rocev2:nscc:ecn uet:none:lossy' \
 SIMULATION_CC_TIMEOUT=90 make simulation-congestion-test
 ```
 
@@ -3629,8 +3643,10 @@ Cleanup must remain safe after interruption during every lifecycle stage.
   does not claim direct UCX UCT/RC offload, libfabric MSG/RxM, MPI integration,
   or physical-node qualification. RCCL remains unvalidated until AMD hardware
   is available.
-- The congestion-control registry and UET/NSCC adapter are implemented.
-  RoCEv2 admission and feedback integration is still planned.
+- The common congestion-control registry is implemented for RoCEv2 and UET.
+  The local matrix covers NSCC, `none`, a registered plug-in, constrained
+  pending-send admission, deterministic retry loss, and named netem profiles.
+  Physical ECN/CNP behavior remains a hardware promotion gate.
 - Kind and CPU-only virtme/libvirt profiles do not validate real GPU
   collectives or performance.
 - The training image passed CPU DDP, checkpoint/restart, public tiny-model,

@@ -1386,6 +1386,39 @@ Return value:
 
 A pointer to the new object on success, or NULL on failure.
 
+### [`uib_rocev2_qp_init`](../include/uib/qp.h)
+
+```c
+int uib_rocev2_qp_init(struct uib_qp *qp);
+```
+
+Description:
+
+Initialize RoCEv2-specific QP state.
+
+Parameters:
+
+- `qp` — Queue pair
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_rocev2_qp_modified`](../include/uib/qp.h)
+
+```c
+void uib_rocev2_qp_modified(struct uib_qp *qp, int attr_mask);
+```
+
+Description:
+
+Refresh RoCEv2 state after a QP change.
+
+Parameters:
+
+- `qp` — Queue pair
+- `attr_mask` — Bitmask selecting the modified attributes
+
 ### [`uib_rocev2_qp_fini`](../include/uib/qp.h)
 
 ```c

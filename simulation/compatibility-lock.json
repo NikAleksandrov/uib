@@ -41,9 +41,10 @@
       "abiVersion": 1,
       "stateBytes": 512,
       "implementedProtocols": {
+        "rocev2": ["nscc", "none", "registered"],
         "uet": ["nscc", "none", "registered"]
       },
-      "plannedProtocols": ["rocev2"]
+      "plannedProtocols": []
     },
     "runtime": {
       "platformLibraries": [

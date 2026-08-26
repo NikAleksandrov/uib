@@ -16,6 +16,7 @@ when the relevant context, transport, benchmark, or test is created.
 - [TCP devmem transport](#tcp-devmem-transport)
 - [Provider-owned host-memory receive](#provider-owned-host-memory-receive)
 - [Ultra Ethernet](#ultra-ethernet)
+- [RoCEv2](#rocev2)
 - [Stress benchmark executable](#stress-benchmark-executable)
 - [Complete benchmark matrix](#complete-benchmark-matrix)
 - [Namespace benchmark harness](#namespace-benchmark-harness)
@@ -78,6 +79,13 @@ when the relevant context, transport, benchmark, or test is created.
 | <code>UIB_UET_OPTIMIZED</code> | `auto` | `off`, `auto`, `small`, or `medium` | Select the SES request-header optimization policy. | <code>UIB_PROTOCOL=uet UIB_UET_OPTIMIZED=medium app</code> |
 | <code>UIB_UET_MULTIPATH</code> | `off` | `off`, `oblivious`, or `path-aware` | Select entropy multipathing and path-failure tracking mode. | <code>UIB_PROTOCOL=uet UIB_UET_MULTIPATH=path-aware app</code> |
 | <code>UIB_UET_DEBUG</code> | Unset and disabled. | Any non-empty value enables logging. | Enable diagnostic UET packet and completion logging. | <code>UIB_PROTOCOL=uet UIB_UET_DEBUG=1 ./tests/loopback</code> |
+
+## RoCEv2
+
+| Variable | Default | Accepted values | Description | Example |
+|---|---|---|---|---|
+| <code>UIB_ROCEV2_CC</code> | `none` | `nscc`, `none`, or a name registered with `uib_congestion_register()` | Select the congestion-control algorithm for RoCEv2 RC queue pairs. Use `none` for the traditional unlimited sender baseline. | <code>UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc app</code> |
+| <code>UIB_ROCEV2_NSCC_MAX_WND</code> | The maximum window calculated by NSCC configuration. | A byte count no smaller than the active MTU plus wire overhead. | Cap the initial NSCC congestion window for RoCEv2 experiments. | <code>UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc UIB_ROCEV2_NSCC_MAX_WND=65536 app</code> |
 
 ## Stress benchmark executable
 

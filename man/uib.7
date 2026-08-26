@@ -1333,6 +1333,24 @@ Parameter \fBattr\fP: Queue pair attributes
 .br
 Return value: A pointer to the new object on success, or NULL on failure.
 .TP
+.B uib_rocev2_qp_init
+int uib_rocev2_qp_init(struct uib_qp *qp);
+.br
+Initialize RoCEv2\-specific QP state.
+.br
+Parameter \fBqp\fP: Queue pair
+.br
+Return value: 0 on success or a negative error code on failure.
+.TP
+.B uib_rocev2_qp_modified
+void uib_rocev2_qp_modified(struct uib_qp *qp, int attr_mask);
+.br
+Refresh RoCEv2 state after a QP change.
+.br
+Parameter \fBqp\fP: Queue pair
+.br
+Parameter \fBattr_mask\fP: Bitmask selecting the modified attributes
+.TP
 .B uib_rocev2_qp_fini
 void uib_rocev2_qp_fini(struct uib_qp *qp);
 .br
@@ -2343,6 +2361,25 @@ Default: Unset and disabled.
 Accepted values: Any non\-empty value enables logging.
 .br
 Example: \fBUIB_PROTOCOL=uet UIB_UET_DEBUG=1 ./tests/loopback\fP
+.SS "RoCEv2"
+.TP
+.B UIB_ROCEV2_CC
+Select the congestion\-control algorithm for RoCEv2 RC queue pairs. Use none for the traditional unlimited sender baseline.
+.br
+Default: none
+.br
+Accepted values: nscc, none, or a name registered with uib_congestion_register()
+.br
+Example: \fBUIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc app\fP
+.TP
+.B UIB_ROCEV2_NSCC_MAX_WND
+Cap the initial NSCC congestion window for RoCEv2 experiments.
+.br
+Default: The maximum window calculated by NSCC configuration.
+.br
+Accepted values: A byte count no smaller than the active MTU plus wire overhead.
+.br
+Example: \fBUIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc UIB_ROCEV2_NSCC_MAX_WND=65536 app\fP
 .SS "Stress benchmark executable"
 .TP
 .B UIB_BENCH_PROTOCOL
