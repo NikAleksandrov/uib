@@ -515,6 +515,10 @@ only one communication, protocol, and network-condition overlay.
 | `infrastructure.kernel` | Non-empty path | Kernel selected by a virtme profile |
 | `infrastructure.kubernetesContext` | Context name | Existing Kubernetes target |
 | `infrastructure.allowExistingMutations` | `true`, `false` | Permit explicitly requested shaping on existing hardware |
+| `virtme.mode` | `kind`, `multi-guest` | One guest containing Kind, or one guest per scheduler node |
+| `virtme.bridgePrefix` | 2-6 lowercase letters/digits, beginning with a letter | Prefix for the deterministic run-owned data bridge; the rendered name remains within Linux's 15-character limit |
+| `virtme.sshPortBase` | Integer 1024-65534; default `23000` | Controller SSH-forward port; worker ports are consecutive |
+| `virtme.extraKernelArguments` | List of non-empty strings | Extra `--append` arguments added separately to every generated virtme-ng command |
 | `libvirt.uri` | Libvirt connection URI | `qemu:///system` for bridge mode or `qemu:///session` for passwordless rootless mode |
 | `libvirt.pool` | Existing active storage-pool name | Pool in which run-owned overlays and cloud-init volumes are created |
 | `libvirt.networkMode` | `bridge`, `rootless` | Managed libvirt networks, or passt management plus an unprivileged multicast data plane |
@@ -624,6 +628,8 @@ nodes * processesPerNode == data * tensor * pipeline * expert
 | Slurm without model-cache/result paths, or UIB without a runtime path/data interface | Pyxis cannot provide the common mount and address contract |
 | `libvirt.networkMode: rootless` without `qemu:///session` | Rootless mode is deliberately scoped to a per-user libvirt daemon |
 | `libvirt.sshPortBase + nodes.workers` above 65535 | The controller and every worker need a valid consecutive forwarding port |
+| `virtme.sshPortBase + nodes.workers` above 65535 | Every persistent guest needs a valid, distinct SSH-forward port |
+| Multi-guest virtme without `network.dataInterface` | Guest provisioning and UIB binding need an explicit data NIC; the current topology uses `eth0` |
 | `libvirt.networkMode: bridge` without permission to create libvirt networks | Managed bridge/tap networking needs the normal system-libvirt network privileges |
 | libvirt Kubernetes with `networkMode: rootless` | Per-guest passt management networks cannot form the required Kubernetes control plane; use bridge mode |
 | Rootless mode for network-performance conclusions | Passt and multicast tunnels are functional transports, not an accurate model of physical fabric performance |
@@ -1658,30 +1664,56 @@ simulation/bin/uib-sim render-workload --profile real-kubernetes \
 
 ### virtme with Kind
 
-`virtme-kind` launches a selected Linux kernel, starts Kind inside that guest,
-and runs the same Helm chart. This is useful for testing io_uring, DMA-BUF,
-ZCRX, namespaces, and kernel-version compatibility.
+`virtme-kind` is the one-guest composition for a selected Linux kernel with
+Kind inside that guest. The existing `make virtme-test` gate proves one-shot
+guest execution; the persistent Kind lifecycle adapter remains pending. This
+mode is intended for io_uring, DMA-BUF, ZCRX, namespace, and kernel-version
+compatibility tests.
 
 Example overlay:
 
 ```yaml
 infrastructure:
   provider: virtme
-  mode: kind
   kernel: /boot/vmlinuz-test
-  cpu: 8
-  memory: 16Gi
+virtme:
+  mode: kind
+  bridgePrefix: uibv
+  sshPortBase: 23000
+  extraKernelArguments: [panic=1]
 cluster:
   manager: kubernetes
+nodes:
+  cpu: 8
+  memory: 16Gi
 ```
 
 ### Multiple virtme Kubernetes nodes
 
-`virtme-kubernetes` starts a control-plane guest and worker guests connected
-through explicitly owned bridge and tap devices. Each guest gets a writable
-overlay and a management and data-plane address. A pinned k3s deployment is
-the initial lightweight choice; kubeadm can replace it through the manager
-adapter.
+`virtme-kubernetes` has a deterministic topology renderer for one control
+plane and the configured worker count. It derives a run-owned Linux bridge,
+stable data addresses and MACs, consecutive loopback SSH ports, and one
+ordinary `vng --run` command per guest. Kernel, CPU, memory, and extra kernel
+arguments remain configuration values rather than script edits.
+
+```text
+simulation/bin/uib-sim render --profile virtme-kubernetes --format json \
+  > /tmp/uib-virtme.json
+simulation/backends/virtme/cluster render /tmp/uib-virtme.json \
+  --name uib-virtme-lab > /tmp/uib-virtme-topology.json
+```
+
+The rendered ownership section initially contains only the bridge. A running
+lifecycle must append exact guest PIDs, transient tap names discovered after
+launch, and writable-overlay paths before it may report readiness. Cleanup is
+allowed to act only on those recorded resources.
+
+The installed virtme-ng 1.35 passes the existing one-shot guest tests and
+renders the required bridge and SSH NICs. Persistent SSH control did not exit
+reliably under the current execution wrapper, so multi-guest `up` remains
+gated instead of silently falling back to Kind or libvirt. Once that gate
+passes, the pinned k3s manager used by libvirt can provision the rendered
+guests over `eth0`.
 
 ### OpenTofu and libvirt Kubernetes
 
@@ -3240,6 +3272,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in network condition renders to the expected `tc netem` command; unsafe interfaces and invalid combinations are rejected; it does not modify a qdisc |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | RoCEv2 and UET SEND and RDMA read/write complete with actual netem conditions and built-in or plugin congestion control; the UET cases also cover atomics |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
+| `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Deterministic bridge ownership, IPv4 addresses, unique MACs, consecutive SSH ports, node sizing, selected kernel, separate kernel arguments, exact virtme-ng launch vectors, cleanup target, and unsafe configuration rejection |
 | `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge/rootless VM rendering; Slurm and bridge-only Kubernetes playbook selection; pinned k3s inputs, non-logged join token, kubeconfig export, cached-image verification, worker network evidence, Slurm remote lifecycle, exclusive ownership, and exact-state cleanup with fake standard commands |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, SSH/SCP, passt, NFS-capable Ubuntu guests, roughly 12 GiB memory for the default three VMs, and download access on the first run | Actual controller/two-worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, ordinary worker tasks, cross-VM standard RC payload through UIB, remote batch submission and status, two-rank pinned OCI execution with portable UIB preflight, result collection, state-based destruction, and domain/pool absence; no NCCL or GPU claim |
@@ -3255,13 +3288,14 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, admission, two-node torchrun rendezvous, distinct placement, UIB preflight, CPU DDP result, and complete run/operator/cluster cleanup; no UIB traffic |
 | `make simulation-kuberay-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, roughly 10 GB of image storage, four CPU cores and 8 GiB for the Ray head; network access for uncached images, source archives, chart, and model revision | Required actual two-worker UIB verbs traffic, portable-runtime compatibility, KubeRay v1.6.2 admission and Ray 2.58.0 readiness, offline cached SmolLM2 inference, four-result correctness, retained evidence, and complete cleanup; the single-rank inference portion itself sends no UIB traffic |
 
-Run the nine hardware-neutral gates:
+Run the ten hardware-neutral gates:
 
 ```text
 make simulation-cli-test
 make simulation-netem-test
 make simulation-congestion-test
 make simulation-kind-test
+make simulation-virtme-backend-test
 make simulation-libvirt-test
 make simulation-kubernetes-render-test
 make simulation-slurm-render-test
@@ -3671,8 +3705,9 @@ Every resource receives a run ID and is written to an ownership ledger as soon
 as it is created.
 
 - Kind deletes only the recorded cluster name.
-- virtme stops only recorded PIDs and deletes recorded taps, bridges, overlays,
-  and temporary roots.
+- The promoted virtme lifecycle may stop only recorded PIDs and delete
+  recorded taps, bridges, overlays, and temporary roots. Its current renderer
+  performs no host mutation.
 - libvirt cleanup uses the run's OpenTofu state and `tofu destroy`.
 - existing Kubernetes cleanup deletes only run-owned namespaced resources.
 - Slurm cleanup cancels only recorded job IDs.
