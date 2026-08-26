@@ -92,8 +92,8 @@ topology.
 | `make simulation-libvirt-inference-e2e-test` | CPU with KVM | No | The same UIB gate plus real offline SmolLM2 serving from a staged image and dynamic model cache through Slurm/Pyxis/Enroot; one serving task has no collective traffic |
 | `make nccl-test` | One NVIDIA GPU with local MPS support | No | Two local ranks send host-staged NCCL traffic through UIB |
 | `make training-uib-test` | One NVIDIA GPU with local MPS support | No | Unmodified two-rank PyTorch DDP sends gradient traffic through UIB |
-| UCX verbs transport gate | CPU | No | Two local processes exchange data through UCX's verbs transport and UIB, with TCP and shared-memory transports excluded |
-| libfabric verbs provider gate | CPU | No | `fi_info` and multi-process fabtests select `verbs` or `ofi_rxm;verbs` through UIB, with sockets/tcp providers excluded |
+| UCX verbs transport gate | CPU | No | Two local processes exchange tag traffic through UCX `ud_verbs/uib0:1`, with TCP and shared-memory transports excluded |
+| libfabric verbs provider gate | CPU | No | `fi_info` discovers `uib0-dgram`, then a two-process data-integrity fabtest uses `verbs;ofi_rxd`; sockets/tcp providers are excluded |
 | RCCL local collective gate | At least two AMD GPUs | No | Two local RCCL ranks exchange host-staged collective traffic through UIB; this is functional, not multi-node validation |
 | Multi-GPU training gate | At least two GPUs in one node | No | DDP or FSDP sharding across distinct GPUs; not node-to-node behavior |
 | Two-node NCCL promotion gate | GPU on each of at least two nodes | **Yes** | Host-staged NCCL traffic through UIB across physical nodes; required for L1 |
@@ -267,8 +267,9 @@ of NCCL, RCCL, UCX, or libfabric; the verbs implementation beneath it is:
 
 NCCL and RCCL share many `NCCL_*` configuration names but remain separate
 validation stacks: NVIDIA CUDA/NCCL results cannot satisfy an AMD ROCm/RCCL
-gate. UCX must select a verbs transport, and libfabric must select `verbs` or
-`ofi_rxm;verbs`; TCP, sockets, shared-memory, and vendor-direct fallbacks are
+gate. UCX must select a verbs transport. The currently validated libfabric
+chain is `verbs;ofi_rxd`, which layers an RDM endpoint over UIB's verbs UD
+endpoint. TCP, sockets, shared-memory, and vendor-direct fallbacks are
 failures for a UIB compatibility result.
 
 A native collective network plugin could be another adapter, but it would be
@@ -566,7 +567,7 @@ only one communication, protocol, and network-condition overlay.
 | `communication.nccl.environment`, `.rccl.environment` | Scalar map with `NCCL_` or `RCCL_` names | Advanced collective settings; transport-selection variables are adapter-owned |
 | `communication.ucx.transports` | Non-empty list, normally `rc`, `ud` | Explicit UCX verbs transports |
 | `communication.ucx.device` | Device and port, normally `uib0:1` | Exact UCX device |
-| `communication.libfabric.provider` | `verbs`, `ofi_rxm;verbs` | Exact OFI provider chain |
+| `communication.libfabric.provider` | `verbs`, `verbs;ofi_rxd` | Exact OFI provider chain; the local RDM gate uses `verbs;ofi_rxd` |
 
 The communication overlay removes settings for other front ends from the
 resolved file. This prevents stale NCCL values from appearing in an UCX run or
@@ -686,7 +687,7 @@ simulation/bin/uib-sim render --profile virtme-kubernetes \
   --overlay network/lossy
 ```
 
-libfabric RxM/verbs with reordering:
+libfabric RxD/verbs with reordering:
 
 ```text
 simulation/bin/uib-sim render --profile libvirt-kubernetes \
@@ -802,36 +803,43 @@ and [NCCL environment documentation](https://docs.nvidia.com/deeplearning/nccl/u
 
 ### UCX and libfabric
 
-The UCX gate runs `ucx_info -d` and `ucx_perftest` with only the verbs-backed
-transport enabled. The libfabric gate runs `fi_info -p verbs`, then fabtests
-with `FI_PROVIDER=verbs` and `FI_PROVIDER=ofi_rxm;verbs`. Logs must name
-`uib0`, UIB's library must appear in the process map, and any TCP, sockets,
-shared-memory, or vendor-direct data path fails the gate.
+`make ucx-libfabric-test` is an actual two-process data-path gate. With UCX
+1.18.1 it runs tag latency through `ud_verbs/uib0:1`. With libfabric 2.1.0 it
+discovers `uib0-dgram`, layers the standard RxD utility provider over verbs,
+and runs `fi_rdm_pingpong` with data-integrity checking at 1, 64, and 1024
+bytes. The test requires the expected provider names in the logs and rejects
+TCP, sockets, shared-memory, and vendor-direct fallbacks.
 
-These gates require more than symbol loading. UCX exercises device discovery,
-memory registration, completion channels, address-vector behavior, atomics,
-and error handling. The libfabric verbs provider also uses `librdmacm` for
-connection management. The implementation sequence therefore inventories the
-exact calls from pinned UCX/libfabric builds, adds missing semantics, tests
-local namespace pairs, and finally repeats the same binaries on two physical
-nodes. Until that sequence passes, UCX and libfabric support remains planned.
+The gate added the verbs semantics those front ends exercised: address
+handles, UD send/receive and GRH handling, `sq_sig_all`, bounded inline sends,
+QP capability queries, ECE rejection, and clean rejection of EFA-specific
+queries. This is local CPU compatibility evidence. UCX stream/RMA/atomic
+coverage, libfabric direct DGRAM coverage, and physical-node repetition remain
+separate promotion gates.
 
-Use explicit selectors in a diagnostic run:
+Both front ends inspect `/dev/infiniband/uib0` before opening the user-space
+device. It must be a readable and writable character device. UIB maps
+`/dev/null` there as a discovery anchor; data does not flow through that file.
+The local wrapper, Kubernetes renderer, and Slurm/Pyxis renderer create the
+appropriate mapping automatically. See the
+[transparent-verbs guide](transparent-verbs.md#character-device-anchor-for-ucx-and-libfabric)
+for direct-container and host commands.
+
+The selectors used by the gate are:
 
 ```text
 UCX_TLS=rc,ud UCX_NET_DEVICES=uib0:1 \
 LD_PRELOAD=/opt/uib/lib/libuibv.so ucx_perftest <peer>
 
-FI_PROVIDER=verbs LD_PRELOAD=/opt/uib/lib/libuibv.so \
-fi_pingpong <peer>
-
-FI_PROVIDER='ofi_rxm;verbs' LD_PRELOAD=/opt/uib/lib/libuibv.so \
-fi_rdm_pingpong <peer>
+FI_PROVIDER='verbs;ofi_rxd' FI_VERBS_DGRAM_USE_NAME_SERVER=0 \
+LD_PRELOAD=/opt/uib/lib/libuibv.so \
+fi_rdm_pingpong -p 'verbs;ofi_rxd' -d uib0-dgram -b <peer>
 ```
 
-The exact UCX transport list is taken from `ucx_info -d` for the pinned
-release; a configuration is rejected if it accidentally retains `tcp`,
-`self`, `posix`, `sysv`, or another non-verbs data transport.
+RxD is used because UIB currently exposes a verbs DGRAM endpoint and does not
+provide the IPoIB plus `librdmacm` path required by the verbs MSG/RxM chain.
+The exact UCX transport is taken from `ucx_info -d`; a result fails if it
+selects `tcp`, `self`, `posix`, `sysv`, `cma`, or another non-verbs data path.
 
 ### RCCL
 
@@ -961,6 +969,13 @@ Three distribution methods are supported:
    same derived image; only environment selection differs.
 
 No method overwrites the host's system libibverbs installation.
+
+UCX and libfabric additionally require `/dev/infiniband/uib0` to exist as a
+readable and writable character device for their pre-open checks. The
+Kubernetes adapter mounts a `/dev/null` `hostPath` at that path, and the Slurm
+adapter adds `/dev/null:/dev/infiniband/uib0` to the Pyxis mounts. This anchor
+is configuration metadata only; all verbs and data operations still go
+through `libuibv.so` and UIB.
 
 Native baseline:
 
@@ -1231,10 +1246,10 @@ compatibility work.
    ordering, completion, timeout, and fallback regressions in disposable jobs
    without reserving scarce RDMA lab hardware. A final real-hardware gate is
    still required for provider-specific behavior and performance.
-3. **MPI, UCX, and libfabric compatibility testing.** UCX and libfabric both
-   have verbs-backed transports, so they can broaden coverage to MPI, PGAS,
-   RMA, and other HPC software after UIB implements their queried verbs,
-   connection-management, atomic, and event semantics.
+3. **MPI, UCX, and libfabric compatibility testing.** The validated local UCX
+   tag and libfabric RxD/RDM paths broaden CPU compatibility coverage. MPI,
+   PGAS, RMA, atomics, connection-managed endpoints, and physical-node runs
+   remain distinct promotion targets.
 4. **Repeatable protocol, congestion, and failure experiments.** Compare
    RoCEv2 and Ultra Ethernet behavior with controlled latency, loss,
    reordering, ECN, multipath, and rank failure while preserving a normal
@@ -2804,7 +2819,9 @@ to:
 ```yaml
 communication:
   frontend: libfabric
-  provider: "ofi_rxm;verbs"
+  transportAllowlist: ["verbs;ofi_rxd"]
+  libfabric:
+    provider: "verbs;ofi_rxd"
 ```
 
 This swaps the communication API and therefore is not the same application
@@ -3403,7 +3420,7 @@ not the UIB data plane.
 | `make provider-nccl-abi-test` | libibverbs development files | The provider exposes the versioned ABI and calls NCCL's required verbs entry points; no GPU is used |
 | `make nccl-test` | NVIDIA GPU and driver, CUDA MPS, MPI, `nccl-tests` `all_reduce_perf`, `setpriv`, `unshare`, and `timeout` | Two local NCCL ranks use `libuibv.so`, the NCCL IB network, and UIB traffic; Socket fallback and data errors fail the test |
 | `make rccl-test` | At least two accessible AMD GPU ranks, ROCm/RCCL, MPI-enabled `rccl-tests`, `rocminfo`, `setpriv`, `unshare`, and `timeout` | Two or more local RCCL ranks select the IB network through UIB without Socket fallback |
-| `make ucx-libfabric-test` | `ucx_info`, `ucx_perftest`, `fi_info`, `fi_pingpong`, `fi_rdm_pingpong`, and `timeout` | Actual two-process UCX tag traffic over `rc`/`ud` and libfabric message/RDM traffic over verbs; TCP, shared-memory, and sockets fallbacks fail the test |
+| `make ucx-libfabric-test` | UCX 1.18.1-compatible `ucx_info`/`ucx_perftest`, libfabric/fabtests 2.1.0-compatible `fi_info`/`fi_rdm_pingpong`, `timeout`, and permission to expose the character-device anchor | Actual two-process UCX tag traffic over `ud_verbs/uib0:1` and data-checked libfabric RDM traffic over `verbs;ofi_rxd`; TCP, shared-memory, sockets, and native-verbs fallbacks fail the test |
 
 NCCL options:
 
@@ -3438,6 +3455,7 @@ UCX/libfabric options:
 | `COMM_TEST_ITERATIONS` | `100` | UCX performance-test iterations |
 | `COMM_TEST_TIMEOUT` | `30` | Timeout in seconds for each client or server |
 | `COMM_TEST_BIND_PORT` | `19800` | UIB and UCX test port |
+| `COMM_TEST_MESSAGE_SIZES` | `l:1,64,1024` | Fabtests `-S` size expression; the default checks three payload sizes |
 
 Examples:
 
@@ -3449,13 +3467,15 @@ RCCL_TESTS_BIN=/opt/rccl-tests/build/all_reduce_perf \
 RCCL_TEST_RANKS=4 HIP_VISIBLE_DEVICES=0,1,2,3 make rccl-test
 
 COMM_TEST_ITERATIONS=1000 COMM_TEST_TIMEOUT=60 \
+COMM_TEST_MESSAGE_SIZES=l:1,256,4096 \
 make ucx-libfabric-test
 ```
 
 `nccl-test` intentionally uses two ranks on one GPU through MPS. That is real
 NCCL/UIB traffic, but not multi-GPU or multi-node validation. `rccl-test`
 requires AMD hardware and was not run on the NVIDIA-only development host.
-The UCX/libfabric gate was not run there because those tools were unavailable.
+The UCX/libfabric gate passed locally; it remains to be repeated between
+physical nodes and expanded beyond the validated tag/RDM subsets.
 
 ### Training tests
 
@@ -3599,8 +3619,10 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 - UIB's versioned NCCL loader ABI and a two-rank, host-staged NCCL all-reduce
   are covered by repository tests. The actual collective test is opt-in
   because it requires CUDA, NCCL, MPI, MPS, a GPU, and UTS namespace access.
-- UCX/libfabric and RCCL compatibility gates are specified but have not yet
-  passed. UIB does not currently claim transparent compatibility with them.
+- UCX tag traffic over `ud_verbs` and libfabric RDM traffic over
+  `verbs;ofi_rxd` passed the local CPU gate. This does not yet claim UCX
+  stream/RMA/atomics, libfabric MSG/RxM, MPI integration, or physical-node
+  qualification. RCCL remains unvalidated until AMD hardware is available.
 - The congestion-control registry and UET/NSCC adapter are implemented.
   RoCEv2 admission and feedback integration is still planned.
 - Kind and CPU-only virtme/libvirt profiles do not validate real GPU

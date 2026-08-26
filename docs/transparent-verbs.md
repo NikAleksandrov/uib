@@ -15,6 +15,7 @@ library forwards supported calls to the system libibverbs implementation.
 - [Terminology](#terminology)
 - [How transparent loading works](#how-transparent-loading-works)
 - [Build and verify the provider](#build-and-verify-the-provider)
+- [Character-device anchor for UCX and libfabric](#character-device-anchor-for-ucx-and-libfabric)
 - [Loading UIB from NCCL](#loading-uib-from-nccl)
 - [Minimal UIB-to-UIB example](#minimal-uib-to-uib-example)
 - [Settings needed for transparent operation](#settings-needed-for-transparent-operation)
@@ -100,6 +101,53 @@ The last command should list `uib0`. Use an absolute `LD_PRELOAD` path in
 services, containers, remote shells, and scripts; their working directory may
 not be the source tree.
 
+## Character-device anchor for UCX and libfabric
+
+UCX and the libfabric verbs provider check the kernel-facing device path
+`/dev/infiniband/uib0` before opening the verbs device. They require that path
+to exist as a readable and writable character device. UIB supplies `uib0` in
+user space, so it does not naturally have the kernel character device those
+checks expect.
+
+For transparent UCX or libfabric testing, expose `/dev/null` at
+`/dev/infiniband/uib0`. This is only a device-discovery anchor: neither UCX nor
+libfabric sends data through `/dev/null`. Their subsequent libibverbs calls are
+interposed by `libuibv.so`, and UIB carries the data traffic.
+
+The repository wrapper creates a temporary bind mount when needed, runs the
+command, and removes only the mount and path it created:
+
+```sh
+sudo ./simulation/runtime/with-device-anchor \
+    env LD_PRELOAD="$PWD/libuibv.so" ucx_info -d
+```
+
+`make ucx-libfabric-test` invokes this wrapper automatically. Root or mount
+capability is needed only when the anchor does not already exist. The source
+and target can be changed for an unusual environment with
+`DEVICE_ANCHOR_SOURCE` and `DEVICE_ANCHOR_PATH`.
+
+For a direct container run, map the character device into the container:
+
+```sh
+docker run --rm \
+    --device=/dev/null:/dev/infiniband/uib0:rw \
+    -v /absolute/path/to/uib:/opt/uib:ro \
+    -e LD_PRELOAD=/opt/uib/libuibv.so \
+    image command arguments
+```
+
+The simulation adapters add the equivalent mapping automatically when UIB is
+enabled and `communication.frontend` is `ucx` or `libfabric`:
+
+- Kubernetes uses a `hostPath` from `/dev/null` to
+  `/dev/infiniband/uib0`.
+- Slurm/Pyxis adds `/dev/null:/dev/infiniband/uib0` to the Enroot mounts.
+
+If a cluster policy forbids host device mounts, the UCX/libfabric transparent
+profile cannot run until that policy permits this character-device
+anchor. NCCL does not perform this path check and does not need the anchor.
+
 ## Loading UIB from NCCL
 
 Current NCCL releases can open a verbs library directly instead of relying
@@ -125,10 +173,10 @@ provides a pollable, blocking asynchronous-event descriptor for every `uib0`
 context. UIB does not currently produce device or port transition events, so
 the descriptor normally remains idle.
 
-The optional `ibv_query_ece()`, `ibv_set_ece()`, and
-`ibv_query_port_speed()` helpers are not exported yet. NCCL treats their
-absence as a disabled optional capability; UIB does not provide success stubs
-that could falsely advertise ECE or extended port-speed support.
+UIB exports `ibv_query_ece()` and `ibv_set_ece()` at `IBVERBS_1.10` and
+returns `EOPNOTSUPP`, so applications receive an explicit unsupported result
+instead of a false success. `ibv_query_port_speed()` is not exported. NCCL
+treats these as optional capabilities.
 
 Check the loader contract without installing NCCL:
 
@@ -313,6 +361,8 @@ Important compatibility details are:
   device. The GID is an IPv4-mapped address derived from `UIB_BIND_IP`.
 - UIB's common transparent data path is RC. It supports SEND/RECV, RDMA WRITE,
   RDMA READ, immediate data, and standard 64-bit fetch-add and compare-swap.
+- UD queue pairs support address handles and SEND/RECV, including the receive
+  GRH prefix required by UCX and the libfabric verbs provider.
 - Host memory registered with `ibv_reg_mr_iova()` or `ibv_reg_mr_iova2()` must
   use the process virtual address as its IOVA. A different host-memory IOVA is
   rejected.
@@ -384,12 +434,15 @@ UIB includes tests using unmodified rdma-core tools:
 make uib-tools-test
 make uet-tools-test
 make rxe-tools-test
+make ucx-libfabric-test
 ```
 
 `uib-tools-test` and `uet-tools-test` run `ibv_rc_pingpong` between two UIB
 network namespaces. `rxe-tools-test` runs the UIB preload provider against a
 kernel RXE peer in raw RoCEv2 mode. The RXE test needs the appropriate kernel
-modules and administrative network privileges.
+modules and administrative network privileges. `ucx-libfabric-test` runs
+actual two-process UCX tag traffic over `ud_verbs` and libfabric RDM traffic
+over `verbs;ofi_rxd`, with payload checking and fallback rejection.
 
 ## Verbs hooked by `libuibv.so`
 
@@ -419,6 +472,8 @@ Device and QP queries:
 - `ibv_query_gid()`
 - `ibv_query_pkey()`
 - `ibv_query_qp()`
+- `ibv_query_ece()`
+- `ibv_set_ece()`
 
 Protection domains and memory regions:
 
@@ -445,6 +500,11 @@ Queue pairs:
 - `ibv_modify_qp()`
 - `ibv_destroy_qp()`
 
+Address handles:
+
+- `ibv_create_ah()`
+- `ibv_destroy_ah()`
+
 Four common data-path verbs are normally inline libibverbs wrappers rather
 than exported functions. UIB hooks them through the operation table installed
 in the `uib0` context:
@@ -453,3 +513,6 @@ in the `uib0` context:
 - `ibv_post_recv()`
 - `ibv_poll_cq()`
 - `ibv_req_notify_cq()`
+
+UIB also interposes `efadv_query_device()` so the EFA libfabric provider can
+reject `uib0` cleanly instead of treating it as an EFA context.
