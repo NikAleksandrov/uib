@@ -34,17 +34,20 @@ mkdir "$test_dir/fakes"
 cp "$project_dir/tests/fakes/virtme/ssh-keygen" "$test_dir/fakes/ssh-keygen"
 cp "$project_dir/tests/fakes/virtme/vng" "$test_dir/fakes/vng"
 cp "$project_dir/tests/fakes/virtme/ssh" "$test_dir/fakes/ssh"
+cp "$project_dir/tests/fakes/virtme/k3s" "$test_dir/fakes/k3s"
 cp "$project_dir/tests/fakes/virtme/ip" "$test_dir/fakes/ip"
 chmod +x "$test_dir/fakes/ssh-keygen" "$test_dir/fakes/vng" \
-	"$test_dir/fakes/ssh" "$test_dir/fakes/ip"
+	"$test_dir/fakes/ssh" "$test_dir/fakes/ip" "$test_dir/fakes/k3s"
 
 export SSH_KEYGEN_COMMAND=$test_dir/fakes/ssh-keygen
 export VNG_COMMAND=$test_dir/fakes/vng
 export SSH_COMMAND=$test_dir/fakes/ssh
 export IP_COMMAND=$test_dir/fakes/ip
+export K3S_BINARY=$test_dir/fakes/k3s
 export VIRTME_SSH_WAIT=2
 export VIRTME_TEST_VNG_LOG=$test_dir/vng.log
 export VIRTME_TEST_IP_LOG=$test_dir/ip.log
+export VIRTME_API_FORWARD_CHECK_COMMAND=/bin/true
 
 "$cli" up --profile virtme-kubernetes --run-id virtme-lifecycle \
 	--state-dir "$test_dir/runs" > /dev/null
@@ -52,6 +55,10 @@ export VIRTME_TEST_IP_LOG=$test_dir/ip.log
 	--state-dir "$test_dir/runs" > "$test_dir/status.json"
 python3 "$project_dir/tests/cases/virtme_backend/kernel_topology.py" "$test_dir/runs/virtme-lifecycle/infrastructure" \
 	"$test_dir/status.json"
+"$cli" kubeconfig --profile virtme-kubernetes --run-id virtme-lifecycle \
+	--state-dir "$test_dir/runs" > "$test_dir/exported-kubeconfig"
+grep -q 'server: https://127.0.0.1:23003' \
+	"$test_dir/exported-kubeconfig"
 "$cli" down --profile virtme-kubernetes --run-id virtme-lifecycle \
 	--state-dir "$test_dir/runs"
 python3 "$project_dir/tests/cases/virtme_backend/lifecycle_status.py" "$test_dir/runs/virtme-lifecycle/infrastructure/ledger.json"

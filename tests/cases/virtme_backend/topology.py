@@ -15,6 +15,7 @@ assert network["type"] == "qemu-socket"
 assert network["multicastAddress"].startswith("239.255.")
 assert 30000 <= network["multicastPort"] < 50000
 assert network["dataInterface"] == "eth1"
+assert topology["kubernetesApiPort"] == 23003
 guests = topology["guests"]
 assert sorted(guests) == ["controller", "worker-01", "worker-02"]
 assert guests["controller"]["dataAddress"] == "198.51.100.10"

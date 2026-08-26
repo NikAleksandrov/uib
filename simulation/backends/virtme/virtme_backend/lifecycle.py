@@ -26,10 +26,11 @@ def command_render(args):
 
 
 def command_up(args):
+    from .artifacts import acquire_k3s
     from .core import VirtmeError, executable, load_config, validate_name, write_json
-    from .kubernetes import inventory
+    from .kubernetes import inventory, provision_kubernetes, write_kubeconfig
     from .network import create_network, delete_network
-    from .processes import launch_guest, terminate_process, wait_for_ssh
+    from .processes import launch_api_forward, launch_guest, terminate_process, wait_for_ssh
     from .topology import topology
 
     validate_name(args.name)
@@ -68,6 +69,10 @@ def command_up(args):
         public_key = key.with_suffix(".pub")
         vng = executable("VNG_COMMAND", "vng")
         ssh = executable("SSH_COMMAND", "ssh")
+        k3s = None
+        if config["cluster"]["manager"] == "kubernetes":
+            cache = pathlib.Path(args.cache_dir).expanduser().resolve()
+            k3s = acquire_k3s(config, cache)
         network_created = create_network(topology_value["network"])
         logs = state / "logs"
         logs.mkdir()
@@ -85,6 +90,21 @@ def command_up(args):
             wait_for_ssh(ssh, key, guest, process, logs / f"{name}.log")
         write_json(state / "inventory.json", inventory(
             topology_value, key, config["cluster"]["manager"]))
+        if k3s:
+            ledger["state"] = "provisioning"
+            write_json(ledger_path, ledger)
+            kubeconfig_value = provision_kubernetes(
+                config, topology_value, ssh, key, k3s)
+            forward = launch_api_forward(
+                ssh, key, topology_value["guests"]["controller"],
+                topology_value["kubernetesApiPort"],
+                logs / "kubernetes-api-forward.log")
+            processes.append(forward)
+            topology_value["ownership"]["processes"] = processes
+            write_json(state / "topology.json", topology_value)
+            kubeconfig = write_kubeconfig(
+                state, kubeconfig_value, topology_value["kubernetesApiPort"])
+            ledger["kubeconfig"] = kubeconfig.name
         ledger["state"] = "ready"
         ledger["topology"] = "topology.json"
         ledger["inventory"] = "inventory.json"
@@ -117,20 +137,45 @@ def command_status(args):
     topology_value = read_json(state / "topology.json", "virtme topology")
     processes = topology_value.get("ownership", {}).get("processes", [])
     expected = len(topology_value.get("guests", {}))
-    live = sum(1 for process in processes if owned_process_alive(process))
+    guests = [process for process in processes
+              if process.get("node") != "kubernetes-api-forward"]
+    live = sum(1 for process in guests if owned_process_alive(process))
+    forward = next((process for process in processes
+                    if process.get("node") == "kubernetes-api-forward"), None)
+    needs_forward = ledger.get("clusterManager") == "kubernetes"
+    forward_ready = (not needs_forward if forward is None
+                     else owned_process_alive(forward))
     report = {
         "runId": args.name,
         "provider": "virtme",
         "state": ledger["state"],
         "guests": expected,
-        "recordedGuests": len(processes),
+        "recordedGuests": len(guests),
         "liveGuests": live,
     }
+    if needs_forward:
+        report["kubernetesApiForward"] = forward_ready
     if (ledger["state"] == "ready" and
-            (len(processes) != expected or live != expected)):
+            (len(guests) != expected or live != expected or not forward_ready)):
         report["state"] = "degraded"
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["state"] == "ready" else 1
+
+
+def command_kubeconfig(args):
+    from .core import VirtmeError, validate_name
+
+    validate_name(args.name)
+    state = pathlib.Path(args.state_dir).expanduser().resolve()
+    unused, ledger = load_ledger(state, args.name)
+    if (ledger.get("clusterManager") != "kubernetes" or
+            ledger.get("state") != "ready" or
+            ledger.get("kubeconfig") != "kubeconfig"):
+        raise VirtmeError("the owned virtme Kubernetes cluster is not ready")
+    try:
+        print((state / "kubeconfig").read_text(encoding="utf-8"), end="")
+    except OSError as error:
+        raise VirtmeError(f"cannot read Kubernetes configuration: {error}") from error
 
 
 def command_down(args):

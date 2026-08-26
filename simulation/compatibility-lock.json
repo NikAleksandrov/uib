@@ -84,12 +84,14 @@
         }
       },
       "virtme": {
-        "status": "single-guest-and-rootless-multi-guest-data-plane-validated",
+        "status": "rootless-multi-guest-kubernetes-validated",
         "cliVersion": "1.35",
         "singleGuestTestTarget": "make virtme-test",
         "multiGuestTestTarget": "make simulation-virtme-backend-test",
         "multiGuestControl": "validated-tcp-ssh-with-run-owned-key",
         "rootlessDataPlane": "validated-two-guest-qemu-socket-ping",
+        "kubernetes": "validated-two-guest-k3s-lifecycle",
+        "kubernetesTestTarget": "make simulation-virtme-kubernetes-e2e-test",
         "bridgeDataPlane": "rendered-and-mocked-lifecycle",
         "intendedValidationLevel": "L0"
       },

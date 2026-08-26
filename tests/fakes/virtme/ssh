@@ -1,3 +1,40 @@
 #!/bin/sh
 # SPDX-License-Identifier: Apache-2.0
+set -eu
+command=
+forward=
+next_is_forward=false
+for argument in "$@"; do
+	command=$argument
+	if test "$next_is_forward" = true; then
+		forward=$argument
+		next_is_forward=false
+	elif test "$argument" = -L; then
+		next_is_forward=true
+	fi
+done
+if test -n "$forward"; then
+	trap 'exit 0' INT TERM
+	while :; do
+		sleep 1
+	done
+fi
+case "$command" in
+*'get nodes -o name'*)
+	printf '%s\n' node/controller node/worker-01 node/worker-02
+	;;
+*'config view --raw'*)
+	cat <<'CONFIG'
+apiVersion: v1
+clusters:
+- cluster:
+    server: https://127.0.0.1:6443
+  name: default
+contexts: []
+current-context: ""
+kind: Config
+users: []
+CONFIG
+	;;
+esac
 exit 0

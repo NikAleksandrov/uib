@@ -4,6 +4,7 @@ import os
 import pathlib
 import shlex
 import signal
+import socket
 import subprocess
 import time
 
@@ -102,6 +103,27 @@ def wait_for_ssh(ssh, key, guest, process, log):
         f"SSH did not become ready for {guest['hostname']}; inspect {log}")
 
 
+def remote_command(ssh, key, guest, command, capture=False, check=True,
+                   timeout=30):
+    from .core import VirtmeError
+
+    try:
+        result = subprocess.run(
+            ssh_command(ssh, key, guest["sshPort"], command),
+            text=True, stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        if check:
+            raise VirtmeError(
+                f"cannot run command on {guest['hostname']}: {error}") from error
+        return None
+    if check and result.returncode:
+        raise VirtmeError(
+            f"remote command failed on {guest['hostname']} with status "
+            f"{result.returncode}")
+    return result
+
+
 def launch_guest(vng, config, guest, public_key, log):
     from .core import VirtmeError
 
@@ -133,3 +155,61 @@ def launch_guest(vng, config, guest, public_key, log):
         "startTime": start,
         "log": log.name,
     }
+
+
+def launch_api_forward(ssh, key, controller, port, log):
+    from .core import VirtmeError
+
+    command = [
+        ssh,
+        "-i", str(key),
+        "-o", "BatchMode=yes",
+        "-o", "IdentitiesOnly=yes",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "ServerAliveInterval=10",
+        "-N",
+        "-L", f"127.0.0.1:{port}:127.0.0.1:6443",
+        "-p", str(controller["sshPort"]),
+        "root@127.0.0.1",
+    ]
+    try:
+        with log.open("x", encoding="utf-8") as output:
+            child = subprocess.Popen(
+                command, stdin=subprocess.DEVNULL, stdout=output, stderr=output,
+                start_new_session=True)
+    except OSError as error:
+        raise VirtmeError(f"cannot launch Kubernetes API forward: {error}") from error
+    process = {
+        "node": "kubernetes-api-forward",
+        "pid": child.pid,
+        "startTime": process_start_time(child.pid) or "",
+        "log": log.name,
+    }
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if not owned_process_alive(process):
+            raise VirtmeError(
+                f"Kubernetes API forward exited; inspect {log}")
+        checker = os.environ.get("VIRTME_API_FORWARD_CHECK_COMMAND")
+        if checker:
+            try:
+                result = subprocess.run(
+                    [checker, str(port)], stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, check=False)
+            except OSError as error:
+                raise VirtmeError(
+                    f"cannot check Kubernetes API forward: {error}") from error
+            if result.returncode == 0:
+                return process
+        else:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    return process
+            except OSError:
+                pass
+        time.sleep(0.2)
+    terminate_process(process)
+    raise VirtmeError("Kubernetes API forward did not become ready")

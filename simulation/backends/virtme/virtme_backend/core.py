@@ -12,6 +12,15 @@ import tempfile
 NAME = re.compile(r"^[a-z](?:[a-z0-9-]{1,46}[a-z0-9])$")
 
 
+BACKEND = pathlib.Path(__file__).resolve().parents[1]
+
+
+SIMULATION = BACKEND.parents[1]
+
+
+DEFAULT_CACHE = SIMULATION / ".artifacts" / "downloads" / "virtme"
+
+
 class VirtmeError(Exception):
     pass
 
@@ -30,6 +39,13 @@ def load_config(path):
         raise VirtmeError("configuration has no virtme settings")
     if config["virtme"]["mode"] != "multi-guest":
         raise VirtmeError("the topology renderer requires multi-guest mode")
+    if config.get("cluster", {}).get("manager") == "kubernetes":
+        if config.get("kubernetes", {}).get("distribution") != "k3s":
+            raise VirtmeError("virtme Kubernetes requires k3s")
+        if not re.fullmatch(
+                r"v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+",
+                config["cluster"].get("version", "")):
+            raise VirtmeError("virtme k3s requires an exact release version")
     network_mode = config["virtme"]["networkMode"]
     if network_mode == "bridge" and "bridgePrefix" not in config["virtme"]:
         raise VirtmeError("virtme bridge networking requires bridgePrefix")

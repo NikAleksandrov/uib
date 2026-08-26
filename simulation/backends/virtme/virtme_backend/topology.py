@@ -27,7 +27,10 @@ def nodes(config, run_id):
                         for index in range(1, config["nodes"]["workers"] + 1))
     network = data_network(config, len(descriptions))
     port_base = config["virtme"]["sshPortBase"]
-    if port_base + config["nodes"]["workers"] > 65535:
+    last_port = port_base + config["nodes"]["workers"]
+    if config["cluster"]["manager"] == "kubernetes":
+        last_port += 1
+    if last_port > 65535:
         raise VirtmeError("virtme SSH port range exceeds 65535")
     result = {}
     for name, role, index in descriptions:
@@ -96,7 +99,8 @@ def vng_command(config, network, node):
         "--memory", f"{quantity_mib(config['nodes']['memory'])}M",
     ])
     if network["type"] == "qemu-socket":
-        command.append(f"--qemu-opts={qemu_network_options(network, node)}")
+        command.append(
+            f"--qemu-opts={qemu_network_options(network, node)}")
     else:
         command.extend([
             "--network", f"bridge={network['name']}",
@@ -116,7 +120,7 @@ def topology(config, run_id):
     guests = nodes(config, run_id)
     network = network_topology(config, run_id, len(guests))
     bridges = [network["name"]] if network["type"] == "linux-bridge" else []
-    return {
+    value = {
         "schemaVersion": 1,
         "runId": run_id,
         "provider": "virtme",
@@ -134,3 +138,8 @@ def topology(config, run_id):
             "temporaryRoots": [],
         },
     }
+    if config["cluster"]["manager"] == "kubernetes":
+        value["kubernetesApiPort"] = (
+            config["virtme"]["sshPortBase"] +
+            config["nodes"]["workers"] + 1)
+    return value

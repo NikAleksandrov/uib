@@ -144,9 +144,12 @@ def validate_infrastructure(config):
             raise ConfigurationError(
                 "virtme currently requires one control plane")
         ssh_port_base = config["virtme"]["sshPortBase"]
-        if ssh_port_base + config["nodes"]["workers"] > 65535:
+        last_port = ssh_port_base + config["nodes"]["workers"]
+        if config["cluster"]["manager"] == "kubernetes":
+            last_port += 1
+        if last_port > 65535:
             raise ConfigurationError(
-                "virtme SSH port range exceeds 65535")
+                "virtme forwarded port range exceeds 65535")
         if (config["virtme"]["mode"] == "multi-guest" and
                 not config["network"].get("dataInterface")):
             raise ConfigurationError(

@@ -156,6 +156,11 @@ def command_kubeconfig(args):
             "kubeconfig", "--name", args.run_id,
             "--state-dir", str(state_path(args) / "infrastructure"),
         ])
+    if config["infrastructure"]["provider"] == "virtme":
+        return invoke_backend(config, lambda unused: [
+            "kubeconfig", "--name", args.run_id,
+            "--state-dir", str(state_path(args) / "infrastructure"),
+        ])
     return invoke_backend(
         config, lambda unused: ["kubeconfig", "--name", args.run_id])
 
