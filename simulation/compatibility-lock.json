@@ -184,7 +184,7 @@
         "validatedOn": "2026-08-25"
       },
       "virtme": {
-        "status": "validated-multi-guest-kubernetes-and-slurm-uib-lifecycle",
+        "status": "validated-multi-guest-kubernetes-slurm-uib-netem-lifecycle",
         "virtmeNg": "1.35",
         "networkModes": ["socket", "bridge"],
         "validatedMode": "rootless-qemu-socket-ethernet",
@@ -197,13 +197,15 @@
             "enroot": "4.2.1",
             "pyxis": "0.24.0",
             "containerLayer": "validated-generated-squashfs",
-            "uibTraffic": "passed-direct-and-pyxis"
+            "uibTraffic": "passed-direct-and-pyxis",
+            "networkShaping": "validated-worker-egress-datacenter-netem"
           }
         },
         "testTargets": [
           "make simulation-virtme-backend-test",
           "make simulation-virtme-kubernetes-e2e-test",
-          "make simulation-virtme-slurm-e2e-test"
+          "make simulation-virtme-slurm-e2e-test",
+          "make simulation-virtme-netem-e2e-test"
         ],
         "validatedOn": "2026-08-26"
       }
@@ -287,9 +289,14 @@
       "containerRuntime": "generated-busybox-glibc-squashfs-passed-through-pyxis-enroot",
       "uibRuntimeBundle": "portable-glibc-2.34-ceiling",
       "uibTraffic": "32x2051-byte multi-packet RoCEv2 RC messages passed directly and through Pyxis/Enroot between distinct virtme workers with unchanged ibv_rc_pingpong",
+      "networkShaping": "datacenter condition passed on both worker data-interface egress qdiscs with nonzero traffic counters",
+      "networkEvidence": "applied command, qdisc counters, iproute2, kernel, and seed acceptance recorded per worker",
       "cleanup": "recorded guest processes terminated with PID start-time checks",
       "validationLevel": "L0",
-      "testTarget": "make simulation-virtme-slurm-e2e-test"
+      "testTargets": [
+        "make simulation-virtme-slurm-e2e-test",
+        "make simulation-virtme-netem-e2e-test"
+      ]
     },
     {
       "id": "slurm-pyxis-enroot-libvirt-rootless-cpu",

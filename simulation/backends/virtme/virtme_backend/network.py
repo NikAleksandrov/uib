@@ -1,7 +1,94 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import json
+import re
 import shlex
 import subprocess
+
+
+def apply_network_shaping(config, topology_value, ssh, key):
+    from .core import SIMULATION, VirtmeError
+    from .processes import remote_command, remote_write, worker_guests
+
+    try:
+        adapter = (SIMULATION / "network/netem").read_text(encoding="utf-8")
+    except OSError as error:
+        raise VirtmeError(f"cannot read the netem adapter: {error}") from error
+    resolved = json.dumps(config, sort_keys=True)
+    commands = {}
+    interface = config["network"]["dataInterface"]
+    for guest in worker_guests(topology_value):
+        remote_write(ssh, key, guest, "/run/uib-netem", adapter, mode="0755")
+        remote_write(
+            ssh, key, guest, "/run/uib-simulation.json", resolved)
+        result = remote_command(
+            ssh, key, guest, shlex.join([
+                "/run/uib-netem", "apply", "/run/uib-simulation.json",
+                interface, "--replace-existing",
+            ]), capture=True)
+        commands[guest["hostname"]] = result.stdout.strip()
+    return commands
+
+
+def record_network_evidence(config, topology_value, ssh, key, commands, state):
+    from .core import VirtmeError, write_json
+    from .processes import remote_command, worker_guests
+
+    shaping = config["network"]["shaping"]
+    interface = config["network"]["dataInterface"]
+    endpoints = {}
+    for guest in worker_guests(topology_value):
+        hostname = guest["hostname"]
+        qdisc = remote_command(
+            ssh, key, guest,
+            shlex.join(["/run/uib-netem", "show", interface]),
+            capture=True).stdout.strip()
+        iproute2 = remote_command(
+            ssh, key, guest, "tc -Version", capture=True).stdout.strip()
+        kernel = remote_command(
+            ssh, key, guest, "uname -r", capture=True).stdout.strip()
+        applied = commands.get(hostname, "")
+        if not all((applied, qdisc, iproute2, kernel)):
+            raise VirtmeError(
+                f"incomplete network evidence for {hostname}")
+        active = "qdisc netem " in qdisc
+        if active != shaping["enabled"]:
+            raise VirtmeError(f"unexpected qdisc state for {hostname}")
+        if active and not re.search(r"Sent [1-9][0-9]* bytes", qdisc):
+            raise VirtmeError(
+                f"network evidence has no traffic for {hostname}")
+        seed = shaping.get("seed")
+        endpoints[hostname] = {
+            "appliedCommand": applied,
+            "qdisc": qdisc,
+            "iproute2": iproute2,
+            "kernel": kernel,
+            "seedApplied": (
+                None if seed is None else f" seed {seed}" in applied),
+        }
+    path = state / "network.json"
+    write_json(path, {
+        "schemaVersion": 1,
+        "runId": topology_value["runId"],
+        "scope": "worker-data-egress",
+        "interface": interface,
+        "replaceExisting": True,
+        "shaping": shaping,
+        "endpoints": endpoints,
+    })
+    return path
+
+
+def clear_network_shaping(config, topology_value, ssh, key):
+    from .processes import remote_command, worker_guests
+
+    interface = config["network"]["dataInterface"]
+    command = (
+        "if test -x /run/uib-netem; then "
+        f"/run/uib-netem clear {shlex.quote(interface)}; fi")
+    for guest in worker_guests(topology_value):
+        remote_command(
+            ssh, key, guest, command, check=False, timeout=5)
 
 
 def run_network_command(command):

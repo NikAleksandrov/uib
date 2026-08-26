@@ -11,6 +11,7 @@ with open(os.path.join(state, "ledger.json"), encoding="utf-8") as source:
 assert ledger["state"] == "ready"
 assert ledger["provider"] == "virtme"
 assert ledger["kubeconfig"] == "kubeconfig"
+assert ledger["networkEvidence"] == "network.json"
 with open(os.path.join(state, "topology.json"), encoding="utf-8") as source:
     topology = json.load(source)
 assert len(topology["ownership"]["processes"]) == 4
@@ -18,6 +19,16 @@ assert all(item["pid"] > 1 and item["startTime"]
            for item in topology["ownership"]["processes"])
 assert topology["ownership"]["processes"][-1]["node"] == \
     "kubernetes-api-forward"
+with open(os.path.join(state, "network.json"), encoding="utf-8") as source:
+    network = json.load(source)
+assert network["scope"] == "worker-data-egress"
+assert network["interface"] == "eth1"
+assert network["shaping"]["enabled"] is True
+assert len(network["endpoints"]) == 2
+for endpoint in network["endpoints"].values():
+    assert "qdisc netem " in endpoint["qdisc"]
+    assert "Sent 4096 bytes" in endpoint["qdisc"]
+    assert endpoint["seedApplied"] is True
 with open(os.path.join(state, "inventory.json"), encoding="utf-8") as source:
     inventory = json.load(source)
 assert inventory["all"]["vars"]["ansible_user"] == "root"

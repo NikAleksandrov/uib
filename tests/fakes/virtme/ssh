@@ -13,6 +13,9 @@ for argument in "$@"; do
 		next_is_forward=true
 	fi
 done
+if test -n "${VIRTME_TEST_SSH_LOG:-}"; then
+	printf '%s\n' "$command" >> "$VIRTME_TEST_SSH_LOG"
+fi
 if test -n "$forward"; then
 	trap 'exit 0' INT TERM
 	while :; do
@@ -20,6 +23,27 @@ if test -n "$forward"; then
 	done
 fi
 case "$command" in
+*'/run/uib-netem apply '*)
+	if test "${VIRTME_TEST_SHAPING:-}" = active; then
+		printf '%s\n' 'tc qdisc replace dev eth1 root netem delay 100us 20us rate 25Gbit seed 12345'
+	else
+		printf '%s\n' 'tc qdisc del dev eth1 root'
+	fi
+	;;
+*'/run/uib-netem show '*)
+	if test "${VIRTME_TEST_SHAPING:-}" = active; then
+		printf '%s\n' 'qdisc netem 8001: root refcnt 2 limit 8192 delay 100us 20us rate 25Gbit'
+		printf '%s\n' ' Sent 4096 bytes 32 pkt (dropped 0, overlimits 0 requeues 0)'
+	else
+		printf '%s\n' 'qdisc noqueue 0: root refcnt 2'
+	fi
+	;;
+*'tc -Version'*)
+	printf '%s\n' 'tc utility, iproute2-6.15.0'
+	;;
+*'uname -r'*)
+	printf '%s\n' '6.12.0-test'
+	;;
 *'get nodes -o name'*)
 	printf '%s\n' node/controller node/worker-01 node/worker-02
 	;;

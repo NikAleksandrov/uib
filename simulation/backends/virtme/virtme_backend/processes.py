@@ -136,6 +136,11 @@ def remote_write(ssh, key, guest, path, value, mode="0644"):
     remote_command(ssh, key, guest, command)
 
 
+def worker_guests(topology_value):
+    return [guest for guest in topology_value["guests"].values()
+            if guest["role"] == "worker"]
+
+
 def launch_guest(vng, config, guest, public_key, log):
     from .core import VirtmeError
 

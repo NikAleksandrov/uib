@@ -88,6 +88,7 @@ topology.
 | `make diagnostic-gpu-test` | One NVIDIA GPU | No | CUDA visibility and a correctness-checked, single-rank NCCL collective |
 | `make simulation-kubernetes-uib-test` | CPU | No | Unchanged verbs programs exchange actual RC SEND/RECV and RDMA Write traffic through UIB between two Kind workers |
 | `make simulation-virtme-slurm-e2e-test` | CPU with KVM or QEMU emulation | No | Real controller/two-worker Slurm/Pyxis/Enroot lifecycle and 32-message, 2051-byte RC traffic through UIB both directly and inside Pyxis, with exact cleanup |
+| `make simulation-virtme-netem-e2e-test` | CPU with KVM or QEMU emulation | No | The same virtme Slurm UIB gate with a named netem condition active on both worker data interfaces and validated post-traffic evidence |
 | `make simulation-libvirt-e2e-test` | CPU with KVM | No | Disposable Slurm/Pyxis/Enroot controller/two-worker lifecycle, actual cross-VM RC payload traffic through UIB, and remote `run`/`status`/`collect`/`down` |
 | `make simulation-libvirt-netem-e2e-test` | CPU with KVM | No | The same cross-VM UIB gate while a selected netem condition is active on both workers, with collected qdisc and version evidence |
 | `make simulation-libvirt-training-e2e-test` | CPU with KVM | No | The same UIB gate plus real two-rank CPU DDP training in a staged local OCI filesystem through Slurm/Pyxis/Enroot; Gloo training is not UIB collective traffic |
@@ -2257,10 +2258,10 @@ simulation/bin/uib-sim down --profile virtme-slurm \
     --run-id uib-virtme-slurm
 ```
 
-This is a real multi-kernel Slurm/Pyxis/Enroot UIB L0 gate. Guest-side network
-shaping and complete workload submission through `uib-sim run` remain for the
-virtme backend; use `libvirt-slurm` for that complete workload lifecycle
-today. Neither virtme mode is GPU or physical-fabric evidence.
+This is a real multi-kernel Slurm/Pyxis/Enroot UIB L0 gate with optional
+guest-side network shaping. Complete workload submission through `uib-sim run`
+remains for the virtme backend; use `libvirt-slurm` for that complete workload
+lifecycle today. Neither virtme mode is GPU or physical-fabric evidence.
 
 ## Libvirt Slurm lifecycle
 
@@ -2740,11 +2741,11 @@ Configurable link features include:
 - deterministic random seed;
 - timed link degradation and recovery.
 
-`tc netem` is the default impairment mechanism. The implemented libvirt Slurm
-backend applies it to each disposable worker's data-interface egress. Kind,
-virtme, and host-side libvirt tap placement remain backend extensions. A
-real-cluster profile normally disables shaping and records physical NIC and
-switch counters instead.
+`tc netem` is the default impairment mechanism. The virtme and libvirt Slurm
+backends apply it to each disposable worker's data-interface egress. Kind and
+host-side libvirt tap placement remain backend extensions. A real-cluster
+profile normally disables shaping and records physical NIC and switch counters
+instead.
 
 Faults can also terminate a pod, Slurm rank, virtme guest, or VM. Each fault is
 recorded with planned time, actual time, target, result, and recovery time.
@@ -2771,27 +2772,32 @@ root qdisc unless `--replace-existing` is explicitly supplied. `clear` deletes
 only a root qdisc whose kind is `netem`; it does not delete an unrelated qdisc.
 Set `NETEM_TC=/path/to/tc` when `tc` is outside `PATH`.
 
-The libvirt Slurm lifecycle applies the same adapter automatically after the
-scheduler stack is ready and before its actual cross-worker UIB traffic gate:
+The virtme and libvirt Slurm lifecycles apply the same adapter automatically
+before their actual cross-worker UIB traffic gates:
 
 ```text
+make simulation-virtme-netem-e2e-test
+
+VIRTME_NETWORK_CONDITION=constrained \
+make simulation-virtme-netem-e2e-test
+
 make simulation-libvirt-netem-e2e-test
 
 LIBVIRT_NETWORK_CONDITION=constrained \
 make simulation-libvirt-netem-e2e-test
 ```
 
-The target defaults to `datacenter`; accepted values are `clean`,
+Both targets default to `datacenter`; accepted values are `clean`,
 `datacenter`, `constrained`, `lossy`, `reordered`, and `ecn`. The condition is
 applied symmetrically to the egress of every worker data interface. Because
-the VMs and their interfaces are run-owned, the lifecycle explicitly replaces
-their initial root qdisc. After the cross-worker UIB gate, it requires the
-requested `netem` state and nonzero qdisc traffic counters, then fetches a
-per-worker record containing the printed apply command, `tc -s` output, kernel
-release, iproute2 version, and whether a requested seed was accepted. Older
+the guests and their interfaces are run-owned, each lifecycle explicitly
+replaces their initial root qdisc. After the cross-worker UIB gate, it requires
+the requested `netem` state and nonzero qdisc traffic counters, then records
+the printed apply command, `tc -s` output, kernel release, iproute2 version,
+and whether a requested seed was accepted for every worker. Older
 netem releases without `seed` support omit that option, warn, and record
 `seedApplied: false`; they are functional but not packet-decision reproducible.
-`collect` validates and exports the record as
+The libvirt `collect` path validates and exports the record as
 `network-emulation.json`; the generated manifest covers it.
 The same network overlay must be supplied to `up` and `run`, and `uib-sim`
 rejects a workload whose resolved network differs from its existing libvirt
@@ -3357,6 +3363,8 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Rootless socket and optional bridge rendering, IPv4/MAC/SSH allocation, exact virtme-ng launch vectors, run-owned key/inventory creation, PID/start-time ownership, CLI `up/status/down`, bridge create/delete cleanup through fake standard commands, and invalid combination rejection |
 | `make simulation-virtme-kubernetes-e2e-test` | virtme-ng 1.35, SSH, kubectl, QEMU with KVM or TCG, about 4 GiB memory for the two reduced-size guests, and download access for the pinned k3s binary on first use | A real controller and worker under separate virtme kernels, rootless socket data traffic, pinned k3s/containerd startup without systemd PID 1, both nodes Ready, host API access through an owned SSH forward, cached download reuse, and exact process cleanup |
+| `make simulation-virtme-slurm-e2e-test` | virtme-ng 1.35, SSH, QEMU with KVM or TCG, `jq`, `tc`, Slurm/Pyxis build tools, a Docker-compatible engine for the portable runtime, about 6 GiB memory, and download access on the first run | A real controller/two-worker Slurm/Pyxis/Enroot lifecycle, direct and containerized cross-worker UIB traffic, clean network evidence, portable-runtime preflight, and exact cleanup |
+| `make simulation-virtme-netem-e2e-test` | The virtme Slurm gate requirements | The selected condition is active on both worker data interfaces while direct and Pyxis-contained UIB traffic passes; exact qdisc/kernel/iproute2 evidence and cleanup are validated |
 | `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge/rootless VM rendering; Slurm and bridge-only Kubernetes playbook selection; pinned k3s inputs, non-logged join token, kubeconfig export, cached-image verification, worker network evidence, Slurm remote lifecycle, exclusive ownership, and exact-state cleanup with fake standard commands |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, SSH/SCP, passt, NFS-capable Ubuntu guests, roughly 12 GiB memory for the default three VMs, and download access on the first run | Actual controller/two-worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, ordinary worker tasks, cross-VM standard RC payload through UIB, remote batch submission and status, two-rank pinned OCI execution with portable UIB preflight, result collection, state-based destruction, and domain/pool absence; no NCCL or GPU claim |
@@ -3465,6 +3473,15 @@ Run the real controller/two-worker scheduler gate with:
 make simulation-virtme-slurm-e2e-test
 ```
 
+Run the same gate with the default `datacenter` condition using:
+
+```text
+make simulation-virtme-netem-e2e-test
+
+VIRTME_NETWORK_CONDITION=lossy \
+make simulation-virtme-netem-e2e-test
+```
+
 The test requires an amd64 Debian 13-compatible userspace, `vng`, KVM or QEMU
 emulation, `ssh`, `ssh-keygen`, `apt-get`, `dpkg-deb`, `make`, a C compiler,
 and a Docker-compatible engine for the portable runtime build. The first run
@@ -3482,6 +3499,7 @@ status, and exact process cleanup.
 | `VIRTME_DOWNLOAD_CACHE` | `simulation/.artifacts/downloads/virtme` | Reusable verified package, source, runtime, plugin, and smoke-image cache |
 | `UIB_RUNTIME_SOURCE` | `simulation/.artifacts/uib-runtime` | Host path to the complete portable runtime shared read-only with every guest |
 | `VIRTME_MODEL_CACHE` | `simulation/.artifacts/huggingface` | Host path shared read-write at `storage.modelCachePath` in every guest |
+| `VIRTME_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty, `clean`, `datacenter`, `constrained`, `lossy`, `reordered`, or `ecn`; the selected overlay applies to every worker data-interface egress |
 | `PORTABLE_RUNTIME_CONTAINER_ENGINE` | `docker` | Docker-compatible engine used to build and verify the portable runtime dependency |
 | `VIRTME_SSH_WAIT` | `90` | Positive seconds allowed for each guest SSH endpoint |
 | `VIRTME_SLURM_WAIT` | `60` | Positive seconds allowed for controller and worker readiness |

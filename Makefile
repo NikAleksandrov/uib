@@ -334,6 +334,10 @@ simulation-virtme-kubernetes-e2e-test:
 simulation-virtme-slurm-e2e-test: runtime-bundle-portable-test
 	./tests/run_virtme_slurm_e2e_test.sh
 
+simulation-virtme-netem-e2e-test: runtime-bundle-portable-test
+	VIRTME_NETWORK_CONDITION=datacenter \
+		./tests/run_virtme_slurm_e2e_test.sh
+
 simulation-kind-e2e-test:
 	./tests/run_kind_e2e_test.sh
 
@@ -942,6 +946,7 @@ clean:
 	simulation-virtme-backend-test \
 	simulation-virtme-kubernetes-e2e-test \
 	simulation-virtme-slurm-e2e-test \
+	simulation-virtme-netem-e2e-test \
 	simulation-kubernetes-render-test simulation-slurm-render-test \
 	simulation-slurm-lifecycle-test simulation-slurm-collect-test \
 	simulation-libvirt-test \

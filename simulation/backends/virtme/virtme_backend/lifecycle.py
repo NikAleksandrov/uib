@@ -29,7 +29,7 @@ def command_up(args):
     from .artifacts import acquire_k3s, acquire_slurm_packages, configure_slurm_storage, create_container_smoke_image, extract_slurm_runtime, prepare_container_runtime
     from .core import ENROOT_VERSION, PYXIS_VERSION, SLURM_VERSION, VirtmeError, executable, load_config, validate_name, write_json
     from .kubernetes import inventory, provision_kubernetes, write_kubeconfig
-    from .network import create_network, delete_network
+    from .network import apply_network_shaping, clear_network_shaping, create_network, delete_network, record_network_evidence
     from .processes import launch_api_forward, launch_guest, terminate_process, wait_for_ssh
     from .slurm import provision_slurm
     from .topology import topology
@@ -58,6 +58,7 @@ def command_up(args):
     write_json(state / "topology.json", topology_value)
     processes = []
     network_created = False
+    shaping_commands = {}
     try:
         if config["cluster"]["manager"] == "slurm":
             configure_slurm_storage(config, topology_value, state)
@@ -102,6 +103,8 @@ def command_up(args):
             wait_for_ssh(ssh, key, guest, process, logs / f"{name}.log")
         write_json(state / "inventory.json", inventory(
             topology_value, key, config["cluster"]["manager"]))
+        shaping_commands = apply_network_shaping(
+            config, topology_value, ssh, key)
         if k3s:
             ledger["state"] = "provisioning"
             write_json(ledger_path, ledger)
@@ -130,6 +133,9 @@ def command_up(args):
             ledger["uibTraffic"] = (
                 "passed-direct-and-pyxis" if config["uib"]["enabled"]
                 else "disabled")
+        network_evidence = record_network_evidence(
+            config, topology_value, ssh, key, shaping_commands, state)
+        ledger["networkEvidence"] = network_evidence.name
         ledger["state"] = "ready"
         ledger["topology"] = "topology.json"
         ledger["inventory"] = "inventory.json"
@@ -138,6 +144,9 @@ def command_up(args):
         ledger["state"] = "failed"
         ledger["error"] = str(error)
         if not args.retain:
+            if "ssh" in locals() and "key" in locals():
+                clear_network_shaping(
+                    config, topology_value, ssh, key)
             for process in reversed(processes):
                 terminate_process(process)
             try:
@@ -219,8 +228,8 @@ def command_kubeconfig(args):
 
 
 def command_down(args):
-    from .core import VirtmeError, read_json, validate_name, write_json
-    from .network import delete_network
+    from .core import VirtmeError, executable, read_json, validate_name, write_json
+    from .network import clear_network_shaping, delete_network
     from .processes import terminate_process
 
     validate_name(args.name)
@@ -232,6 +241,11 @@ def command_down(args):
     processes = topology_value.get("ownership", {}).get("processes")
     if not isinstance(processes, list):
         raise VirtmeError("virtme topology has invalid process ownership")
+    config = read_json(
+        state / "resolved-simulation.json", "resolved simulation")
+    ssh = executable("SSH_COMMAND", "ssh")
+    clear_network_shaping(
+        config, topology_value, ssh, state / "id_ed25519")
     for process in reversed(processes):
         terminate_process(process)
     delete_network(topology_value["network"])

@@ -7,6 +7,17 @@ cli=$project_dir/simulation/bin/uib-sim
 run_id=uib-vslurm-$$
 state_dir=${SIMULATION_STATE_DIR:-$project_dir/simulation/.artifacts/runs}
 profile_args='--set nodes.cpu=2 --set nodes.memory=2Gi'
+network_condition=${VIRTME_NETWORK_CONDITION:-}
+case $network_condition in
+'') ;;
+clean|datacenter|constrained|lossy|reordered|ecn)
+	profile_args="$profile_args --overlay network/$network_condition"
+	;;
+*)
+	echo "unsupported virtme network condition: $network_condition" >&2
+	exit 2
+	;;
+esac
 created=false
 
 cleanup()
@@ -27,13 +38,15 @@ created=true
 "$cli" status --profile virtme-slurm --run-id "$run_id" \
 	--state-dir "$state_dir" $profile_args > "$state_dir/$run_id/status.json"
 
-python3 - "$state_dir/$run_id" <<'PY'
+python3 - "$state_dir/$run_id" "$network_condition" <<'PY'
 import json
 import os
+import re
 import sys
 
 
 state = sys.argv[1]
+condition = sys.argv[2]
 with open(os.path.join(state, "status.json"), encoding="utf-8") as source:
     status = json.load(source)
 assert status["state"] == "ready"
@@ -48,6 +61,7 @@ assert ledger["slurmVersion"] == "24.11.5-4"
 assert ledger["enrootVersion"] == "4.2.1"
 assert ledger["pyxisVersion"] == "0.24.0"
 assert ledger["uibTraffic"] == "passed-direct-and-pyxis"
+assert ledger["networkEvidence"] == "network.json"
 assert os.path.isfile(os.path.join(ledger["slurmRuntime"], "usr/bin/srun"))
 assert os.path.isfile(os.path.join(
     ledger["slurmRuntime"], "usr/lib/x86_64-linux-gnu/slurm-wlm",
@@ -66,6 +80,26 @@ assert os.path.isdir(storage["modelCache"]["host"])
 assert storage["results"]["guest"] == "/var/lib/uib/results"
 assert storage["results"]["mode"] == "read-write"
 assert os.path.isdir(storage["results"]["host"])
+with open(os.path.join(infrastructure, "network.json"),
+          encoding="utf-8") as source:
+    network = json.load(source)
+shaped = condition not in ("", "clean")
+assert network["scope"] == "worker-data-egress"
+assert network["interface"] == "eth1"
+assert network["shaping"]["enabled"] is shaped
+assert len(network["endpoints"]) == 2
+for endpoint in network["endpoints"].values():
+    assert ("qdisc netem " in endpoint["qdisc"]) is shaped
+    assert endpoint["appliedCommand"]
+    assert endpoint["iproute2"]
+    assert endpoint["kernel"]
+    if shaped:
+        assert re.search(r"Sent [1-9][0-9]* bytes", endpoint["qdisc"])
+if condition == "datacenter":
+    assert network["shaping"]["bandwidth"] == "25Gbit"
+    assert network["shaping"]["latency"] == "100us"
+    assert network["shaping"]["jitter"] == "20us"
+    assert network["shaping"]["queueLimit"] == 8192
 with open(os.path.join(infrastructure, "inventory.json"),
           encoding="utf-8") as source:
     inventory = json.load(source)
