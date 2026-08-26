@@ -22,10 +22,11 @@
         "forbiddenFallbacks": ["Socket", "native-libibverbs"]
       },
       "ucx": {
-        "status": "validated-local-ud-tag",
+        "status": "validated-local-ud-ucp-matrix",
         "testTarget": "make ucx-libfabric-test",
         "validatedVersion": "1.18.1",
         "requiredTransportClass": "ud_verbs",
+        "validatedTests": ["tag_lat", "stream_lat", "ucp_put_lat", "ucp_get", "ucp_fadd", "ucp_cswap"],
         "forbiddenFallbacks": ["tcp", "self", "posix", "sysv", "cma", "vendor-direct"]
       },
       "libfabric": {
@@ -432,7 +433,7 @@
     "multiGpuTraining": "not-validated",
     "multiGpuInference": "not-validated",
     "inferenceOverUib": "not-validated",
-    "ucxOverUib": "validated-local-ud-tag",
+    "ucxOverUib": "validated-local-ud-ucp-matrix",
     "libfabricOverUib": "validated-local-verbs-rxd-rdm",
     "rcclOverUib": "not-validated-amd-hardware-required",
     "rocev2PluggableCongestion": "not-implemented",

@@ -6,8 +6,10 @@ project_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 test_dir=$(mktemp -d /tmp/uib-ucx-libfabric-test.XXXXXX)
 test_timeout=${COMM_TEST_TIMEOUT:-30}
 iterations=${COMM_TEST_ITERATIONS:-100}
+warmups=${COMM_TEST_WARMUPS:-10}
 bind_port=${COMM_TEST_BIND_PORT:-19800}
 message_sizes=${COMM_TEST_MESSAGE_SIZES:-l:1,64,1024}
+ucx_tests=${COMM_TEST_UCX_TESTS:-tag_lat stream_lat ucp_put_lat ucp_get ucp_fadd ucp_cswap}
 server_pid=
 
 if [ ! -c /dev/infiniband/uib0 ]; then
@@ -58,29 +60,41 @@ grep -E 'provider:[[:space:]]*verbs|prov_name:[[:space:]]*verbs' \
 	"$test_dir/fi-info.log" >/dev/null
 grep -F uib0 "$test_dir/fi-info.log" >/dev/null
 
-timeout -k 2 "$test_timeout" env \
-	LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.1 \
-	UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
-	UIB_ZEROCOPY=off UCX_TLS=rc,ud UCX_NET_DEVICES=uib0:1 \
-	UCX_LOG_LEVEL=info ucx_perftest -t tag_lat -n "$iterations" \
-	-P 0 -p "$bind_port" > "$test_dir/ucx-server.log" 2>&1 &
-server_pid=$!
-sleep 1
-timeout -k 2 "$test_timeout" env \
-	LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.2 \
-	UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
-	UIB_ZEROCOPY=off UCX_TLS=rc,ud UCX_NET_DEVICES=uib0:1 \
-	UCX_LOG_LEVEL=info ucx_perftest -t tag_lat -n "$iterations" \
-	-P 0 -p "$bind_port" 127.0.0.1 \
-	> "$test_dir/ucx-client.log" 2>&1
-wait "$server_pid"
-server_pid=
-grep -F 'tag(ud_verbs/uib0:1)' "$test_dir/ucx-client.log" >/dev/null
-if grep -Ei 'transport.*(tcp|self|posix|sysv|cma)' \
-	"$test_dir/ucx-client.log" >/dev/null; then
-	echo "UCX selected a forbidden non-verbs data transport" >&2
-	exit 1
-fi
+run_ucx_test()
+{
+	test_name=$1
+	server_log=$test_dir/ucx-$test_name-server.log
+	client_log=$test_dir/ucx-$test_name-client.log
+
+	timeout -k 2 "$test_timeout" env \
+		LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.1 \
+		UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
+		UIB_ZEROCOPY=off UCX_TLS=rc,ud UCX_NET_DEVICES=uib0:1 \
+		UCX_LOG_LEVEL=info ucx_perftest -t "$test_name" \
+		-n "$iterations" -w "$warmups" -P 0 -p "$bind_port" \
+		> "$server_log" 2>&1 &
+	server_pid=$!
+	sleep 1
+	timeout -k 2 "$test_timeout" env \
+		LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.2 \
+		UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
+		UIB_ZEROCOPY=off UCX_TLS=rc,ud UCX_NET_DEVICES=uib0:1 \
+		UCX_LOG_LEVEL=info ucx_perftest -t "$test_name" \
+		-n "$iterations" -w "$warmups" -P 0 -p "$bind_port" \
+		127.0.0.1 > "$client_log" 2>&1
+	wait "$server_pid"
+	server_pid=
+	grep -F 'ud_verbs/uib0:1' "$client_log" >/dev/null
+	if grep -Ei 'transport.*(tcp|self|posix|sysv|cma)' \
+		"$client_log" >/dev/null; then
+		echo "UCX selected a forbidden non-verbs data transport" >&2
+		exit 1
+	fi
+}
+
+for test_name in $ucx_tests; do
+	run_ucx_test "$test_name"
+done
 
 for test_name in fi_rdm_pingpong; do
 	log_name=${test_name#fi_}
