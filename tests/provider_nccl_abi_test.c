@@ -72,6 +72,7 @@ int main(void)
 	int (*close_device)(struct ibv_context *);
 	int (*get_async_event)(struct ibv_context *, struct ibv_async_event *);
 	int (*query_device)(struct ibv_context *, struct ibv_device_attr *);
+	int (*query_port)(struct ibv_context *, uint8_t, struct ibv_port_attr *);
 	struct ibv_pd *(*alloc_pd)(struct ibv_context *);
 	int (*dealloc_pd)(struct ibv_pd *);
 	struct ibv_cq *(*create_cq)(struct ibv_context *, int, void *,
@@ -98,6 +99,7 @@ int main(void)
 	struct ibv_srq_attr srq_attr;
 	struct ibv_async_event event;
 	struct ibv_device_attr device_attr;
+	struct ibv_port_attr port_attr;
 	struct ibv_device **devices = NULL;
 	struct ibv_context *context = NULL;
 	struct ibv_pd *pd = NULL;
@@ -133,6 +135,7 @@ int main(void)
 	get_async_event = load_symbol(handle, "ibv_get_async_event",
 				      "IBVERBS_1.1");
 	query_device = load_symbol(handle, "ibv_query_device", "IBVERBS_1.1");
+	query_port = load_symbol(handle, "ibv_query_port", "IBVERBS_1.1");
 	alloc_pd = load_symbol(handle, "ibv_alloc_pd", "IBVERBS_1.1");
 	dealloc_pd = load_symbol(handle, "ibv_dealloc_pd", "IBVERBS_1.1");
 	create_cq = load_symbol(handle, "ibv_create_cq", "IBVERBS_1.1");
@@ -184,6 +187,21 @@ int main(void)
 	if (query_device(context, &device_attr) ||
 	    device_attr.atomic_cap != IBV_ATOMIC_HCA) {
 		fprintf(stderr, "uib0 did not advertise host atomic support\n");
+		goto out;
+	}
+	setenv("UIB_ACTIVE_MTU", "1024", 1);
+	memset(&port_attr, 0, sizeof(port_attr));
+	if (query_port(context, 1, &port_attr) ||
+	    port_attr.max_mtu != IBV_MTU_4096 ||
+	    port_attr.active_mtu != IBV_MTU_1024) {
+		fprintf(stderr, "uib0 did not advertise the configured active MTU\n");
+		goto out;
+	}
+	setenv("UIB_ACTIVE_MTU", "invalid", 1);
+	memset(&port_attr, 0, sizeof(port_attr));
+	if (query_port(context, 1, &port_attr) ||
+	    port_attr.active_mtu != IBV_MTU_4096) {
+		fprintf(stderr, "uib0 did not use the default for an invalid MTU\n");
 		goto out;
 	}
 	flags = fcntl(context->async_fd, F_GETFL);

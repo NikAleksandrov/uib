@@ -41,6 +41,8 @@
  */
 #define UIB_ENV_BIND_PORT "UIB_BIND_PORT"
 
+#define UIB_ENV_ACTIVE_MTU "UIB_ACTIVE_MTU"
+
 /**
  * DOC: UIB_TRANSPORT_MODE
  * @uib-env: Library and transparent provider

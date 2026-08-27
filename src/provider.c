@@ -231,6 +231,23 @@ static enum ibv_mtu bytes_to_mtu(uint32_t mtu)
 	return IBV_MTU_4096;
 }
 
+static enum ibv_mtu active_mtu_from_env(void)
+{
+	const char *value = getenv(UIB_ENV_ACTIVE_MTU);
+
+	if (!value || !*value || !strcmp(value, "4096"))
+		return IBV_MTU_4096;
+	if (!strcmp(value, "2048"))
+		return IBV_MTU_2048;
+	if (!strcmp(value, "1024"))
+		return IBV_MTU_1024;
+	if (!strcmp(value, "512"))
+		return IBV_MTU_512;
+	if (!strcmp(value, "256"))
+		return IBV_MTU_256;
+	return IBV_MTU_4096;
+}
+
 static enum uib_wr_opcode map_wr_op_in(enum ibv_wr_opcode op)
 {
 	switch (op) {
@@ -1569,7 +1586,7 @@ int ibv_query_port(struct ibv_context *ctx, uint8_t port,
 	memset(p, 0, sizeof(*p));
 	p->state          = IBV_PORT_ACTIVE;
 	p->max_mtu        = IBV_MTU_4096;
-	p->active_mtu     = IBV_MTU_4096;
+	p->active_mtu     = active_mtu_from_env();
 	p->max_msg_sz     = 4096;
 	p->gid_tbl_len    = 1;
 	p->pkey_tbl_len   = 1;

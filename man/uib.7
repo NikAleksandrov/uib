@@ -2335,6 +2335,16 @@ Default: 10240 in auto mode; 1024 in on or required mode.
 Accepted values: A non\-negative byte count.
 .br
 Example: \fBUIB_ZEROCOPY_THRESHOLD=4096 ./examples/stress_bench\fP
+.SS "Transparent provider"
+.TP
+.B UIB_ACTIVE_MTU
+Set the active verbs port MTU advertised to applications. Invalid values use the default.
+.br
+Default: 4096
+.br
+Accepted values: 256, 512, 1024, 2048, or 4096
+.br
+Example: \fBUIB_ACTIVE_MTU=1024 LD_PRELOAD=$PWD/libuibv.so ibv_rc_pingpong\fP
 .SS "UDP transports"
 .TP
 .B UIB_UDP_GSO

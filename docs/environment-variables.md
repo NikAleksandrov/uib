@@ -11,6 +11,7 @@ when the relevant context, transport, benchmark, or test is created.
 ## Contents
 
 - [Library and transparent provider](#library-and-transparent-provider)
+- [Transparent provider](#transparent-provider)
 - [UDP transports](#udp-transports)
 - [AF_XDP transport](#afxdp-transport)
 - [TCP devmem transport](#tcp-devmem-transport)
@@ -39,6 +40,12 @@ when the relevant context, transport, benchmark, or test is created.
 | <code>UIB_URING_SQPOLL_CPU</code> | Unset. | An online CPU number. | Pin the optional io_uring SQPOLL kernel thread to one CPU. | <code>UIB_URING_SQPOLL=on UIB_URING_SQPOLL_CPU=3 ./examples/stress_bench</code> |
 | <code>UIB_ZEROCOPY</code> | `auto` | `off`, `auto`, `on`, or `required` | Control optional socket and AF_XDP transmit zero-copy. | <code>UIB_ZEROCOPY=required ./examples/stress_bench</code> |
 | <code>UIB_ZEROCOPY_THRESHOLD</code> | 10240 in auto mode; 1024 in on or required mode. | A non-negative byte count. | Override the minimum packet size used for socket zero-copy. | <code>UIB_ZEROCOPY_THRESHOLD=4096 ./examples/stress_bench</code> |
+
+## Transparent provider
+
+| Variable | Default | Accepted values | Description | Example |
+|---|---|---|---|---|
+| <code>UIB_ACTIVE_MTU</code> | `4096` | `256`, `512`, `1024`, `2048`, or `4096` | Set the active verbs port MTU advertised to applications. Invalid values use the default. | <code>UIB_ACTIVE_MTU=1024 LD_PRELOAD=$PWD/libuibv.so ibv_rc_pingpong</code> |
 
 ## UDP transports
 
