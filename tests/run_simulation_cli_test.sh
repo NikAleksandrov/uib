@@ -138,6 +138,32 @@ if "$cli" render --profile libvirt-kubernetes \
 	exit 1
 fi
 
+printf '%s\n' \
+	'faults:' \
+	'  - at: 10s' \
+	'    action: add-delay' \
+	'    target: worker-01/data' \
+	'    latency: 2ms' \
+	'    duration: 30s' \
+	'  - afterEvent: checkpoint-complete' \
+	'    action: terminate-rank' \
+	'    rank: 1' > "$test_dir/valid-faults.yaml"
+"$cli" render --profile kind-kubernetes \
+	--request "$test_dir/valid-faults.yaml" --format json \
+	> "$test_dir/valid-faults.json"
+
+for invalid_fault in \
+	'[{at: 1s, action: add-delay, target: worker-01/data, duration: 1s}]' \
+	'[{at: 1s, action: packet-loss, target: worker-01/data, percent: 0, duration: 1s}]' \
+	'[{at: 1s, action: link-down, target: worker-01/data, duration: 0s}]' \
+	'[{at: 1s, action: terminate-rank, rank: 1, target: worker-01/data}]'; do
+	if "$cli" render --profile kind-kubernetes \
+		--set "faults=$invalid_fault" > /dev/null 2>&1; then
+		echo "invalid fault schedule was accepted: $invalid_fault" >&2
+		exit 1
+	fi
+done
+
 set +e
 "$cli" doctor --profile kind-kubernetes > "$test_dir/doctor.json"
 doctor_status=$?

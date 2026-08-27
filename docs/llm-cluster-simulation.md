@@ -612,6 +612,11 @@ vice versa.
 | `faults[].at` | Integer plus `ms`, `s`, `m`, or `h` | Time-relative fault |
 | `faults[].afterEvent` | Event name | Event-relative fault alternative |
 | `faults[].action` | `add-delay`, `packet-loss`, `link-down`, `terminate-rank` | Fault type |
+| `faults[].target` | Backend endpoint name | Required by every network action |
+| `faults[].latency` | Nonzero netem duration | Required only by `add-delay` |
+| `faults[].percent` | Number greater than 0 and at most 100 | Required only by `packet-loss` |
+| `faults[].duration` | Nonzero `ms`, `s`, `m`, or `h` offset | Required by every network action so cleanup can restore the link |
+| `faults[].rank` | Non-negative rank number | Required only by `terminate-rank` |
 
 The rank invariant is:
 
@@ -653,6 +658,7 @@ nodes * processesPerNode == data * tensor * pipeline * expert
 | ECN without nonzero loss | Netem uses a loss model to decide which packets to mark |
 | Gilbert-Elliott loss without all recovery/bad-state/good-state percentages | The four values define the complete reproducible burst model |
 | Gilbert-Elliott parameters with random loss, or random-loss correlation with `gemodel` | The two netem loss grammars are mutually exclusive |
+| Missing or action-inapplicable fault fields | Each fault has one unambiguous executor contract; network faults always include a recovery duration |
 | Correlation without its delay/loss/duplicate/corrupt/reorder parent | Invalid netem grammar |
 | Cell size without packet overhead; cell overhead without cell size | Invalid netem rate grammar |
 | Shaping an `existing` profile without `allowExistingMutations: true` | Protects real interfaces |

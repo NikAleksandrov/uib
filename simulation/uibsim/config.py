@@ -360,6 +360,48 @@ def validate_communication(config):
 
 
 
+def validate_faults(config):
+    from .core import COMPATIBILITY, ConfigurationError
+    provider = config["infrastructure"]["provider"]
+    manager = config["cluster"]["manager"]
+    runtime = config["container"]["runtime"]
+    frontend = config["communication"]["frontend"]
+    gpu = config["nodes"]["gpus"]
+    uib = config["uib"]
+    storage = config["storage"]
+    action_fields = {
+        "add-delay": {"target", "latency", "duration"},
+        "packet-loss": {"target", "percent", "duration"},
+        "link-down": {"target", "duration"},
+        "terminate-rank": {"rank"},
+    }
+    optional_fields = {"at", "afterEvent", "action"}
+    for index, fault in enumerate(config.get("faults", [])):
+        action = fault["action"]
+        required = action_fields[action]
+        missing = required - set(fault)
+        if missing:
+            raise ConfigurationError(
+                f"faults[{index}] {action} requires {sorted(missing)[0]}")
+        unexpected = set(fault) - required - optional_fields
+        if unexpected:
+            raise ConfigurationError(
+                f"faults[{index}] {action} does not accept "
+                f"{sorted(unexpected)[0]}")
+        if "duration" in fault and re.fullmatch(
+                r"0+(?:ms|s|m|h)", fault["duration"]):
+            raise ConfigurationError(
+                f"faults[{index}] duration must be nonzero")
+        if "latency" in fault and re.fullmatch(
+                r"0+(?:ns|us|ms|s)", fault["latency"]):
+            raise ConfigurationError(
+                f"faults[{index}] latency must be nonzero")
+        if "percent" in fault and fault["percent"] <= 0:
+            raise ConfigurationError(
+                f"faults[{index}] percent must be greater than zero")
+
+
+
 def validate_workload(config):
     from .core import COMPATIBILITY, ConfigurationError
     provider = config["infrastructure"]["provider"]
@@ -387,6 +429,7 @@ def validate_semantics(config):
     validate_infrastructure(config)
     validate_scheduler(config)
     validate_communication(config)
+    validate_faults(config)
     validate_workload(config)
 
 
