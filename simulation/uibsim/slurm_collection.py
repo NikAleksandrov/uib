@@ -97,7 +97,7 @@ def _slurm_collect_workload(args, job_id, missing, remote, results_root, status,
 
 def _slurm_collect_evidence(collected_workload, config, missing, remote, scheduler, staged_caches, staged_images, temporary, workload_results):
     from .core import COMPATIBILITY, ConfigurationError, DEFAULT_RESULT_DIR, SLURM_TERMINAL_STATES
-    from .evidence import collect_fault_evidence, collect_workload_metrics, file_manifest, transport_evidence
+    from .evidence import collect_fault_evidence, collect_workload_metrics, file_manifest, provider_counter_evidence, transport_evidence
     from .state import copy_file, copy_run_provenance, copy_tree, load_ledger, owned_state_file, path_is_within, read_json, state_path, utc_now, write_json
 
     fault_files, fault_records, applied_fault_targets, recovered_fault_targets = collect_fault_evidence(collected_workload, temporary / 'faults.jsonl')
@@ -135,14 +135,16 @@ def _slurm_collect_evidence(collected_workload, config, missing, remote, schedul
     write_json(temporary / 'preflight.json', {'schemaVersion': 1, 'uibEnabled': config['uib']['enabled'], 'runtimePreflight': 'invoked-by-batch-script' if config['uib']['enabled'] else 'not-applicable', 'verifiedByCollector': False, 'evidence': 'logs/batch.out and logs/batch.err'})
     transport = transport_evidence(config, [('logs', temporary / 'logs'), ('workload', temporary / 'workload')])
     write_json(temporary / 'transport-evidence.json', transport)
+    counters = provider_counter_evidence(config, [('logs', temporary / 'logs'), ('workload', temporary / 'workload')])
+    write_json(temporary / 'provider-counters.json', counters)
     metrics = collect_workload_metrics(config, [('logs', temporary / 'logs'), ('workload', temporary / 'workload')], temporary / 'metrics' / 'workload.jsonl')
     return counters, fault_files, fault_records, host_probes, metrics, transport
 
-def _slurm_finalize_bundle(args, config, fault_files, fault_records, host_probes, job_id, metrics, missing, network_emulation, output, scheduler, status, temporary, terminal, transport, workload_status):
-    from .evidence import collect_fault_evidence, collect_workload_metrics, file_manifest, transport_evidence
+def _slurm_finalize_bundle(args, config, counters, fault_files, fault_records, host_probes, job_id, metrics, missing, network_emulation, output, scheduler, status, temporary, terminal, transport, workload_status):
+    from .evidence import collect_fault_evidence, collect_workload_metrics, file_manifest, provider_counter_evidence, transport_evidence
     from .state import copy_file, copy_run_provenance, copy_tree, load_ledger, owned_state_file, path_is_within, read_json, state_path, utc_now, write_json
 
-    summary = {'schemaVersion': 1, 'runId': args.run_id, 'collectedAt': utc_now(), 'completeSchedulerSnapshot': terminal, 'scheduler': 'slurm', 'schedulerEvidenceSource': status['source'], 'jobId': job_id, 'schedulerState': scheduler['state'], 'schedulerExitCode': scheduler['exitCode'], 'workloadExitCode': workload_status.get('exitCode') if workload_status else None, 'underlyingWorkloadExitCode': workload_status.get('workloadExitCode') if workload_status else None, 'expectedFaultOutcome': workload_status.get('expectedFaultOutcome', False) if workload_status else False, 'workloadStatusRecorded': workload_status is not None, 'uibEnabled': config['uib']['enabled'], 'protocol': config['uib']['protocol'] if config['uib']['enabled'] else None, 'congestionControl': config['uib']['congestionControl'] if config['uib']['enabled'] else None, 'memoryMode': config['uib']['memoryMode'] if config['uib']['enabled'] else None, 'communicationFrontend': config['communication']['frontend'], 'validationLevel': 'not-assigned', 'uibTrafficEvidence': transport['classification'], 'transportEvidence': 'transport-evidence.json', 'workloadMetrics': 'metrics/workload.jsonl', 'workloadMetricRecords': len(metrics), 'hostProbes': 'host-probes.json', 'hostProbeNodes': len(host_probes), 'networkEmulation': 'network-emulation.json' if network_emulation is not None else None, 'faultEvidenceFiles': fault_files, 'faultEvidenceRecords': fault_records, 'promotionEligible': False, 'missingArtifacts': missing}
+    summary = {'schemaVersion': 1, 'runId': args.run_id, 'collectedAt': utc_now(), 'completeSchedulerSnapshot': terminal, 'scheduler': 'slurm', 'schedulerEvidenceSource': status['source'], 'jobId': job_id, 'schedulerState': scheduler['state'], 'schedulerExitCode': scheduler['exitCode'], 'workloadExitCode': workload_status.get('exitCode') if workload_status else None, 'underlyingWorkloadExitCode': workload_status.get('workloadExitCode') if workload_status else None, 'expectedFaultOutcome': workload_status.get('expectedFaultOutcome', False) if workload_status else False, 'workloadStatusRecorded': workload_status is not None, 'uibEnabled': config['uib']['enabled'], 'protocol': config['uib']['protocol'] if config['uib']['enabled'] else None, 'congestionControl': config['uib']['congestionControl'] if config['uib']['enabled'] else None, 'memoryMode': config['uib']['memoryMode'] if config['uib']['enabled'] else None, 'communicationFrontend': config['communication']['frontend'], 'validationLevel': 'not-assigned', 'uibTrafficEvidence': transport['classification'], 'uibCounterEvidence': counters['classification'], 'transportEvidence': 'transport-evidence.json', 'providerCounters': 'provider-counters.json', 'workloadMetrics': 'metrics/workload.jsonl', 'workloadMetricRecords': len(metrics), 'hostProbes': 'host-probes.json', 'hostProbeNodes': len(host_probes), 'networkEmulation': 'network-emulation.json' if network_emulation is not None else None, 'faultEvidenceFiles': fault_files, 'faultEvidenceRecords': fault_records, 'promotionEligible': False, 'missingArtifacts': missing}
     write_json(temporary / 'summary.json', summary)
     summary_text = f"# UIB simulation result: {args.run_id}\n\nSlurm job `{job_id}` was `{scheduler['state']}` with scheduler exit code `{scheduler['exitCode']}`. The bundle is {('a terminal' if terminal else 'an incomplete diagnostic')} snapshot.\n\nCollection alone does not prove that application traffic used UIB. Inspect the preflight, transport logs, correctness output, and network evidence before assigning a validation level or promoting this result.\n"
     (temporary / 'summary.md').write_text(summary_text, encoding='utf-8')
@@ -152,7 +154,7 @@ def _slurm_finalize_bundle(args, config, fault_files, fault_records, host_probes
 def command_slurm_collect(args):
     from .slurm import query_slurm_status
     from .core import COMPATIBILITY, ConfigurationError, DEFAULT_RESULT_DIR, SLURM_TERMINAL_STATES
-    from .evidence import collect_fault_evidence, collect_workload_metrics, file_manifest, transport_evidence
+    from .evidence import collect_fault_evidence, collect_workload_metrics, file_manifest, provider_counter_evidence, transport_evidence
     from .scheduler import copy_remote_path, remote_path_exists, run_scheduler, scheduler_remote
     from .state import copy_file, copy_run_provenance, copy_tree, load_ledger, owned_state_file, path_is_within, read_json, state_path, utc_now, write_json
 
@@ -204,7 +206,7 @@ def command_slurm_collect(args):
         network_emulation, staged_caches, staged_images = _slurm_stage_run(args, config, config_path, ledger, missing, network_emulation, run_dir, staged_caches, staged_images, temporary)
         collected_workload, workload_status = _slurm_collect_workload(args, job_id, missing, remote, results_root, status, temporary, workload_results, workload_status)
         counters, fault_files, fault_records, host_probes, metrics, transport = _slurm_collect_evidence(collected_workload, config, missing, remote, scheduler, staged_caches, staged_images, temporary, workload_results)
-        _slurm_finalize_bundle(args, config, fault_files, fault_records, host_probes, job_id, metrics, missing, network_emulation, output, scheduler, status, temporary, terminal, transport, workload_status)
+        _slurm_finalize_bundle(args, config, counters, fault_files, fault_records, host_probes, job_id, metrics, missing, network_emulation, output, scheduler, status, temporary, terminal, transport, workload_status)
     except (ConfigurationError, OSError) as error:
         shutil.rmtree(temporary, ignore_errors=True)
         if isinstance(error, ConfigurationError):

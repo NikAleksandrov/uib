@@ -2255,6 +2255,15 @@ Accepted values: udp\-io\-uring, udp\-sync, udp\-zc\-afxdp, or tcp\-devmem
 .br
 Example: \fBUIB_TRANSPORT_MODE=udp\-sync ./examples/direct_traffic rocev2\fP
 .TP
+.B UIB_STATS_OUTPUT
+Emit one machine\-readable UIB_STATS JSON record when each context closes. Simulation collectors use stderr to verify the selected UIB backend and aggregate its packet and zero\-copy counters without application changes. Statistics are diagnostic evidence and do not change application results.
+.br
+Default: off
+.br
+Accepted values: off or stderr
+.br
+Example: \fBUIB_STATS_OUTPUT=stderr LD_PRELOAD=$PWD/libuibv.so app\fP
+.TP
 .B UIB_UDP_MODE
 Select ordinary UDP sockets or raw RoCEv2 interoperability.
 .br

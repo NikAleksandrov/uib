@@ -40,6 +40,7 @@ def environment(config):
                 ),
                 "UIB_BIND_PORT": string_value(uib["bindPort"]),
                 "UIB_PROTOCOL": uib["protocol"],
+                "UIB_STATS_OUTPUT": "stderr",
                 "UIB_TRANSPORT_MODE": uib["transport"],
                 "UIB_ZEROCOPY": "off",
             }
@@ -60,6 +61,7 @@ def environment(config):
             "UIB_BIND_IP",
             "UIB_BIND_PORT",
             "UIB_PROTOCOL",
+            "UIB_STATS_OUTPUT",
             "UIB_TRANSPORT_MODE",
             "UIB_UET_CC",
             "UIB_UET_NSCC_MAX_WND",

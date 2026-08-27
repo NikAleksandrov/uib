@@ -13,6 +13,7 @@
 #include "uib/qp.h"
 #include "uib/transport.h"
 #include "uib/protocol.h"
+#include "observability.h"
 
 /**
  * uib_open_device - Open a context using the environment-selected protocol.
@@ -107,6 +108,7 @@ int uib_close_device(struct uib_context *ctx)
 {
 	if (!ctx)
 		return -EINVAL;
+	uib_observability_emit(ctx);
 	uib_transport_fini(ctx);
 	if (ctx->pops && ctx->pops->fini)
 		ctx->pops->fini(ctx);

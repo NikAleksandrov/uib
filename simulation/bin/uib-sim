@@ -10,6 +10,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from uibsim.cli import main
 from uibsim.evidence import (
     transport_evidence,
+    provider_counter_evidence,
     normalize_workload_result,
     collect_workload_metrics,
 )

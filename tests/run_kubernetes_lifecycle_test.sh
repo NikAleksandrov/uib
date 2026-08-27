@@ -172,11 +172,17 @@ assert summary["schedulerState"] == "COMPLETED"
 assert summary["completeSchedulerSnapshot"] is True
 assert summary["uibPreflightVerified"] is True
 assert summary["uibTrafficEvidence"] == "not-exercised-non-rdma-backend"
+assert summary["uibCounterEvidence"] == "insufficient"
+assert summary["providerCounters"] == "provider-counters.json"
 assert summary["promotionEligible"] is False
 with (root / "transport-evidence.json").open(encoding="utf-8") as source:
     transport = json.load(source)
 assert transport["classification"] == "not-exercised-non-rdma-backend"
 assert transport["requestedRanks"] == 2
+with (root / "provider-counters.json").open(encoding="utf-8") as source:
+    counters = json.load(source)
+assert counters["classification"] == "insufficient"
+assert counters["recordCount"] == 0
 with (root / "metrics" / "workload.jsonl").open(encoding="utf-8") as source:
     metrics = [json.loads(line) for line in source]
 assert len(metrics) == 1

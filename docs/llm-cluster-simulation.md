@@ -2331,6 +2331,11 @@ UIB selection and explicit forbidden fallback, but still sets
 an exit code of zero, UIB preflight, nor a matching log line assigns a
 validation level without correctness, topology, and network evidence.
 
+UIB-enabled renders also set `UIB_STATS_OUTPUT=stderr`. The library then emits
+one `UIB_STATS` JSON record when each context closes, without application
+changes. Collection aggregates those records in `provider-counters.json` and
+copies its classification to `summary.json.uibCounterEvidence`.
+
 Normal users need no command overrides. The fake lifecycle gate uses these
 test seams, each of which must name one executable rather than a shell command:
 
@@ -3593,6 +3598,7 @@ results/<run-id>/
   images.json
   preflight.json
   transport-evidence.json
+  provider-counters.json
   host-probes.json
   network-emulation.json      # when infrastructure supplied validated evidence
   manifest.json
@@ -3681,6 +3687,16 @@ transport selection only. Correctness, counter interpretation, performance,
 and L0-L3 assignment remain separate gates so a matching string cannot promote
 a result by itself.
 
+`provider-counters.json` checks UIB's own close-time records against the
+requested protocol and transport, then sums packet, batching, error, and
+zero-copy counters. `traffic-observed` requires completed sends, received
+packets, and close records from at least the configured number of rank
+processes. Backend mismatch, incomplete rank coverage, transport errors,
+unavailable counters, invalid records, and zero traffic have distinct
+classifications. Missing records are `insufficient`; one-rank runs are
+`not-exercised-single-rank`. Counter evidence is supplementary and never makes
+a result promotion-eligible by itself.
+
 `metrics/workload.jsonl` contains one normalized record for each distinct,
 successful, run-owned result found in workload files or container/batch logs.
 The collector deduplicates a result printed to logs and written to JSON, then
@@ -3752,6 +3768,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
 | `make simulation-kubernetes-lifecycle-test` | The Kubernetes renderer requirements; no cluster, operator, or container engine | Exclusive run ownership, standard `kubectl apply/get/logs/version/delete` delegation, terminal and explicit incomplete snapshots, pod placement, per-container logs, per-pod UIB preflight, client/server and Node host probes, namespace cleanup, and SHA-256 evidence integrity using a fake kubectl executable |
 | `make simulation-transport-evidence-test` | Python 3, PyYAML, and `jsonschema`; no cluster or communication library | Bounded NCCL, RCCL, UCX, and libfabric positive-selection rules; forbidden fallback precedence; insufficient, single-rank, Gloo, and native classifications; and oversized-log skipping |
+| `make simulation-provider-counter-evidence-test` | Python 3; no cluster or communication library | UIB close-time counter aggregation; traffic, incomplete-rank, no-traffic, error, backend-mismatch, unavailable, invalid, single-rank, and native classifications |
 | `make simulation-workload-metrics-test` | Python 3, PyYAML, and `jsonschema`; no cluster, model, or dataset | Training and inference result normalization, duplicate-source merging, units and key metrics, run ownership, and rejection of non-finite values |
 | `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, in-allocation host/tool probes, timed network-fault steps and evidence gates, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, RoCEv2/UET congestion settings, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
 | `make simulation-slurm-lifecycle-test` | The Slurm renderer requirements; no Slurm installation or container engine | Exclusive ignored run ledgers, shared-path preflight, exact `sbatch --parsable` submission, recorded numeric job ownership, read-only `sacct` status and `scontrol` fallback including an empty pending node list, exact-ID `scancel`, retained failures, and rejection of result/ledger reuse or ambiguous submission output using fake standard commands |
@@ -3775,6 +3792,7 @@ make simulation-libvirt-test
 make simulation-kubernetes-render-test
 make simulation-kubernetes-lifecycle-test
 make simulation-transport-evidence-test
+make simulation-provider-counter-evidence-test
 make simulation-workload-metrics-test
 make simulation-slurm-render-test
 make simulation-slurm-lifecycle-test

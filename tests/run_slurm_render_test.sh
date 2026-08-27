@@ -82,6 +82,7 @@ assert "LD_LIBRARY_PATH=/opt/uib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" in ba
 assert "NCCL_IB_HCA='=uib0'" in batch
 assert "GLOO_SOCKET_IFNAME=eth1" in batch
 assert "UIB_ACTIVE_MTU=1024" in batch
+assert "UIB_STATS_OUTPUT=stderr" in batch
 assert "SLURM_UIB_NETWORK_MTU=1500" in batch
 assert 'actual_mtu=$(/opt/uib/bin/ip -o link show dev ' in batch
 assert "UIB_BIND_PORT=$((SLURM_UIB_BIND_PORT_BASE + LOCAL_RANK))" in batch

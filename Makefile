@@ -97,6 +97,7 @@ SRCS := \
 	src/congestion.c \
 	src/uet_nscc.c \
 	src/context.c \
+	src/observability.c \
 	src/transport.c \
 	src/zerocopy.c \
 	src/host_zc.c \
@@ -374,6 +375,9 @@ simulation-kubernetes-lifecycle-test:
 
 simulation-transport-evidence-test:
 	./tests/run_transport_evidence_test.sh
+
+simulation-provider-counter-evidence-test:
+	./tests/run_provider_counter_evidence_test.sh
 
 simulation-workload-metrics-test:
 	./tests/run_workload_metrics_test.sh
@@ -911,6 +915,7 @@ test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_
 	UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
 	UIB_TRANSPORT_MODE=udp-sync ./$(TEST_BIN)
 	UIB_TRANSPORT_MODE=udp-io-uring ./$(TEST_BIN)
+	./tests/run_stats_output_test.sh
 
 guest-test: all rxe-test-build
 	$(MAKE) test
@@ -1021,6 +1026,7 @@ clean:
 	simulation-kubernetes-render-test simulation-slurm-render-test \
 	simulation-kubernetes-lifecycle-test \
 	simulation-transport-evidence-test \
+	simulation-provider-counter-evidence-test \
 	simulation-workload-metrics-test \
 	simulation-slurm-lifecycle-test simulation-slurm-collect-test \
 	simulation-libvirt-test \

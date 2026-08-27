@@ -96,7 +96,10 @@ printf '%s\n' \
 	'Using network IB' \
 	'Connected all rings, use ring PXN 0 GDR 0 via NET/IB/0' \
 	> "$test_dir/results/uib-collect-7654.out"
-: > "$test_dir/results/uib-collect-7654.err"
+cat > "$test_dir/results/uib-collect-7654.err" <<'EOF'
+UIB_STATS {"schemaVersion":1,"pid":1001,"processToken":101,"contextSequence":1,"protocol":"uet","transport":"udp-sync","transportCountersAvailable":true,"transportCounters":{"txQueued":8,"txSubmitted":8,"txCompleted":8,"txErrors":0,"txGsoBatches":0,"txGsoPackets":0,"rxPackets":7,"rxGroBatches":0,"rxCompletionBatches":7},"zeroCopyCounters":{"copiedCalls":8,"copiedBytes":512,"zeroCopyCalls":0,"zeroCopyBytes":0,"completions":0,"deferredCopies":0,"errors":0}}
+UIB_STATS {"schemaVersion":1,"pid":1002,"processToken":102,"contextSequence":1,"protocol":"uet","transport":"udp-sync","transportCountersAvailable":true,"transportCounters":{"txQueued":7,"txSubmitted":7,"txCompleted":7,"txErrors":0,"txGsoBatches":0,"txGsoPackets":0,"rxPackets":8,"rxGroBatches":0,"rxCompletionBatches":8},"zeroCopyCounters":{"copiedCalls":7,"copiedBytes":448,"zeroCopyCalls":0,"zeroCopyBytes":0,"completions":0,"deferredCopies":0,"errors":0}}
+EOF
 printf '%s\n' 'must not be collected' > "$test_dir/results/unrelated.out"
 
 bundle=$test_dir/bundles/uib-collect
@@ -141,7 +144,9 @@ assert summary["protocol"] == "uet"
 assert summary["congestionControl"]["algorithm"] == "nscc"
 assert summary["validationLevel"] == "not-assigned"
 assert summary["uibTrafficEvidence"] == "confirmed"
+assert summary["uibCounterEvidence"] == "traffic-observed"
 assert summary["transportEvidence"] == "transport-evidence.json"
+assert summary["providerCounters"] == "provider-counters.json"
 assert summary["faultEvidenceFiles"] == 3
 assert summary["faultEvidenceRecords"] == 5
 assert "fault-evidence/completed-targets" not in summary["missingArtifacts"]
@@ -152,6 +157,13 @@ with (root / "transport-evidence.json").open(encoding="utf-8") as source:
 assert transport["classification"] == "confirmed"
 assert transport["positiveMatches"] == ["uib-library", "ib-data-path"]
 assert transport["forbiddenMatches"] == []
+with (root / "provider-counters.json").open(encoding="utf-8") as source:
+    counters = json.load(source)
+assert counters["classification"] == "traffic-observed"
+assert counters["recordCount"] == 2
+assert counters["observedProcesses"] == 2
+assert counters["aggregateTransportCounters"]["txCompleted"] == 15
+assert counters["aggregateTransportCounters"]["rxPackets"] == 15
 with (root / "metrics" / "workload.jsonl").open(encoding="utf-8") as source:
     metrics = [json.loads(line) for line in source]
 assert len(metrics) == 1

@@ -142,6 +142,155 @@ def transport_evidence(config, roots):
     }
 
 
+def provider_counter_evidence(config, roots):
+    suffixes = {".err", ".json", ".jsonl", ".log", ".out", ".txt"}
+    counter_names = (
+        "txQueued", "txSubmitted", "txCompleted", "txErrors",
+        "txGsoBatches", "txGsoPackets", "rxPackets", "rxGroBatches",
+        "rxCompletionBatches",
+    )
+    zerocopy_names = (
+        "copiedCalls", "copiedBytes", "zeroCopyCalls", "zeroCopyBytes",
+        "completions", "deferredCopies", "errors",
+    )
+    maximum_file = 4 * 1024 * 1024
+    maximum_total = 32 * 1024 * 1024
+    records = []
+    checked = []
+    skipped = []
+    invalid = []
+    unavailable = 0
+    total = 0
+    aggregate = {name: 0 for name in counter_names}
+    zerocopy_aggregate = {name: 0 for name in zerocopy_names}
+
+    for label, root in roots:
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*")):
+            if (not path.is_file() or path.is_symlink() or
+                    path.suffix.lower() not in suffixes):
+                continue
+            try:
+                size = path.stat().st_size
+                source = f"{label}/{path.relative_to(root)}"
+                if size > maximum_file or total + size > maximum_total:
+                    skipped.append(source)
+                    continue
+                lines = path.read_text(
+                    encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            total += size
+            found = False
+            for number, line in enumerate(lines, 1):
+                marker = line.find("UIB_STATS ")
+                if marker < 0:
+                    continue
+                found = True
+                try:
+                    record = json.loads(line[marker + len("UIB_STATS "):])
+                except json.JSONDecodeError:
+                    invalid.append(f"{source}:{number}")
+                    continue
+                if (not isinstance(record, dict) or
+                        record.get("schemaVersion") != 1 or
+                        isinstance(record.get("processToken"), bool) or
+                        not isinstance(record.get("processToken"), int) or
+                        not isinstance(record.get("protocol"), str) or
+                        not isinstance(record.get("transport"), str) or
+                        not isinstance(
+                            record.get("transportCountersAvailable"), bool)):
+                    invalid.append(f"{source}:{number}")
+                    continue
+                counters = record.get("transportCounters")
+                zerocopy = record.get("zeroCopyCounters")
+                if (not isinstance(zerocopy, dict) or any(
+                        isinstance(zerocopy.get(name), bool) or
+                        not isinstance(zerocopy.get(name), int) or
+                        zerocopy[name] < 0 for name in zerocopy_names)):
+                    invalid.append(f"{source}:{number}")
+                    continue
+                if not record["transportCountersAvailable"]:
+                    if counters is not None:
+                        invalid.append(f"{source}:{number}")
+                        continue
+                    unavailable += 1
+                elif (not isinstance(counters, dict) or any(
+                        isinstance(counters.get(name), bool) or
+                        not isinstance(counters.get(name), int) or
+                        counters[name] < 0 for name in counter_names)):
+                    invalid.append(f"{source}:{number}")
+                    continue
+                else:
+                    for name in counter_names:
+                        aggregate[name] += counters[name]
+                for name in zerocopy_names:
+                    zerocopy_aggregate[name] += zerocopy[name]
+                records.append({
+                    "source": source,
+                    "pid": record.get("pid"),
+                    "processToken": record["processToken"],
+                    "contextSequence": record.get("contextSequence"),
+                    "protocol": record["protocol"],
+                    "transport": record["transport"],
+                    "transportCountersAvailable":
+                        record["transportCountersAvailable"],
+                })
+            if found:
+                checked.append(source)
+
+    enabled = config["uib"]["enabled"]
+    parallel = config["workload"]["parallelism"]
+    ranks = parallel["nodes"] * parallel["processesPerNode"]
+    mismatches = [
+        record for record in records
+        if (record["protocol"] != config["uib"]["protocol"] or
+            record["transport"] != config["uib"]["transport"])
+    ] if enabled else []
+    processes = {record["processToken"] for record in records}
+    if not enabled:
+        classification = "native-baseline"
+    elif ranks < 2:
+        classification = "not-exercised-single-rank"
+    elif invalid:
+        classification = "invalid"
+    elif mismatches:
+        classification = "backend-mismatch"
+    elif not records:
+        classification = "insufficient"
+    elif unavailable:
+        classification = "counters-unavailable"
+    elif len(processes) < ranks:
+        classification = "incomplete-rank-coverage"
+    elif aggregate["txErrors"]:
+        classification = "errors-observed"
+    elif aggregate["txCompleted"] and aggregate["rxPackets"]:
+        classification = "traffic-observed"
+    else:
+        classification = "no-traffic"
+
+    return {
+        "schemaVersion": 1,
+        "classification": classification,
+        "requestedRanks": ranks,
+        "expectedProtocol": config["uib"]["protocol"] if enabled else None,
+        "expectedTransport": config["uib"]["transport"] if enabled else None,
+        "recordCount": len(records),
+        "observedProcesses": len(processes),
+        "unavailableRecordCount": unavailable,
+        "invalidRecords": invalid,
+        "mismatchedRecords": mismatches,
+        "checkedFiles": checked,
+        "skippedFiles": skipped,
+        "bytesInspected": total,
+        "aggregateTransportCounters": aggregate,
+        "aggregateZeroCopyCounters": zerocopy_aggregate,
+        "records": records,
+        "promotionEligible": False,
+    }
+
+
 def finite_number(value, minimum=0):
     return (not isinstance(value, bool) and isinstance(value, (int, float)) and
             math.isfinite(value) and value >= minimum)

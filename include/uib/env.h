@@ -57,6 +57,22 @@
 #define UIB_ENV_TRANSPORT_MODE "UIB_TRANSPORT_MODE"
 
 /**
+ * DOC: UIB_STATS_OUTPUT
+ * @uib-env: Library and transparent provider
+ * @default: `off`
+ * @values: `off` or `stderr`
+ *
+ * Emit one machine-readable `UIB_STATS` JSON record when each context closes.
+ * Simulation collectors use `stderr` to verify the selected UIB backend and
+ * aggregate its packet and zero-copy counters without application changes.
+ * Statistics are diagnostic evidence and do not change application results.
+ *
+ * Example:
+ * UIB_STATS_OUTPUT=stderr LD_PRELOAD=$PWD/libuibv.so app
+ */
+#define UIB_ENV_STATS_OUTPUT "UIB_STATS_OUTPUT"
+
+/**
  * DOC: UIB_UDP_MODE
  * @uib-env: Library and transparent provider
  * @default: `socket`
