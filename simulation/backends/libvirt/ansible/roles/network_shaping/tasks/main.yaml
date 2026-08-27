@@ -52,9 +52,11 @@
       - apply
       - /run/uib-simulation.json
       - "{{ uib_data_interface }}"
+      - --target
+      - "{{ uib_fault_targets[inventory_hostname] }}"
       - --replace-existing
   register: uib_netem_apply
-  changed_when: uib_network_shaping.enabled | bool
+  changed_when: uib_endpoint_shaping[inventory_hostname].enabled | bool
 
 - name: Preserve the applied netem command for post-traffic evidence
   ansible.builtin.copy:

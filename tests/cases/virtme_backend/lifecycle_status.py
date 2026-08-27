@@ -25,7 +25,13 @@ assert network["scope"] == "worker-data-egress"
 assert network["interface"] == "eth1"
 assert network["shaping"]["enabled"] is True
 assert len(network["endpoints"]) == 2
-for endpoint in network["endpoints"].values():
+endpoints = {
+    endpoint["target"]: endpoint
+    for endpoint in network["endpoints"].values()
+}
+assert endpoints["worker-01/data"]["shaping"]["latency"] == "100us"
+assert endpoints["worker-02/data"]["shaping"]["latency"] == "5ms"
+for endpoint in endpoints.values():
     assert "qdisc netem " in endpoint["qdisc"]
     assert "Sent 4096 bytes" in endpoint["qdisc"]
     assert endpoint["seedApplied"] is True

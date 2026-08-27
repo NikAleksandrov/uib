@@ -8,7 +8,7 @@ import subprocess
 
 def apply_network_shaping(config, topology_value, ssh, key):
     from .core import SIMULATION, VirtmeError
-    from .processes import remote_command, remote_write, worker_guests
+    from .processes import remote_command, remote_write, worker_guests, worker_targets
 
     try:
         adapter = (SIMULATION / "network/netem").read_text(encoding="utf-8")
@@ -20,20 +20,20 @@ def apply_network_shaping(config, topology_value, ssh, key):
     resolved = json.dumps(config, sort_keys=True)
     commands = {}
     interface = config["network"]["dataInterface"]
-    workers = sorted(worker_guests(topology_value),
-                     key=lambda guest: guest["hostname"])
-    for index, guest in enumerate(workers, 1):
+    targets = worker_targets(topology_value)
+    for guest in worker_guests(topology_value):
+        target = targets[guest["hostname"]]
         remote_write(ssh, key, guest, "/run/uib-netem", adapter, mode="0755")
         remote_write(ssh, key, guest, "/run/uib-network-schedule", schedule,
                      mode="0755")
         remote_write(ssh, key, guest, "/run/uib-fault-target",
-                     f"worker-{index:02d}/data\n")
+                     f"{target}\n")
         remote_write(
             ssh, key, guest, "/run/uib-simulation.json", resolved)
         result = remote_command(
             ssh, key, guest, shlex.join([
                 "/run/uib-netem", "apply", "/run/uib-simulation.json",
-                interface, "--replace-existing",
+                interface, "--target", target, "--replace-existing",
             ]), capture=True)
         commands[guest["hostname"]] = result.stdout.strip()
     return commands
@@ -41,13 +41,17 @@ def apply_network_shaping(config, topology_value, ssh, key):
 
 def record_network_evidence(config, topology_value, ssh, key, commands, state):
     from .core import VirtmeError, write_json
-    from .processes import remote_command, worker_guests
+    from .processes import remote_command, worker_guests, worker_targets
 
-    shaping = config["network"]["shaping"]
+    default_shaping = config["network"]["shaping"]
+    endpoint_shaping = config["network"].get("endpointShaping", {})
     interface = config["network"]["dataInterface"]
+    targets = worker_targets(topology_value)
     endpoints = {}
     for guest in worker_guests(topology_value):
         hostname = guest["hostname"]
+        target = targets[hostname]
+        shaping = endpoint_shaping.get(target, default_shaping)
         qdisc = remote_command(
             ssh, key, guest,
             shlex.join(["/run/uib-netem", "show", interface]),
@@ -68,6 +72,8 @@ def record_network_evidence(config, topology_value, ssh, key, commands, state):
                 f"network evidence has no traffic for {hostname}")
         seed = shaping.get("seed")
         endpoints[hostname] = {
+            "target": target,
+            "shaping": shaping,
             "appliedCommand": applied,
             "qdisc": qdisc,
             "iproute2": iproute2,
@@ -82,7 +88,7 @@ def record_network_evidence(config, topology_value, ssh, key, commands, state):
         "scope": "worker-data-egress",
         "interface": interface,
         "replaceExisting": True,
-        "shaping": shaping,
+        "shaping": default_shaping,
         "endpoints": endpoints,
     })
     return path

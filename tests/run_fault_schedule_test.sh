@@ -48,8 +48,10 @@ faults:
     target: worker-01/data
     duration: 1ms
 EOF
-"$cli" render --profile kind-kubernetes --overlay network/clean \
-	--request "$test_dir/faults.yaml" --format json > "$test_dir/config.json"
+"$cli" render --profile virtme-kubernetes --overlay network/clean \
+	--request "$test_dir/faults.yaml" --format json \
+	--set 'network.endpointShaping={worker-01/data: {enabled: true, latency: 7ms}}' \
+	> "$test_dir/config.json"
 
 FAULT_NETEM="$test_dir/bin/netem" FAULT_IP="$test_dir/bin/ip" \
 FAULT_TEST_COMMANDS="$test_dir/commands" \
@@ -68,10 +70,12 @@ assert all(record["result"] == "applied" for record in records)
 assert [record["phase"] for record in records].count("apply") == 3
 assert [record["phase"] for record in records].count("recover") == 3
 assert records[-1]["activeFaults"] == []
-assert records[-1]["commands"][-1]["shaping"] == {"enabled": False}
+assert records[-1]["commands"][-1]["shaping"] == {
+    "enabled": True, "latency": "7ms"}
 commands = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
 assert '"latency":"5ms"' in commands
 assert '"lossPercent":2' in commands
+assert '"latency":"7ms"' in commands
 assert "ip link set dev eth-test down" in commands
 assert "ip link set dev eth-test up" in commands
 PY

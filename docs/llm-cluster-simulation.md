@@ -554,7 +554,7 @@ use a small YAML overlay for a group of related values.
 | virtme network | `virtme-bridge` (optional; the profiles default to rootless socket networking) |
 | Communication | `communication/nccl`, `communication/rccl`, `communication/ucx`, `communication/libfabric` |
 | Protocol and congestion | `protocol/rocev2`, `protocol/rocev2-nscc-experimental`, `protocol/uet-nscc`, `protocol/uet-none` |
-| Network condition | `network/clean`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/bursty`, `network/reordered`, `network/ecn` |
+| Network condition | `network/clean`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/bursty`, `network/reordered`, `network/ecn`, `network/asymmetric` |
 
 A later overlay from the same layer replaces the earlier layer settings. This
 makes interactive comparisons easy, but a committed request should specify
@@ -606,6 +606,8 @@ only one communication, protocol, and network-condition overlay.
 | `nodes.gpus.perWorker` | Integer 0-64 | GPUs available per worker |
 | `nodes.gpus.resourceName` | Scheduler resource name | For example `nvidia.com/gpu` |
 | `network.dataInterface` | Linux interface name, at most 15 characters | Slurm bind interface or the Kubernetes node/CNI data interface |
+| `network.shaping` | Complete shaping object | Default network condition for every worker |
+| `network.endpointShaping` | Map from `worker-NN/data` to complete shaping objects | Optional per-worker replacements; unknown workers are rejected |
 
 ### UIB and communication values
 
@@ -2902,6 +2904,8 @@ simulation/bin/uib-sim render --profile virtme-kubernetes \
   --overlay network/constrained --format json > /tmp/uib-config.json
 
 simulation/network/netem render /tmp/uib-config.json tap-uib-0
+simulation/network/netem render /tmp/uib-config.json tap-uib-0 \
+  --target worker-02/data
 simulation/network/netem apply  /tmp/uib-config.json tap-uib-0
 simulation/network/netem show   tap-uib-0
 simulation/network/netem clear  tap-uib-0
@@ -2929,8 +2933,35 @@ make simulation-libvirt-netem-e2e-test
 ```
 
 Both targets default to `datacenter`; accepted values are `clean`,
-`datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, and `ecn`. The condition is
-applied symmetrically to the egress of every worker data interface. Because
+`datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, `ecn`, and
+`asymmetric`. Uniform conditions apply to every worker data-interface egress.
+The asymmetric overlay resolves an optional per-worker replacement:
+
+```yaml
+network:
+  shaping:
+    enabled: true
+    latency: 250us
+  endpointShaping:
+    worker-01/data:
+      enabled: true
+      latency: 100us
+    worker-02/data:
+      enabled: true
+      bandwidth: 1Gbit
+      latency: 5ms
+```
+
+`network.shaping` remains the default for every endpoint not named in
+`endpointShaping`. Each endpoint value is a complete shaping object rather
+than a partial merge. Targets use stable `worker-NN/data` names and must refer
+to a configured worker. The netem adapter selects the same resolved value with
+`--target`; virtme, libvirt, and timed faults pass it automatically. Evidence
+stores the target and effective shaping beside each worker's qdisc counters.
+Kind rejects `endpointShaping` until its pod/host-network executor is
+implemented, so a per-worker request cannot silently run as a uniform test.
+
+Because
 the guests and their interfaces are run-owned, each lifecycle explicitly
 replaces their initial root qdisc. After the cross-worker UIB gate, it requires
 the requested `netem` state and nonzero qdisc traffic counters, then records
@@ -2955,6 +2986,7 @@ The checked-in conditions are intentionally small and readable:
 | `network/bursty` | 1 ms delay and a Gilbert-Elliott model with 0.5% bad-state entry, 20% recovery, 80% loss while bad, 0.01% loss while good, 1024-packet queue, seed 12345 |
 | `network/reordered` | 2 ms delay, 500 us normal jitter, 10% reordering, 25% correlation, gap 5, seed 12345 |
 | `network/ecn` | 10 Gbit/s, 250 us delay, 2% loss decision model converted to ECN marks for ECN-capable packets, 512-packet queue, seed 12345 |
+| `network/asymmetric` | 250 us default; worker 1 uses 100 us, while worker 2 uses 1 Gbit/s and 5 ms |
 
 ### Netem configuration fields
 
@@ -2962,7 +2994,10 @@ All percentages are numbers from 0 through 100. Durations accept `ns`, `us`,
 `ms`, or `s`. Rates accept an integer followed by `kbit`, `Mbit`, `Gbit`, or
 the corresponding case variants.
 
-| Field under `network.shaping` | Default | Netem mapping |
+The same fields are accepted by `network.shaping` and every complete
+`network.endpointShaping.<worker-NN/data>` replacement.
+
+| Shaping field | Default | Netem mapping |
 |---|---:|---|
 | `enabled` | Required | Apply or remove the owned netem condition |
 | `bandwidth` | Unset | `rate RATE` |
@@ -3520,7 +3555,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | Target | Requirements | What it validates |
 |---|---|---|
 | `make simulation-cli-test` | Python 3, PyYAML, and `jsonschema` | Every profile, named layer replacement, schema and semantic rejection, typed `--set`, and the read-only `doctor` report |
-| `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in network condition renders to the expected `tc netem` command; unsafe interfaces and invalid combinations are rejected; it does not modify a qdisc |
+| `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in uniform and per-worker network condition renders to the expected `tc netem` command; unsafe interfaces, targets, and invalid combinations are rejected; it does not modify a qdisc |
 | `make simulation-fault-schedule-test` | Python 3, `jq`, and the CLI requirements; no network privilege | Overlapping delay, loss, and link-down transitions, direct and noninteractive privileged command dispatch, exact JSONL evidence, base-condition recovery, missing targets, and signal-interruption cleanup through controlled standard-command adapters |
 | `make simulation-fault-e2e-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | A timed 2 ms netem window carries the complete RoCEv2 UIB SEND, multi-packet, RDMA read/write, and atomic workload; nonzero qdisc counters, transition evidence, and exact recovery are required |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | RoCEv2 and UET SEND and RDMA read/write complete with actual netem conditions and built-in or plugin congestion control; the UET cases also cover atomics |
@@ -3665,7 +3700,7 @@ and exact process cleanup.
 | `VIRTME_DOWNLOAD_CACHE` | `simulation/.artifacts/downloads/virtme` | Reusable verified package, source, runtime, plugin, and smoke-image cache |
 | `UIB_RUNTIME_SOURCE` | `simulation/.artifacts/uib-runtime` | Host path to the complete portable runtime shared read-only with every guest |
 | `VIRTME_MODEL_CACHE` | `simulation/.artifacts/huggingface` | Host path shared read-write at `storage.modelCachePath` in every guest |
-| `VIRTME_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty, `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, or `ecn`; the selected overlay applies to every worker data-interface egress |
+| `VIRTME_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty, `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, `ecn`, or `asymmetric`; uniform overlays apply to every worker egress, while `asymmetric` uses per-worker settings |
 | `VIRTME_SLURM_JOB_WAIT` | `120` | Positive seconds allowed for the end-to-end workload job to reach a terminal state |
 | `SLURM_IMAGE_CACHE` | `simulation/.artifacts/slurm-images` | Reusable verified host SquashFS cache shared with the virtme guests |
 | `PORTABLE_RUNTIME_CONTAINER_ENGINE` | `docker` | Docker-compatible engine used to build and verify the portable runtime dependency |
@@ -3740,7 +3775,7 @@ committed.
 |---|---|---|
 | `LIBVIRT_URI` | `qemu:///session` | Exact libvirt URI; rootless mode requires the session URI |
 | `LIBVIRT_NETWORK_MODE` | `rootless` | `rootless` for passt plus multicast, or `bridge` for managed networks |
-| `LIBVIRT_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty for the profile setting, or `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, or `ecn`; applied to every worker data-interface egress |
+| `LIBVIRT_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty for the profile setting, or `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, `ecn`, or `asymmetric`; uniform overlays apply to every worker egress, while `asymmetric` uses per-worker settings |
 | `LIBVIRT_POOL` | Unique run ID | Active pool name; the gate creates and later removes a missing session pool |
 | `LIBVIRT_POOL_DIR` | Ignored run-specific path | Directory backing a session pool created by the gate; not used for a pre-existing pool |
 | `LIBVIRT_WORKERS` | `2` | Positive worker count; two or more place the UIB traffic ranks on distinct VMs |

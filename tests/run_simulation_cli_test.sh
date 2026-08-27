@@ -53,6 +53,46 @@ done
 	--set nodes.gpus.vendor=amd --format json > "$test_dir/rccl.json"
 "$cli" render --profile kind-kubernetes --overlay protocol/uet-nscc \
 	--format json > "$test_dir/uet-overlay.json"
+"$cli" render --profile virtme-kubernetes --overlay network/asymmetric \
+	--format json > "$test_dir/asymmetric.json"
+python3 - "$test_dir/asymmetric.json" <<'PY'
+import json
+import sys
+
+config = json.load(open(sys.argv[1], encoding="utf-8"))
+assert config["network"]["shaping"]["latency"] == "250us"
+assert config["network"]["endpointShaping"]["worker-01/data"]["latency"] == \
+    "100us"
+assert config["network"]["endpointShaping"]["worker-02/data"]["bandwidth"] == \
+    "1Gbit"
+PY
+if "$cli" render --profile virtme-kubernetes \
+	--set 'network.endpointShaping={worker-03/data: {enabled: true, latency: 1ms}}' \
+	> /dev/null 2>&1; then
+	echo "endpoint shaping accepted a nonexistent worker" >&2
+	exit 1
+fi
+if "$cli" render --profile virtme-kubernetes \
+	--set 'network.endpointShaping={worker-01/data: {enabled: true, jitter: 1ms}}' \
+	> /dev/null 2>&1; then
+	echo "endpoint shaping bypassed impairment validation" >&2
+	exit 1
+fi
+if "$cli" render --profile kind-kubernetes --overlay network/asymmetric \
+	> /dev/null 2>&1; then
+	echo "Kind accepted unimplemented per-worker shaping" >&2
+	exit 1
+fi
+"$cli" render --profile virtme-kubernetes --overlay network/asymmetric \
+	--overlay network/clean --format json > "$test_dir/replaced-network.json"
+python3 - "$test_dir/replaced-network.json" <<'PY'
+import json
+import sys
+
+config = json.load(open(sys.argv[1], encoding="utf-8"))
+assert config["network"]["shaping"] == {"enabled": False}
+assert "endpointShaping" not in config["network"]
+PY
 
 printf 'unknownTopLevel: true\n' > "$test_dir/unknown.yaml"
 if "$cli" render --profile kind-kubernetes \

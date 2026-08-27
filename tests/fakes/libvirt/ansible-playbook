@@ -59,6 +59,10 @@ assert values["uib_fault_targets"] == {
     "worker-01": "worker-01/data",
     "worker-02": "worker-02/data",
 }
+assert values["uib_endpoint_shaping"] == {
+    "worker-01": {"enabled": False},
+    "worker-02": {"enabled": False},
+}
 assert values["uib_stage_image_source"].endswith(
     "/simulation/adapters/slurm/stage-image")
 assert values["uib_stage_cache_source"].endswith(
@@ -97,7 +101,8 @@ for node in ("worker-01", "worker-02"):
         "schemaVersion": 1,
         "node": node,
         "interface": values["uib_data_interface"],
-        "shaping": values["uib_network_shaping"],
+        "target": values["uib_fault_targets"][node],
+        "shaping": values["uib_endpoint_shaping"][node],
         "appliedCommand": "tc qdisc del dev eth1 root",
         "qdisc": "qdisc noqueue 0: root refcnt 2",
         "iproute2": "tc utility, iproute2-test",

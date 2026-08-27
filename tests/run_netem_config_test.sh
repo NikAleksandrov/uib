@@ -16,6 +16,16 @@ for condition in clean datacenter constrained lossy bursty reordered ecn; do
 		> "$test_dir/$condition.command"
 done
 
+"$cli" render --profile virtme-kubernetes --overlay network/asymmetric \
+	--format json > "$test_dir/asymmetric.json"
+"$netem" render "$test_dir/asymmetric.json" eth-test \
+	> "$test_dir/asymmetric.command"
+
+"$netem" render "$test_dir/asymmetric.json" eth-test \
+	--target worker-01/data > "$test_dir/asymmetric-worker-01.command"
+"$netem" render "$test_dir/asymmetric.json" eth-test \
+	--target worker-02/data > "$test_dir/asymmetric-worker-02.command"
+
 grep -F 'qdisc del dev eth-test root' "$test_dir/clean.command" >/dev/null
 grep -F 'delay 100us 20us 10% distribution normal' \
 	"$test_dir/datacenter.command" >/dev/null
@@ -25,6 +35,10 @@ grep -F 'loss gemodel 0.5% 20% 80% 0.01%' \
 	"$test_dir/bursty.command" >/dev/null
 grep -F 'reorder 10% 25% gap 5' "$test_dir/reordered.command" >/dev/null
 grep -F 'loss random 2% ecn' "$test_dir/ecn.command" >/dev/null
+grep -F 'delay 250us' "$test_dir/asymmetric.command" >/dev/null
+grep -F 'delay 100us' "$test_dir/asymmetric-worker-01.command" >/dev/null
+grep -F 'delay 5ms' "$test_dir/asymmetric-worker-02.command" >/dev/null
+grep -F 'rate 1Gbit' "$test_dir/asymmetric-worker-02.command" >/dev/null
 
 if "$cli" render --profile kind-kubernetes \
 	--set network.shaping.enabled=true \
@@ -55,6 +69,11 @@ fi
 if "$netem" render "$test_dir/datacenter.json" 'bad;interface' \
 	> /dev/null 2>&1; then
 	echo "unsafe interface name was accepted" >&2
+	exit 1
+fi
+if "$netem" render "$test_dir/asymmetric.json" eth-test \
+	--target 'bad/target' > /dev/null 2>&1; then
+	echo "unsafe endpoint shaping target was accepted" >&2
 	exit 1
 fi
 

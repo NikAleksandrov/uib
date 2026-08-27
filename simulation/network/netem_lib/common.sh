@@ -3,8 +3,8 @@
 usage()
 {
 	cat >&2 <<'EOF'
-usage: netem render CONFIG.json INTERFACE
-       netem apply CONFIG.json INTERFACE [--replace-existing]
+usage: netem render CONFIG.json INTERFACE [--target TARGET]
+       netem apply CONFIG.json INTERFACE [--target TARGET] [--replace-existing]
        netem clear INTERFACE
        netem show INTERFACE
 EOF

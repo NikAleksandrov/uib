@@ -50,7 +50,7 @@ fi
 network_condition=${VIRTME_NETWORK_CONDITION:-}
 case $network_condition in
 '') ;;
-clean|datacenter|constrained|lossy|bursty|reordered|ecn)
+clean|datacenter|constrained|lossy|bursty|reordered|ecn|asymmetric)
 	profile_args="$profile_args --overlay network/$network_condition"
 	;;
 *)
@@ -151,6 +151,14 @@ if condition == "datacenter":
     assert network["shaping"]["latency"] == "100us"
     assert network["shaping"]["jitter"] == "20us"
     assert network["shaping"]["queueLimit"] == 8192
+if condition == "asymmetric":
+    endpoints = {
+        endpoint["target"]: endpoint
+        for endpoint in network["endpoints"].values()
+    }
+    assert endpoints["worker-01/data"]["shaping"]["latency"] == "100us"
+    assert endpoints["worker-02/data"]["shaping"]["latency"] == "5ms"
+    assert endpoints["worker-02/data"]["shaping"]["bandwidth"] == "1Gbit"
 with open(os.path.join(infrastructure, "inventory.json"),
           encoding="utf-8") as source:
     inventory = json.load(source)

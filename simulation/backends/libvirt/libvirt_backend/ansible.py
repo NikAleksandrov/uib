@@ -11,6 +11,12 @@ def common_ansible_values(config, values, state, run_id):
     workers = sorted(
         name for name, node in values["nodes"].items()
         if node["role"] == "worker")
+    targets = {
+        name: f"worker-{index:02d}/data"
+        for index, name in enumerate(workers, 1)
+    }
+    default_shaping = config["network"]["shaping"]
+    endpoint_shaping = config["network"].get("endpointShaping", {})
     return {
         "uib_run_id": run_id,
         "uib_run_state": str(state),
@@ -18,9 +24,10 @@ def common_ansible_values(config, values, state, run_id):
         "uib_netem_source": str(SIMULATION / "network" / "netem"),
         "uib_fault_schedule_source": str(
             SIMULATION / "faults" / "network-schedule"),
-        "uib_fault_targets": {
-            name: f"worker-{index:02d}/data"
-            for index, name in enumerate(workers, 1)
+        "uib_fault_targets": targets,
+        "uib_endpoint_shaping": {
+            name: endpoint_shaping.get(target, default_shaping)
+            for name, target in targets.items()
         },
         "uib_stage_image_source": str(
             SIMULATION / "adapters" / "slurm" / "stage-image"),

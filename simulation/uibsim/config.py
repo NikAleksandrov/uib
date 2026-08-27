@@ -89,6 +89,10 @@ def apply_overlay(config, name):
     if name.startswith("network/"):
         config["network"]["shaping"] = copy.deepcopy(
             overlay["network"]["shaping"])
+        config["network"].pop("endpointShaping", None)
+        if "endpointShaping" in overlay["network"]:
+            config["network"]["endpointShaping"] = copy.deepcopy(
+                overlay["network"]["endpointShaping"])
         return config
     return merge(config, overlay)
 
@@ -120,6 +124,60 @@ def quantity_mib(value):
     return int(match.group(1)) * factor
 
 
+def validate_shaping(shaping, path):
+    from .core import ConfigurationError
+
+    impairments = set(shaping) - {"enabled"}
+    if not shaping["enabled"] and impairments:
+        raise ConfigurationError(
+            f"{path} parameters require enabled=true")
+    if "jitter" in shaping and "latency" not in shaping:
+        raise ConfigurationError(f"{path} jitter requires latency")
+    if "delayDistribution" in shaping and "jitter" not in shaping:
+        raise ConfigurationError(f"{path} delay distribution requires jitter")
+    if shaping.get("reorderPercent", 0) and "latency" not in shaping:
+        raise ConfigurationError(f"{path} packet reordering requires latency")
+    if shaping.get("ecn", False) and not shaping.get("lossPercent", 0):
+        raise ConfigurationError(f"{path} netem ECN requires a nonzero loss model")
+    loss_model = shaping.get("lossModel", "random")
+    burst_parameters = {
+        "lossRecoveryPercent",
+        "lossBadStatePercent",
+        "lossGoodStatePercent",
+    }
+    configured_burst = burst_parameters & set(shaping)
+    if loss_model == "gemodel":
+        if not shaping.get("lossPercent", 0):
+            raise ConfigurationError(
+                f"{path} netem gemodel requires a nonzero lossPercent")
+        missing = burst_parameters - configured_burst
+        if missing:
+            raise ConfigurationError(
+                f"{path} netem gemodel requires {sorted(missing)[0]}")
+        if "lossCorrelationPercent" in shaping:
+            raise ConfigurationError(
+                f"{path} lossCorrelationPercent applies only to random loss")
+    elif configured_burst:
+        raise ConfigurationError(
+            f"{path} burst-loss parameters require lossModel=gemodel")
+    correlation_requirements = {
+        "delayCorrelationPercent": "jitter",
+        "lossCorrelationPercent": "lossPercent",
+        "duplicateCorrelationPercent": "duplicatePercent",
+        "corruptCorrelationPercent": "corruptPercent",
+        "reorderCorrelationPercent": "reorderPercent",
+    }
+    for correlation, parent in correlation_requirements.items():
+        if correlation in shaping and parent not in shaping:
+            raise ConfigurationError(f"{path}.{correlation} requires {parent}")
+    if "cellSizeBytes" in shaping and "packetOverheadBytes" not in shaping:
+        raise ConfigurationError(
+            f"{path}.cellSizeBytes requires packetOverheadBytes")
+    if "cellOverheadBytes" in shaping and "cellSizeBytes" not in shaping:
+        raise ConfigurationError(
+            f"{path}.cellOverheadBytes requires cellSizeBytes")
+
+
 def validate_infrastructure(config):
     from .core import COMPATIBILITY, ConfigurationError
     provider = config["infrastructure"]["provider"]
@@ -129,6 +187,11 @@ def validate_infrastructure(config):
     gpu = config["nodes"]["gpus"]
     uib = config["uib"]
     storage = config["storage"]
+    endpoint_shaping = config["network"].get("endpointShaping", {})
+    expected_targets = {
+        f"worker-{index:02d}/data"
+        for index in range(1, config["nodes"]["workers"] + 1)
+    }
     if provider == "libvirt" and "libvirt" not in config:
         raise ConfigurationError("libvirt requires provider settings")
     if provider != "libvirt" and "libvirt" in config:
@@ -241,6 +304,11 @@ def validate_scheduler(config):
     gpu = config["nodes"]["gpus"]
     uib = config["uib"]
     storage = config["storage"]
+    endpoint_shaping = config["network"].get("endpointShaping", {})
+    expected_targets = {
+        f"worker-{index:02d}/data"
+        for index in range(1, config["nodes"]["workers"] + 1)
+    }
     if provider == "kind" and manager != "kubernetes":
         raise ConfigurationError("Kind requires Kubernetes")
     if manager == "kubernetes" and runtime != "containerd":
@@ -269,6 +337,20 @@ def validate_scheduler(config):
             raise ConfigurationError("Slurm UIB runs require storage.uibRuntimePath")
         if uib["enabled"] and not config["network"].get("dataInterface"):
             raise ConfigurationError("Slurm UIB runs require network.dataInterface")
+    if provider == "kind" and endpoint_shaping:
+        raise ConfigurationError(
+            "per-worker shaping is not implemented for Kind")
+    expected_targets = {
+        f"worker-{index:02d}/data"
+        for index in range(1, config["nodes"]["workers"] + 1)
+    }
+    unknown_targets = set(endpoint_shaping) - expected_targets
+    if unknown_targets:
+        raise ConfigurationError(
+            "network.endpointShaping has unknown target: "
+            f"{sorted(unknown_targets)[0]}")
+    for target, shaping in endpoint_shaping.items():
+        validate_shaping(shaping, f"network.endpointShaping.{target}")
 
 
 
@@ -281,6 +363,11 @@ def validate_communication(config):
     gpu = config["nodes"]["gpus"]
     uib = config["uib"]
     storage = config["storage"]
+    endpoint_shaping = config["network"].get("endpointShaping", {})
+    expected_targets = {
+        f"worker-{index:02d}/data"
+        for index in range(1, config["nodes"]["workers"] + 1)
+    }
     if frontend == "rccl" and gpu["vendor"] != "amd":
         raise ConfigurationError("RCCL requires AMD GPUs")
     if frontend == "nccl" and gpu["vendor"] == "amd":
@@ -306,57 +393,32 @@ def validate_communication(config):
     elif parameters:
         raise ConfigurationError(
             "congestion-control parameters require algorithm=nscc")
-    if provider == "existing" and config["network"]["shaping"]["enabled"]:
+
+
+
+def validate_network(config):
+    from .core import COMPATIBILITY, ConfigurationError
+    provider = config["infrastructure"]["provider"]
+    manager = config["cluster"]["manager"]
+    runtime = config["container"]["runtime"]
+    frontend = config["communication"]["frontend"]
+    gpu = config["nodes"]["gpus"]
+    uib = config["uib"]
+    storage = config["storage"]
+    endpoint_shaping = config["network"].get("endpointShaping", {})
+    expected_targets = {
+        f"worker-{index:02d}/data"
+        for index in range(1, config["nodes"]["workers"] + 1)
+    }
+    shaping_values = [config["network"]["shaping"],
+                      *config["network"].get("endpointShaping", {}).values()]
+    if provider == "existing" and any(
+            shaping["enabled"] for shaping in shaping_values):
         if not config["infrastructure"]["allowExistingMutations"]:
             raise ConfigurationError(
                 "shaping an existing cluster requires allowExistingMutations=true")
-    shaping = config["network"]["shaping"]
-    impairments = set(shaping) - {"enabled"}
-    if not shaping["enabled"] and impairments:
-        raise ConfigurationError("network shaping parameters require enabled=true")
-    if "jitter" in shaping and "latency" not in shaping:
-        raise ConfigurationError("network jitter requires latency")
-    if "delayDistribution" in shaping and "jitter" not in shaping:
-        raise ConfigurationError("delay distribution requires jitter")
-    if shaping.get("reorderPercent", 0) and "latency" not in shaping:
-        raise ConfigurationError("packet reordering requires latency")
-    if shaping.get("ecn", False) and not shaping.get("lossPercent", 0):
-        raise ConfigurationError("netem ECN requires a nonzero loss model")
-    loss_model = shaping.get("lossModel", "random")
-    burst_parameters = {
-        "lossRecoveryPercent",
-        "lossBadStatePercent",
-        "lossGoodStatePercent",
-    }
-    configured_burst = burst_parameters & set(shaping)
-    if loss_model == "gemodel":
-        if not shaping.get("lossPercent", 0):
-            raise ConfigurationError(
-                "netem gemodel requires a nonzero lossPercent")
-        missing = burst_parameters - configured_burst
-        if missing:
-            raise ConfigurationError(
-                f"netem gemodel requires {sorted(missing)[0]}")
-        if "lossCorrelationPercent" in shaping:
-            raise ConfigurationError(
-                "lossCorrelationPercent applies only to random loss")
-    elif configured_burst:
-        raise ConfigurationError(
-            "burst-loss parameters require lossModel=gemodel")
-    correlation_requirements = {
-        "delayCorrelationPercent": "jitter",
-        "lossCorrelationPercent": "lossPercent",
-        "duplicateCorrelationPercent": "duplicatePercent",
-        "corruptCorrelationPercent": "corruptPercent",
-        "reorderCorrelationPercent": "reorderPercent",
-    }
-    for correlation, parent in correlation_requirements.items():
-        if correlation in shaping and parent not in shaping:
-            raise ConfigurationError(f"{correlation} requires {parent}")
-    if "cellSizeBytes" in shaping and "packetOverheadBytes" not in shaping:
-        raise ConfigurationError("cellSizeBytes requires packetOverheadBytes")
-    if "cellOverheadBytes" in shaping and "cellSizeBytes" not in shaping:
-        raise ConfigurationError("cellOverheadBytes requires cellSizeBytes")
+    validate_shaping(config["network"]["shaping"], "network.shaping")
+    endpoint_shaping = config["network"].get("endpointShaping", {})
 
 
 
@@ -369,6 +431,11 @@ def validate_faults(config):
     gpu = config["nodes"]["gpus"]
     uib = config["uib"]
     storage = config["storage"]
+    endpoint_shaping = config["network"].get("endpointShaping", {})
+    expected_targets = {
+        f"worker-{index:02d}/data"
+        for index in range(1, config["nodes"]["workers"] + 1)
+    }
     action_fields = {
         "add-delay": {"target", "latency", "duration"},
         "packet-loss": {"target", "percent", "duration"},
@@ -411,6 +478,11 @@ def validate_workload(config):
     gpu = config["nodes"]["gpus"]
     uib = config["uib"]
     storage = config["storage"]
+    endpoint_shaping = config["network"].get("endpointShaping", {})
+    expected_targets = {
+        f"worker-{index:02d}/data"
+        for index in range(1, config["nodes"]["workers"] + 1)
+    }
     workload = config.get("workload")
     if workload:
         parallel = workload["parallelism"]
@@ -429,6 +501,7 @@ def validate_semantics(config):
     validate_infrastructure(config)
     validate_scheduler(config)
     validate_communication(config)
+    validate_network(config)
     validate_faults(config)
     validate_workload(config)
 

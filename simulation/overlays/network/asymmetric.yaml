@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+network:
+  shaping:
+    enabled: true
+    latency: 250us
+    queueLimit: 8192
+    seed: 12345
+  endpointShaping:
+    worker-01/data:
+      enabled: true
+      latency: 100us
+      queueLimit: 8192
+      seed: 12345
+    worker-02/data:
+      enabled: true
+      bandwidth: 1Gbit
+      latency: 5ms
+      queueLimit: 4096
+      seed: 12345

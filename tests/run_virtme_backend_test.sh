@@ -60,7 +60,9 @@ export VIRTME_TEST_SHAPING=active
 
 "$cli" up --profile virtme-kubernetes --overlay network/datacenter \
 	--run-id virtme-lifecycle \
-	--state-dir "$test_dir/runs" > /dev/null
+	--state-dir "$test_dir/runs" \
+	--set 'network.endpointShaping={worker-02/data: {enabled: true, latency: 5ms, queueLimit: 4096, seed: 12345}}' \
+	> /dev/null
 "$cli" status --profile virtme-kubernetes --overlay network/datacenter \
 	--run-id virtme-lifecycle \
 	--state-dir "$test_dir/runs" > "$test_dir/status.json"
@@ -73,6 +75,8 @@ grep -q 'server: https://127.0.0.1:23003' \
 	"$test_dir/exported-kubeconfig"
 [ "$(grep -c '/run/uib-network-schedule' "$test_dir/ssh.log")" -eq 2 ]
 [ "$(grep -c '/run/uib-fault-target' "$test_dir/ssh.log")" -eq 2 ]
+grep -F -- '--target worker-01/data' "$test_dir/ssh.log" > /dev/null
+grep -F -- '--target worker-02/data' "$test_dir/ssh.log" > /dev/null
 "$cli" down --profile virtme-kubernetes --overlay network/datacenter \
 	--run-id virtme-lifecycle \
 	--state-dir "$test_dir/runs"

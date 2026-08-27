@@ -108,6 +108,10 @@ def append_record(output, record):
 
 def run_schedule(config, target, interface, output, netem, ip_command,
                  privilege_command=None):
+    config = copy.deepcopy(config)
+    endpoint_shaping = config["network"].get("endpointShaping", {})
+    config["network"]["shaping"] = copy.deepcopy(
+        endpoint_shaping.get(target, config["network"]["shaping"]))
     events = []
     selected = 0
 

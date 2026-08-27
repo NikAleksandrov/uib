@@ -141,6 +141,15 @@ def worker_guests(topology_value):
             if guest["role"] == "worker"]
 
 
+def worker_targets(topology_value):
+    workers = sorted(worker_guests(topology_value),
+                     key=lambda guest: guest["hostname"])
+    return {
+        guest["hostname"]: f"worker-{index:02d}/data"
+        for index, guest in enumerate(workers, 1)
+    }
+
+
 def launch_guest(vng, config, guest, public_key, log):
     from .core import VirtmeError
 

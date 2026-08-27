@@ -2,9 +2,7 @@
 
 build_command()
 {
-	config=$1
-	interface=$2
-	shaping=$(jq -c '.network.shaping' "$config")
+	interface=$1
 	shaping_enabled=$(jq -r '.enabled' <<<"$shaping")
 
 	if [ "$shaping_enabled" != true ]; then

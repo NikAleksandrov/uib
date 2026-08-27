@@ -35,10 +35,10 @@
   ansible.builtin.assert:
     that:
       - >-
-        (uib_network_shaping.enabled | bool) ==
+        (uib_endpoint_shaping[inventory_hostname].enabled | bool) ==
         ('qdisc netem ' in uib_netem_qdisc.stdout)
       - >-
-        not (uib_network_shaping.enabled | bool) or
+        not (uib_endpoint_shaping[inventory_hostname].enabled | bool) or
         (uib_netem_qdisc.stdout is regex('Sent [1-9][0-9]* bytes'))
     fail_msg: >-
       post-traffic data-plane qdisc does not match the requested shaping or
@@ -54,8 +54,9 @@
       {{ {
         'schemaVersion': 1,
         'node': inventory_hostname,
+        'target': uib_fault_targets[inventory_hostname],
         'interface': uib_data_interface,
-        'shaping': uib_network_shaping,
+        'shaping': uib_endpoint_shaping[inventory_hostname],
         'appliedCommand': uib_netem_command.content | b64decode | trim,
         'qdisc': uib_netem_qdisc.stdout,
         'iproute2': uib_netem_iproute2.stdout,

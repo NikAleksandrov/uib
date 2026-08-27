@@ -21,12 +21,16 @@ def record_network_evidence(state, config, values, run_id):
         raise LibvirtError("network evidence does not match the worker set")
 
     interface = config["network"]["dataInterface"]
-    shaping = config["network"]["shaping"]
+    default_shaping = config["network"]["shaping"]
+    endpoint_shaping = config["network"].get("endpointShaping", {})
     endpoints = {}
-    for node in sorted(expected):
+    for index, node in enumerate(sorted(expected), 1):
+        target = f"worker-{index:02d}/data"
+        shaping = endpoint_shaping.get(target, default_shaping)
         evidence = read_json(root / f"{node}.json", "network evidence")
         if (evidence.get("schemaVersion") != 1 or
                 evidence.get("node") != node or
+                evidence.get("target") != target or
                 evidence.get("interface") != interface or
                 evidence.get("shaping") != shaping):
             raise LibvirtError(f"network evidence mismatch for {node}")
@@ -41,6 +45,8 @@ def record_network_evidence(state, config, values, run_id):
                 r"Sent [1-9][0-9]* bytes", evidence["qdisc"]):
             raise LibvirtError(f"network evidence has no traffic for {node}")
         endpoints[node] = {field: evidence[field] for field in fields}
+        endpoints[node]["target"] = target
+        endpoints[node]["shaping"] = shaping
         seed = shaping.get("seed")
         endpoints[node]["seedApplied"] = (
             None if seed is None else
@@ -53,7 +59,7 @@ def record_network_evidence(state, config, values, run_id):
         "scope": "worker-data-egress",
         "interface": interface,
         "replaceExisting": True,
-        "shaping": shaping,
+        "shaping": default_shaping,
         "endpoints": endpoints,
     })
     return path

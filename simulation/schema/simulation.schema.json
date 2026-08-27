@@ -256,39 +256,13 @@
         "dataCIDR": { "$ref": "#/$defs/cidr" },
         "dataInterface": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,15}$" },
         "mtu": { "type": "integer", "minimum": 576, "maximum": 65535 },
-        "shaping": {
+        "shaping": { "$ref": "#/$defs/shaping" },
+        "endpointShaping": {
           "type": "object",
-          "additionalProperties": false,
-          "required": ["enabled"],
-          "properties": {
-            "enabled": { "type": "boolean" },
-            "bandwidth": { "$ref": "#/$defs/rate" },
-            "latency": { "$ref": "#/$defs/duration" },
-            "jitter": { "$ref": "#/$defs/duration" },
-            "delayCorrelationPercent": { "$ref": "#/$defs/percent" },
-            "delayDistribution": {
-              "enum": ["uniform", "normal", "pareto", "paretonormal"]
-            },
-            "lossModel": { "enum": ["random", "gemodel"] },
-            "lossPercent": { "type": "number", "minimum": 0, "maximum": 100 },
-            "lossCorrelationPercent": { "$ref": "#/$defs/percent" },
-            "lossRecoveryPercent": { "$ref": "#/$defs/percent" },
-            "lossBadStatePercent": { "$ref": "#/$defs/percent" },
-            "lossGoodStatePercent": { "$ref": "#/$defs/percent" },
-            "duplicatePercent": { "$ref": "#/$defs/percent" },
-            "duplicateCorrelationPercent": { "$ref": "#/$defs/percent" },
-            "corruptPercent": { "$ref": "#/$defs/percent" },
-            "corruptCorrelationPercent": { "$ref": "#/$defs/percent" },
-            "reorderPercent": { "type": "number", "minimum": 0, "maximum": 100 },
-            "reorderCorrelationPercent": { "$ref": "#/$defs/percent" },
-            "reorderGap": { "type": "integer", "minimum": 1 },
-            "queueLimit": { "type": "integer", "minimum": 1 },
-            "packetOverheadBytes": { "type": "integer", "minimum": -128, "maximum": 512 },
-            "cellSizeBytes": { "type": "integer", "minimum": 1 },
-            "cellOverheadBytes": { "type": "integer", "minimum": -128, "maximum": 512 },
-            "ecn": { "type": "boolean" },
-            "seed": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
-          }
+          "propertyNames": {
+            "pattern": "^worker-[0-9]{2,4}/data$"
+          },
+          "additionalProperties": { "$ref": "#/$defs/shaping" }
         }
       }
     },
@@ -384,6 +358,40 @@
     "timeOffset": { "type": "string", "pattern": "^[0-9]+(ms|s|m|h)$" },
     "rate": { "type": "string", "pattern": "^[1-9][0-9]*(k|K|m|M|g|G)bit$" },
     "percent": { "type": "number", "minimum": 0, "maximum": 100 },
+    "shaping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "bandwidth": { "$ref": "#/$defs/rate" },
+        "latency": { "$ref": "#/$defs/duration" },
+        "jitter": { "$ref": "#/$defs/duration" },
+        "delayCorrelationPercent": { "$ref": "#/$defs/percent" },
+        "delayDistribution": {
+          "enum": ["uniform", "normal", "pareto", "paretonormal"]
+        },
+        "lossModel": { "enum": ["random", "gemodel"] },
+        "lossPercent": { "type": "number", "minimum": 0, "maximum": 100 },
+        "lossCorrelationPercent": { "$ref": "#/$defs/percent" },
+        "lossRecoveryPercent": { "$ref": "#/$defs/percent" },
+        "lossBadStatePercent": { "$ref": "#/$defs/percent" },
+        "lossGoodStatePercent": { "$ref": "#/$defs/percent" },
+        "duplicatePercent": { "$ref": "#/$defs/percent" },
+        "duplicateCorrelationPercent": { "$ref": "#/$defs/percent" },
+        "corruptPercent": { "$ref": "#/$defs/percent" },
+        "corruptCorrelationPercent": { "$ref": "#/$defs/percent" },
+        "reorderPercent": { "type": "number", "minimum": 0, "maximum": 100 },
+        "reorderCorrelationPercent": { "$ref": "#/$defs/percent" },
+        "reorderGap": { "type": "integer", "minimum": 1 },
+        "queueLimit": { "type": "integer", "minimum": 1 },
+        "packetOverheadBytes": { "type": "integer", "minimum": -128, "maximum": 512 },
+        "cellSizeBytes": { "type": "integer", "minimum": 1 },
+        "cellOverheadBytes": { "type": "integer", "minimum": -128, "maximum": 512 },
+        "ecn": { "type": "boolean" },
+        "seed": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+      }
+    },
     "slurmName": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
