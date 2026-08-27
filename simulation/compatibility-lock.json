@@ -66,6 +66,11 @@
       "experimentalProtocols": {
         "rocev2": ["nscc"]
       },
+      "ipEcnTransmit": "validated-udp-ect0",
+      "ipEcnReceive": "validated-io-uring-multishot-and-batched",
+      "rocev2CeToCnp": "validated-local-loopback",
+      "uetCeToResponseMark": "implemented",
+      "physicalEcnCnp": "not-validated-hardware-required",
       "plannedProtocols": []
     },
     "runtime": {

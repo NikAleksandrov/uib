@@ -7,6 +7,7 @@
 #include "uib/bth.h"
 #include "uib/protocol.h"
 #include "uib/qp.h"
+#include "transport_internal.h"
 
 static int rocev2_packet_qpn(const void *packet, size_t len, uint32_t *qpn)
 {
@@ -68,7 +69,7 @@ const struct uib_protocol_ops uib_rocev2_protocol_ops = {
 	.qp_modified = uib_rocev2_qp_modified,
 	.packet_qpn = rocev2_packet_qpn,
 	.post_send = uib_rocev2_post_send,
-	.handle_packet = uib_rocev2_handle_packet,
+	.handle_packet = uib_rocev2_handle_packet_meta,
 	.retransmit_tick = uib_rocev2_retransmit_tick,
 	.wire_encode = rocev2_wire_encode,
 	.wire_decode = rocev2_wire_decode,

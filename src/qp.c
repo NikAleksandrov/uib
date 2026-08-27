@@ -3,6 +3,7 @@
 #include <string.h>
 #include <errno.h>
 #include <arpa/inet.h>
+#include <netinet/ip.h>
 
 #include <urcu-bp.h>
 
@@ -13,6 +14,7 @@
 #include "uib/context.h"
 #include "uib/env.h"
 #include "uib/transport.h"
+#include "transport_internal.h"
 #include "uib/bth.h"
 #include "uib/uet_nscc.h"
 #include "host_zc_internal.h"
@@ -1059,16 +1061,25 @@ static int rocev2_drain_locked(struct uib_qp *qp)
 	return 0;
 }
 
+static void response_target(const struct uib_qp *qp,
+			    const struct sockaddr_in *source,
+			    struct sockaddr_in *target)
+{
+	*target = *source;
+	if (qp->remote_addr.sin_family == AF_INET) {
+		target->sin_addr = qp->remote_addr.sin_addr;
+		target->sin_port = qp->remote_addr.sin_port;
+	}
+}
+
 static void send_ack(struct uib_qp *qp, const struct sockaddr_in *dst,
 		     uint32_t ack_psn, uint8_t syndrome)
 {
-	struct sockaddr_in target = *dst;
-	if (qp->remote_addr.sin_family == AF_INET) {
-		target.sin_addr = qp->remote_addr.sin_addr;
-		target.sin_port = qp->remote_addr.sin_port;
-	}
+	struct sockaddr_in target;
 	uint8_t pkt[UIB_BTH_BYTES + UIB_AETH_BYTES + UIB_ICRC_BYTES];
 	struct uib_bth *bth = (struct uib_bth *)pkt;
+
+	response_target(qp, dst, &target);
 
 	uib_bth_pack(bth, UIB_OP_ACKNOWLEDGE, UIB_DEFAULT_PKEY,
 		     qp->dest_qp_num, ack_psn, 0);
@@ -1080,6 +1091,20 @@ static void send_ack(struct uib_qp *qp, const struct sockaddr_in *dst,
 
 	memcpy(pkt + UIB_BTH_BYTES + UIB_AETH_BYTES, &bcrc, UIB_ICRC_BYTES);
 	uib_transport_send(qp->ctx, &target, pkt, sizeof(pkt));
+}
+
+static void send_cnp(struct uib_qp *qp, const struct sockaddr_in *dst)
+{
+	uint8_t packet[UIB_BTH_BYTES + UIB_ICRC_BYTES];
+	struct sockaddr_in target;
+	uint32_t wire_crc;
+
+	response_target(qp, dst, &target);
+	uib_bth_pack((struct uib_bth *)packet, UIB_OP_CNP,
+		     UIB_DEFAULT_PKEY, qp->dest_qp_num, 0, 0);
+	wire_crc = htonl(uib_icrc(packet, UIB_BTH_BYTES));
+	memcpy(packet + UIB_BTH_BYTES, &wire_crc, sizeof(wire_crc));
+	uib_transport_send(qp->ctx, &target, packet, sizeof(packet));
 }
 
 static size_t packet_length(const struct uib_qp *qp, uint8_t op,
@@ -2071,6 +2096,14 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 			    const struct sockaddr_in *src,
 			    const void *packet, size_t len)
 {
+	return uib_rocev2_handle_packet_meta(qp, src, packet, len, NULL);
+}
+
+int uib_rocev2_handle_packet_meta(struct uib_qp *qp,
+				  const struct sockaddr_in *src,
+				  const void *packet, size_t len,
+				  const struct uib_rx_meta *meta)
+{
 	const uint8_t *p = packet;
 
 	if (verify_icrc(p, len) < 0)
@@ -2100,6 +2133,8 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		       || op == UIB_OP_RDMA_READ_RESP_MIDDLE
 		       || op == UIB_OP_RDMA_READ_RESP_LAST
 		       || op == UIB_OP_RDMA_READ_RESP_ONLY);
+	if (meta && meta->ecn == IPTOS_ECN_CE && op != UIB_OP_CNP)
+		send_cnp(qp, src);
 
 	if (is_rc && !is_resp) {
 		uint32_t expected = qp->rq_psn & UIB_BTH_PSN_MASK;
@@ -2665,10 +2700,18 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 int uib_qp_handle_packet(struct uib_qp *qp, const struct sockaddr_in *src,
 			 const void *pkt, size_t len)
 {
-	if (!qp || !qp->ctx->pops || !qp->ctx->pops->handle_packet)
-		return -EOPNOTSUPP;
+	return uib_qp_handle_packet_meta(qp, src, pkt, len, NULL);
+}
 
-	return qp->ctx->pops->handle_packet(qp, src, pkt, len);
+int uib_qp_handle_packet_meta(struct uib_qp *qp,
+			      const struct sockaddr_in *src, const void *pkt,
+			      size_t len, const struct uib_rx_meta *meta)
+{
+	if (!qp || !qp->ctx->pops)
+		return -EOPNOTSUPP;
+	if (qp->ctx->pops->handle_packet)
+		return qp->ctx->pops->handle_packet(qp, src, pkt, len, meta);
+	return -EOPNOTSUPP;
 }
 
 static void rocev2_retransmit_list(struct uib_qp *qp,

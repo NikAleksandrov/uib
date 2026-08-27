@@ -19,6 +19,7 @@
 #include "uib/protocol.h"
 #include "uib/afxdp_frame.h"
 #include "ptr_ring.h"
+#include "transport_internal.h"
 
 #define UIB_URING_DEPTH              256
 #define UIB_URING_BATCH_DEFAULT      64
@@ -39,6 +40,8 @@
 #define UIB_UDP_GSO_CAPACITY         65520
 /* Stay below the common Linux MAX_SKB_FRAGS limit of 17. */
 #define UIB_UDP_ZC_MAX_FRAGS         16
+#define UIB_UDP_RX_CONTROL_SPACE \
+	(CMSG_SPACE(sizeof(uint16_t)) + CMSG_SPACE(sizeof(uint8_t)))
 #define UIB_URING_SQPOLL_IDLE_DEFAULT 2000
 #define UIB_SOCKET_BUFFER_SIZE       (4 * 1024 * 1024)
 #define UIB_UDP_COPY_CAPACITY        (8192 + sizeof(struct iphdr) + \
@@ -76,7 +79,7 @@ struct uib_udp_rx_slot {
 	void              *buffer;
 	union {
 		struct cmsghdr header;
-		uint8_t bytes[CMSG_SPACE(sizeof(uint16_t))];
+		uint8_t bytes[UIB_UDP_RX_CONTROL_SPACE];
 	} control;
 	int                armed;
 };
@@ -179,7 +182,7 @@ static int test_drop_packet(struct uib_udp_backend *be)
 
 static int raw_decode(struct uib_context *ctx, void *buffer, size_t frame_len,
 		      struct sockaddr_in *source, void **rdma_out,
-		      size_t *rdma_len_out)
+		      size_t *rdma_len_out, uint8_t *ecn)
 {
 	struct uib_wire_meta meta;
 	uint8_t *frame = buffer;
@@ -217,6 +220,7 @@ static int raw_decode(struct uib_context *ctx, void *buffer, size_t frame_len,
 	meta.src_port = udp->source;
 	meta.dst_port = udp->dest;
 	meta.ip_id = ntohs(ip->id);
+	*ecn = IPTOS_ECN(ip->tos);
 	if (ctx->pops->wire_decode &&
 	    ctx->pops->wire_decode(&meta, rdma, rdma_len) < 0)
 		return -1;
@@ -234,7 +238,7 @@ static int raw_decode(struct uib_context *ctx, void *buffer, size_t frame_len,
 }
 
 static void deliver_packet(struct uib_context *ctx, void *buffer, size_t length,
-			   const struct sockaddr_in *source)
+			   const struct sockaddr_in *source, uint8_t ecn)
 {
 	struct uib_udp_backend *be = ctx->backend;
 	struct sockaddr_in decoded_source = *source;
@@ -243,16 +247,16 @@ static void deliver_packet(struct uib_context *ctx, void *buffer, size_t length,
 
 	if (be->raw_mode &&
 	    raw_decode(ctx, buffer, length, &decoded_source, &rdma,
-		       &rdma_len) < 0)
+		       &rdma_len, &ecn) < 0)
 		return;
-	uib_transport_deliver(ctx, &decoded_source, rdma, rdma_len);
+	uib_transport_deliver_ecn(ctx, &decoded_source, rdma, rdma_len, ecn);
 	__atomic_fetch_add(&be->stats.rx_packets, 1, __ATOMIC_RELAXED);
 }
 
 static void deliver_udp_payload(struct uib_context *ctx, void *buffer,
 				size_t length,
 				const struct sockaddr_in *source,
-				uint16_t gro_size)
+				uint16_t gro_size, uint8_t ecn)
 {
 	struct uib_udp_backend *be = ctx->backend;
 	uint8_t *payload = buffer;
@@ -260,7 +264,7 @@ static void deliver_udp_payload(struct uib_context *ctx, void *buffer,
 	size_t offset;
 
 	if (!gro_size || gro_size >= length) {
-		deliver_packet(ctx, buffer, length, source);
+		deliver_packet(ctx, buffer, length, source, ecn);
 		return;
 	}
 	__atomic_fetch_add(&be->stats.rx_gro_batches, 1, __ATOMIC_RELAXED);
@@ -268,7 +272,7 @@ static void deliver_udp_payload(struct uib_context *ctx, void *buffer,
 		segment = length - offset;
 		if (segment > gro_size)
 			segment = gro_size;
-		deliver_packet(ctx, payload + offset, segment, source);
+		deliver_packet(ctx, payload + offset, segment, source, ecn);
 	}
 }
 
@@ -289,6 +293,23 @@ static uint16_t message_gro_size(const struct msghdr *message)
 	return 0;
 }
 
+static uint8_t message_ecn(const struct msghdr *message)
+{
+	struct cmsghdr *control;
+	uint8_t tos;
+
+	for (control = CMSG_FIRSTHDR(message); control;
+	     control = CMSG_NXTHDR((struct msghdr *)message, control)) {
+		if (control->cmsg_level != IPPROTO_IP ||
+		    control->cmsg_type != IP_TOS ||
+		    control->cmsg_len < CMSG_LEN(sizeof(tos)))
+			continue;
+		memcpy(&tos, CMSG_DATA(control), sizeof(tos));
+		return IPTOS_ECN(tos);
+	}
+	return IPTOS_ECN_NOT_ECT;
+}
+
 static uint16_t multishot_gro_size(struct io_uring_recvmsg_out *output,
 				   struct msghdr *message)
 {
@@ -307,6 +328,26 @@ static uint16_t multishot_gro_size(struct io_uring_recvmsg_out *output,
 						      control);
 	}
 	return 0;
+}
+
+static uint8_t multishot_ecn(struct io_uring_recvmsg_out *output,
+			     struct msghdr *message)
+{
+	struct cmsghdr *control;
+	uint8_t tos;
+
+	control = io_uring_recvmsg_cmsg_firsthdr(output, message);
+	while (control) {
+		if (control->cmsg_level == IPPROTO_IP &&
+		    control->cmsg_type == IP_TOS &&
+		    control->cmsg_len >= CMSG_LEN(sizeof(tos))) {
+			memcpy(&tos, CMSG_DATA(control), sizeof(tos));
+			return IPTOS_ECN(tos);
+		}
+		control = io_uring_recvmsg_cmsg_nexthdr(output, message,
+						      control);
+	}
+	return IPTOS_ECN_NOT_ECT;
 }
 
 static struct io_uring_sqe *get_sqe(struct uib_udp_backend *be)
@@ -378,7 +419,7 @@ static int setup_multishot(struct uib_udp_backend *be)
 	int rc;
 
 	be->rx_buffer_len = UIB_RECV_BUF_LEN + sizeof(struct sockaddr_in) +
-			    CMSG_SPACE(sizeof(uint16_t)) +
+			    UIB_UDP_RX_CONTROL_SPACE +
 			    sizeof(struct io_uring_recvmsg_out);
 	be->rx_buffers = calloc(UIB_URING_RX_BUFFERS, be->rx_buffer_len);
 	if (!be->rx_buffers)
@@ -396,7 +437,7 @@ static int setup_multishot(struct uib_udp_backend *be)
 		recycle_multishot_buffer(be, i);
 	memset(&be->multishot_message, 0, sizeof(be->multishot_message));
 	be->multishot_message.msg_namelen = sizeof(struct sockaddr_in);
-	be->multishot_message.msg_controllen = CMSG_SPACE(sizeof(uint16_t));
+	be->multishot_message.msg_controllen = UIB_UDP_RX_CONTROL_SPACE;
 	be->stats.rx_mode = UIB_URING_RX_MULTISHOT;
 	return 0;
 }
@@ -1027,6 +1068,7 @@ static void complete_multishot(struct uib_context *ctx,
 	void *buffer;
 	void *payload;
 	uint16_t gro_size;
+	uint8_t ecn;
 
 	if (!(cqe->flags & IORING_CQE_F_MORE))
 		be->multishot_armed = 0;
@@ -1053,8 +1095,9 @@ static void complete_multishot(struct uib_context *ctx,
 		goto recycle;
 	memcpy(&source, io_uring_recvmsg_name(output), sizeof(source));
 	gro_size = multishot_gro_size(output, &be->multishot_message);
+	ecn = multishot_ecn(output, &be->multishot_message);
 	deliver_udp_payload(ctx, payload, output->payloadlen, &source,
-			    gro_size);
+			    gro_size, ecn);
 
 recycle:
 	recycle_multishot_buffer(be, id);
@@ -1065,13 +1108,15 @@ static void complete_oneshot(struct uib_context *ctx,
 			     const struct io_uring_cqe *cqe)
 {
 	uint16_t gro_size;
+	uint8_t ecn;
 
 	slot->armed = 0;
 	if (cqe->res <= 0)
 		return;
 	gro_size = message_gro_size(&slot->message);
+	ecn = message_ecn(&slot->message);
 	deliver_udp_payload(ctx, slot->buffer, (size_t)cqe->res,
-			    &slot->source, gro_size);
+			    &slot->source, gro_size, ecn);
 }
 
 static void drain_wake_fd(struct uib_udp_backend *be)
@@ -1339,6 +1384,7 @@ static int setup_socket(struct uib_context *ctx, struct uib_udp_backend *be)
 	const char *udp_mode = getenv(UIB_ENV_UDP_MODE);
 	const char *gso_mode = getenv(UIB_ENV_UDP_GSO);
 	int socket_buffer = UIB_SOCKET_BUFFER_SIZE;
+	int tos = IPTOS_ECN_ECT0;
 	int gso_size = 0;
 	int one = 1;
 	int allow_raw;
@@ -1373,6 +1419,9 @@ static int setup_socket(struct uib_context *ctx, struct uib_udp_backend *be)
 		return -errno;
 	be->fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (be->fd < 0)
+		return -errno;
+	if (setsockopt(be->fd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) < 0 ||
+	    setsockopt(be->fd, IPPROTO_IP, IP_RECVTOS, &one, sizeof(one)) < 0)
 		return -errno;
 	if (gso_mode && strcmp(gso_mode, "auto") &&
 	    strcmp(gso_mode, "off") && strcmp(gso_mode, "on"))
@@ -1651,6 +1700,7 @@ static int build_raw_packet(struct uib_context *ctx,
 	memset(ip, 0, sizeof(*ip));
 	ip->version = 4;
 	ip->ihl = 5;
+	ip->tos = IPTOS_ECN_ECT0;
 	ip->tot_len = htons((uint16_t)packet_len);
 	ip->frag_off = htons(0x4000);
 	ip->ttl = 64;

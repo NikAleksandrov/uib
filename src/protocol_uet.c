@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <arpa/inet.h>
+#include <netinet/ip.h>
 
 #include "uib/uet.h"
 #include "uib/uet_nscc.h"
@@ -1952,7 +1953,7 @@ static int uet_parse_request(const struct uib_uet_pds_req *request, size_t len,
 
 static int uet_handle_request(struct uib_qp *qp,
 			      const struct sockaddr_in *src,
-			      const void *packet, size_t len)
+			      const void *packet, size_t len, int ecn_marked)
 {
 	const struct uib_uet_pds_req *req = packet;
 	struct uib_uet_ses_req canonical;
@@ -2080,7 +2081,7 @@ static int uet_handle_request(struct uib_qp *qp,
 
 	rc = uet_send_response(qp, src, req, ses, cack, response_code,
 			       response_data, response_len, modified_len,
-			       receive_time_ns, 0, request_header);
+			       receive_time_ns, ecn_marked, request_header);
 	free(owned_response);
 	return rc;
 }
@@ -2406,7 +2407,8 @@ static int uet_handle_nack(struct uib_qp *qp, const void *packet, size_t len)
 
 static int uet_handle_packet(struct uib_qp *qp,
 			     const struct sockaddr_in *src,
-			     const void *packet, size_t len)
+			     const void *packet, size_t len,
+			     const struct uib_rx_meta *meta)
 {
 	const struct uib_uet_prologue *prologue = packet;
 
@@ -2414,7 +2416,8 @@ static int uet_handle_packet(struct uib_qp *qp,
 		return -EBADMSG;
 	switch (uib_uet_prologue_type(prologue)) {
 	case UIB_UET_PDS_TYPE_RUD_REQ:
-		return uet_handle_request(qp, src, packet, len);
+		return uet_handle_request(qp, src, packet, len,
+					  meta && meta->ecn == IPTOS_ECN_CE);
 	case UIB_UET_PDS_TYPE_ACK:
 	case UIB_UET_PDS_TYPE_ACK_CC:
 		return uet_handle_ack(qp, packet, len);

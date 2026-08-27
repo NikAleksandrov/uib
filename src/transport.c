@@ -11,6 +11,7 @@
 #include "uib/qp.h"
 #include "uib/protocol.h"
 #include "host_zc_internal.h"
+#include "transport_internal.h"
 #include "utils.h"
 
 struct uib_direct_delivery {
@@ -35,6 +36,16 @@ void uib_transport_deliver(struct uib_context *ctx,
 			   const struct sockaddr_in *src, const void *buf,
 			   size_t len)
 {
+	uib_transport_deliver_ecn(ctx, src, buf, len, 0);
+}
+
+void uib_transport_deliver_ecn(struct uib_context *ctx,
+			       const struct sockaddr_in *src, const void *buf,
+			       size_t len, uint8_t ecn)
+{
+	struct uib_rx_meta meta = {
+		.ecn = ecn,
+	};
 	struct uib_qp *qp;
 	uint32_t dqpn;
 
@@ -51,7 +62,7 @@ void uib_transport_deliver(struct uib_context *ctx,
 		rcu_read_unlock();
 		return;
 	}
-	uib_qp_handle_packet(qp, src, buf, len);
+	uib_qp_handle_packet_meta(qp, src, buf, len, &meta);
 	rcu_read_unlock();
 }
 

@@ -978,11 +978,13 @@ The RoCEv2 adapter retains congestion-limited RC packets in PSN order and
 drains them as acknowledgements reopen the window. It requests intermediate
 ACKs when the selected algorithm needs them and translates cumulative ACKs,
 read responses, retry loss, and received CNP packets into the common events.
-UIB recognizes CNP on the wire; the current UDP receive path does not yet
-synthesize CNP from an IP ECN mark, so physical ECN/CNP interoperation remains
-a hardware promotion test. The shared ABI does not imply that every algorithm
-is suitable for every protocol: NSCC remains a UET algorithm, and its RoCEv2
-selector is experimental only.
+The UDP socket path marks transmitted packets ECT(0), receives the IPv4 TOS
+metadata, and sends a RoCEv2 CNP when a valid packet arrives with CE. The
+batched and multishot receive paths have deterministic loopback coverage; real
+switch marking and NIC CNP interoperation remain a hardware promotion test.
+The same metadata sets UET's congestion-mark flag in its response. The shared
+ABI does not imply that every algorithm is suitable for every protocol: NSCC
+remains a UET algorithm, and its RoCEv2 selector is experimental only.
 
 The common request form is independent of UET-specific environment names:
 
@@ -3438,6 +3440,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-cli-test` | Python 3, PyYAML, and `jsonschema` | Every profile, named layer replacement, schema and semantic rejection, typed `--set`, and the read-only `doctor` report |
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in network condition renders to the expected `tc netem` command; unsafe interfaces and invalid combinations are rejected; it does not modify a qdisc |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | RoCEv2 and UET SEND and RDMA read/write complete with actual netem conditions and built-in or plugin congestion control; the UET cases also cover atomics |
+| `make rocev2-ecn-test` | Build dependencies and permission to open loopback UDP sockets | ECT(0) traffic produces an ACK but no CNP, while a valid CE-marked RoCEv2 packet produces exactly one ACK and one CNP; both io_uring multishot and batched receive metadata paths are tested |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Rootless socket and optional bridge rendering, IPv4/MAC/SSH allocation, exact virtme-ng launch vectors, run-owned key/inventory creation, PID/start-time ownership, CLI `up/status/down`, bridge create/delete cleanup through fake standard commands, and invalid combination rejection |
 | `make simulation-virtme-kubernetes-e2e-test` | virtme-ng 1.35, SSH, kubectl, QEMU with KVM or TCG, about 4 GiB memory for the two reduced-size guests, and download access for the pinned k3s binary on first use | A real controller and worker under separate virtme kernels, rootless socket data traffic, pinned k3s/containerd startup without systemd PID 1, both nodes Ready, host API access through an owned SSH forward, cached download reuse, and exact process cleanup |
@@ -4021,8 +4024,9 @@ Cleanup must remain safe after interruption during every lifecycle stage.
   The local matrix covers NSCC, `none`, a registered plug-in, constrained
   pending-send admission, deterministic retry loss, and named netem profiles.
   NSCC is native to UET and its RoCEv2 cases are experimental ABI research,
-  not a RoCEv2 recommendation. Physical ECN/CNP behavior remains a hardware
-  promotion gate.
+  not a RoCEv2 recommendation. UDP ECT marking and CE-to-CNP generation pass
+  locally; physical switch/NIC ECN/CNP behavior remains a hardware promotion
+  gate.
 - Kind and CPU-only virtme/libvirt profiles do not validate real GPU
   collectives or performance.
 - The training image passed CPU DDP, checkpoint/restart, public tiny-model,

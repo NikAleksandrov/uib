@@ -188,7 +188,8 @@ static int dummy_queue_future(struct uib_dummy_qp *dummy, uint32_t expected,
 
 static int dummy_handle_packet(struct uib_qp *qp,
 			       const struct sockaddr_in *src,
-			       const void *packet, size_t len)
+			       const void *packet, size_t len,
+			       const struct uib_rx_meta *meta)
 {
 	const struct uib_dummy_hdr *hdr = packet;
 	struct uib_dummy_qp *dummy = qp->protocol_private;
@@ -202,6 +203,7 @@ static int dummy_handle_packet(struct uib_qp *qp,
 	int rc;
 
 	(void)src;
+	(void)meta;
 	if (dummy_packet_qpn(packet, len, &qpn) < 0 ||
 	    hdr->opcode != UIB_DUMMY_SEND)
 		return -EBADMSG;

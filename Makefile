@@ -473,6 +473,7 @@ PROTOCOL_TEST := tests/protocol_test
 UET_TEST     := tests/uet_test
 NSCC_TEST    := tests/nscc_test
 CONGESTION_TEST := tests/congestion_test
+ROCEV2_ECN_TEST := tests/rocev2_ecn_test
 CONGESTION_PLUGIN := tests/congestion_plugin.so
 ZEROCOPY_TEST := tests/zerocopy_test
 PROVIDER_DMABUF_TEST := tests/provider_dmabuf_test
@@ -504,6 +505,7 @@ endif
 DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d \
 	$(BTH_TEST).d $(RXE_TEST).d $(PROTOCOL_TEST).d $(UET_TEST).d \
 	$(NSCC_TEST).d $(CONGESTION_TEST).d tests/congestion_plugin.d
+DEPS += $(ROCEV2_ECN_TEST).d
 
 DEPS += $(ZEROCOPY_TEST).d $(PROVIDER_DMABUF_TEST).d \
 	$(PROVIDER_NCCL_ABI_TEST).d $(EXTERNAL_DMABUF_TEST).d
@@ -610,6 +612,10 @@ endif
 $(PSN_INDEX_TEST): tests/psn_index_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
+$(ROCEV2_ECN_TEST): tests/rocev2_ecn_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib \
+		$(LDFLAGS) $(LDLIBS)
+
 $(HOST_ZC_TEST): tests/host_zc_test.c $(LIB_STATIC)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_STATIC) $(LDFLAGS) $(LDLIBS)
 
@@ -691,6 +697,10 @@ uet-loss-test: all
 
 rocev2-loss-test: all $(TEST_BIN)
 	UIB_TEST_DROP_TX=1 ./$(TEST_BIN)
+
+rocev2-ecn-test: all $(ROCEV2_ECN_TEST)
+	./$(ROCEV2_ECN_TEST)
+	UIB_URING_RX_MODE=batch ./$(ROCEV2_ECN_TEST)
 
 rocev2-congestion-test: all $(TEST_BIN) $(CONGESTION_PLUGIN)
 	LD_PRELOAD=$(CURDIR)/$(CONGESTION_PLUGIN) UIB_PROTOCOL=rocev2 \
@@ -847,6 +857,7 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 
 test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
 	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(CONGESTION_TEST) \
+	$(ROCEV2_ECN_TEST) \
 	$(ZEROCOPY_TEST) \
 	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PTR_RING_TEST) $(REORDER_TEST) \
 	$(TRANSPORT_TEST) $(QP_SCALE_TEST) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
@@ -858,6 +869,8 @@ test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_
 	./$(UET_TEST)
 	./$(NSCC_TEST)
 	./$(CONGESTION_TEST)
+	./$(ROCEV2_ECN_TEST)
+	UIB_URING_RX_MODE=batch ./$(ROCEV2_ECN_TEST)
 	./$(ZEROCOPY_TEST)
 	./$(CQ_EVENT_TEST)
 	./$(URING_ASYNC_TEST)
@@ -951,6 +964,7 @@ clean:
 		$(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) \
 		$(BTH_TEST) $(RXE_TEST) $(PROTOCOL_TEST) \
 		$(UET_TEST) $(NSCC_TEST) $(CONGESTION_TEST) \
+		$(ROCEV2_ECN_TEST) \
 		$(CONGESTION_PLUGIN) $(ZEROCOPY_TEST) \
 		$(PROVIDER_DMABUF_TEST) $(PROVIDER_NCCL_ABI_TEST) \
 		$(EXTERNAL_DMABUF_TEST) $(MPI_COMPAT_TEST) \
@@ -993,6 +1007,7 @@ clean:
 	docs-check examples clean install install-static test rxe-test-build \
 	rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \
+	rocev2-ecn-test \
 	uet-congestion-test uet-multipath-test examples-test \
 	examples-stress-test sync-transport-test dmabuf-e2e-test \
 	zerocopy-e2e-test \

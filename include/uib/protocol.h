@@ -10,6 +10,10 @@ struct uib_context;
 struct uib_qp;
 struct uib_send_wr;
 
+struct uib_rx_meta {
+	uint8_t ecn;
+};
+
 struct uib_wire_meta {
 	uint32_t src_ip;
 	uint32_t dst_ip;
@@ -38,7 +42,8 @@ struct uib_protocol_ops {
 			 struct uib_send_wr **bad);
 	int (*handle_packet)(struct uib_qp *qp,
 			     const struct sockaddr_in *src,
-			     const void *packet, size_t len);
+			     const void *packet, size_t len,
+			     const struct uib_rx_meta *meta);
 	void (*retransmit_tick)(struct uib_qp *qp, uint64_t now_ns);
 
 	int (*wire_encode)(const struct uib_wire_meta *meta,
