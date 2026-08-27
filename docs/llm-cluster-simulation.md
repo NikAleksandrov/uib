@@ -845,9 +845,10 @@ through `ud_verbs/uib0:1`. It separately pins the lower-level UCT API to
 64-bit fetch-add, and 64-bit compare-swap.
 With libfabric 2.1.0 it discovers `uib0-dgram`, layers the standard RxD utility
 provider over verbs, and runs untagged ping-pong, tagged ping-pong, and tagged
-bandwidth tests with data-integrity checking at 1, 64, and 1024 bytes. The test
-requires the expected provider names in the logs and rejects TCP, sockets,
-shared-memory, and vendor-direct fallbacks.
+bandwidth tests with data-integrity checking at 1, 64, and 1024 bytes. It also
+runs counter-completed RMA write/read and 64-bit sum/compare-swap tests. The
+test requires the expected provider names in the logs and rejects TCP,
+sockets, shared-memory, and vendor-direct fallbacks.
 
 The gate added the verbs semantics those front ends exercised: address
 handles, UD send/receive and GRH handling, basic shared receive queues,
@@ -855,9 +856,8 @@ handles, UD send/receive and GRH handling, basic shared receive queues,
 clean rejection of EFA-specific queries. This is local CPU compatibility
 evidence. The UCP atomic tests use UCX protocol behavior over UD. Direct UCT
 RC active messages, RMA, fetch-add, and compare-swap are also validated.
-Libfabric counter-completion, RMA, and atomic subsets, direct DGRAM coverage,
-MPI integration, and physical-node repetition remain separate promotion
-gates.
+Direct libfabric DGRAM coverage, the blocking `fi_rdm_cntr_pingpong` variant,
+MPI integration, and physical-node repetition remain separate promotion gates.
 
 Both front ends inspect `/dev/infiniband/uib0` before opening the user-space
 device. It must be a readable and writable character device. UIB maps
@@ -3775,7 +3775,7 @@ not the UIB data plane.
 | `make provider-nccl-abi-test` | libibverbs development files | The provider exposes the versioned ABI and calls NCCL's required verbs entry points; no GPU is used |
 | `make nccl-test` | NVIDIA GPU and driver, CUDA MPS, MPI, `nccl-tests` `all_reduce_perf`, `setpriv`, `unshare`, and `timeout` | Two local NCCL ranks use `libuibv.so`, the NCCL IB network, and UIB traffic; Socket fallback and data errors fail the test |
 | `make rccl-test` | At least two accessible AMD GPU ranks, ROCm/RCCL, MPI-enabled `rccl-tests`, `rocminfo`, `setpriv`, `unshare`, and `timeout` | Two or more local RCCL ranks select the IB network through UIB without Socket fallback |
-| `make ucx-libfabric-test` | UCX 1.18.1-compatible `ucx_info`/`ucx_perftest`, libfabric/fabtests 2.1.0-compatible tools, `timeout`, and permission to expose the character-device anchor | Actual two-process UCX tag, stream, UCP RMA, and UCP atomic traffic over `ud_verbs/uib0:1`; direct UCT active-message, write, read, fetch-add, and compare-swap traffic over `rc_verbs/uib0:1`; and data-checked libfabric untagged and tagged RDM traffic over `verbs;ofi_rxd`. TCP, shared-memory, sockets, and native-verbs fallbacks fail the test |
+| `make ucx-libfabric-test` | UCX 1.18.1-compatible `ucx_info`/`ucx_perftest`, libfabric/fabtests 2.1.0-compatible tools, `timeout`, and permission to expose the character-device anchor | Actual two-process UCX tag, stream, UCP RMA, and UCP atomic traffic over `ud_verbs/uib0:1`; direct UCT active-message, write, read, fetch-add, and compare-swap traffic over `rc_verbs/uib0:1`; and data-checked libfabric untagged/tagged RDM, counter-completed RMA write/read, and 64-bit sum/compare-swap traffic over `verbs;ofi_rxd`. TCP, shared-memory, sockets, and native-verbs fallbacks fail the test |
 
 NCCL options:
 
@@ -3815,6 +3815,9 @@ UCX/libfabric options:
 | `COMM_TEST_UCX_TESTS` | `tag_lat stream_lat ucp_put_lat ucp_get ucp_fadd ucp_cswap` | Space-separated `ucx_perftest -t` matrix; each test must select `ud_verbs/uib0:1` |
 | `COMM_TEST_UCT_TESTS` | `am_lat put_lat get fadd cswap` | Space-separated direct UCT matrix pinned to `rc_verbs/uib0:1`; `get` uses bcopy and the other tests use short layout |
 | `COMM_TEST_LIBFABRIC_TESTS` | `fi_rdm_pingpong fi_rdm_tagged_pingpong fi_rdm_tagged_bw` | Space-separated fabtests matrix pinned to `verbs;ofi_rxd` and `uib0-dgram`; entries must accept the common iteration, size, verification, and out-of-band options |
+| `COMM_TEST_LIBFABRIC_RMA_OPS` | `write read` | Space-separated `fi_rma_bw` operations; each uses `-t counter` and data-integrity checking; empty disables this matrix |
+| `COMM_TEST_LIBFABRIC_ATOMIC_OPS` | `sum cswap` | Space-separated `fi_rdm_atomic` operations; empty disables this matrix |
+| `COMM_TEST_LIBFABRIC_ATOMIC_DATATYPE` | `uint64` | Fabtests datatype shared by the configured atomic operations |
 
 Examples:
 
@@ -3827,6 +3830,12 @@ RCCL_TEST_RANKS=4 HIP_VISIBLE_DEVICES=0,1,2,3 make rccl-test
 
 COMM_TEST_ITERATIONS=1000 COMM_TEST_TIMEOUT=60 \
 COMM_TEST_MESSAGE_SIZES=l:1,256,4096 \
+make ucx-libfabric-test
+
+COMM_TEST_UCX_TESTS= COMM_TEST_UCT_TESTS= \
+COMM_TEST_LIBFABRIC_TESTS= \
+COMM_TEST_LIBFABRIC_RMA_OPS=write \
+COMM_TEST_LIBFABRIC_ATOMIC_OPS=cswap \
 make ucx-libfabric-test
 ```
 
@@ -3984,11 +3993,11 @@ Cleanup must remain safe after interruption during every lifecycle stage.
   because it requires CUDA, NCCL, MPI, MPS, a GPU, and UTS namespace access.
 - UCX tag, stream, UCP RMA, and UCP atomic tests over `ud_verbs`; direct UCT
   active-message, RDMA-write, RDMA-read, fetch-add, and compare-swap tests over
-  `rc_verbs`; and
-  libfabric untagged and tagged RDM traffic over `verbs;ofi_rxd` passed the
-  local CPU gate. This does not claim libfabric counter-completion/RMA/atomic
-  subsets, MSG/RxM, MPI integration, or physical-node qualification. RCCL
-  remains unvalidated until AMD hardware is available.
+  `rc_verbs`; and libfabric untagged/tagged RDM, counter-completed RMA
+  write/read, and 64-bit sum/compare-swap traffic over `verbs;ofi_rxd` passed
+  the local CPU gate. This does not claim direct DGRAM, MSG/RxM, MPI
+  integration, or physical-node qualification. RCCL remains unvalidated until
+  AMD hardware is available.
 - The common congestion-control registry is implemented for RoCEv2 and UET.
   The local matrix covers NSCC, `none`, a registered plug-in, constrained
   pending-send admission, deterministic retry loss, and named netem profiles.

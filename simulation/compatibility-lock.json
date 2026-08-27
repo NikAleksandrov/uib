@@ -34,11 +34,15 @@
         "forbiddenFallbacks": ["tcp", "self", "posix", "sysv", "cma", "vendor-direct"]
       },
       "libfabric": {
-        "status": "validated-local-verbs-rxd-rdm-and-tagged",
+        "status": "validated-local-verbs-rxd-message-rma-and-atomic",
         "testTarget": "make ucx-libfabric-test",
         "validatedVersion": "2.1.0",
         "allowedProviders": ["verbs;ofi_rxd"],
-        "validatedTests": ["fi_rdm_pingpong", "fi_rdm_tagged_pingpong", "fi_rdm_tagged_bw"],
+        "validatedTests": ["fi_rdm_pingpong", "fi_rdm_tagged_pingpong", "fi_rdm_tagged_bw", "fi_rma_bw", "fi_rdm_atomic"],
+        "validatedRmaOps": ["write", "read"],
+        "validatedRmaCompletion": "counter",
+        "validatedAtomicOps": ["sum", "cswap"],
+        "validatedAtomicDatatype": "uint64",
         "forbiddenFallbacks": ["tcp", "sockets", "native-libibverbs"]
       }
     },
@@ -533,7 +537,7 @@
     "multiGpuInference": "not-validated",
     "inferenceOverUib": "not-validated",
     "ucxOverUib": "validated-local-ud-ucp-and-rc-uct-matrices",
-    "libfabricOverUib": "validated-local-verbs-rxd-rdm-and-tagged",
+    "libfabricOverUib": "validated-local-verbs-rxd-message-rma-and-atomic",
     "rcclOverUib": "not-validated-amd-hardware-required",
     "rocev2PluggableCongestion": "validated-local-none-and-registered; nscc-experimental-only",
     "collectives": {

@@ -9,10 +9,13 @@ iterations=${COMM_TEST_ITERATIONS:-100}
 warmups=${COMM_TEST_WARMUPS:-10}
 bind_port=${COMM_TEST_BIND_PORT:-19800}
 message_sizes=${COMM_TEST_MESSAGE_SIZES:-l:1,64,1024}
-ucx_tests=${COMM_TEST_UCX_TESTS:-tag_lat stream_lat ucp_put_lat ucp_get ucp_fadd ucp_cswap}
-uct_tests=${COMM_TEST_UCT_TESTS:-am_lat put_lat get fadd cswap}
+ucx_tests=${COMM_TEST_UCX_TESTS-tag_lat stream_lat ucp_put_lat ucp_get ucp_fadd ucp_cswap}
+uct_tests=${COMM_TEST_UCT_TESTS-am_lat put_lat get fadd cswap}
 default_libfabric_tests='fi_rdm_pingpong fi_rdm_tagged_pingpong fi_rdm_tagged_bw'
-libfabric_tests=${COMM_TEST_LIBFABRIC_TESTS:-$default_libfabric_tests}
+libfabric_tests=${COMM_TEST_LIBFABRIC_TESTS-$default_libfabric_tests}
+libfabric_rma_ops=${COMM_TEST_LIBFABRIC_RMA_OPS-write read}
+libfabric_atomic_ops=${COMM_TEST_LIBFABRIC_ATOMIC_OPS-sum cswap}
+libfabric_atomic_datatype=${COMM_TEST_LIBFABRIC_ATOMIC_DATATYPE-uint64}
 server_pid=
 
 if [ ! -c /dev/infiniband/uib0 ]; then
@@ -37,7 +40,17 @@ cleanup()
 }
 trap cleanup EXIT INT TERM
 
-for command_name in ucx_info ucx_perftest fi_info fi_rdm_pingpong timeout; do
+required_commands="fi_info timeout $libfabric_tests"
+if [ -n "$ucx_tests$uct_tests" ]; then
+	required_commands="$required_commands ucx_info ucx_perftest"
+fi
+if [ -n "$libfabric_rma_ops" ]; then
+	required_commands="$required_commands fi_rma_bw"
+fi
+if [ -n "$libfabric_atomic_ops" ]; then
+	required_commands="$required_commands fi_rdm_atomic"
+fi
+for command_name in $required_commands; do
 	if ! command -v "$command_name" >/dev/null 2>&1; then
 		echo "required UCX/libfabric command not found: $command_name" >&2
 		exit 1
@@ -140,8 +153,9 @@ done
 run_libfabric_test()
 {
 	test_name=$1
-	log_name=${test_name#fi_}
+	log_name=$2
 	provider='verbs;ofi_rxd'
+	shift 2
 	timeout -k 2 "$test_timeout" env \
 		LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.1 \
 		UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
@@ -149,6 +163,7 @@ run_libfabric_test()
 		FI_VERBS_DGRAM_USE_NAME_SERVER=0 \
 		"$test_name" -p "$provider" -d uib0-dgram \
 		-I "$iterations" -S "$message_sizes" -v -b \
+		"$@" \
 		> "$test_dir/$log_name-server.log" \
 		2>&1 &
 	server_pid=$!
@@ -159,7 +174,8 @@ run_libfabric_test()
 		UIB_ZEROCOPY=off FI_PROVIDER="$provider" FI_LOG_LEVEL=info \
 		FI_VERBS_DGRAM_USE_NAME_SERVER=0 \
 		"$test_name" -p "$provider" -d uib0-dgram \
-		-I "$iterations" -S "$message_sizes" -v -b 127.0.0.1 \
+		-I "$iterations" -S "$message_sizes" -v -b \
+		"$@" 127.0.0.1 \
 		> "$test_dir/$log_name-client.log" 2>&1
 	wait "$server_pid"
 	server_pid=
@@ -176,7 +192,17 @@ run_libfabric_test()
 }
 
 for test_name in $libfabric_tests; do
-	run_libfabric_test "$test_name"
+	run_libfabric_test "$test_name" "${test_name#fi_}"
+done
+
+for op in $libfabric_rma_ops; do
+	run_libfabric_test fi_rma_bw "rma-$op-counter" -t counter -o "$op"
+done
+
+for op in $libfabric_atomic_ops; do
+	run_libfabric_test fi_rdm_atomic \
+		"atomic-$op-$libfabric_atomic_datatype" \
+		-o "$op" -z "$libfabric_atomic_datatype"
 done
 
 echo "actual UCX/libfabric UIB compatibility test: PASS"
