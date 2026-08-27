@@ -33,10 +33,11 @@
         "forbiddenFallbacks": ["tcp", "self", "posix", "sysv", "cma", "vendor-direct"]
       },
       "libfabric": {
-        "status": "validated-local-verbs-rxd-rdm",
+        "status": "validated-local-verbs-rxd-rdm-and-tagged",
         "testTarget": "make ucx-libfabric-test",
         "validatedVersion": "2.1.0",
         "allowedProviders": ["verbs;ofi_rxd"],
+        "validatedTests": ["fi_rdm_pingpong", "fi_rdm_tagged_pingpong", "fi_rdm_tagged_bw"],
         "forbiddenFallbacks": ["tcp", "sockets", "native-libibverbs"]
       }
     },
@@ -531,7 +532,7 @@
     "multiGpuInference": "not-validated",
     "inferenceOverUib": "not-validated",
     "ucxOverUib": "validated-local-ud-ucp-and-rc-uct-matrices",
-    "libfabricOverUib": "validated-local-verbs-rxd-rdm",
+    "libfabricOverUib": "validated-local-verbs-rxd-rdm-and-tagged",
     "rcclOverUib": "not-validated-amd-hardware-required",
     "rocev2PluggableCongestion": "validated-local-none-and-registered; nscc-experimental-only",
     "collectives": {

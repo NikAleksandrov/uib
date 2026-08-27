@@ -11,6 +11,8 @@ bind_port=${COMM_TEST_BIND_PORT:-19800}
 message_sizes=${COMM_TEST_MESSAGE_SIZES:-l:1,64,1024}
 ucx_tests=${COMM_TEST_UCX_TESTS:-tag_lat stream_lat ucp_put_lat ucp_get ucp_fadd ucp_cswap}
 uct_tests=${COMM_TEST_UCT_TESTS:-am_lat put_lat get}
+default_libfabric_tests='fi_rdm_pingpong fi_rdm_tagged_pingpong fi_rdm_tagged_bw'
+libfabric_tests=${COMM_TEST_LIBFABRIC_TESTS:-$default_libfabric_tests}
 server_pid=
 
 if [ ! -c /dev/infiniband/uib0 ]; then
@@ -135,39 +137,46 @@ for test_name in $uct_tests; do
 	run_uct_test "$test_name"
 done
 
-test_name=fi_rdm_pingpong
-log_name=${test_name#fi_}
-provider='verbs;ofi_rxd'
-timeout -k 2 "$test_timeout" env \
-	LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.1 \
-	UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
-	UIB_ZEROCOPY=off FI_PROVIDER="$provider" FI_LOG_LEVEL=info \
-	FI_VERBS_DGRAM_USE_NAME_SERVER=0 \
-	"$test_name" -p "$provider" -d uib0-dgram \
-	-I "$iterations" -S "$message_sizes" -v -b \
-	> "$test_dir/$log_name-server.log" \
-	2>&1 &
-server_pid=$!
-sleep 1
-timeout -k 2 "$test_timeout" env \
-	LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.2 \
-	UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
-	UIB_ZEROCOPY=off FI_PROVIDER="$provider" FI_LOG_LEVEL=info \
-	FI_VERBS_DGRAM_USE_NAME_SERVER=0 \
-	"$test_name" -p "$provider" -d uib0-dgram \
-	-I "$iterations" -S "$message_sizes" -v -b 127.0.0.1 \
-	> "$test_dir/$log_name-client.log" 2>&1
-wait "$server_pid"
-server_pid=
-grep -F 'Using verbs provider' \
-	"$test_dir/$log_name-client.log" >/dev/null
-grep -F 'Using ofi_rxd provider' \
-	"$test_dir/$log_name-client.log" >/dev/null
-grep -F uib0-dgram "$test_dir/$log_name-client.log" >/dev/null
-if grep -Ei 'Using (tcp|sockets) provider' \
-	"$test_dir/$log_name-client.log" >/dev/null; then
-	echo "libfabric selected a forbidden software provider" >&2
-	exit 1
-fi
+run_libfabric_test()
+{
+	test_name=$1
+	log_name=${test_name#fi_}
+	provider='verbs;ofi_rxd'
+	timeout -k 2 "$test_timeout" env \
+		LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.1 \
+		UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
+		UIB_ZEROCOPY=off FI_PROVIDER="$provider" FI_LOG_LEVEL=info \
+		FI_VERBS_DGRAM_USE_NAME_SERVER=0 \
+		"$test_name" -p "$provider" -d uib0-dgram \
+		-I "$iterations" -S "$message_sizes" -v -b \
+		> "$test_dir/$log_name-server.log" \
+		2>&1 &
+	server_pid=$!
+	sleep 1
+	timeout -k 2 "$test_timeout" env \
+		LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.2 \
+		UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
+		UIB_ZEROCOPY=off FI_PROVIDER="$provider" FI_LOG_LEVEL=info \
+		FI_VERBS_DGRAM_USE_NAME_SERVER=0 \
+		"$test_name" -p "$provider" -d uib0-dgram \
+		-I "$iterations" -S "$message_sizes" -v -b 127.0.0.1 \
+		> "$test_dir/$log_name-client.log" 2>&1
+	wait "$server_pid"
+	server_pid=
+	grep -F 'Using verbs provider' \
+		"$test_dir/$log_name-client.log" >/dev/null
+	grep -F 'Using ofi_rxd provider' \
+		"$test_dir/$log_name-client.log" >/dev/null
+	grep -F uib0-dgram "$test_dir/$log_name-client.log" >/dev/null
+	if grep -Ei 'Using (tcp|sockets) provider' \
+		"$test_dir/$log_name-client.log" >/dev/null; then
+		echo "libfabric selected a forbidden software provider" >&2
+		exit 1
+	fi
+}
+
+for test_name in $libfabric_tests; do
+	run_libfabric_test "$test_name"
+done
 
 echo "actual UCX/libfabric UIB compatibility test: PASS"

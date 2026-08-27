@@ -445,8 +445,8 @@ kernel RXE peer in raw RoCEv2 mode. The RXE test needs the appropriate kernel
 modules and administrative network privileges. `ucx-libfabric-test` runs
 actual two-process UCX tag, stream, UCP RMA, and UCP atomic traffic over
 `ud_verbs`; direct UCT active-message, RDMA-write, and RDMA-read traffic over
-`rc_verbs`; plus libfabric RDM traffic over `verbs;ofi_rxd`, with payload
-checking and fallback rejection.
+`rc_verbs`; plus libfabric untagged and tagged RDM traffic over
+`verbs;ofi_rxd`, with payload checking and fallback rejection.
 
 ## Verbs hooked by `libuibv.so`
 
