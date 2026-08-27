@@ -71,6 +71,8 @@ python3 "$project_dir/tests/cases/virtme_backend/lifecycle_status.py" "$test_dir
 	--state-dir "$test_dir/runs" > "$test_dir/exported-kubeconfig"
 grep -q 'server: https://127.0.0.1:23003' \
 	"$test_dir/exported-kubeconfig"
+[ "$(grep -c '/run/uib-network-schedule' "$test_dir/ssh.log")" -eq 2 ]
+[ "$(grep -c '/run/uib-fault-target' "$test_dir/ssh.log")" -eq 2 ]
 "$cli" down --profile virtme-kubernetes --overlay network/datacenter \
 	--run-id virtme-lifecycle \
 	--state-dir "$test_dir/runs"

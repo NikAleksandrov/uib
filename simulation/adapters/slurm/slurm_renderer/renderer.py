@@ -28,7 +28,7 @@ def workload_command(config):
 def render(config, run_id, allow_mutable_tags):
 	from .core import shell_assignment, validate_config
 	from .environment import container_mounts, directives, environment
-	from .faults import task_wrapper
+	from .faults import fault_evidence, fault_step, task_wrapper
 
 	validate_config(config, run_id, allow_mutable_tags)
 	config = copy.deepcopy(config)
@@ -98,6 +98,7 @@ def render(config, run_id, allow_mutable_tags):
 			'\texit 2',
 			'fi',
 		])
+	lines.extend(["", *fault_step(config)])
 
 	mounts = container_mounts(config)
 	lines.extend([
@@ -142,6 +143,7 @@ def render(config, run_id, allow_mutable_tags):
 	lines.append(" \\\n\t".join(quoted) + " || status=$?")
 	lines.extend([
 		'status=${status:-0}',
+		*fault_evidence(config),
 		'cat > "$RUN_DIR/status.json" <<UIB_STATUS_JSON_EOF',
 		'{',
 		f'  "runId": "{run_id}",',

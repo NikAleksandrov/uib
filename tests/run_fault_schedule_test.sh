@@ -20,7 +20,16 @@ cat > "$test_dir/bin/ip" <<'EOF'
 set -eu
 printf 'ip %s\n' "$*" >> "$FAULT_TEST_COMMANDS"
 EOF
-chmod +x "$test_dir/bin/netem" "$test_dir/bin/ip"
+cat > "$test_dir/bin/sudo" <<'EOF'
+#!/bin/sh
+set -eu
+[ "$1" = -n ]
+shift
+printf 'sudo %s\n' "$*" >> "$FAULT_TEST_PRIVILEGE"
+exec "$@"
+EOF
+chmod +x "$test_dir/bin/netem" "$test_dir/bin/ip" \
+	"$test_dir/bin/sudo"
 
 cat > "$test_dir/faults.yaml" <<'EOF'
 faults:
@@ -66,6 +75,19 @@ assert '"lossPercent":2' in commands
 assert "ip link set dev eth-test down" in commands
 assert "ip link set dev eth-test up" in commands
 PY
+
+: > "$test_dir/privilege.commands"
+FAULT_TEST_COMMANDS="$test_dir/commands" \
+FAULT_TEST_PRIVILEGE="$test_dir/privilege.commands" \
+	"$schedule" "$test_dir/config.json" --target worker-01/data \
+	--interface eth-test --output "$test_dir/privileged.jsonl" \
+	--netem "$test_dir/bin/netem" --ip-command "$test_dir/bin/ip" \
+	--privilege-command "$test_dir/bin/sudo"
+grep -F 'sudo ' "$test_dir/privilege.commands" > /dev/null
+grep -F "$test_dir/bin/netem apply" \
+	"$test_dir/privilege.commands" > /dev/null
+grep -F "$test_dir/bin/ip link set dev eth-test down" \
+	"$test_dir/privilege.commands" > /dev/null
 
 if FAULT_NETEM="$test_dir/bin/netem" FAULT_IP="$test_dir/bin/ip" \
 	FAULT_TEST_COMMANDS="$test_dir/commands" \

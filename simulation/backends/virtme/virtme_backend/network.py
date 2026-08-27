@@ -12,13 +12,22 @@ def apply_network_shaping(config, topology_value, ssh, key):
 
     try:
         adapter = (SIMULATION / "network/netem").read_text(encoding="utf-8")
+        schedule = (SIMULATION / "faults/network-schedule").read_text(
+            encoding="utf-8")
     except OSError as error:
-        raise VirtmeError(f"cannot read the netem adapter: {error}") from error
+        raise VirtmeError(
+            f"cannot read the network adapters: {error}") from error
     resolved = json.dumps(config, sort_keys=True)
     commands = {}
     interface = config["network"]["dataInterface"]
-    for guest in worker_guests(topology_value):
+    workers = sorted(worker_guests(topology_value),
+                     key=lambda guest: guest["hostname"])
+    for index, guest in enumerate(workers, 1):
         remote_write(ssh, key, guest, "/run/uib-netem", adapter, mode="0755")
+        remote_write(ssh, key, guest, "/run/uib-network-schedule", schedule,
+                     mode="0755")
+        remote_write(ssh, key, guest, "/run/uib-fault-target",
+                     f"worker-{index:02d}/data\n")
         remote_write(
             ssh, key, guest, "/run/uib-simulation.json", resolved)
         result = remote_command(

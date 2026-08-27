@@ -130,6 +130,15 @@ def validate_config(config, run_id, allow_mutable_tags):
 	gpus = config["nodes"]["gpus"]["perWorker"]
 	if gpus and gpus % parallel["processesPerNode"]:
 		raise RenderError("GPUs per worker must be divisible by processesPerNode")
+	for index, fault in enumerate(config.get("faults", [])):
+		if fault["action"] not in ("add-delay", "packet-loss", "link-down"):
+			raise RenderError(
+				f"faults[{index}] requires a scheduler-specific executor"
+			)
+		if "at" not in fault:
+			raise RenderError(
+				f"faults[{index}] event-relative execution is not implemented"
+			)
 
 	kind = workload["kind"]
 	if kind == "training":

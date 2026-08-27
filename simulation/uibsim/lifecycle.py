@@ -401,7 +401,7 @@ def command_run(args):
 
 def command_collect(args):
     from .core import COMPATIBILITY, ConfigurationError, DEFAULT_RESULT_DIR, SLURM_TERMINAL_STATES
-    from .evidence import file_manifest
+    from .evidence import collect_fault_evidence, file_manifest
     from .scheduler import copy_remote_path, remote_path_exists, run_scheduler, scheduler_remote
     from .slurm import query_slurm_status
     from .state import copy_file, copy_tree, load_ledger, owned_state_file, path_is_within, read_json, state_path, utc_now, write_json
@@ -584,7 +584,17 @@ def command_collect(args):
                 status["scontrol"].stdout, encoding="utf-8")
             (temporary / "scheduler" / "scontrol.stderr").write_text(
                 status["scontrol"].stderr, encoding="utf-8")
-        (temporary / "faults.jsonl").write_text("", encoding="utf-8")
+        (fault_files, fault_records, applied_fault_targets,
+         recovered_fault_targets) = \
+            collect_fault_evidence(
+                collected_workload, temporary / "faults.jsonl")
+        expected_fault_targets = {
+            fault["target"] for fault in config.get("faults", [])
+            if fault["action"] in ("add-delay", "packet-loss", "link-down")
+        }
+        if expected_fault_targets - (applied_fault_targets &
+                                     recovered_fault_targets):
+            missing.append("fault-evidence/completed-targets")
 
         nodes = []
         nodes_path = ((temporary / "workload" / "nodes.txt") if remote else
@@ -650,6 +660,8 @@ def command_collect(args):
             "networkEmulation": (
                 "network-emulation.json"
                 if network_emulation is not None else None),
+            "faultEvidenceFiles": fault_files,
+            "faultEvidenceRecords": fault_records,
             "promotionEligible": False,
             "missingArtifacts": missing,
         }

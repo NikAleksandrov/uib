@@ -53,6 +53,12 @@ assert values["uib_enabled"] is True
 assert values["uib_data_interface"] == "eth1"
 assert values["uib_network_shaping"] == {"enabled": False}
 assert values["uib_netem_source"].endswith("/simulation/network/netem")
+assert values["uib_fault_schedule_source"].endswith(
+    "/simulation/faults/network-schedule")
+assert values["uib_fault_targets"] == {
+    "worker-01": "worker-01/data",
+    "worker-02": "worker-02/data",
+}
 assert values["uib_stage_image_source"].endswith(
     "/simulation/adapters/slurm/stage-image")
 assert values["uib_stage_cache_source"].endswith(

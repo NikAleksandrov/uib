@@ -8,11 +8,20 @@ def common_ansible_values(config, values, state, run_id):
     from .core import SIMULATION, quantity
 
     manager = config["cluster"]["manager"]
+    workers = sorted(
+        name for name, node in values["nodes"].items()
+        if node["role"] == "worker")
     return {
         "uib_run_id": run_id,
         "uib_run_state": str(state),
         "uib_config": str(state / "resolved-simulation.json"),
         "uib_netem_source": str(SIMULATION / "network" / "netem"),
+        "uib_fault_schedule_source": str(
+            SIMULATION / "faults" / "network-schedule"),
+        "uib_fault_targets": {
+            name: f"worker-{index:02d}/data"
+            for index, name in enumerate(workers, 1)
+        },
         "uib_stage_image_source": str(
             SIMULATION / "adapters" / "slurm" / "stage-image"),
         "uib_stage_cache_source": str(

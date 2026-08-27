@@ -9,6 +9,34 @@
     group: root
     mode: "0755"
 
+- name: Install the common network fault scheduler
+  ansible.builtin.copy:
+    src: "{{ uib_fault_schedule_source }}"
+    dest: /run/uib-network-schedule
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the stable worker fault target
+  ansible.builtin.copy:
+    dest: /run/uib-fault-target
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ uib_fault_targets[inventory_hostname] }}\n"
+
+- name: Authorize simulation-only network mutations
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/uib-network-schedule
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+    content: >-
+      {{ uib_ssh_user }} ALL=(root) NOPASSWD:
+      /usr/local/libexec/uib-netem *,
+      /usr/sbin/ip link set dev *
+
 - name: Install the resolved network configuration
   ansible.builtin.copy:
     src: "{{ uib_config }}"

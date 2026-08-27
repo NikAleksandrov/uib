@@ -458,12 +458,12 @@ workload:
 faults:
   - at: 2m
     action: add-delay
-    target: worker-2/data
+    target: worker-01/data
     latency: 2ms
     duration: 30s
   - at: 4m
     action: packet-loss
-    target: rack-b/uplink
+    target: worker-02/data
     percent: 1
     duration: 15s
   - afterEvent: checkpoint-complete
@@ -478,8 +478,8 @@ device:
 
 ```text
 simulation/faults/network-schedule /tmp/uib-config.json \
-  --target worker-2/data --interface eth1 \
-  --output /results/faults-worker-2.jsonl &
+  --target worker-01/data --interface eth1 \
+  --output /results/faults-worker-01.jsonl &
 ```
 
 The scheduler composes overlapping delay, random-loss, and link-down windows,
@@ -489,6 +489,34 @@ record. The output path must be new. Every JSONL transition contains its source
 index, planned and actual monotonic offset, active faults, exact command result,
 and effective shaping. Event-relative faults and `terminate-rank` require the
 scheduler-specific executor because they depend on Kubernetes or Slurm state.
+
+The virtme and libvirt backends install the scheduler on every worker and map
+workers, in hostname order, to `worker-01/data`, `worker-02/data`, and so on.
+The generated Slurm batch starts one overlapping scheduler task per node at
+the same time origin as the workload. It stops the tasks after the workload,
+restores the base network condition, and fails the job if a requested target
+did not produce every `apply` and `recover` record. A fault window extending
+beyond the workload therefore fails rather than reporting a truncated test as
+complete. Only time-relative `add-delay`, `packet-loss`, and `link-down` faults
+are accepted by this path.
+
+Changing qdiscs or link state requires network-administration privilege. The
+virtme Slurm service and its jobs run as root inside disposable guests. The
+libvirt provisioner instead installs a sudoers rule limited to the simulation
+netem adapter and `ip link set`; the scheduler and its evidence file still run
+as the ordinary job user. On an existing Slurm cluster, an administrator must
+install these files on every worker before accepting a request with `faults`:
+
+| Worker file | Required content |
+|---|---|
+| `/run/uib-network-schedule` | Executable copy of `simulation/faults/network-schedule` |
+| `/run/uib-fault-target` | One stable target followed by a newline, such as `worker-01/data` |
+| `/usr/local/libexec/uib-netem` | Executable copy of `simulation/network/netem` |
+
+The job also requires `jq`, `tc`, `ip`, and noninteractive sudo permission for
+`/usr/local/libexec/uib-netem *` and `/usr/sbin/ip link set dev *`. Target names
+must be unique and must match the request exactly. A request without `faults`
+does not start a scheduler or require this setup.
 
 ## Configuration syntax and values
 
@@ -2255,6 +2283,13 @@ records, and existing output directories. Export is non-destructive and
 includes inputs, scheduler records, logs, workload output, topology, metadata,
 summaries, and a SHA-256 manifest; missing artifacts are explicit.
 
+For a timed network-fault run, each worker writes
+`workload/faults-<slurm-node>.jsonl`. Collection validates every record, adds
+its `sourceFile`, and merges the records into top-level `faults.jsonl`.
+`summary.json` records `faultEvidenceFiles` and `faultEvidenceRecords`; a
+requested target without both `apply` and `recover` records is listed as
+missing evidence.
+
 The collector deliberately sets `validationLevel` to `not-assigned`,
 `uibTrafficEvidence` to `not-evaluated`, and `promotionEligible` to false.
 Neither an exit code of zero nor UIB preflight proves that application payloads
@@ -3429,6 +3464,7 @@ results/<run-id>/
     status.json
     nodes.txt
     slurm-job.txt
+    faults-<slurm-node>.jsonl  # one per affected worker
     ... workload-owned checkpoints, metrics, and traces ...
   metrics/
   traces/
@@ -3485,25 +3521,25 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 |---|---|---|
 | `make simulation-cli-test` | Python 3, PyYAML, and `jsonschema` | Every profile, named layer replacement, schema and semantic rejection, typed `--set`, and the read-only `doctor` report |
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in network condition renders to the expected `tc netem` command; unsafe interfaces and invalid combinations are rejected; it does not modify a qdisc |
-| `make simulation-fault-schedule-test` | Python 3, `jq`, and the CLI requirements; no network privilege | Overlapping delay, loss, and link-down transitions, exact JSONL evidence, base-condition recovery, missing targets, and signal-interruption cleanup through controlled standard-command adapters |
+| `make simulation-fault-schedule-test` | Python 3, `jq`, and the CLI requirements; no network privilege | Overlapping delay, loss, and link-down transitions, direct and noninteractive privileged command dispatch, exact JSONL evidence, base-condition recovery, missing targets, and signal-interruption cleanup through controlled standard-command adapters |
 | `make simulation-fault-e2e-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | A timed 2 ms netem window carries the complete RoCEv2 UIB SEND, multi-packet, RDMA read/write, and atomic workload; nonzero qdisc counters, transition evidence, and exact recovery are required |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | RoCEv2 and UET SEND and RDMA read/write complete with actual netem conditions and built-in or plugin congestion control; the UET cases also cover atomics |
 | `make rocev2-ecn-test` | Build dependencies and permission to open loopback UDP sockets | ECT(0) traffic produces an ACK but no CNP, while a valid CE-marked RoCEv2 packet produces exactly one ACK and one CNP; both io_uring multishot and batched receive metadata paths are tested |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
-| `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Rootless socket and optional bridge rendering, IPv4/MAC/SSH allocation, exact virtme-ng launch vectors, run-owned key/inventory creation, PID/start-time ownership, CLI `up/status/down`, bridge create/delete cleanup through fake standard commands, and invalid combination rejection |
+| `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Rootless socket and optional bridge rendering, IPv4/MAC/SSH allocation, exact virtme-ng launch vectors, worker fault-scheduler provisioning and stable targets, run-owned key/inventory creation, PID/start-time ownership, CLI `up/status/down`, bridge create/delete cleanup through fake standard commands, and invalid combination rejection |
 | `make simulation-virtme-kubernetes-e2e-test` | virtme-ng 1.35, SSH, kubectl, QEMU with KVM or TCG, about 4 GiB memory for the two reduced-size guests, and download access for the pinned k3s binary on first use | A real controller and worker under separate virtme kernels, rootless socket data traffic, pinned k3s/containerd startup without systemd PID 1, both nodes Ready, host API access through an owned SSH forward, cached download reuse, and exact process cleanup |
 | `make simulation-virtme-slurm-e2e-test` | virtme-ng 1.35, SSH/SCP, QEMU with KVM or TCG, `jq`, `tc`, Slurm/Pyxis build tools, a Docker-compatible engine for the portable runtime and workload image, about 6 GiB memory, and download access on the first run | A real controller/two-worker Slurm/Pyxis/Enroot lifecycle, direct and containerized cross-worker UIB traffic, automatic pinned-image staging, remote two-rank `run`/`status`/`collect`, clean network evidence, portable-runtime preflight, and exact cleanup |
 | `make simulation-virtme-netem-e2e-test` | The virtme Slurm gate requirements | The same complete workload lifecycle while the selected condition is active on both worker data interfaces; exact qdisc/kernel/iproute2 evidence and cleanup are validated |
-| `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge/rootless VM rendering; Slurm and bridge-only Kubernetes playbook selection; pinned k3s inputs, non-logged join token, kubeconfig export, cached-image verification, worker network evidence, Slurm remote lifecycle, exclusive ownership, and exact-state cleanup with fake standard commands |
+| `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge/rootless VM rendering; Slurm and bridge-only Kubernetes playbook selection; pinned k3s inputs, non-logged join token, kubeconfig export, cached-image verification, worker network and fault-scheduler provisioning, Slurm remote lifecycle, exclusive ownership, and exact-state cleanup with fake standard commands |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, SSH/SCP, passt, NFS-capable Ubuntu guests, roughly 12 GiB memory for the default three VMs, and download access on the first run | Actual controller/two-worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, ordinary worker tasks, cross-VM standard RC payload through UIB, remote batch submission and status, two-rank pinned OCI execution with portable UIB preflight, result collection, state-based destruction, and domain/pool absence; no NCCL or GPU claim |
 | `make simulation-libvirt-netem-e2e-test` | The libvirt gate requirements; guest iproute2 and `jq` are installed automatically | The selected checked-in condition is active on both worker data interfaces before actual cross-VM UIB traffic, exact qdisc/kernel/iproute2 evidence is collected, the Slurm lifecycle passes, and the VMs are removed; rootless timing and throughput are not physical-fabric measurements |
 | `make simulation-libvirt-training-e2e-test` | The libvirt gate requirements, the local training image or image-build access, 32 GiB guest disks, roughly 12 GiB host memory, and about 3 GiB ignored host cache space for the current image | Everything in the libvirt gate, content-addressed SquashFS creation or verified cache reuse, real two-worker CPU DDP training through Slurm/Pyxis/Enroot, collected training and image ledgers, and complete cleanup; the workload uses Gloo, while the separate provisioning gate supplies actual UIB traffic |
 | `make simulation-libvirt-inference-e2e-test` | The libvirt gate requirements, the local inference image or build access, the downloaded SmolLM2 cache, 8 GiB per VM, 64 GiB guest disks, and about 8 GiB ignored host image-cache space | Everything in the libvirt gate, bounded-memory SquashFS staging, verified Hugging Face cache transfer, real offline four-request CPU serving through Slurm/Pyxis/Enroot, request trace and artifact ledgers, and cleanup; the one-task workload itself has no UIB traffic |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
-| `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, RoCEv2/UET congestion settings, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
+| `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, timed network-fault steps and evidence gates, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, RoCEv2/UET congestion settings, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
 | `make simulation-slurm-lifecycle-test` | The Slurm renderer requirements; no Slurm installation or container engine | Exclusive ignored run ledgers, shared-path preflight, exact `sbatch --parsable` submission, recorded numeric job ownership, read-only `sacct` status and `scontrol` fallback including an empty pending node list, exact-ID `scancel`, retained failures, and rejection of result/ledger reuse or ambiguous submission output using fake standard commands |
-| `make simulation-slurm-collect-test` | The Slurm lifecycle requirements; no Slurm installation, container engine, or network access | Exact-ID `sacct` and `scontrol` evidence, terminal/incomplete policy, captured source inputs, scheduler/log/workload export, ownership validation, symlink rejection, non-overwrite behavior, honest nonpromotion labels, and every SHA-256 manifest entry using fake standard commands |
+| `make simulation-slurm-collect-test` | The Slurm lifecycle requirements; no Slurm installation, container engine, or network access | Exact-ID `sacct` and `scontrol` evidence, terminal/incomplete policy, captured source inputs, scheduler/log/workload export, validated per-worker fault-evidence aggregation, ownership and symlink rejection, non-overwrite behavior, honest nonpromotion labels, and every SHA-256 manifest entry using fake standard commands |
 | `make runtime-bundle-portable-test` | A Docker-compatible engine, network access for the pinned Ubuntu image and verified source archives on first use, and normal UIB build resources | Reproducible old-userspace build, GLIBC ceiling, portable feature set, provider/static artifacts, checksums, preflight, source dependency metadata, and copied licenses |
 | `make simulation-kubernetes-uib-test` | Kind, kubectl, a Docker-compatible engine, build dependencies, and CPU/memory for two workers; network access is needed only for uncached pinned images and diagnostic sources | Actual RoCEv2 and UET RC SEND/RECV and RDMA Write traffic from unchanged standard verbs binaries between distinct Pod IPs and Kind workers, plus runtime injection and complete cleanup; no GPU or collective claim |
 | `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, admission, two-node torchrun rendezvous, distinct placement, UIB preflight, CPU DDP result, and complete run/operator/cluster cleanup; no UIB traffic |

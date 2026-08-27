@@ -164,6 +164,37 @@ render_training uib-slurm-uet --overlay protocol/uet-nscc \
 grep -F 'export UIB_PROTOCOL=uet' "$test_dir/uet.sbatch" > /dev/null
 grep -F 'export UIB_UET_CC=nscc' "$test_dir/uet.sbatch" > /dev/null
 
+render_training uib-slurm-fault \
+	--set 'faults=[{"at":"1s","action":"add-delay","target":"worker-01/data","latency":"2ms","duration":"1s"}]' \
+	> "$test_dir/fault.sbatch"
+sh -n "$test_dir/fault.sbatch"
+grep -F -- '--overlap' "$test_dir/fault.sbatch" > /dev/null
+grep -F -- '/run/uib-fault-target' "$test_dir/fault.sbatch" > /dev/null
+grep -F -- '/run/uib-network-schedule' "$test_dir/fault.sbatch" > /dev/null
+grep -F -- '--netem /usr/local/libexec/uib-netem' \
+	"$test_dir/fault.sbatch" > /dev/null
+grep -F -- '--privilege-command sudo' \
+	"$test_dir/fault.sbatch" > /dev/null
+grep -F -- 'FAULT_EXPECTED_EVENTS=' "$test_dir/fault.sbatch" > /dev/null
+grep -F -- 'FAULT_RECOVERED=' "$test_dir/fault.sbatch" > /dev/null
+grep -F -- "faults-\${SLURMD_NODENAME}.jsonl" \
+	"$test_dir/fault.sbatch" > /dev/null
+
+"$cli" render-workload --profile virtme-slurm --request "$training" \
+	--run-id uib-virtme-fault --allow-mutable-tags \
+	--set "storage.uibRuntimePath=$test_dir/runtime" \
+	--set "storage.modelCachePath=$test_dir/cache" \
+	--set "storage.resultsPath=$test_dir/results" \
+	--set 'faults=[{"at":"1s","action":"packet-loss","target":"worker-02/data","percent":1,"duration":"1s"}]' \
+	> "$test_dir/virtme-fault.sbatch"
+grep -F -- '--netem /run/uib-netem' \
+	"$test_dir/virtme-fault.sbatch" > /dev/null
+if grep -F -- '--privilege-command' "$test_dir/virtme-fault.sbatch" \
+	> /dev/null; then
+	echo "virtme fault scheduling requested unnecessary elevation" >&2
+	exit 1
+fi
+
 render_training uib-slurm-rocev2-nscc \
 	--overlay protocol/rocev2-nscc-experimental \
 	--set uib.congestionControl.parameters.maxWindowBytes=65536 \
@@ -253,6 +284,20 @@ fi
 if render_training uib-slurm-ucx --overlay communication/ucx \
 	> /dev/null 2>&1; then
 	echo "an unsupported Slurm communication front end was accepted" >&2
+	exit 1
+fi
+
+if render_training uib-slurm-rank-fault \
+	--set 'faults=[{"at":"1s","action":"terminate-rank","rank":0}]' \
+	> /dev/null 2>&1; then
+	echo "a scheduler-specific rank fault was accepted" >&2
+	exit 1
+fi
+
+if render_training uib-slurm-event-fault \
+	--set 'faults=[{"afterEvent":"ready","action":"add-delay","target":"worker-01/data","latency":"2ms","duration":"1s"}]' \
+	> /dev/null 2>&1; then
+	echo "an event-relative network fault was accepted" >&2
 	exit 1
 fi
 

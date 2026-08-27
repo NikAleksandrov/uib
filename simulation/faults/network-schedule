@@ -72,7 +72,9 @@ def effective_config(config, active):
     return effective
 
 
-def invoke(command):
+def invoke(command, privilege_command=None):
+    if privilege_command:
+        command = [privilege_command, "-n", *command]
     completed = subprocess.run(command, text=True, capture_output=True,
                                check=False)
     return {
@@ -83,16 +85,16 @@ def invoke(command):
     }
 
 
-def apply_shaping(config, interface, netem):
+def apply_shaping(config, interface, netem, privilege_command):
     descriptor, name = tempfile.mkstemp(prefix="uib-fault-", suffix=".json")
     path = pathlib.Path(name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
             json.dump(config, output, sort_keys=True)
             output.write("\n")
-        result = invoke([
-            netem, "apply", str(path), interface, "--replace-existing",
-        ])
+        result = invoke(
+            [netem, "apply", str(path), interface, "--replace-existing"],
+            privilege_command)
         result["shaping"] = config["network"]["shaping"]
         return result
     finally:
@@ -104,7 +106,8 @@ def append_record(output, record):
     output.flush()
 
 
-def run_schedule(config, target, interface, output, netem, ip_command):
+def run_schedule(config, target, interface, output, netem, ip_command,
+                 privilege_command=None):
     events = []
     selected = 0
 
@@ -141,16 +144,20 @@ def run_schedule(config, target, interface, output, netem, ip_command):
                             for item in active.values())
             commands = []
             if link_down and not was_down:
-                commands.append(invoke([ip_command, "link", "set", "dev",
-                                        interface, "down"]))
+                commands.append(invoke(
+                    [ip_command, "link", "set", "dev", interface, "down"],
+                    privilege_command))
             elif was_down and not link_down:
-                commands.append(invoke([ip_command, "link", "set", "dev",
-                                        interface, "up"]))
+                commands.append(invoke(
+                    [ip_command, "link", "set", "dev", interface, "up"],
+                    privilege_command))
                 commands.append(apply_shaping(
-                    effective_config(config, active), interface, netem))
+                    effective_config(config, active), interface, netem,
+                    privilege_command))
             elif not link_down:
                 commands.append(apply_shaping(
-                    effective_config(config, active), interface, netem))
+                    effective_config(config, active), interface, netem,
+                    privilege_command))
 
             failed = any(command["exitCode"] for command in commands)
             append_record(output, {
@@ -173,9 +180,11 @@ def run_schedule(config, target, interface, output, netem, ip_command):
         if not completed:
             commands = []
             if link_down:
-                commands.append(invoke([ip_command, "link", "set", "dev",
-                                        interface, "up"]))
-            commands.append(apply_shaping(config, interface, netem))
+                commands.append(invoke(
+                    [ip_command, "link", "set", "dev", interface, "up"],
+                    privilege_command))
+            commands.append(apply_shaping(
+                config, interface, netem, privilege_command))
             cleanup_failed = any(command["exitCode"] for command in commands)
             append_record(output, {
                 "schemaVersion": 1,
@@ -204,6 +213,14 @@ def main():
                         help="interface represented by the logical target")
     parser.add_argument("--output", required=True,
                         help="new JSONL evidence file")
+    parser.add_argument("--netem", default=os.environ.get(
+                            "FAULT_NETEM", str(DEFAULT_NETEM)),
+                        help="netem adapter executable")
+    parser.add_argument("--ip-command", default=os.environ.get(
+                            "FAULT_IP", "ip"),
+                        help="ip executable")
+    parser.add_argument("--privilege-command",
+                        help="noninteractive sudo-compatible executable")
     args = parser.parse_args()
     output_path = pathlib.Path(args.output)
     try:
@@ -215,8 +232,7 @@ def main():
         with output_path.open("x", encoding="utf-8") as output:
             run_schedule(
                 load_config(args.config), args.target, args.interface, output,
-                os.environ.get("FAULT_NETEM", str(DEFAULT_NETEM)),
-                os.environ.get("FAULT_IP", "ip"),
+                args.netem, args.ip_command, args.privilege_command,
             )
     except (OSError, ScheduleError) as error:
         print(f"network-schedule: {error}", file=sys.stderr)
