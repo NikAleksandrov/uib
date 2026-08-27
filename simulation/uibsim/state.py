@@ -77,7 +77,7 @@ def state_path(args):
     return pathlib.Path(args.state_dir).expanduser().resolve() / args.run_id
 
 
-def load_ledger(args):
+def load_ledger(args, scheduler=None):
     from .core import ConfigurationError
 
     path = state_path(args) / "ledger.json"
@@ -88,9 +88,49 @@ def load_ledger(args):
         raise ConfigurationError(f"cannot load run ledger {path}: {error}") from error
     if ledger.get("schemaVersion") != 1:
         raise ConfigurationError(f"unsupported run ledger: {path}")
-    if ledger.get("runId") != args.run_id or ledger.get("scheduler") != "slurm":
+    if (ledger.get("runId") != args.run_id or
+            ledger.get("scheduler") not in {"kubernetes", "slurm"} or
+            (scheduler is not None and ledger.get("scheduler") != scheduler)):
         raise ConfigurationError(f"run ledger ownership mismatch: {path}")
     return path, ledger
+
+
+def prepare_run_directory(args, config):
+    from .core import ConfigurationError
+
+    run_dir = state_path(args)
+    try:
+        run_dir.parent.mkdir(parents=True, exist_ok=True)
+        if run_dir.exists():
+            infrastructure = run_dir / "infrastructure" / "ledger.json"
+            infrastructure_ledger = read_json(
+                infrastructure, "infrastructure ledger")
+            provider = config["infrastructure"]["provider"]
+            if (provider not in {"libvirt", "virtme"} or
+                    infrastructure_ledger.get("schemaVersion") != 1 or
+                    infrastructure_ledger.get("runId") != args.run_id or
+                    infrastructure_ledger.get("provider") != provider or
+                    infrastructure_ledger.get("state") != "ready" or
+                    (run_dir / "ledger.json").exists()):
+                raise FileExistsError
+            infrastructure_config = read_json(
+                run_dir / "infrastructure" / "resolved-simulation.json",
+                "infrastructure configuration")
+            if infrastructure_config.get("network") != config["network"]:
+                raise ConfigurationError(
+                    "workload network configuration differs from the "
+                    f"provisioned {provider} network")
+        else:
+            run_dir.mkdir()
+    except FileNotFoundError as error:
+        raise ConfigurationError(
+            f"incomplete infrastructure state in {run_dir}") from error
+    except FileExistsError as error:
+        raise ConfigurationError(f"run state already exists: {run_dir}") from error
+    except OSError as error:
+        raise ConfigurationError(
+            f"cannot create run state {run_dir}: {error}") from error
+    return run_dir
 
 
 def read_json(path, description):
@@ -151,3 +191,26 @@ def owned_state_file(run_dir, value, description):
         raise ConfigurationError(
             f"{description} escapes the run state directory")
     return candidate
+
+
+def copy_run_provenance(run_dir, ledger, temporary):
+    from .core import ConfigurationError
+
+    inputs = ledger.get("inputs", {})
+    if not isinstance(inputs, dict):
+        raise ConfigurationError("invalid inputs in run ledger")
+    for name, destination in (
+            (inputs.get("profile"), "profile.yaml"),
+            (inputs.get("request"), "request.yaml")):
+        if name:
+            copy_file(owned_state_file(run_dir, name, destination),
+                      temporary / destination)
+    overlays = inputs.get("overlays", [])
+    if not isinstance(overlays, list):
+        raise ConfigurationError("invalid overlays in run ledger")
+    for index, item in enumerate(overlays):
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            raise ConfigurationError("invalid overlay in run ledger")
+        source = owned_state_file(run_dir, item.get("path"), "overlay input")
+        copy_file(source, temporary / "overlays" / f"{index:02d}.yaml")
+    write_json(temporary / "request-provenance.json", inputs)

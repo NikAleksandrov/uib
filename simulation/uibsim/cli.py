@@ -53,6 +53,7 @@ def main():
     status = commands.add_parser("status", help="inspect selected infrastructure")
     add_lifecycle_args(status)
     add_state_dir_arg(status)
+    status.add_argument("--kubeconfig", help="Kubernetes client configuration")
     status.set_defaults(handler=command_status)
     kubeconfig = commands.add_parser("kubeconfig", help="print provider kubeconfig")
     add_lifecycle_args(kubeconfig)
@@ -90,6 +91,7 @@ def main():
     run.add_argument(
         "--allow-mutable-tags", action="store_true",
         help="allow local development image tags instead of immutable digests")
+    run.add_argument("--kubeconfig", help="Kubernetes client configuration")
     run.set_defaults(handler=command_run)
     collect = commands.add_parser(
         "collect", help="collect one recorded scheduler result")
@@ -103,10 +105,15 @@ def main():
     collect.add_argument(
         "--allow-incomplete", action="store_true",
         help="collect a diagnostic snapshot before the job reaches a terminal state")
+    collect.add_argument("--kubeconfig", help="Kubernetes client configuration")
     collect.set_defaults(handler=command_collect)
     down = commands.add_parser("down", help="remove selected infrastructure")
     add_lifecycle_args(down)
     add_state_dir_arg(down)
+    down.add_argument("--kubeconfig", help="Kubernetes client configuration")
+    down.add_argument(
+        "--infrastructure", action="store_true",
+        help="also remove same-run Kubernetes infrastructure")
     down.set_defaults(handler=command_down)
     args = parser.parse_args()
     try:

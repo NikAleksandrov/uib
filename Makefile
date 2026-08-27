@@ -369,6 +369,9 @@ simulation-kind-e2e-test:
 simulation-kubernetes-render-test:
 	./tests/run_kubernetes_render_test.sh
 
+simulation-kubernetes-lifecycle-test:
+	./tests/run_kubernetes_lifecycle_test.sh
+
 simulation-slurm-render-test:
 	./tests/run_slurm_render_test.sh
 
@@ -1010,6 +1013,7 @@ clean:
 	simulation-virtme-inference-e2e-test \
 	simulation-virtme-netem-e2e-test \
 	simulation-kubernetes-render-test simulation-slurm-render-test \
+	simulation-kubernetes-lifecycle-test \
 	simulation-slurm-lifecycle-test simulation-slurm-collect-test \
 	simulation-libvirt-test \
 	simulation-libvirt-e2e-test \

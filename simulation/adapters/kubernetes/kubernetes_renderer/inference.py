@@ -124,8 +124,7 @@ def render_inference(config, run_id, allow_mutable_tags):
             },
             "spec": {
                 "entrypoint": entrypoint,
-                "shutdownAfterJobFinishes": True,
-                "ttlSecondsAfterFinished": 60,
+                "shutdownAfterJobFinishes": False,
                 "rayClusterSpec": ray_cluster,
             },
         },

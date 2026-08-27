@@ -1701,6 +1701,11 @@ real local gate with:
 make simulation-kuberay-e2e-test
 ```
 
+The rendered RayJob retains its RayCluster after job completion so pod logs
+remain available to `uib-sim collect`. The run-owned namespace is the cleanup
+boundary; `uib-sim down` or an explicit namespace deletion removes the
+RayJob, RayCluster, pods, and temporary volumes together.
+
 The target first runs the actual two-worker UIB verbs gate, builds the portable
 runtime and inference images, downloads the pinned SmolLM2 revision once into
 the ignored cache, creates a disposable one-worker Kind cluster, installs the
@@ -3369,8 +3374,9 @@ Each backend keeps using its own normal configuration and state:
 - Helm values and Kubernetes labels/namespaces;
 - Slurm batch files, job IDs, Pyxis, and Enroot configuration.
 
-`uib-sim` delegates Kind and libvirt Kubernetes/Slurm infrastructure now. The
-remaining adapters follow the same standard-tool pattern:
+`uib-sim` delegates Kind, virtme, and libvirt infrastructure and submits
+workloads through standard Kubernetes or Slurm clients. The adapters follow
+the same standard-tool pattern:
 
 ```text
 simulation/bin/uib-sim doctor --profile <profile>
@@ -3394,15 +3400,14 @@ the selected Kubernetes or Slurm manager through its generated inventory. For
 existing clusters the adapter performs no infrastructure changes. The general
 `deploy` operation is not implemented yet.
 
-The Slurm `run` adapter resolves configuration, records its exact inputs,
-checks shared paths, renders the batch file, submits it, and records ownership.
-Its `collect` adapter exports one exact recorded job without deleting the
-workload; use a new output directory for each repeat snapshot. A Kubernetes
-`run` adapter and deeper Slurm capability preflights remain planned.
-
-Kind `down` removes the named Kind cluster; Slurm `down` requests cancellation
-of the recorded job. Automatic export from `down` and a common Kubernetes
-collector remain planned; invoke Slurm `collect` explicitly before cleanup.
+Both workload adapters resolve configuration, record the exact inputs, render
+the scheduler object, submit it, and write an exclusive run ledger. Kubernetes
+uses `kubectl apply`; Slurm uses `sbatch --parsable`. `status` reads only the
+recorded Kubernetes object or Slurm job. `collect` creates a non-overwriting
+evidence bundle without deleting the workload, and `down` removes the owned
+namespace or requests cancellation of the recorded Slurm job. Collect before
+cleanup because scheduler logs are intentionally not copied automatically by
+`down`.
 
 ### Fast local example
 
@@ -3415,10 +3420,59 @@ uib-sim down --profile kind-kubernetes --run-id uib-lab
 ```
 
 These lifecycle operations are implemented for Kind and libvirt Kubernetes.
-Slurm additionally
-implements `run`, accounting-oriented `status`, evidence-only `collect`, and
-recorded-job `down`. `deploy`, Kubernetes collection, and Kubernetes workload
-submission remain planned.
+Kubernetes and Slurm both implement workload `run`, scheduler-aware `status`,
+evidence-only `collect`, and recorded-workload `down`. Operator installation
+remains a separate Helm layer so sites can use their existing Kubeflow Trainer
+or KubeRay deployment.
+
+### Kubernetes workload lifecycle
+
+Install the selected operator first, then use the same request on Kind, the
+virtme/libvirt k3s labs, or an existing cluster:
+
+```text
+simulation/bin/uib-sim run --profile kind-kubernetes \
+    --request simulation/requests/training-smoke.yaml \
+    --run-id uib-training --kubeconfig /tmp/uib-lab.kubeconfig \
+    --allow-mutable-tags
+simulation/bin/uib-sim status --profile kind-kubernetes \
+    --request simulation/requests/training-smoke.yaml \
+    --run-id uib-training --kubeconfig /tmp/uib-lab.kubeconfig
+simulation/bin/uib-sim collect --run-id uib-training \
+    --kubeconfig /tmp/uib-lab.kubeconfig
+simulation/bin/uib-sim down --profile kind-kubernetes \
+    --run-id uib-training --kubeconfig /tmp/uib-lab.kubeconfig
+simulation/bin/uib-sim down --profile kind-kubernetes --run-id uib-lab
+```
+
+The run ID names the namespace, primary `TrainJob` or `RayJob`, ledger, and
+default result directory. Use different run IDs for independent repetitions.
+When a workload ledger exists, `down` removes only its namespace. A separate
+cluster-name `down` removes Kind infrastructure. For a combined virtme or
+libvirt run using one ID, pass `--infrastructure` to remove both the namespace
+and the run-owned machines after collection.
+The cluster connection is selected in this order:
+
+1. `--kubeconfig PATH` on the command;
+2. the kubeconfig exported into an owned virtme/libvirt run directory;
+3. `infrastructure.kubernetesContext` for an existing cluster;
+4. `kind-<run-id>` for a same-name Kind cluster, or the normal active context
+   when an explicit kubeconfig was supplied.
+
+`KUBECTL_COMMAND` may select a compatible `kubectl` executable. A profile with
+`kubernetesContext: replace-me` is rejected rather than using an accidental
+current context. Kubernetes fault schedules are also rejected by `run` until
+their executor is implemented; rendering a fault that will be ignored is not
+allowed.
+
+`collect` accepts `--allow-incomplete` only for diagnostic snapshots. A normal
+collection requires a completed or failed primary resource and records its
+JSON, namespace, events, selected pods, every init/application container log,
+placement, resolved configuration, compatibility lock, and SHA-256 manifest.
+It verifies `UIB runtime preflight: PASS` independently for every selected pod,
+but deliberately leaves `uibTrafficEvidence` as `not-evaluated` and
+`promotionEligible` false. Runtime injection alone is not proof that the
+workload used UIB.
 
 ### Planned selected-kernel lifecycle
 
@@ -3521,7 +3575,9 @@ metric definitions.
 
 ## Results and evidence
 
-The implemented Slurm collector produces:
+Kubernetes and Slurm collectors share the top-level identity, topology,
+preflight, summary, and integrity files. Scheduler-specific evidence stays
+under `scheduler/`:
 
 ```text
 results/<run-id>/
@@ -3538,8 +3594,13 @@ results/<run-id>/
   network-emulation.json      # when infrastructure supplied validated evidence
   manifest.json
   scheduler/
-    workload.sbatch
-    status.psv
+    workload.sbatch           # Slurm
+    workload.yaml             # Kubernetes
+    workload.json             # collected TrainJob or RayJob
+    pods.json
+    namespace.yaml
+    events.yaml
+    status.psv                # Slurm
     status-source.json
     sacct.stderr
     sacct.psv                 # when sacct supplied the record
@@ -3551,8 +3612,9 @@ results/<run-id>/
   state/
     ledger.json
   logs/
-    batch.out
-    batch.err
+    batch.out                 # Slurm
+    batch.err                 # Slurm
+    <pod>.<container>.log     # Kubernetes
   workload/
     status.json
     nodes.txt
@@ -3587,12 +3649,13 @@ The long-term common summary states:
 - skipped gates and reasons;
 - correctness and performance outcomes.
 
-The current collector fills identity, scheduler outcome, requested and
-allocated topology, images, selected UIB layers, workload exit status,
-validated libvirt qdisc evidence when available, and missing artifacts. It
-does not infer transport use, correctness, performance, or a validation level
-from logs; those promotion checks remain explicit so a single-process or
-socket-fallback run cannot be mislabeled as UIB validation.
+The collectors fill identity, scheduler outcome, requested and allocated
+topology, images, selected UIB layers, workload status, and missing artifacts.
+Slurm also imports validated infrastructure qdisc evidence when available.
+Kubernetes verifies each pod's UIB preflight init-container log. Neither
+collector infers transport use, correctness, performance, or a validation
+level from generic logs; those promotion checks remain explicit so a
+single-process or socket-fallback run cannot be mislabeled as UIB validation.
 
 Training metrics include tokens per second, step time, collective time,
 checkpoint time, loss, GPU use, host use, network counters, retries, and fault
@@ -3633,15 +3696,16 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-libvirt-training-e2e-test` | The libvirt gate requirements, the local training image or image-build access, 32 GiB guest disks, roughly 12 GiB host memory, and about 3 GiB ignored host cache space for the current image | Everything in the libvirt gate, content-addressed SquashFS creation or verified cache reuse, real two-worker CPU DDP training through Slurm/Pyxis/Enroot, collected training and image ledgers, and complete cleanup; the workload uses Gloo, while the separate provisioning gate supplies actual UIB traffic |
 | `make simulation-libvirt-inference-e2e-test` | The libvirt gate requirements, the local inference image or build access, the downloaded SmolLM2 cache, 8 GiB per VM, 64 GiB guest disks, and about 8 GiB ignored host image-cache space | Everything in the libvirt gate, bounded-memory SquashFS staging, verified Hugging Face cache transfer, real offline four-request CPU serving through Slurm/Pyxis/Enroot, request trace and artifact ledgers, and cleanup; the one-task workload itself has no UIB traffic |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
+| `make simulation-kubernetes-lifecycle-test` | The Kubernetes renderer requirements; no cluster, operator, or container engine | Exclusive run ownership, standard `kubectl apply/get/logs/delete` delegation, terminal and explicit incomplete snapshots, pod placement, per-container logs, per-pod UIB preflight verification, namespace cleanup, and SHA-256 evidence integrity using a fake kubectl executable |
 | `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, timed network-fault steps and evidence gates, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, RoCEv2/UET congestion settings, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
 | `make simulation-slurm-lifecycle-test` | The Slurm renderer requirements; no Slurm installation or container engine | Exclusive ignored run ledgers, shared-path preflight, exact `sbatch --parsable` submission, recorded numeric job ownership, read-only `sacct` status and `scontrol` fallback including an empty pending node list, exact-ID `scancel`, retained failures, and rejection of result/ledger reuse or ambiguous submission output using fake standard commands |
 | `make simulation-slurm-collect-test` | The Slurm lifecycle requirements; no Slurm installation, container engine, or network access | Exact-ID `sacct` and `scontrol` evidence, terminal/incomplete policy, captured source inputs, scheduler/log/workload export, validated per-worker fault-evidence aggregation, ownership and symlink rejection, non-overwrite behavior, honest nonpromotion labels, and every SHA-256 manifest entry using fake standard commands |
 | `make runtime-bundle-portable-test` | A Docker-compatible engine, network access for the pinned Ubuntu image and verified source archives on first use, and normal UIB build resources | Reproducible old-userspace build, GLIBC ceiling, portable feature set, provider/static artifacts, checksums, preflight, source dependency metadata, and copied licenses |
 | `make simulation-kubernetes-uib-test` | Kind, kubectl, a Docker-compatible engine, build dependencies, and CPU/memory for two workers; network access is needed only for uncached pinned images and diagnostic sources | Actual RoCEv2 and UET RC SEND/RECV and RDMA Write traffic from unchanged standard verbs binaries between distinct Pod IPs and Kind workers, plus runtime injection and complete cleanup; no GPU or collective claim |
-| `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, admission, two-node torchrun rendezvous, distinct placement, UIB preflight, CPU DDP result, and complete run/operator/cluster cleanup; no UIB traffic |
-| `make simulation-kuberay-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, roughly 10 GB of image storage, four CPU cores and 8 GiB for the Ray head; network access for uncached images, source archives, chart, and model revision | Required actual two-worker UIB verbs traffic, portable-runtime compatibility, KubeRay v1.6.2 admission and Ray 2.58.0 readiness, offline cached SmolLM2 inference, four-result correctness, retained evidence, and complete cleanup; the single-rank inference portion itself sends no UIB traffic |
+| `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, common `run/status/collect`, admission, two-node torchrun rendezvous, distinct placement, per-pod UIB preflight evidence, CPU DDP result, integrity manifest, and complete cleanup; no UIB traffic |
+| `make simulation-kuberay-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, roughly 10 GB of image storage, four CPU cores and 8 GiB for the Ray head; network access for uncached images, source archives, chart, and model revision | Required actual two-worker UIB verbs traffic, portable-runtime compatibility, KubeRay v1.6.2 admission, common `run/status/collect`, Ray 2.58.0 readiness, offline cached SmolLM2 inference, four-result correctness, retained integrity-checked evidence, and complete cleanup; the single-rank inference portion itself sends no UIB traffic |
 
-Run the twelve hardware-neutral gates:
+Run the hardware-neutral gates:
 
 ```text
 make simulation-cli-test
@@ -3653,6 +3717,7 @@ make simulation-kind-test
 make simulation-virtme-backend-test
 make simulation-libvirt-test
 make simulation-kubernetes-render-test
+make simulation-kubernetes-lifecycle-test
 make simulation-slurm-render-test
 make simulation-slurm-lifecycle-test
 make simulation-slurm-collect-test

@@ -19,8 +19,8 @@ assert config["backend"] == "transformers"
 assert config["model"]["revision"] == \
     "12fd25f77366fa6b3b4b768ec3050bf629380bac"
 assert job["apiVersion"] == "ray.io/v1"
-assert job["spec"]["shutdownAfterJobFinishes"] is True
-assert job["spec"]["ttlSecondsAfterFinished"] == 60
+assert job["spec"]["shutdownAfterJobFinishes"] is False
+assert "ttlSecondsAfterFinished" not in job["spec"]
 assert job["spec"]["entrypoint"].startswith("/bin/sh -c ")
 assert "inference serve" in job["spec"]["entrypoint"]
 assert "inference probe" in job["spec"]["entrypoint"]

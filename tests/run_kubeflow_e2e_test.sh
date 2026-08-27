@@ -17,7 +17,8 @@ kubectl_command=${KUBECTL_COMMAND:-kubectl}
 helm_command=${HELM_COMMAND:-helm}
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-kubeflow-e2e.XXXXXX")
 kubeconfig=$test_dir/kubeconfig
-manifest=$test_dir/workload.yaml
+state_dir=$test_dir/state
+bundle=$test_dir/bundle
 logs=$test_dir/training.log
 created=0
 
@@ -66,16 +67,19 @@ created=1
 	--create-namespace --set runtimes.defaultEnabled=true \
 	--wait --timeout "$operator_timeout"
 
-"$cli" render-workload --profile kind-kubernetes --request "$request" \
+"$cli" run --profile kind-kubernetes --request "$request" \
 	--run-id "$run_id" --allow-mutable-tags \
+	--state-dir "$state_dir" --kubeconfig "$kubeconfig" \
 	--set "workload.image=$training_image" \
-	--set "uib.bundle=$runtime_image" > "$manifest"
-"$kubectl_command" --kubeconfig "$kubeconfig" create namespace "$run_id" \
-	--save-config
-"$kubectl_command" --kubeconfig "$kubeconfig" apply -f "$manifest"
+	--set "uib.bundle=$runtime_image"
 "$kubectl_command" --kubeconfig "$kubeconfig" wait \
 	--namespace "$run_id" --for=condition=Complete \
 	"trainjob/$run_id" --timeout "$workload_timeout"
+"$cli" status --profile kind-kubernetes --run-id "$run_id" \
+	--state-dir "$state_dir" --kubeconfig "$kubeconfig" \
+	> "$test_dir/status.json"
+"$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
+	--kubeconfig "$kubeconfig" --output-dir "$bundle"
 
 "$kubectl_command" --kubeconfig "$kubeconfig" get pods \
 	--namespace "$run_id" --selector "uib.dev/run-id=$run_id" \
@@ -91,6 +95,23 @@ assert len(pods) == 2, f"expected two trainer pods, found {len(pods)}"
 assert all(pod["status"]["phase"] == "Succeeded" for pod in pods)
 nodes = {pod["spec"]["nodeName"] for pod in pods}
 assert len(nodes) == 2, f"trainer pods did not use distinct nodes: {nodes}"
+PY
+
+python3 - "$bundle/summary.json" "$bundle/preflight.json" <<'PY'
+import json
+import sys
+
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    summary = json.load(source)
+with open(sys.argv[2], encoding="utf-8") as source:
+    preflight = json.load(source)
+assert summary["scheduler"] == "kubernetes"
+assert summary["schedulerState"] == "COMPLETED"
+assert summary["uibPreflightVerified"] is True
+assert summary["promotionEligible"] is False
+assert preflight["expectedPods"] == 2
+assert preflight["passedPods"] == 2
 PY
 
 : > "$logs"

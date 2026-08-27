@@ -78,5 +78,8 @@ SLURM_TERMINAL_STATES = {
 }
 
 
+KUBERNETES_TERMINAL_STATES = {"COMPLETED", "FAILED"}
+
+
 class ConfigurationError(Exception):
     pass

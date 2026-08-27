@@ -20,8 +20,9 @@ helm_command=${HELM_COMMAND:-helm}
 results_root=${SIMULATION_KUBERAY_RESULTS:-$project_dir/simulation/.artifacts/results}
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-kuberay-e2e.XXXXXX")
 kubeconfig=$test_dir/kubeconfig
+state_dir=$test_dir/state
 evidence=$results_root/$name
-manifest=$evidence/workload.yaml
+bundle=$evidence/bundle
 logs=$evidence/inference.log
 created=0
 
@@ -133,13 +134,13 @@ created=1
 	--version "$operator_version" --namespace kuberay-system \
 	--create-namespace --wait --timeout "$operator_timeout"
 
-"$cli" render-workload --profile kind-kubernetes --request "$request" \
+"$cli" run --profile kind-kubernetes --request "$request" \
 	--run-id "$run_id" --allow-mutable-tags \
+	--state-dir "$state_dir" --kubeconfig "$kubeconfig" \
 	--set nodes.workers=1 \
 	--set "workload.image=$inference_image" \
 	--set "uib.bundle=$runtime_image" \
-	--set "storage.modelCacheImage=$cache_image" > "$manifest"
-"$kubectl_command" --kubeconfig "$kubeconfig" apply -f "$manifest"
+	--set "storage.modelCacheImage=$cache_image"
 
 phase=provisioning
 deadline=$(($(date +%s) + provisioning_timeout))
@@ -168,6 +169,11 @@ while :; do
 	sleep 2
 done
 
+"$cli" status --profile kind-kubernetes --run-id "$run_id" \
+	--state-dir "$state_dir" --kubeconfig "$kubeconfig" \
+	--set nodes.workers=1 > "$evidence/status.json"
+"$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
+	--kubeconfig "$kubeconfig" --output-dir "$bundle"
 collect_diagnostics
 
 python3 - "$logs" "$run_id" <<'PY'
@@ -192,6 +198,23 @@ assert result["requests"] == 4
 assert result["outputTokens"] == 16
 assert result["transport"]["uibEnabled"] is True
 print("KubeRay result: " + json.dumps(result, sort_keys=True))
+PY
+
+python3 - "$bundle/summary.json" "$bundle/preflight.json" <<'PY'
+import json
+import sys
+
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    summary = json.load(source)
+with open(sys.argv[2], encoding="utf-8") as source:
+    preflight = json.load(source)
+assert summary["scheduler"] == "kubernetes"
+assert summary["schedulerState"] == "COMPLETED"
+assert summary["uibPreflightVerified"] is True
+assert summary["promotionEligible"] is False
+assert preflight["expectedPods"] == preflight["passedPods"]
+assert preflight["expectedPods"] > 0
 PY
 
 "$kubectl_command" --kubeconfig "$kubeconfig" delete namespace "$run_id" \
