@@ -2,6 +2,7 @@
 
 CC      ?= cc
 AR      ?= ar
+MPICC   ?= mpicc
 PKG_CONFIG ?= pkg-config
 PREFIX  ?= /usr/local
 MANDIR  ?= $(PREFIX)/share/man
@@ -29,6 +30,7 @@ ifeq ($(strip $(URCU_LIBS)),)
 endif
 HAVE_IBVERBS ?= $(shell printf '#include <infiniband/verbs.h>\n' | \
 	$(CC) -x c -fsyntax-only - >/dev/null 2>&1 && echo 1 || echo 0)
+HAVE_MPI ?= $(shell command -v $(MPICC) >/dev/null 2>&1 && echo 1 || echo 0)
 ENABLE_PROVIDER ?= $(HAVE_IBVERBS)
 HAVE_VIRTME ?= $(shell command -v vng >/dev/null 2>&1 && echo 1 || echo 0)
 HAVE_IBV_TOOLS ?= $(shell command -v ibv_rc_pingpong >/dev/null 2>&1 && echo 1 || echo 0)
@@ -475,6 +477,7 @@ CONGESTION_PLUGIN := tests/congestion_plugin.so
 ZEROCOPY_TEST := tests/zerocopy_test
 PROVIDER_DMABUF_TEST := tests/provider_dmabuf_test
 PROVIDER_NCCL_ABI_TEST := tests/provider_nccl_abi_test
+MPI_COMPAT_TEST := tests/mpi_compat_test
 EXTERNAL_DMABUF_TEST := tests/external_dmabuf_test
 CQ_EVENT_TEST := tests/cq_event_test
 URING_ASYNC_TEST := tests/uring_async_test
@@ -504,6 +507,7 @@ DEPS += $(TEST_BIN).d $(FRAME_TEST).d $(DMABUF_TEST).d \
 
 DEPS += $(ZEROCOPY_TEST).d $(PROVIDER_DMABUF_TEST).d \
 	$(PROVIDER_NCCL_ABI_TEST).d $(EXTERNAL_DMABUF_TEST).d
+DEPS += $(MPI_COMPAT_TEST).d
 
 DEPS += $(CQ_EVENT_TEST).d $(URING_ASYNC_TEST).d $(PTR_RING_TEST).d
 DEPS += $(PROVIDER_CQ_EVENT_TEST).d
@@ -598,6 +602,11 @@ $(PROVIDER_WR_BENCH): tests/provider_wr_bench.c $(LIB_PROVIDER)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luibv \
 		$(IBVERBS_LIBS) -libverbs
 
+ifeq ($(HAVE_MPI),1)
+$(MPI_COMPAT_TEST): tests/mpi_compat_test.c
+	$(MPICC) $(CFLAGS) -o $@ $<
+endif
+
 $(PSN_INDEX_TEST): tests/psn_index_test.c $(LIB_SHARED)
 	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
@@ -660,10 +669,18 @@ rccl-test: all $(PROVIDER_CQ_EVENT_TEST) $(PROVIDER_NCCL_ABI_TEST)
 ucx-libfabric-test: all
 	./simulation/runtime/with-device-anchor \
 		./tests/run_ucx_libfabric_test.sh
+ifeq ($(HAVE_MPI),1)
+mpi-compat-test: all $(MPI_COMPAT_TEST)
+	./simulation/runtime/with-device-anchor \
+		./tests/run_mpi_compat_test.sh
+else
+mpi-compat-test:
+	@echo "SKIP $@: MPI development files are unavailable"
+endif
 else
 rxe-test-build rxe-test rxe-tools-test uib-tools-test uet-tools-test \
 provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test nccl-test \
-rccl-test ucx-libfabric-test:
+rccl-test ucx-libfabric-test mpi-compat-test:
 	@echo "SKIP $@: libibverbs development files are unavailable"
 endif
 
@@ -936,7 +953,7 @@ clean:
 		$(UET_TEST) $(NSCC_TEST) $(CONGESTION_TEST) \
 		$(CONGESTION_PLUGIN) $(ZEROCOPY_TEST) \
 		$(PROVIDER_DMABUF_TEST) $(PROVIDER_NCCL_ABI_TEST) \
-		$(EXTERNAL_DMABUF_TEST) \
+		$(EXTERNAL_DMABUF_TEST) $(MPI_COMPAT_TEST) \
 		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST) \
 		$(PTR_RING_TEST) \
 		$(REORDER_TEST) $(TRANSPORT_TEST) $(QP_SCALE_TEST) \
@@ -983,7 +1000,7 @@ clean:
 	benchmark-smoke ib-write-bw-test dummy-reorder-test \
 	scaling-benchmark scaling-test \
 	provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test \
-	nccl-test rccl-test ucx-libfabric-test \
+	nccl-test rccl-test ucx-libfabric-test mpi-compat-test \
 	gpu-dmabuf-test external-dmabuf-test remote-benchmark-test \
 	namespace-benchmark-test guest-test \
 	optional-features-test virtme-test configure-test test-all \

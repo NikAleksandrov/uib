@@ -447,6 +447,9 @@ actual two-process UCX tag, stream, UCP RMA, and UCP atomic traffic over
 compare-swap traffic over `rc_verbs`; plus libfabric untagged/tagged RDM,
 counter-completed RMA write/read, and 64-bit sum/compare-swap traffic over
 `verbs;ofi_rxd`, with payload checking and fallback rejection.
+`mpi-compat-test` additionally runs the same two-rank Open MPI binary over the
+validated UCX and libfabric paths, including point-to-point data integrity and
+an all-reduce.
 
 ## Verbs hooked by `libuibv.so`
 

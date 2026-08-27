@@ -857,7 +857,13 @@ clean rejection of EFA-specific queries. This is local CPU compatibility
 evidence. The UCP atomic tests use UCX protocol behavior over UD. Direct UCT
 RC active messages, RMA, fetch-add, and compare-swap are also validated.
 Direct libfabric DGRAM coverage, the blocking `fi_rdm_cntr_pingpong` variant,
-MPI integration, and physical-node repetition remain separate promotion gates.
+and physical-node repetition remain separate promotion gates.
+
+`make mpi-compat-test` runs an unchanged two-rank MPI program over both front
+ends. The UCX case pins Open MPI's `pml/ucx` to `ud_verbs/uib0:1`; the OFI case
+pins `pml/cm` plus `mtl/ofi` to `verbs;ofi_rxd`. Both exchange verified 1,
+2051, and 65536-byte messages and run an all-reduce. Provider logs must prove
+the requested UIB path and fail on a software fallback.
 
 Both front ends inspect `/dev/infiniband/uib0` before opening the user-space
 device. It must be a readable and writable character device. UIB maps
@@ -1303,10 +1309,10 @@ compatibility work.
    ordering, completion, timeout, and fallback regressions in disposable jobs
    without reserving scarce RDMA lab hardware. A final real-hardware gate is
    still required for provider-specific behavior and performance.
-3. **MPI, UCX, and libfabric compatibility testing.** The validated local UCX
-   tag and libfabric RxD/RDM paths broaden CPU compatibility coverage. MPI,
-   PGAS, RMA, atomics, connection-managed endpoints, and physical-node runs
-   remain distinct promotion targets.
+3. **MPI, UCX, and libfabric compatibility testing.** The validated local UCX,
+   libfabric RxD/RDM, and two-rank Open MPI paths broaden CPU compatibility
+   coverage. PGAS, connection-managed endpoints, and physical-node runs remain
+   distinct promotion targets.
 4. **Repeatable protocol, congestion, and failure experiments.** Compare
    RoCEv2 and Ultra Ethernet behavior with controlled latency, loss,
    reordering, ECN, multipath, and rank failure while preserving a normal
@@ -3776,6 +3782,7 @@ not the UIB data plane.
 | `make nccl-test` | NVIDIA GPU and driver, CUDA MPS, MPI, `nccl-tests` `all_reduce_perf`, `setpriv`, `unshare`, and `timeout` | Two local NCCL ranks use `libuibv.so`, the NCCL IB network, and UIB traffic; Socket fallback and data errors fail the test |
 | `make rccl-test` | At least two accessible AMD GPU ranks, ROCm/RCCL, MPI-enabled `rccl-tests`, `rocminfo`, `setpriv`, `unshare`, and `timeout` | Two or more local RCCL ranks select the IB network through UIB without Socket fallback |
 | `make ucx-libfabric-test` | UCX 1.18.1-compatible `ucx_info`/`ucx_perftest`, libfabric/fabtests 2.1.0-compatible tools, `timeout`, and permission to expose the character-device anchor | Actual two-process UCX tag, stream, UCP RMA, and UCP atomic traffic over `ud_verbs/uib0:1`; direct UCT active-message, write, read, fetch-add, and compare-swap traffic over `rc_verbs/uib0:1`; and data-checked libfabric untagged/tagged RDM, counter-completed RMA write/read, and 64-bit sum/compare-swap traffic over `verbs;ofi_rxd`. TCP, shared-memory, sockets, and native-verbs fallbacks fail the test |
+| `make mpi-compat-test` | Open MPI 5.0.7-compatible `mpicc`/`mpirun` built with `pml/ucx` and `mtl/ofi`, the UCX/libfabric requirements above, and permission to expose the character-device anchor | The same two-rank MPI binary exchanges 1, 2051, and 65536-byte verified messages and runs an all-reduce through UIB, once through `pml/ucx` and once through `mtl/ofi`; fallback fails the test |
 
 NCCL options:
 
@@ -3819,6 +3826,15 @@ UCX/libfabric options:
 | `COMM_TEST_LIBFABRIC_ATOMIC_OPS` | `sum cswap` | Space-separated `fi_rdm_atomic` operations; empty disables this matrix |
 | `COMM_TEST_LIBFABRIC_ATOMIC_DATATYPE` | `uint64` | Fabtests datatype shared by the configured atomic operations |
 
+MPI options:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MPIEXEC` | `mpirun` | MPI launcher executable |
+| `MPI_TEST_FRONTENDS` | `ucx ofi` | Space-separated matrix; valid entries are `ucx` and `ofi`; empty is rejected because it would test no UIB path |
+| `MPI_TEST_TIMEOUT` | `45` | Timeout in seconds for each two-rank run |
+| `MPI_TEST_BIND_PORT` | `19820` | UIB UDP bind port shared by rank-specific loopback addresses |
+
 Examples:
 
 ```text
@@ -3837,13 +3853,15 @@ COMM_TEST_LIBFABRIC_TESTS= \
 COMM_TEST_LIBFABRIC_RMA_OPS=write \
 COMM_TEST_LIBFABRIC_ATOMIC_OPS=cswap \
 make ucx-libfabric-test
+
+MPI_TEST_FRONTENDS=ucx MPI_TEST_TIMEOUT=60 make mpi-compat-test
 ```
 
 `nccl-test` intentionally uses two ranks on one GPU through MPS. That is real
 NCCL/UIB traffic, but not multi-GPU or multi-node validation. `rccl-test`
 requires AMD hardware and was not run on the NVIDIA-only development host.
-The UCX/libfabric gate passed locally; MPI integration and physical-node
-repetition remain separate promotion work.
+The UCX/libfabric and MPI gates passed locally; physical-node repetition
+remains separate promotion work.
 
 ### Training tests
 
@@ -3995,9 +4013,10 @@ Cleanup must remain safe after interruption during every lifecycle stage.
   active-message, RDMA-write, RDMA-read, fetch-add, and compare-swap tests over
   `rc_verbs`; and libfabric untagged/tagged RDM, counter-completed RMA
   write/read, and 64-bit sum/compare-swap traffic over `verbs;ofi_rxd` passed
-  the local CPU gate. This does not claim direct DGRAM, MSG/RxM, MPI
-  integration, or physical-node qualification. RCCL remains unvalidated until
-  AMD hardware is available.
+  the local CPU gate. Open MPI also passed verified point-to-point and
+  collective traffic through each front end. This does not claim direct
+  DGRAM, MSG/RxM, or physical-node qualification. RCCL remains unvalidated
+  until AMD hardware is available.
 - The common congestion-control registry is implemented for RoCEv2 and UET.
   The local matrix covers NSCC, `none`, a registered plug-in, constrained
   pending-send admission, deterministic retry loss, and named netem profiles.

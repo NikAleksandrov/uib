@@ -44,6 +44,16 @@
         "validatedAtomicOps": ["sum", "cswap"],
         "validatedAtomicDatatype": "uint64",
         "forbiddenFallbacks": ["tcp", "sockets", "native-libibverbs"]
+      },
+      "mpi": {
+        "status": "validated-local-two-rank-over-ucx-and-libfabric",
+        "testTarget": "make mpi-compat-test",
+        "validatedImplementation": "Open MPI",
+        "validatedVersion": "5.0.7",
+        "validatedFrontends": ["pml/ucx", "pml/cm+mtl/ofi"],
+        "validatedMessageSizes": [1, 2051, 65536],
+        "validatedOperations": ["sendrecv", "allreduce"],
+        "forbiddenFallbacks": ["ucx-tcp", "ucx-shared-memory", "ofi-tcp", "ofi-sockets", "native-libibverbs"]
       }
     },
     "congestionControl": {
@@ -538,6 +548,7 @@
     "inferenceOverUib": "not-validated",
     "ucxOverUib": "validated-local-ud-ucp-and-rc-uct-matrices",
     "libfabricOverUib": "validated-local-verbs-rxd-message-rma-and-atomic",
+    "mpiOverUib": "validated-local-two-rank-over-ucx-and-libfabric",
     "rcclOverUib": "not-validated-amd-hardware-required",
     "rocev2PluggableCongestion": "validated-local-none-and-registered; nscc-experimental-only",
     "collectives": {
