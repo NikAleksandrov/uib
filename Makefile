@@ -324,6 +324,9 @@ simulation-cli-test:
 simulation-netem-test:
 	./tests/run_netem_config_test.sh
 
+simulation-fault-schedule-test:
+	./tests/run_fault_schedule_test.sh
+
 simulation-kind-test:
 	./tests/run_kind_backend_test.sh
 
@@ -986,7 +989,8 @@ clean:
 	inference-image inference-smoke-test inference-gpu-test \
 	diagnostic-sources diagnostic-image diagnostic-smoke-test \
 	diagnostic-uib-preflight-test diagnostic-gpu-test \
-	simulation-cli-test simulation-netem-test simulation-congestion-test \
+	simulation-cli-test simulation-netem-test simulation-fault-schedule-test \
+	simulation-congestion-test \
 	simulation-kind-test simulation-kind-e2e-test \
 	simulation-virtme-backend-test \
 	simulation-virtme-kubernetes-e2e-test \

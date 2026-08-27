@@ -471,6 +471,25 @@ faults:
     rank: 7
 ```
 
+Time-relative network faults use the shared endpoint scheduler. Run one
+scheduler in each affected guest, pod network namespace, or host-tap namespace;
+the logical target selects that endpoint and `--interface` names its local
+device:
+
+```text
+simulation/faults/network-schedule /tmp/uib-config.json \
+  --target worker-2/data --interface eth1 \
+  --output /results/faults-worker-2.jsonl &
+```
+
+The scheduler composes overlapping delay, random-loss, and link-down windows,
+then restores the resolved base network condition after each recovery. SIGINT,
+SIGTERM, and command failures also trigger restoration and a final `cleanup`
+record. The output path must be new. Every JSONL transition contains its source
+index, planned and actual monotonic offset, active faults, exact command result,
+and effective shaping. Event-relative faults and `terminate-rank` require the
+scheduler-specific executor because they depend on Kubernetes or Slurm state.
+
 ## Configuration syntax and values
 
 Configuration is merged in this order, with later values winning:
@@ -3466,6 +3485,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 |---|---|---|
 | `make simulation-cli-test` | Python 3, PyYAML, and `jsonschema` | Every profile, named layer replacement, schema and semantic rejection, typed `--set`, and the read-only `doctor` report |
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in network condition renders to the expected `tc netem` command; unsafe interfaces and invalid combinations are rejected; it does not modify a qdisc |
+| `make simulation-fault-schedule-test` | Python 3, `jq`, and the CLI requirements; no network privilege | Overlapping delay, loss, and link-down transitions, exact JSONL evidence, base-condition recovery, missing targets, and signal-interruption cleanup through controlled standard-command adapters |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | RoCEv2 and UET SEND and RDMA read/write complete with actual netem conditions and built-in or plugin congestion control; the UET cases also cover atomics |
 | `make rocev2-ecn-test` | Build dependencies and permission to open loopback UDP sockets | ECT(0) traffic produces an ACK but no CNP, while a valid CE-marked RoCEv2 packet produces exactly one ACK and one CNP; both io_uring multishot and batched receive metadata paths are tested |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
