@@ -201,9 +201,12 @@ def command_load_cache(args):
     from .images import stage_huggingface_cache
 
     config = resolve(args)
-    if config["infrastructure"]["provider"] != "libvirt":
+    provider = config["infrastructure"]["provider"]
+    if (provider not in {"libvirt", "virtme"} or
+            config["cluster"]["manager"] != "slurm"):
         raise ConfigurationError(
-            "load-cache is currently implemented only for libvirt")
+            "load-cache is currently implemented only for libvirt and "
+            "virtme Slurm")
     print(stage_huggingface_cache(args, pathlib.Path(args.source)))
     return 0
 

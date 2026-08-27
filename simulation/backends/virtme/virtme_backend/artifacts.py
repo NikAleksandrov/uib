@@ -12,7 +12,7 @@ import urllib.request
 
 
 def configure_slurm_storage(config, topology_value, state):
-    from .core import DEFAULT_IMAGE_CACHE, DEFAULT_MODEL_CACHE, DEFAULT_RUNTIME, VirtmeError
+    from .core import DEFAULT_IMAGE_CACHE, DEFAULT_MODEL_CACHE, DEFAULT_RUNTIME, VirtmeError, quantity_mib
 
     runtime = pathlib.Path(os.environ.get(
         "UIB_RUNTIME_SOURCE", str(DEFAULT_RUNTIME))).expanduser().resolve()
@@ -32,10 +32,12 @@ def configure_slurm_storage(config, topology_value, state):
     image_cache = pathlib.Path(os.environ.get(
         "SLURM_IMAGE_CACHE", str(DEFAULT_IMAGE_CACHE))).expanduser().resolve()
     results = state / "shared" / "results"
+    enroot = state / "node-storage" / "enroot"
     try:
         image_cache.mkdir(parents=True, exist_ok=True)
         model_cache.mkdir(parents=True, exist_ok=True)
         results.mkdir(parents=True)
+        enroot.mkdir(parents=True)
     except OSError as error:
         raise VirtmeError(f"cannot prepare virtme shared storage: {error}") \
             from error
@@ -46,7 +48,7 @@ def configure_slurm_storage(config, topology_value, state):
             "mode": "read-write",
         },
         "modelCache": {
-            "guest": config["storage"]["modelCachePath"],
+            "guest": config["storage"]["modelCachePath"] + "/huggingface",
             "host": str(model_cache),
             "mode": "read-write",
         },
@@ -62,12 +64,44 @@ def configure_slurm_storage(config, topology_value, state):
             "host": str(runtime),
             "mode": "read-only",
         }
-    for guest in topology_value["guests"].values():
+    enroot_images = {}
+    topology_value["nodeStorage"] = {
+        "enroot": {
+            "guest": "/var/lib/uib/enroot",
+            "device": "/dev/vda",
+            "filesystem": "ext4",
+            "images": enroot_images,
+            "mode": "node-local",
+            "size": config["nodes"]["disk"],
+        },
+    }
+    for name, guest in topology_value["guests"].items():
         for mapping in mappings.values():
             option = "--rodir" if mapping["mode"] == "read-only" else "--rwdir"
             guest["command"].extend([
                 option, f"{mapping['guest']}={mapping['host']}",
             ])
+        if guest["role"] != "worker":
+            continue
+        enroot_image = enroot / f"{name}.ext4"
+        enroot_images[name] = str(enroot_image)
+        try:
+            with enroot_image.open("xb") as output:
+                output.truncate(quantity_mib(config["nodes"]["disk"]) * 1024 * 1024)
+        except OSError as error:
+            raise VirtmeError(
+                f"cannot prepare virtme Enroot storage: {error}") from error
+        try:
+            formatted = subprocess.run([
+                "/sbin/mkfs.ext4", "-q", "-F", "-m", "0",
+                "-L", f"uib-{name}", str(enroot_image),
+            ], check=False)
+        except OSError as error:
+            raise VirtmeError(f"cannot invoke mkfs.ext4: {error}") from error
+        if formatted.returncode:
+            raise VirtmeError(
+                f"cannot format virtme Enroot storage: {enroot_image}")
+        guest["command"].extend(["--disk", str(enroot_image)])
     topology_value["sharedStorage"] = mappings
     return runtime
 

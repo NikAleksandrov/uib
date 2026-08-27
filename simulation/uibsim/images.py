@@ -373,11 +373,17 @@ def create_cache_archive(source):
 
 def run_cache_helper(args, mode, digest, **kwargs):
     from .core import ConfigurationError
-    from .scheduler import run_scheduler
+    from .scheduler import run_scheduler, scheduler_remote
 
+    remote = scheduler_remote(args)
+    if remote and remote["provider"] == "virtme":
+        program = "/run/uib-stage-huggingface-cache"
+    else:
+        program = "/usr/local/libexec/uib-stage-huggingface-cache"
+    arguments = [mode, digest]
     result = run_scheduler(
-        args, "", "/usr/local/libexec/uib-stage-huggingface-cache",
-        [mode, digest], text=True, capture_output=True, **kwargs)
+        args, "", program, arguments, text=True, capture_output=True,
+        **kwargs)
     remote_path = "/var/cache/uib/models/huggingface"
     if result.returncode == 0 and result.stdout.strip() != remote_path:
         raise ConfigurationError(
@@ -446,12 +452,37 @@ def record_slurm_cache_inventory(source, digest, size):
 def stage_huggingface_cache(args, source):
     from .core import ConfigurationError
     from .scheduler import scheduler_remote
+    from .state import read_json, state_path
 
-    if not scheduler_remote(args):
-        raise ConfigurationError("libvirt infrastructure is not ready")
+    remote = scheduler_remote(args)
+    if not remote:
+        raise ConfigurationError("remote Slurm infrastructure is not ready")
     source = validate_huggingface_cache(source)
     archive, digest = create_cache_archive(source)
     try:
+        if remote["provider"] == "virtme":
+            topology = read_json(
+                state_path(args) / "infrastructure" / "topology.json",
+                "virtme topology")
+            try:
+                mapping = topology["sharedStorage"]["modelCache"]
+                mounted = pathlib.Path(mapping["host"]).resolve(strict=True)
+                remote_path = mapping["guest"]
+            except (KeyError, OSError, TypeError) as error:
+                raise ConfigurationError(
+                    "invalid virtme model-cache mapping") from error
+            if mounted != source or remote_path != "/var/cache/uib/models/huggingface":
+                raise ConfigurationError(
+                    "virtme cache source differs from VIRTME_MODEL_CACHE; "
+                    "select the source before up")
+            try:
+                size = archive.stat().st_size
+            except OSError as error:
+                raise ConfigurationError(
+                    f"cannot inspect Hugging Face cache archive: {error}") from error
+            record_slurm_cache_inventory(source, digest, size)
+            record_staged_cache(args, source, digest, size, remote_path)
+            return remote_path
         checked, remote_path = run_cache_helper(args, "check", digest)
         if checked.returncode == 3:
             try:

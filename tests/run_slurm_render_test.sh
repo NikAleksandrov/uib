@@ -80,6 +80,7 @@ assert f"{root}/cache:/cache" in batch
 assert "/opt/uib/lib/libuibv.so" in batch
 assert "LD_LIBRARY_PATH=/opt/uib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" in batch
 assert "NCCL_IB_HCA='=uib0'" in batch
+assert "GLOO_SOCKET_IFNAME=eth1" in batch
 assert "UIB_BIND_PORT=$((SLURM_UIB_BIND_PORT_BASE + LOCAL_RANK))" in batch
 assert 'UIB_BIND_IP=$(/opt/uib/bin/ip -o -4 addr show dev "$SLURM_UIB_DATA_INTERFACE"' in batch
 assert "/opt/uib/bin/uib-preflight --library-only" in batch
@@ -108,6 +109,10 @@ if [ "$1" = show ] && [ "$2" = job ]; then
 fi
 if [ "$1" = show ] && [ "$2" = hostnames ]; then
 	printf '%s\n' node-a node-b
+	exit 0
+fi
+if [ "$1" = show ] && [ "$2" = node ]; then
+	echo "NodeName=$3 NodeAddr=198.51.100.21 State=ALLOCATED"
 	exit 0
 fi
 exit 2

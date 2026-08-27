@@ -27,13 +27,13 @@ def slurm_environment(runtime):
         "ENROOT_SYSCONF_PATH=/run/uib-enroot/etc",
         "ENROOT_RUNTIME_PATH=/run/uib-enroot/runtime",
         "ENROOT_CACHE_PATH=/run/uib-enroot/cache",
-        "ENROOT_DATA_PATH=/run/uib-enroot/data",
+        "ENROOT_DATA_PATH=/var/lib/uib/enroot/data",
         "ENROOT_CONFIG_PATH=/run/uib-enroot/config",
         "ENROOT_ALLOW_SUPERUSER=yes",
         "ENROOT_LOGIN_SHELL=no",
         "XDG_CACHE_HOME=/run/uib-enroot/cache-home",
         "XDG_CONFIG_HOME=/run/uib-enroot/config-home",
-        "XDG_DATA_HOME=/run/uib-enroot/data-home",
+        "XDG_DATA_HOME=/var/lib/uib/enroot/data-home",
         "XDG_RUNTIME_DIR=/run/uib-enroot/runtime-home",
     ]
 
@@ -217,12 +217,18 @@ def provision_slurm(config, topology_value, ssh, key, runtime, smoke_image,
         image_helper = (
             SIMULATION / "adapters/slurm/stage-image").read_text(
                 encoding="utf-8")
+        cache_helper = (
+            SIMULATION / "adapters/slurm/stage-huggingface-cache").read_text(
+                encoding="utf-8")
     except OSError as error:
         raise VirtmeError(
-            f"cannot read the Slurm image helper: {error}") from error
+            f"cannot read a Slurm staging helper: {error}") from error
     remote_write(
         ssh, key, controller, "/run/uib-stage-image", image_helper,
         mode="0755")
+    remote_write(
+        ssh, key, controller, "/run/uib-stage-huggingface-cache",
+        cache_helper, mode="0755")
     prepare = (
         "set -eu; install -d -m 0700 /run/uib-slurm; "
         "install -d -m 0755 /run/uib-slurm/slurmctld "
@@ -232,9 +238,12 @@ def provision_slurm(config, topology_value, ssh, key, runtime, smoke_image,
         "/run/uib-enroot/runtime /run/uib-enroot/cache-home "
         "/run/uib-enroot/config-home /run/uib-enroot/data-home "
         "/run/uib-enroot/runtime-home; "
+        "install -d -m 1777 /run/uib-enroot/tmp; "
         "install -d -m 0755 /run/uib-enroot/etc "
         "/run/uib-enroot/etc/hooks.d /run/uib-enroot/etc/mounts.d "
         "/run/uib-enroot/etc/environ.d; "
+        f"cp -a {shlex.quote(str(runtime))}/etc/enroot/. "
+        "/run/uib-enroot/etc/; "
         "if test -e /usr/lib/enroot; then "
         f"test \"$(readlink -f /usr/lib/enroot)\" = {shlex.quote(str(runtime))}"
         "/usr/lib/enroot; else "
@@ -243,7 +252,14 @@ def provision_slurm(config, topology_value, ssh, key, runtime, smoke_image,
         "test \"$(readlink -f /etc/enroot)\" = /run/uib-enroot/etc; else "
         "ln -s /run/uib-enroot/etc /etc/enroot; fi")
     for guest in guests.values():
-        remote_command(ssh, key, guest, prepare)
+        command = prepare
+        if guest["role"] == "worker":
+            command = (
+                "set -eu; install -d -m 0700 /var/lib/uib/enroot; "
+                "mount -t ext4 /dev/vda /var/lib/uib/enroot; "
+                "install -d -m 0700 /var/lib/uib/enroot/data "
+                "/var/lib/uib/enroot/data-home; " + prepare)
+        remote_command(ssh, key, guest, command)
 
     key_path = state / "munge.key"
     try:

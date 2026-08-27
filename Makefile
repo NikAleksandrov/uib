@@ -338,6 +338,20 @@ simulation-virtme-netem-e2e-test: runtime-bundle-portable-test
 	VIRTME_NETWORK_CONDITION=datacenter \
 		./tests/run_virtme_slurm_e2e_test.sh
 
+simulation-virtme-training-e2e-test: runtime-bundle-portable-test
+	@$(TRAINING_CONTAINER_ENGINE) image inspect $(TRAINING_IMAGE) >/dev/null 2>&1 || \
+		$(MAKE) training-image
+	VIRTME_SLURM_WORKLOAD=training \
+	VIRTME_SLURM_IMAGE='$(TRAINING_IMAGE)' \
+	CONTAINER_ENGINE_COMMAND='$(TRAINING_CONTAINER_ENGINE)' \
+		./tests/run_virtme_slurm_e2e_test.sh
+
+simulation-virtme-inference-e2e-test: runtime-bundle-portable-test inference-smoke-test
+	VIRTME_SLURM_WORKLOAD=inference \
+	VIRTME_SLURM_IMAGE='$(INFERENCE_IMAGE)' \
+	CONTAINER_ENGINE_COMMAND='$(INFERENCE_CONTAINER_ENGINE)' \
+		./tests/run_virtme_slurm_e2e_test.sh
+
 simulation-kind-e2e-test:
 	./tests/run_kind_e2e_test.sh
 
@@ -946,6 +960,8 @@ clean:
 	simulation-virtme-backend-test \
 	simulation-virtme-kubernetes-e2e-test \
 	simulation-virtme-slurm-e2e-test \
+	simulation-virtme-training-e2e-test \
+	simulation-virtme-inference-e2e-test \
 	simulation-virtme-netem-e2e-test \
 	simulation-kubernetes-render-test simulation-slurm-render-test \
 	simulation-slurm-lifecycle-test simulation-slurm-collect-test \

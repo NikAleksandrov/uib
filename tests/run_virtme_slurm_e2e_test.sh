@@ -6,9 +6,37 @@ project_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cli=$project_dir/simulation/bin/uib-sim
 run_id=uib-vslurm-$$
 state_dir=${SIMULATION_STATE_DIR:-$project_dir/simulation/.artifacts/runs}
-profile_args='--set nodes.cpu=2 --set nodes.memory=2Gi'
-result_dir=$state_dir/$run_id-results
-job_timeout=${VIRTME_SLURM_JOB_WAIT:-120}
+workload=${VIRTME_SLURM_WORKLOAD:-lifecycle}
+case $workload in
+lifecycle)
+	request=$project_dir/simulation/requests/slurm-lifecycle-smoke.yaml
+	image='docker.io/library/ubuntu@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc'
+	memory=${VIRTME_SLURM_MEMORY:-2Gi}
+	disk=${VIRTME_SLURM_DISK:-32Gi}
+	job_timeout=${VIRTME_SLURM_JOB_WAIT:-120}
+	;;
+training)
+	request=$project_dir/simulation/requests/training-smoke.yaml
+	image=${VIRTME_SLURM_IMAGE:-uib-training:test}
+	memory=${VIRTME_SLURM_MEMORY:-4Gi}
+	disk=${VIRTME_SLURM_DISK:-32Gi}
+	job_timeout=${VIRTME_SLURM_JOB_WAIT:-900}
+	;;
+inference)
+	request=$project_dir/simulation/requests/inference-smoke.yaml
+	image=${VIRTME_SLURM_IMAGE:-uib-inference:test}
+	cache_source=${VIRTME_SLURM_CACHE_SOURCE:-$project_dir/simulation/.artifacts/huggingface}
+	memory=${VIRTME_SLURM_MEMORY:-8Gi}
+	disk=${VIRTME_SLURM_DISK:-64Gi}
+	job_timeout=${VIRTME_SLURM_JOB_WAIT:-1200}
+	;;
+*)
+	echo "VIRTME_SLURM_WORKLOAD must be lifecycle, training, or inference" >&2
+	exit 2
+	;;
+esac
+profile_args="--set nodes.cpu=2 --set nodes.memory=$memory --set nodes.disk=$disk"
+result_dir=${VIRTME_SLURM_RESULT_DIR:-$state_dir/$run_id-results}
 case $job_timeout in
 ''|*[!0-9]*)
 	echo "VIRTME_SLURM_JOB_WAIT must be a positive integer" >&2
@@ -50,7 +78,7 @@ created=true
 "$cli" status --profile virtme-slurm --run-id "$run_id" \
 	--state-dir "$state_dir" $profile_args > "$state_dir/$run_id/status.json"
 
-python3 - "$state_dir/$run_id" "$network_condition" <<'PY'
+python3 - "$state_dir/$run_id" "$network_condition" "$disk" <<'PY'
 import json
 import os
 import re
@@ -89,12 +117,20 @@ assert os.path.isfile(os.path.join(
 assert storage["images"]["guest"] == "/var/cache/uib/images"
 assert storage["images"]["mode"] == "read-write"
 assert os.path.isdir(storage["images"]["host"])
-assert storage["modelCache"]["guest"] == "/var/cache/uib/models"
+assert storage["modelCache"]["guest"] == "/var/cache/uib/models/huggingface"
 assert storage["modelCache"]["mode"] == "read-write"
 assert os.path.isdir(storage["modelCache"]["host"])
 assert storage["results"]["guest"] == "/var/lib/uib/results"
 assert storage["results"]["mode"] == "read-write"
 assert os.path.isdir(storage["results"]["host"])
+enroot = topology["nodeStorage"]["enroot"]
+assert enroot["guest"] == "/var/lib/uib/enroot"
+assert enroot["device"] == "/dev/vda"
+assert enroot["filesystem"] == "ext4"
+assert enroot["mode"] == "node-local"
+assert enroot["size"] == sys.argv[3]
+assert sorted(enroot["images"]) == ["worker-01", "worker-02"]
+assert all(os.path.isfile(path) for path in enroot["images"].values())
 with open(os.path.join(infrastructure, "network.json"),
           encoding="utf-8") as source:
     network = json.load(source)
@@ -121,11 +157,16 @@ with open(os.path.join(infrastructure, "inventory.json"),
 assert len(inventory["all"]["children"]["slurm_workers"]["hosts"]) == 2
 PY
 
-image='docker.io/library/ubuntu@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc'
+if test "$workload" = inference; then
+	# shellcheck disable=SC2086
+	"$cli" load-cache --profile virtme-slurm --run-id "$run_id" \
+		--state-dir "$state_dir" --source "$cache_source" \
+		$profile_args >/dev/null
+fi
 # shellcheck disable=SC2086
 staged_image=$("$cli" load-image --profile virtme-slurm \
 	--run-id "$run_id" --state-dir "$state_dir" --image "$image" \
-	$profile_args)
+	--allow-mutable-tags $profile_args)
 case $staged_image in
 /var/cache/uib/images/*.sqsh) ;;
 *)
@@ -136,7 +177,7 @@ esac
 
 # shellcheck disable=SC2086
 job_id=$("$cli" run --profile virtme-slurm \
-	--request simulation/requests/slurm-lifecycle-smoke.yaml \
+	--request "$request" \
 	--run-id "$run_id" --state-dir "$state_dir" --allow-mutable-tags \
 	--set "workload.image=$staged_image" $profile_args)
 
@@ -167,6 +208,11 @@ while test "$attempt" -lt $((job_timeout / 2)); do
 	FAILED|CANCELLED|TIMEOUT|NODE_FAIL|OUT_OF_MEMORY|PREEMPTED|BOOT_FAIL|DEADLINE)
 		echo "virtme Slurm job $job_id ended in $job_state" >&2
 		cat "$status_file" >&2
+		if "$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
+			--output-dir "$result_dir" >/dev/null 2>&1; then
+			find "$result_dir/logs" -maxdepth 1 -type f -print \
+				-exec tail -100 {} \; >&2
+		fi
 		exit 1
 		;;
 	esac
@@ -176,6 +222,11 @@ done
 if test "$job_state" != COMPLETED; then
 	echo "virtme Slurm job $job_id did not complete in $job_timeout seconds" >&2
 	cat "$status_file" >&2
+	if "$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
+		--output-dir "$result_dir" >/dev/null 2>&1; then
+		find "$result_dir/logs" -maxdepth 1 -type f -print \
+			-exec tail -100 {} \; >&2
+	fi
 	exit 1
 fi
 
@@ -183,7 +234,7 @@ reported=$("$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
 	--output-dir "$result_dir")
 test "$reported" = "$result_dir"
 
-python3 - "$result_dir" "$run_id" "$job_id" <<'PY'
+python3 - "$result_dir" "$run_id" "$job_id" "$workload" <<'PY'
 import json
 import pathlib
 import sys
@@ -208,12 +259,53 @@ with (root / "network-emulation.json").open(encoding="utf-8") as source:
     network = json.load(source)
 assert network["runId"] == sys.argv[2]
 assert len(network["endpoints"]) == 2
-for rank in range(2):
-    with (root / "workload" / f"rank-{rank}.json").open(
+with (root / "topology.json").open(encoding="utf-8") as source:
+    topology = json.load(source)
+expected_nodes = 1 if sys.argv[4] == "inference" else 2
+assert topology["requestedNodes"] == expected_nodes
+assert len(topology["allocatedNodes"]) == expected_nodes
+if sys.argv[4] == "lifecycle":
+    for rank in range(2):
+        with (root / "workload" / f"rank-{rank}.json").open(
+                encoding="utf-8") as source:
+            result = json.load(source)
+        assert result == {"rank": rank, "worldSize": 2}
+elif sys.argv[4] == "training":
+    with (root / "workload" / sys.argv[2] / "result.json").open(
             encoding="utf-8") as source:
         result = json.load(source)
-    assert result == {"rank": rank, "worldSize": 2}
+    assert result["status"] == "passed"
+    assert result["runId"] == sys.argv[2]
+    assert result["worldSize"] == 2
+    assert result["device"] == "cpu"
+    assert result["strategy"] == "ddp"
+    assert result["completedSteps"] == 4
+    assert result["transport"]["distributedBackend"] == "gloo"
+    assert result["transport"]["uibEnabled"] is True
+    assert result["stack"]["ncclLibrary"] == "2.30.4"
+else:
+    with (root / "workload" / sys.argv[2] / "result.json").open(
+            encoding="utf-8") as source:
+        result = json.load(source)
+    assert result["status"] == "passed"
+    assert result["runId"] == sys.argv[2]
+    assert result["backend"] == "transformers"
+    assert result["requests"] == 4
+    assert result["outputTokens"] == 16
+    assert result["transport"]["uibEnabled"] is True
+    assert result["stack"]["vllm"] == "0.27.1"
+    assert result["stack"]["ray"] == "2.58.0"
+    assert result["stack"]["ncclLibrary"] == "2.30.7"
+    with (root / "workload" / sys.argv[2] / "request-trace.json").open(
+            encoding="utf-8") as source:
+        trace = json.load(source)
+    assert len(trace["requests"]) == 4
+    with (root / "staged-caches.json").open(encoding="utf-8") as source:
+        staged_cache = json.load(source)
+    assert staged_cache["runId"] == sys.argv[2]
 PY
+
+grep -F 'UIB runtime preflight: PASS' "$result_dir/logs/batch.out" >/dev/null
 
 cleanup
 created=false
@@ -237,6 +329,8 @@ for process in topology["ownership"]["processes"]:
         continue
     fields = value.rpartition(") ")[2].split()
     assert len(fields) <= 19 or fields[19] != process["startTime"]
+for image in topology["nodeStorage"]["enroot"]["images"].values():
+    assert not os.path.exists(image)
 PY
 
-echo "virtme Slurm end-to-end test: PASS"
+echo "virtme Slurm $workload end-to-end test: PASS"

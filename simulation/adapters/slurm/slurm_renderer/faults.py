@@ -3,6 +3,7 @@
 def task_wrapper(uib_enabled):
 	lines = [
 		"set -eu",
+		"export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"export RANK=${SLURM_PROCID:-0}",
 		"export WORLD_SIZE=${SLURM_NTASKS:-1}",
 		"export LOCAL_RANK=${SLURM_LOCALID:-0}",

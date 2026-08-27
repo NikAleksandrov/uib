@@ -5,6 +5,30 @@ import pathlib
 import subprocess
 
 
+def delete_node_storage(topology_value, state):
+    from .core import VirtmeError
+
+    storage = topology_value.get("nodeStorage", {}).get("enroot")
+    if storage is None:
+        return
+    images = storage.get("images")
+    if not isinstance(images, dict):
+        raise VirtmeError("virtme topology has invalid node storage")
+    root = (state / "node-storage" / "enroot").resolve()
+    for value in images.values():
+        if not isinstance(value, str):
+            raise VirtmeError("virtme topology has invalid node storage path")
+        image = pathlib.Path(value)
+        try:
+            if image.resolve().parent != root or image.suffix != ".ext4":
+                raise VirtmeError(
+                    f"virtme node storage escapes its owned root: {image}")
+            image.unlink(missing_ok=True)
+        except OSError as error:
+            raise VirtmeError(
+                f"cannot remove virtme node storage {image}: {error}") from error
+
+
 def load_ledger(state, run_id):
     from .core import VirtmeError, read_json
 
@@ -152,6 +176,7 @@ def command_up(args):
             try:
                 if network_created:
                     delete_network(topology_value["network"])
+                delete_node_storage(topology_value, state)
                 ledger["cleanup"] = "destroyed"
             except VirtmeError as cleanup_error:
                 ledger["cleanup"] = "failed"
@@ -249,5 +274,6 @@ def command_down(args):
     for process in reversed(processes):
         terminate_process(process)
     delete_network(topology_value["network"])
+    delete_node_storage(topology_value, state)
     ledger["state"] = "destroyed"
     write_json(ledger_path, ledger)

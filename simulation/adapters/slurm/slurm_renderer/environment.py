@@ -6,6 +6,7 @@ def environment(config):
 	uib = config["uib"]
 	collective = config["communication"]["nccl"]
 	values = {
+		"GLOO_SOCKET_IFNAME": config["network"]["dataInterface"],
 		"HF_HOME": "/cache/huggingface",
 		"MASTER_PORT": string_value(config["slurm"].get("rendezvousPort", 29500)),
 		"NCCL_DEBUG": "INFO",
@@ -14,14 +15,15 @@ def environment(config):
 		"NCCL_IB_HCA": collective["hca"],
 		"NCCL_NET": collective["network"],
 	}
-	protected_nccl = {
+	protected_environment = {
+		"GLOO_SOCKET_IFNAME",
 		"NCCL_IBVERBS_LIB",
 		"NCCL_IB_DISABLE",
 		"NCCL_IB_HCA",
 		"NCCL_NET",
 	}
 	for name, value in collective.get("environment", {}).items():
-		if name in protected_nccl:
+		if name in protected_environment:
 			raise RenderError(
 				f"{name} is controlled by the resolved communication layer"
 			)

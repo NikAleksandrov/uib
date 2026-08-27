@@ -84,7 +84,7 @@
         }
       },
       "virtme": {
-        "status": "rootless-multi-guest-kubernetes-validated",
+        "status": "rootless-multi-guest-kubernetes-and-slurm-validated",
         "cliVersion": "1.35",
         "singleGuestTestTarget": "make virtme-test",
         "multiGuestTestTarget": "make simulation-virtme-backend-test",
@@ -92,6 +92,14 @@
         "rootlessDataPlane": "validated-two-guest-qemu-socket-ping",
         "kubernetes": "validated-two-guest-k3s-lifecycle",
         "kubernetesTestTarget": "make simulation-virtme-kubernetes-e2e-test",
+        "slurm": "validated-controller-two-worker-lifecycle-and-cpu-training",
+        "slurmTestTargets": [
+          "make simulation-virtme-slurm-e2e-test",
+          "make simulation-virtme-netem-e2e-test",
+          "make simulation-virtme-training-e2e-test"
+        ],
+        "slurmInferenceTestTarget": "make simulation-virtme-inference-e2e-test",
+        "slurmInferenceStatus": "implemented-local-resource-gate-pending",
         "bridgeDataPlane": "rendered-and-mocked-lifecycle",
         "intendedValidationLevel": "L0"
       },
@@ -295,11 +303,15 @@
       "networkEvidence": "applied command, qdisc counters, iproute2, kernel, and seed acceptance recorded per worker",
       "imageStaging": "pinned OCI image pulled on cache miss and converted directly from tar to shared content-addressed SquashFS",
       "workloadLifecycle": "two-rank Pyxis job submitted and completed through virtme SSH; status and collected evidence validated",
+      "nodeLocalStorage": "sparse ext4 image per worker mounted for Enroot data and removed by run-owned cleanup",
+      "training": "two-rank four-step CPU DDP workload passed through Slurm/Pyxis/Enroot; Gloo is not UIB collective evidence",
+      "inference": "gate implemented with direct persistent Hugging Face cache mapping; local resource validation pending",
       "cleanup": "recorded guest processes terminated with PID start-time checks",
       "validationLevel": "L0",
       "testTargets": [
         "make simulation-virtme-slurm-e2e-test",
-        "make simulation-virtme-netem-e2e-test"
+        "make simulation-virtme-netem-e2e-test",
+        "make simulation-virtme-training-e2e-test"
       ]
     },
     {

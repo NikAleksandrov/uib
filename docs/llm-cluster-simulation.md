@@ -89,6 +89,8 @@ topology.
 | `make simulation-kubernetes-uib-test` | CPU | No | Unchanged verbs programs exchange actual RC SEND/RECV and RDMA Write traffic through UIB between two Kind workers |
 | `make simulation-virtme-slurm-e2e-test` | CPU with KVM or QEMU emulation | No | Real controller/two-worker Slurm/Pyxis/Enroot lifecycle and 32-message, 2051-byte RC traffic through UIB both directly and inside Pyxis, with exact cleanup |
 | `make simulation-virtme-netem-e2e-test` | CPU with KVM or QEMU emulation | No | The same virtme Slurm UIB gate with a named netem condition active on both worker data interfaces and validated post-traffic evidence |
+| `make simulation-virtme-training-e2e-test` | CPU with KVM or QEMU emulation | No | The same cross-worker UIB gate plus real two-rank CPU DDP training through Slurm/Pyxis/Enroot; Gloo training is not UIB collective traffic |
+| `make simulation-virtme-inference-e2e-test` | CPU with KVM or QEMU emulation | No | The same cross-worker UIB gate plus offline SmolLM2 inference from the persistent cache; implemented, but its local resource gate is not yet recorded as passing |
 | `make simulation-libvirt-e2e-test` | CPU with KVM | No | Disposable Slurm/Pyxis/Enroot controller/two-worker lifecycle, actual cross-VM RC payload traffic through UIB, and remote `run`/`status`/`collect`/`down` |
 | `make simulation-libvirt-netem-e2e-test` | CPU with KVM | No | The same cross-VM UIB gate while a selected netem condition is active on both workers, with collected qdisc and version evidence |
 | `make simulation-libvirt-training-e2e-test` | CPU with KVM | No | The same UIB gate plus real two-rank CPU DDP training in a staged local OCI filesystem through Slurm/Pyxis/Enroot; Gloo training is not UIB collective traffic |
@@ -2019,9 +2021,9 @@ Neither value accepts a shell pipeline or embedded arguments. An incomplete,
 symbolic-link, malformed-checksum, or checksum-mismatched cache entry is a
 hard failure rather than an implicit replacement.
 
-Inference additionally needs the dynamically downloaded model cache. Stage it
-after `up` and before `run`; the default source is the same ignored cache used
-by the container smoke tests:
+Inference additionally needs the dynamically downloaded model cache. Register
+it after `up` and before `run`; the default source is the same ignored cache
+used by the container smoke tests:
 
 ```text
 simulation/bin/uib-sim load-cache --profile libvirt-slurm \
@@ -2030,6 +2032,10 @@ simulation/bin/uib-sim load-cache --profile libvirt-slurm \
 # Or select an existing cache explicitly.
 simulation/bin/uib-sim load-cache --profile libvirt-slurm \
     --run-id "$run_id" --source /srv/huggingface-cache
+
+# The command is identical for a virtme lab.
+simulation/bin/uib-sim load-cache --profile virtme-slurm \
+    --run-id "$run_id"
 ```
 
 `load-cache` currently has one intentionally fixed contract: a Hugging Face
@@ -2039,9 +2045,12 @@ directory containing only directories, regular files, and symbolic links that
 resolve inside that root. This preserves the normal Hugging Face blob/snapshot
 layout while rejecting sockets, devices, broken links, and escaping links.
 
-The adapter transfers a temporary archive, verifies it before atomic
-installation, and retains the original ignored cache. A different existing
-guest cache is a hard failure. `TAR_COMMAND` selects the local `tar` executable.
+Libvirt transfers a temporary archive, verifies it before atomic installation,
+and retains the original ignored cache. A different existing guest cache is a
+hard failure. `TAR_COMMAND` selects the local `tar` executable. Virtme instead
+maps `VIRTME_MODEL_CACHE` directly into every guest, so the files are neither
+copied nor downloaded again. Its `--source` must identify that same directory;
+select a different cache by setting `VIRTME_MODEL_CACHE` before `up`.
 `SLURM_CACHE_INVENTORY` selects the ignored inventory directory, which defaults
 to `simulation/.artifacts/slurm-caches`. Its `inventory.json` and the run-owned
 `staged-caches.json` contain only the cache kind, source directory name,
@@ -2059,9 +2068,9 @@ contract.
 
 On real Slurm hardware, push the same image to the site registry, replace only
 the infrastructure-specific path, and omit the mutable-tag opt-in. Populate
-the configured site model cache with the same pinned Hugging Face revision;
-`load-cache` is only needed for disposable libvirt labs whose shared cache
-starts empty:
+the configured site model cache with the same pinned Hugging Face revision.
+`load-cache` records or transfers cache provenance for disposable libvirt and
+virtme labs; an existing site cache needs no staging command:
 
 ```text
 simulation/bin/uib-sim run --profile real-slurm \
@@ -2247,14 +2256,18 @@ send 32 2051-byte RC messages, so they exercise the multi-packet path rather
 than only loading the library. The container run also executes the portable
 runtime preflight. `status` checks both guest ownership and `slurmctld`.
 
-The portable UIB runtime is shared read-only at
-`storage.uibRuntimePath`. The model cache and result directory are separate
-read-write shares at `storage.modelCachePath` and `storage.resultsPath`. The
-content-addressed SquashFS cache is shared read-write at
-`/var/cache/uib/images`. Changing the three configurable storage values changes
-only their guest paths; the host runtime, model cache, and image cache can be
-selected with `UIB_RUNTIME_SOURCE`, `VIRTME_MODEL_CACHE`, and
-`SLURM_IMAGE_CACHE`.
+The portable UIB runtime is shared read-only at `storage.uibRuntimePath`. The
+Hugging Face cache is mapped below `storage.modelCachePath`, results use
+`storage.resultsPath`, and the content-addressed SquashFS cache is shared at
+`/var/cache/uib/images`. Each worker receives a sparse ext4 image mounted at
+`/var/lib/uib/enroot` for Enroot's writable data. `nodes.disk` controls its
+maximum size; the backend records every image and removes it during `down` or
+failed `up`. This avoids placing expanded containers in the guest's small
+memory-backed root filesystem. Standard pinned Enroot configuration supplies
+the normal device mounts inside containers.
+
+Host storage can be selected with `UIB_RUNTIME_SOURCE`,
+`VIRTME_MODEL_CACHE`, and `SLURM_IMAGE_CACHE`.
 
 ```text
 simulation/bin/uib-sim up --profile virtme-slurm \
@@ -2275,6 +2288,39 @@ simulation/bin/uib-sim collect --run-id uib-virtme-slurm \
 simulation/bin/uib-sim down --profile virtme-slurm \
     --run-id uib-virtme-slurm
 ```
+
+The workload gates use the same lifecycle and accept a small set of overrides:
+
+| Variable | Values or default | Purpose |
+|---|---|---|
+| `VIRTME_SLURM_WORKLOAD` | `lifecycle` | Select `lifecycle`, `training`, or `inference` when invoking the test script directly |
+| `VIRTME_SLURM_IMAGE` | Workload-specific local tag | Select the training or inference OCI image |
+| `VIRTME_SLURM_MEMORY` | `2Gi`, `4Gi`, or `8Gi` by workload | Memory per controller and worker guest |
+| `VIRTME_SLURM_DISK` | `32Gi`, or `64Gi` for inference | Maximum sparse Enroot disk size per worker |
+| `VIRTME_SLURM_CACHE_SOURCE` | Ignored Hugging Face cache | Select the inference cache; it must also be `VIRTME_MODEL_CACHE` at `up` |
+| `VIRTME_SLURM_JOB_WAIT` | Workload-specific seconds | Bound job completion waiting |
+| `VIRTME_SLURM_RESULT_DIR` | Run-owned ignored directory | Select collected evidence output |
+
+The Make targets set the workload and image automatically:
+
+```text
+make simulation-virtme-training-e2e-test
+make simulation-virtme-inference-e2e-test
+
+# Conserve host memory by reducing each of the three guests.
+VIRTME_SLURM_MEMORY=4Gi make simulation-virtme-inference-e2e-test
+
+# Reuse a cache on another filesystem.
+VIRTME_MODEL_CACHE=/srv/uib-huggingface \
+VIRTME_SLURM_CACHE_SOURCE=/srv/uib-huggingface \
+    make simulation-virtme-inference-e2e-test
+```
+
+Training was validated with `4Gi` per guest. Inference defaults to `8Gi` per
+guest and may work with less, but a lower value is a local tuning choice rather
+than a recorded compatibility result. All three modes first run unchanged
+cross-worker UIB traffic, so a passing workload cannot silently replace the
+UIB transport gate with Gloo or a single local process.
 
 This is a real multi-kernel Slurm/Pyxis/Enroot UIB L0 gate with optional
 guest-side network shaping and a complete remote

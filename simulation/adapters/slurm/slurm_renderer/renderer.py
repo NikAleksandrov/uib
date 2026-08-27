@@ -70,9 +70,13 @@ def render(config, run_id, allow_mutable_tags):
 		"",
 		'scontrol show job "$SLURM_JOB_ID" > "$RUN_DIR/slurm-job.txt"',
 		'scontrol show hostnames "$SLURM_JOB_NODELIST" > "$RUN_DIR/nodes.txt"',
-		'MASTER_ADDR=$(sed -n \'1p\' "$RUN_DIR/nodes.txt")',
+		'MASTER_NODE=$(sed -n \'1p\' "$RUN_DIR/nodes.txt")',
+		'MASTER_ADDR=$(scontrol show node "$MASTER_NODE" --oneliner | '
+		"awk '{ for (field = 1; field <= NF; field++) "
+		"if ($field ~ /^NodeAddr=/) { sub(/^NodeAddr=/, \"\", $field); "
+		"print $field; exit } }')",
 		'if [ -z "$MASTER_ADDR" ]; then',
-		'\techo "Slurm allocation has no nodes" >&2',
+		'\techo "Slurm allocation has no node address" >&2',
 		'\texit 2',
 		'fi',
 		'export MASTER_ADDR',

@@ -85,13 +85,13 @@ def scheduler_remote(args):
             "ENROOT_SYSCONF_PATH=/run/uib-enroot/etc",
             "ENROOT_RUNTIME_PATH=/run/uib-enroot/runtime",
             "ENROOT_CACHE_PATH=/run/uib-enroot/cache",
-            "ENROOT_DATA_PATH=/run/uib-enroot/data",
+            "ENROOT_DATA_PATH=/var/lib/uib/enroot/data",
             "ENROOT_CONFIG_PATH=/run/uib-enroot/config",
             "ENROOT_ALLOW_SUPERUSER=yes",
             "ENROOT_LOGIN_SHELL=no",
             "XDG_CACHE_HOME=/run/uib-enroot/cache-home",
             "XDG_CONFIG_HOME=/run/uib-enroot/config-home",
-            "XDG_DATA_HOME=/run/uib-enroot/data-home",
+            "XDG_DATA_HOME=/var/lib/uib/enroot/data-home",
             "XDG_RUNTIME_DIR=/run/uib-enroot/runtime-home",
         ]
     return {

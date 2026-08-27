@@ -15,6 +15,9 @@ def common_ansible_values(config, values, state, run_id):
         "uib_netem_source": str(SIMULATION / "network" / "netem"),
         "uib_stage_image_source": str(
             SIMULATION / "adapters" / "slurm" / "stage-image"),
+        "uib_stage_cache_source": str(
+            SIMULATION / "adapters" / "slurm" /
+            "stage-huggingface-cache"),
         "uib_enabled": config["uib"]["enabled"],
         "uib_ssh_user": config["libvirt"]["sshUser"],
         "uib_data_interface": config["network"]["dataInterface"],
