@@ -36,7 +36,11 @@ elif command == "logs":
     if container == "uib-runtime-check":
         print("UIB runtime preflight: PASS")
     else:
-        print(json.dumps({"runId": "uib-kubernetes", "status": "passed"}))
+        print(json.dumps({
+            "runId": "uib-kubernetes",
+            "status": "passed",
+            "transport": {"distributedBackend": "gloo"},
+        }))
 elif command == "get" and "trainjob" in arguments:
     state = os.environ.get("KUBE_TEST_STATE", "complete")
     condition = ("Complete" if state == "complete" else "Running")
@@ -137,7 +141,12 @@ assert summary["scheduler"] == "kubernetes"
 assert summary["schedulerState"] == "COMPLETED"
 assert summary["completeSchedulerSnapshot"] is True
 assert summary["uibPreflightVerified"] is True
+assert summary["uibTrafficEvidence"] == "not-exercised-non-rdma-backend"
 assert summary["promotionEligible"] is False
+with (root / "transport-evidence.json").open(encoding="utf-8") as source:
+    transport = json.load(source)
+assert transport["classification"] == "not-exercised-non-rdma-backend"
+assert transport["requestedRanks"] == 2
 with (root / "preflight.json").open(encoding="utf-8") as source:
     preflight = json.load(source)
 assert preflight["expectedPods"] == 2

@@ -8,6 +8,9 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from uibsim.cli import main
+from uibsim.evidence import (
+    transport_evidence,
+)
 
 
 if __name__ == "__main__":

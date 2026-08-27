@@ -71,7 +71,12 @@ printf '%s\n' \
 printf '%s\n' \
 	'{"schemaVersion":1,"phase":"apply","action":"terminate-rank","target":"rank-0","rank":0,"result":"applied"}' \
 	> "$run_results/faults-ranks.jsonl"
-printf '%s\n' 'UIB preflight passed' > "$test_dir/results/uib-collect-7654.out"
+printf '%s\n' \
+	'UIB runtime preflight: PASS' \
+	'NCCL_IBVERBS_LIB set by environment to /opt/uib/lib/libuibv.so' \
+	'Using network IB' \
+	'Connected all rings, use ring PXN 0 GDR 0 via NET/IB/0' \
+	> "$test_dir/results/uib-collect-7654.out"
 : > "$test_dir/results/uib-collect-7654.err"
 printf '%s\n' 'must not be collected' > "$test_dir/results/unrelated.out"
 
@@ -116,12 +121,18 @@ assert summary["uibEnabled"] is True
 assert summary["protocol"] == "uet"
 assert summary["congestionControl"]["algorithm"] == "nscc"
 assert summary["validationLevel"] == "not-assigned"
-assert summary["uibTrafficEvidence"] == "not-evaluated"
+assert summary["uibTrafficEvidence"] == "confirmed"
+assert summary["transportEvidence"] == "transport-evidence.json"
 assert summary["faultEvidenceFiles"] == 3
 assert summary["faultEvidenceRecords"] == 5
 assert "fault-evidence/completed-targets" not in summary["missingArtifacts"]
 assert "fault-evidence/terminated-ranks" not in summary["missingArtifacts"]
 assert summary["promotionEligible"] is False
+with (root / "transport-evidence.json").open(encoding="utf-8") as source:
+    transport = json.load(source)
+assert transport["classification"] == "confirmed"
+assert transport["positiveMatches"] == ["uib-library", "ib-data-path"]
+assert transport["forbiddenMatches"] == []
 with (root / "faults.jsonl").open(encoding="utf-8") as source:
     faults = [json.loads(line) for line in source]
 assert len(faults) == 5
@@ -147,6 +158,8 @@ for item in manifest["files"]:
     assert hashlib.sha256(data).hexdigest() == item["sha256"]
 PY
 
+printf '%s\n' 'Connected via NET/Socket/0' \
+	>> "$test_dir/results/uib-collect-7654.out"
 fallback=$test_dir/fallback
 TEST_LOG="$test_dir/log" SACCT_TEST_MODE=disabled \
 	SACCT_COMMAND="$test_dir/fake-bin/sacct" \
@@ -166,6 +179,7 @@ with open(sys.argv[1], encoding="utf-8") as source:
 with open(sys.argv[2], encoding="utf-8") as source:
     status = json.load(source)
 assert summary["schedulerEvidenceSource"] == "scontrol"
+assert summary["uibTrafficEvidence"] == "fallback-detected"
 assert status["source"] == "scontrol"
 PY
 

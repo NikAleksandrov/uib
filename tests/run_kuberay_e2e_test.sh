@@ -212,6 +212,7 @@ with open(sys.argv[2], encoding="utf-8") as source:
 assert summary["scheduler"] == "kubernetes"
 assert summary["schedulerState"] == "COMPLETED"
 assert summary["uibPreflightVerified"] is True
+assert summary["uibTrafficEvidence"] == "not-exercised-single-rank"
 assert summary["promotionEligible"] is False
 assert preflight["expectedPods"] == preflight["passedPods"]
 assert preflight["expectedPods"] > 0

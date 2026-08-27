@@ -2324,11 +2324,12 @@ its `sourceFile`, and merges the records into top-level `faults.jsonl`.
 requested network target without both `apply` and `recover` records, or a
 requested rank without its `apply` record, is listed as missing evidence.
 
-The collector deliberately sets `validationLevel` to `not-assigned`,
-`uibTrafficEvidence` to `not-evaluated`, and `promotionEligible` to false.
-Neither an exit code of zero nor UIB preflight proves that application payloads
-used UIB; assign a validation level only after checking transport-selection,
-correctness, and network evidence.
+The collector writes `transport-evidence.json` and copies its conservative
+classification into `summary.json.uibTrafficEvidence`. It recognizes positive
+UIB selection and explicit forbidden fallback, but still sets
+`validationLevel` to `not-assigned` and `promotionEligible` to false. Neither
+an exit code of zero, UIB preflight, nor a matching log line assigns a
+validation level without correctness, topology, and network evidence.
 
 Normal users need no command overrides. The fake lifecycle gate uses these
 test seams, each of which must name one executable rather than a shell command:
@@ -3470,9 +3471,9 @@ collection requires a completed or failed primary resource and records its
 JSON, namespace, events, selected pods, every init/application container log,
 placement, resolved configuration, compatibility lock, and SHA-256 manifest.
 It verifies `UIB runtime preflight: PASS` independently for every selected pod,
-but deliberately leaves `uibTrafficEvidence` as `not-evaluated` and
-`promotionEligible` false. Runtime injection alone is not proof that the
-workload used UIB.
+then applies the same transport classifier as Slurm. Runtime injection alone
+is not proof that the workload used UIB, and collection never changes
+`promotionEligible` from false.
 
 ### Planned selected-kernel lifecycle
 
@@ -3591,6 +3592,7 @@ results/<run-id>/
   topology.json
   images.json
   preflight.json
+  transport-evidence.json
   network-emulation.json      # when infrastructure supplied validated evidence
   manifest.json
   scheduler/
@@ -3652,10 +3654,29 @@ The long-term common summary states:
 The collectors fill identity, scheduler outcome, requested and allocated
 topology, images, selected UIB layers, workload status, and missing artifacts.
 Slurm also imports validated infrastructure qdisc evidence when available.
-Kubernetes verifies each pod's UIB preflight init-container log. Neither
-collector infers transport use, correctness, performance, or a validation
-level from generic logs; those promotion checks remain explicit so a
-single-process or socket-fallback run cannot be mislabeled as UIB validation.
+Kubernetes verifies each pod's UIB preflight init-container log. Both
+collectors classify transport selection from bounded text logs and structured
+workload JSON. They inspect at most 4 MiB per file and 32 MiB per bundle, skip
+checkpoints and unknown/binary suffixes, and record every checked or skipped
+file. The possible classifications are:
+
+| Classification | Meaning |
+|---|---|
+| `confirmed` | Every required front-end signal is present and no forbidden fallback signal is present |
+| `fallback-detected` | A forbidden socket/software transport signal is present; this overrides positive matches |
+| `insufficient` | A multi-rank UIB run lacks one or more required selection signals |
+| `not-exercised-single-rank` | The request has fewer than two ranks, so it cannot prove a communication data path |
+| `not-exercised-non-rdma-backend` | Structured workload output says the distributed backend was Gloo rather than the configured GPU/RDMA collective path |
+| `native-baseline` | UIB was disabled in the recorded configuration |
+
+NCCL/RCCL confirmation requires both the UIB verbs-library selection and an
+IB data-path line such as `via NET/IB/0`; `via NET/Socket/0` is forbidden. UCX
+requires `ud_verbs/uib0:1` or `rc_verbs/uib0:1` and rejects logged TCP or
+shared-memory transports. Libfabric requires both `verbs;ofi_rxd` and
+`uib0-dgram` and rejects a logged sockets/TCP provider. These rules classify
+transport selection only. Correctness, counter interpretation, performance,
+and L0-L3 assignment remain separate gates so a matching string cannot promote
+a result by itself.
 
 Training metrics include tokens per second, step time, collective time,
 checkpoint time, loss, GPU use, host use, network counters, retries, and fault
@@ -3697,6 +3718,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-libvirt-inference-e2e-test` | The libvirt gate requirements, the local inference image or build access, the downloaded SmolLM2 cache, 8 GiB per VM, 64 GiB guest disks, and about 8 GiB ignored host image-cache space | Everything in the libvirt gate, bounded-memory SquashFS staging, verified Hugging Face cache transfer, real offline four-request CPU serving through Slurm/Pyxis/Enroot, request trace and artifact ledgers, and cleanup; the one-task workload itself has no UIB traffic |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
 | `make simulation-kubernetes-lifecycle-test` | The Kubernetes renderer requirements; no cluster, operator, or container engine | Exclusive run ownership, standard `kubectl apply/get/logs/delete` delegation, terminal and explicit incomplete snapshots, pod placement, per-container logs, per-pod UIB preflight verification, namespace cleanup, and SHA-256 evidence integrity using a fake kubectl executable |
+| `make simulation-transport-evidence-test` | Python 3, PyYAML, and `jsonschema`; no cluster or communication library | Bounded NCCL, RCCL, UCX, and libfabric positive-selection rules; forbidden fallback precedence; insufficient, single-rank, Gloo, and native classifications; and oversized-log skipping |
 | `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, timed network-fault steps and evidence gates, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, RoCEv2/UET congestion settings, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
 | `make simulation-slurm-lifecycle-test` | The Slurm renderer requirements; no Slurm installation or container engine | Exclusive ignored run ledgers, shared-path preflight, exact `sbatch --parsable` submission, recorded numeric job ownership, read-only `sacct` status and `scontrol` fallback including an empty pending node list, exact-ID `scancel`, retained failures, and rejection of result/ledger reuse or ambiguous submission output using fake standard commands |
 | `make simulation-slurm-collect-test` | The Slurm lifecycle requirements; no Slurm installation, container engine, or network access | Exact-ID `sacct` and `scontrol` evidence, terminal/incomplete policy, captured source inputs, scheduler/log/workload export, validated per-worker fault-evidence aggregation, ownership and symlink rejection, non-overwrite behavior, honest nonpromotion labels, and every SHA-256 manifest entry using fake standard commands |
@@ -3718,6 +3740,7 @@ make simulation-virtme-backend-test
 make simulation-libvirt-test
 make simulation-kubernetes-render-test
 make simulation-kubernetes-lifecycle-test
+make simulation-transport-evidence-test
 make simulation-slurm-render-test
 make simulation-slurm-lifecycle-test
 make simulation-slurm-collect-test
