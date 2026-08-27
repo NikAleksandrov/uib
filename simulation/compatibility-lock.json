@@ -28,7 +28,8 @@
         "validatedUcpTransport": "ud_verbs",
         "validatedUcpTests": ["tag_lat", "stream_lat", "ucp_put_lat", "ucp_get", "ucp_fadd", "ucp_cswap"],
         "validatedUctTransport": "rc_verbs",
-        "validatedUctTests": ["am_lat", "put_lat", "get"],
+        "validatedUctTests": ["am_lat", "put_lat", "get", "fadd", "cswap"],
+        "validatedUctAtomicMemory": "host",
         "rcFlushMode": "flow-control",
         "forbiddenFallbacks": ["tcp", "self", "posix", "sysv", "cma", "vendor-direct"]
       },

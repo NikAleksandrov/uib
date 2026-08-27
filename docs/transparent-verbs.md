@@ -360,9 +360,8 @@ Important compatibility details are:
 - Port number `1`, GID index `0`, and P_Key index `0` describe the synthetic
   device. The GID is an IPv4-mapped address derived from `UIB_BIND_IP`.
 - UIB's common transparent data path is RC. It supports SEND/RECV, RDMA WRITE,
-  RDMA READ, and immediate data. Atomic support is protocol-specific: UET
-  supports 64-bit fetch-add and compare-swap, while direct RoCEv2 atomics are
-  not advertised.
+  RDMA READ, immediate data, and aligned 64-bit fetch-add and compare-swap on
+  host memory. UET additionally exposes its extended atomic API.
 - UD queue pairs support address handles and SEND/RECV, including the receive
   GRH prefix required by UCX and the libfabric verbs provider.
 - Host memory registered with `ibv_reg_mr_iova()` or `ibv_reg_mr_iova2()` must
@@ -444,9 +443,9 @@ network namespaces. `rxe-tools-test` runs the UIB preload provider against a
 kernel RXE peer in raw RoCEv2 mode. The RXE test needs the appropriate kernel
 modules and administrative network privileges. `ucx-libfabric-test` runs
 actual two-process UCX tag, stream, UCP RMA, and UCP atomic traffic over
-`ud_verbs`; direct UCT active-message, RDMA-write, and RDMA-read traffic over
-`rc_verbs`; plus libfabric untagged and tagged RDM traffic over
-`verbs;ofi_rxd`, with payload checking and fallback rejection.
+`ud_verbs`; direct UCT active-message, RDMA-write, RDMA-read, fetch-add, and
+compare-swap traffic over `rc_verbs`; plus libfabric untagged and tagged RDM
+traffic over `verbs;ofi_rxd`, with payload checking and fallback rejection.
 
 ## Verbs hooked by `libuibv.so`
 

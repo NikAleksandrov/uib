@@ -23,6 +23,14 @@
 #define UIB_OUT_POOL_MAX 1024
 #define UIB_OUT_POOL_CLASSES 3
 #define UIB_TX_BATCH_STACK 64
+#define UIB_ATOMIC_ACK_BYTES 8
+
+struct uib_atomic_eth {
+	uint64_t va;
+	uint32_t rkey;
+	uint64_t swap_data;
+	uint64_t compare_data;
+} __packed;
 
 struct uib_outstanding_pool {
 	struct uib_ptr_ring free[UIB_OUT_POOL_CLASSES];
@@ -1248,6 +1256,83 @@ static int post_rdma_read(struct uib_qp *qp, struct uib_send_wr *wr,
 	return 0;
 }
 
+static void atomic_eth_pack(struct uib_atomic_eth *atomic,
+			    const struct uib_send_wr *wr)
+{
+	atomic->va = htobe64(wr->atomic.remote_addr);
+	atomic->rkey = htonl(wr->atomic.rkey);
+	atomic->swap_data = htobe64(wr->opcode == UIB_WR_ATOMIC_FETCH_ADD ?
+		wr->atomic.compare_add : wr->atomic.swap);
+	atomic->compare_data = htobe64(wr->opcode == UIB_WR_ATOMIC_CMP_SWAP ?
+		wr->atomic.compare_add : 0);
+}
+
+static int post_atomic(struct uib_qp *qp, struct uib_send_wr *wr)
+{
+	struct uib_atomic_eth *atomic;
+	struct uib_outstanding *out;
+	struct uib_mr *mr;
+	struct uib_bth *bth;
+	uint32_t wire_crc;
+	uint32_t crc;
+	uint32_t psn;
+	uint8_t op;
+	size_t packet_len;
+
+	if (qp->qp_type != UIB_QPT_RC || wr->num_sge != 1 ||
+	    wr->sg_list[0].length < UIB_ATOMIC_ACK_BYTES ||
+	    (wr->sg_list[0].addr & (UIB_ATOMIC_ACK_BYTES - 1)) ||
+	    (wr->atomic.remote_addr & (UIB_ATOMIC_ACK_BYTES - 1)))
+		return -EINVAL;
+	mr = uib_mr_lookup_local(qp->pd, wr->sg_list[0].lkey,
+				 (void *)(uintptr_t)wr->sg_list[0].addr,
+				 UIB_ATOMIC_ACK_BYTES, UIB_ACCESS_LOCAL_WRITE);
+	if (!mr)
+		return -EACCES;
+	uib_mr_put(mr);
+
+	packet_len = UIB_BTH_BYTES + sizeof(*atomic) + UIB_ICRC_BYTES;
+	out = alloc_outstanding(qp, packet_len);
+	if (!out)
+		return -ENOMEM;
+	out->read_sgl = calloc(1, sizeof(*out->read_sgl));
+	if (!out->read_sgl) {
+		free_outstanding(out);
+		return -ENOMEM;
+	}
+	*out->read_sgl = wr->sg_list[0];
+	out->read_num_sge = 1;
+	out->read_total_len = UIB_ATOMIC_ACK_BYTES;
+
+	op = wr->opcode == UIB_WR_ATOMIC_FETCH_ADD ? UIB_OP_FETCH_ADD :
+		UIB_OP_COMPARE_SWAP;
+	bth = out->pkt;
+	atomic = (struct uib_atomic_eth *)((uint8_t *)out->pkt +
+					     UIB_BTH_BYTES);
+	pthread_mutex_lock(&qp->lock);
+	psn = qp->sq_psn++;
+	uib_bth_pack(bth, op, UIB_DEFAULT_PKEY, qp->dest_qp_num, psn, 1);
+	atomic_eth_pack(atomic, wr);
+	crc = uib_icrc(out->pkt, packet_len - UIB_ICRC_BYTES);
+	wire_crc = htonl(crc);
+	memcpy((uint8_t *)out->pkt + packet_len - UIB_ICRC_BYTES,
+	       &wire_crc, sizeof(wire_crc));
+	out->nominal_len = rocev2_nominal_len(qp, packet_len);
+	out->psn = psn;
+	out->wire_opcode = op;
+	out->signaled = !!(wr->send_flags & UIB_SEND_SIGNALED);
+	out->is_read = 1;
+	out->is_final = 1;
+	out->wr_id = wr->wr_id;
+	out->wr_opcode = wr->opcode;
+	out->dst = qp->remote_addr;
+	out->pkt_len = packet_len;
+	enqueue_outstanding(qp, out);
+	rocev2_drain_locked(qp);
+	pthread_mutex_unlock(&qp->lock);
+	return 0;
+}
+
 static uint8_t pick_opcode(enum uib_qp_type qpt, enum uib_wr_opcode op,
 			   int with_imm, uint32_t n, uint32_t i)
 {
@@ -1334,7 +1419,7 @@ static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
 		return post_rdma_read(qp, wr, total);
 	if (wr->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
 	    wr->opcode == UIB_WR_ATOMIC_CMP_SWAP)
-		return -EOPNOTSUPP;
+		return post_atomic(qp, wr);
 	mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
 	if (is_ud && total > mtu)
 		return -EMSGSIZE;
@@ -1920,6 +2005,28 @@ out:
 	uib_mr_put(mr);
 }
 
+static void send_atomic_ack(struct uib_qp *qp, uint32_t psn, uint64_t value)
+{
+	uint8_t packet[UIB_BTH_BYTES + UIB_AETH_BYTES +
+		       UIB_ATOMIC_ACK_BYTES + UIB_ICRC_BYTES];
+	uint64_t wire_value = htobe64(value);
+	uint32_t wire_crc;
+	uint32_t crc;
+	uint8_t *p = packet;
+
+	uib_bth_pack((struct uib_bth *)p, UIB_OP_ATOMIC_ACKNOWLEDGE,
+		     UIB_DEFAULT_PKEY, qp->dest_qp_num, psn, 0);
+	p += UIB_BTH_BYTES;
+	uib_aeth_pack((struct uib_aeth *)p, UIB_AETH_ACK, psn);
+	p += UIB_AETH_BYTES;
+	memcpy(p, &wire_value, sizeof(wire_value));
+	p += sizeof(wire_value);
+	crc = uib_icrc(packet, p - packet);
+	wire_crc = htonl(crc);
+	memcpy(p, &wire_crc, sizeof(wire_crc));
+	uib_transport_send(qp->ctx, &qp->remote_addr, packet, sizeof(packet));
+}
+
 static struct uib_outstanding *find_read_by_psn(struct uib_qp *qp, uint32_t psn)
 {
 	struct uib_outstanding *out;
@@ -1988,6 +2095,7 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 	int is_rc = (qp->qp_type == UIB_QPT_RC);
 
 	int is_resp = (op == UIB_OP_ACKNOWLEDGE || op == UIB_OP_CNP
+		       || op == UIB_OP_ATOMIC_ACKNOWLEDGE
 		       || op == UIB_OP_RDMA_READ_RESP_FIRST
 		       || op == UIB_OP_RDMA_READ_RESP_MIDDLE
 		       || op == UIB_OP_RDMA_READ_RESP_LAST
@@ -1998,7 +2106,15 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		int order = psn_cmp(psn, expected);
 
 		if (order < 0) {
-			send_ack(qp, src, qp->last_rx_psn, UIB_AETH_ACK);
+			if ((op == UIB_OP_FETCH_ADD ||
+			     op == UIB_OP_COMPARE_SWAP) &&
+			    qp->atomic_ack_valid &&
+			    !psn_cmp(psn, qp->atomic_ack_psn))
+				send_atomic_ack(qp, psn,
+						qp->atomic_ack_value);
+			else
+				send_ack(qp, src, qp->last_rx_psn,
+					 UIB_AETH_ACK);
 			return 0;
 		}
 		if (order > 0) {
@@ -2361,6 +2477,87 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 		qp->last_rx_valid = 1;
 		qp->rq_psn = psn + span;
 		return 0;
+	}
+	case UIB_OP_FETCH_ADD:
+	case UIB_OP_COMPARE_SWAP: {
+		const struct uib_atomic_eth *atomic;
+		struct uib_mr *mr;
+		uint64_t compare;
+		uint64_t operand;
+		uint64_t expected;
+		uint64_t old;
+		uint64_t va;
+		uint32_t rkey;
+
+		if (body_len < sizeof(*atomic))
+			return -EBADMSG;
+		atomic = (const struct uib_atomic_eth *)body;
+		va = be64toh(atomic->va);
+		rkey = ntohl(atomic->rkey);
+		operand = be64toh(atomic->swap_data);
+		compare = be64toh(atomic->compare_data);
+		if ((va & (UIB_ATOMIC_ACK_BYTES - 1)) ||
+		    !(qp->access_flags & UIB_ACCESS_REMOTE_ATOMIC)) {
+			send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
+			return -EACCES;
+		}
+		mr = uib_mr_check_remote(qp->pd, rkey, va,
+					 UIB_ATOMIC_ACK_BYTES,
+					 UIB_ACCESS_REMOTE_ATOMIC);
+		if (!mr) {
+			send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
+			return -EACCES;
+		}
+		if (mr->kind != UIB_MR_HOST) {
+			uib_mr_put(mr);
+			send_ack(qp, src, psn, UIB_AETH_NAK_REM_OP);
+			return -EOPNOTSUPP;
+		}
+		if (op == UIB_OP_FETCH_ADD) {
+			old = __atomic_fetch_add((uint64_t *)(uintptr_t)va,
+						 operand, __ATOMIC_SEQ_CST);
+		} else {
+			expected = compare;
+			__atomic_compare_exchange_n((uint64_t *)(uintptr_t)va,
+						    &expected, operand, 0,
+						    __ATOMIC_SEQ_CST,
+						    __ATOMIC_SEQ_CST);
+			old = expected;
+		}
+		uib_mr_put(mr);
+		qp->atomic_ack_psn = psn;
+		qp->atomic_ack_value = old;
+		qp->atomic_ack_valid = 1;
+		qp->last_rx_psn = psn;
+		qp->last_rx_valid = 1;
+		qp->rq_psn = psn + 1;
+		send_atomic_ack(qp, psn, old);
+		return 0;
+	}
+	case UIB_OP_ATOMIC_ACKNOWLEDGE: {
+		struct uib_outstanding *out;
+		uint64_t wire_value;
+		uint64_t value;
+		size_t consumed = 0;
+		int rc;
+
+		if (body_len < UIB_AETH_BYTES + UIB_ATOMIC_ACK_BYTES)
+			return -EBADMSG;
+		memcpy(&wire_value, body + UIB_AETH_BYTES,
+		       sizeof(wire_value));
+		value = be64toh(wire_value);
+		out = find_read_by_psn(qp, psn);
+		if (!out)
+			return 0;
+		rc = scatter_at(qp->pd, out->read_sgl, out->read_num_sge,
+				0, (const uint8_t *)&value, sizeof(value),
+				&consumed);
+		detach_outstanding(qp, out);
+		emit_send_wc(qp, out->wr_id, out->wr_opcode, out->signaled,
+			     rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
+			     (uint32_t)consumed);
+		free_outstanding(out);
+		return rc;
 	}
 	case UIB_OP_RDMA_READ_RESP_ONLY: {
 		if (body_len < UIB_AETH_BYTES)

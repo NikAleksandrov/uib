@@ -1,4 +1,10 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * Phase-A regression harness: two RC QPs in a single process talking over the
+ * loopback interface via two uib contexts (distinct UDP ports). Exercises
+ * SEND (single + multi-packet), RDMA WRITE, RDMA READ, and 64-bit atomics, and
+ * checks both the transferred bytes and the resulting work completions.
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -318,7 +324,8 @@ int main(void)
 	struct uib_qp *qpA, *qpB;
 	struct uib_qp_init_attr ia;
 	struct uib_mr *mrA, *mrB;
-	static uint8_t bufA[65536], bufB[65536];
+	static uint8_t bufA[65536] __attribute__((aligned(8)));
+	static uint8_t bufB[65536] __attribute__((aligned(8)));
 	uint8_t *sendA, *recvB, *writeA, *targetB, *readA;
 	uint64_t *atomicA, *atomicB;
 	int is_uet = getenv("UIB_PROTOCOL") &&
@@ -417,22 +424,22 @@ int main(void)
 	report_wc("read.send", cqA);
 	check_bytes("read.data", readA, targetB, BIG_LEN);
 
+	*atomicA = 0;
+	*atomicB = 41;
+	post_atomic(qpA, 0xA005, UIB_WR_ATOMIC_FETCH_ADD, atomicA,
+		    mrA->lkey, (uintptr_t)atomicB, mrB->rkey, 1, 0);
+	report_wc("atomic.add", cqA);
+	check_bytes("atomic.add.old", atomicA, &(uint64_t){41}, 8);
+	check_bytes("atomic.add.new", atomicB, &(uint64_t){42}, 8);
+
+	*atomicA = 0;
+	post_atomic(qpA, 0xA006, UIB_WR_ATOMIC_CMP_SWAP, atomicA,
+		    mrA->lkey, (uintptr_t)atomicB, mrB->rkey, 42, 99);
+	report_wc("atomic.cswap", cqA);
+	check_bytes("atomic.cswap.old", atomicA, &(uint64_t){42}, 8);
+	check_bytes("atomic.cswap.new", atomicB, &(uint64_t){99}, 8);
+
 	if (is_uet) {
-		*atomicA = 0;
-		*atomicB = 41;
-		post_atomic(qpA, 0xA005, UIB_WR_ATOMIC_FETCH_ADD, atomicA,
-			    mrA->lkey, (uintptr_t)atomicB, mrB->rkey, 1, 0);
-		report_wc("atomic.add", cqA);
-		check_bytes("atomic.add.old", atomicA, &(uint64_t){41}, 8);
-		check_bytes("atomic.add.new", atomicB, &(uint64_t){42}, 8);
-
-		*atomicA = 0;
-		post_atomic(qpA, 0xA006, UIB_WR_ATOMIC_CMP_SWAP, atomicA,
-			    mrA->lkey, (uintptr_t)atomicB, mrB->rkey, 42, 99);
-		report_wc("atomic.cswap", cqA);
-		check_bytes("atomic.cswap.old", atomicA, &(uint64_t){42}, 8);
-		check_bytes("atomic.cswap.new", atomicB, &(uint64_t){99}, 8);
-
 		test_uet_atomic_matrix(qpA, cqA, mrA, mrB, atomicA, atomicB);
 		if (getenv("UIB_UET_MULTIPATH")) {
 			struct uib_uet_multipath_stats stats;

@@ -1554,6 +1554,7 @@ int ibv_query_device(struct ibv_context *ctx, struct ibv_device_attr *attr)
 	attr->max_srq_sge      = 16;
 	attr->max_qp_rd_atom   = 16;
 	attr->max_res_rd_atom  = 256;
+	attr->atomic_cap       = IBV_ATOMIC_HCA;
 	attr->phys_port_cnt    = 1;
 	return 0;
 }

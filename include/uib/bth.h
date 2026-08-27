@@ -32,6 +32,9 @@
 #define UIB_OP_RDMA_READ_RESP_LAST       0x0f
 #define UIB_OP_RDMA_READ_RESP_ONLY       0x10
 #define UIB_OP_ACKNOWLEDGE               0x11
+#define UIB_OP_ATOMIC_ACKNOWLEDGE        0x12
+#define UIB_OP_COMPARE_SWAP              0x13
+#define UIB_OP_FETCH_ADD                 0x14
 #define UIB_OP_UD_SEND_ONLY              0x64
 #define UIB_OP_UD_SEND_ONLY_WITH_IMM     0x65
 #define UIB_OP_CNP                       0x81

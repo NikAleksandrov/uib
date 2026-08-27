@@ -71,6 +71,7 @@ int main(void)
 	struct ibv_context *(*open_device)(struct ibv_device *);
 	int (*close_device)(struct ibv_context *);
 	int (*get_async_event)(struct ibv_context *, struct ibv_async_event *);
+	int (*query_device)(struct ibv_context *, struct ibv_device_attr *);
 	struct ibv_pd *(*alloc_pd)(struct ibv_context *);
 	int (*dealloc_pd)(struct ibv_pd *);
 	struct ibv_cq *(*create_cq)(struct ibv_context *, int, void *,
@@ -96,6 +97,7 @@ int main(void)
 	struct ibv_srq_init_attr srq_init_attr;
 	struct ibv_srq_attr srq_attr;
 	struct ibv_async_event event;
+	struct ibv_device_attr device_attr;
 	struct ibv_device **devices = NULL;
 	struct ibv_context *context = NULL;
 	struct ibv_pd *pd = NULL;
@@ -130,6 +132,7 @@ int main(void)
 	close_device = load_symbol(handle, "ibv_close_device", "IBVERBS_1.1");
 	get_async_event = load_symbol(handle, "ibv_get_async_event",
 				      "IBVERBS_1.1");
+	query_device = load_symbol(handle, "ibv_query_device", "IBVERBS_1.1");
 	alloc_pd = load_symbol(handle, "ibv_alloc_pd", "IBVERBS_1.1");
 	dealloc_pd = load_symbol(handle, "ibv_dealloc_pd", "IBVERBS_1.1");
 	create_cq = load_symbol(handle, "ibv_create_cq", "IBVERBS_1.1");
@@ -172,8 +175,15 @@ int main(void)
 		goto out;
 	}
 	if (!context->ops.post_send || !context->ops.post_recv ||
+	    !context->ops.post_srq_recv ||
 	    !context->ops.poll_cq || !context->ops.req_notify_cq) {
 		fprintf(stderr, "uib0 did not install the NCCL data-path operations\n");
+		goto out;
+	}
+	memset(&device_attr, 0, sizeof(device_attr));
+	if (query_device(context, &device_attr) ||
+	    device_attr.atomic_cap != IBV_ATOMIC_HCA) {
+		fprintf(stderr, "uib0 did not advertise host atomic support\n");
 		goto out;
 	}
 	flags = fcntl(context->async_fd, F_GETFL);

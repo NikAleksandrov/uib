@@ -190,7 +190,10 @@ struct uib_qp {
 	uint32_t                out_count;
 	uint32_t                last_acked_psn;
 	uint32_t                last_rx_psn;
+	uint32_t                atomic_ack_psn;
+	uint64_t                atomic_ack_value;
 	uint8_t                 last_rx_valid;
+	uint8_t                 atomic_ack_valid;
 	uint64_t                retry_deadline_ns;
 	uint32_t                retry_heap_index;
 	uint8_t                 retry_scheduled;
