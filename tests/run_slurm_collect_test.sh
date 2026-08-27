@@ -59,6 +59,11 @@ cat > "$run_results/status.json" <<'EOF'
 EOF
 printf '%s\n' node-01 node-02 > "$run_results/nodes.txt"
 printf '%s\n' 'JobId=7654 JobState=COMPLETED' > "$run_results/slurm-job.txt"
+printf '%s\n' \
+	'node-01|Linux|6.12.0-test|x86_64' \
+	'node-02|Linux|6.12.0-test|x86_64' > "$run_results/host-probes.psv"
+printf '%s\n' 'slurm 24.11.5' 'slurm 24.11.5' \
+	> "$run_results/scheduler-tools.txt"
 cat > "$run_results/result.json" <<'EOF'
 {
   "schemaVersion": 1,
@@ -155,6 +160,17 @@ assert metrics[0]["worldSize"] == 2
 assert metrics[0]["samplesPerSecond"] == 8.0
 assert metrics[0]["sourceFiles"] == ["workload/result.json"]
 assert summary["workloadMetricRecords"] == 1
+with (root / "host-probes.json").open(encoding="utf-8") as source:
+    probes = json.load(source)
+assert summary["hostProbeNodes"] == 2
+assert probes["scheduler"] == "slurm"
+assert probes["nodes"][0] == {
+    "name": "node-01",
+    "operatingSystem": "Linux",
+    "kernelVersion": "6.12.0-test",
+    "architecture": "x86_64",
+}
+assert probes["schedulerTools"] == "workload/scheduler-tools.txt"
 with (root / "faults.jsonl").open(encoding="utf-8") as source:
     faults = [json.loads(line) for line in source]
 assert len(faults) == 5

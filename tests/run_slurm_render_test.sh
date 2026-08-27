@@ -87,6 +87,9 @@ assert 'actual_mtu=$(/opt/uib/bin/ip -o link show dev ' in batch
 assert "UIB_BIND_PORT=$((SLURM_UIB_BIND_PORT_BASE + LOCAL_RANK))" in batch
 assert 'UIB_BIND_IP=$(/opt/uib/bin/ip -o -4 addr show dev "$SLURM_UIB_DATA_INTERFACE"' in batch
 assert "/opt/uib/bin/uib-preflight --library-only" in batch
+assert 'srun --version; scontrol --version' in batch
+assert '--ntasks=2 --ntasks-per-node=1 /bin/sh -c' in batch
+assert 'host-probes.psv' in batch
 assert "export RANK=${SLURM_PROCID:-0}" in batch
 assert "/opt/uib-training/bin/train" in batch
 

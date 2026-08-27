@@ -36,6 +36,7 @@ def render(config, run_id, allow_mutable_tags):
 	workload_config = copy.deepcopy(config["workload"]["parameters"]["config"])
 	workload_config["runId"] = run_id
 	storage = config["storage"]
+	parallel = config["workload"]["parallelism"]
 	values = environment(config)
 	environment_names = sorted(values)
 	environment_names.extend([
@@ -70,6 +71,15 @@ def render(config, run_id, allow_mutable_tags):
 		"",
 		'scontrol show job "$SLURM_JOB_ID" > "$RUN_DIR/slurm-job.txt"',
 		'scontrol show hostnames "$SLURM_JOB_NODELIST" > "$RUN_DIR/nodes.txt"',
+		'{ srun --version; scontrol --version; } '
+		'> "$RUN_DIR/scheduler-tools.txt" 2>&1 || true',
+		shlex.join([
+			"srun", "--overlap", f"--nodes={parallel['nodes']}",
+			f"--ntasks={parallel['nodes']}", "--ntasks-per-node=1",
+			"/bin/sh", "-c",
+			"printf '%s|%s|%s|%s\\n' \"$(hostname)\" "
+			"\"$(uname -s)\" \"$(uname -r)\" \"$(uname -m)\"",
+		]) + ' > "$RUN_DIR/host-probes.psv"',
 		'MASTER_NODE=$(sed -n \'1p\' "$RUN_DIR/nodes.txt")',
 		'MASTER_ADDR=$(scontrol show node "$MASTER_NODE" --oneliner | '
 		"awk '{ for (field = 1; field <= NF; field++) "
@@ -109,7 +119,6 @@ def render(config, run_id, allow_mutable_tags):
 		"",
 	])
 
-	parallel = config["workload"]["parallelism"]
 	srun = [
 		"srun",
 		f"--nodes={parallel['nodes']}",
