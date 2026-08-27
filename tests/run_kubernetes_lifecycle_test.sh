@@ -37,8 +37,17 @@ elif command == "logs":
         print("UIB runtime preflight: PASS")
     else:
         print(json.dumps({
+            "schemaVersion": 1,
             "runId": "uib-kubernetes",
             "status": "passed",
+            "worldSize": 2,
+            "device": "cpu",
+            "strategy": "ddp",
+            "completedSteps": 4,
+            "resumedFromStep": 0,
+            "durationSeconds": 2.0,
+            "samplesPerSecond": 8.0,
+            "loss": {"first": 4.0, "last": 2.0},
             "transport": {"distributedBackend": "gloo"},
         }))
 elif command == "get" and "trainjob" in arguments:
@@ -147,6 +156,13 @@ with (root / "transport-evidence.json").open(encoding="utf-8") as source:
     transport = json.load(source)
 assert transport["classification"] == "not-exercised-non-rdma-backend"
 assert transport["requestedRanks"] == 2
+with (root / "metrics" / "workload.jsonl").open(encoding="utf-8") as source:
+    metrics = [json.loads(line) for line in source]
+assert len(metrics) == 1
+assert metrics[0]["kind"] == "training"
+assert metrics[0]["samplesPerSecond"] == 8.0
+assert len(metrics[0]["sourceFiles"]) == 2
+assert summary["workloadMetricRecords"] == 1
 with (root / "preflight.json").open(encoding="utf-8") as source:
     preflight = json.load(source)
 assert preflight["expectedPods"] == 2

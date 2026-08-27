@@ -3625,6 +3625,7 @@ results/<run-id>/
     faults-ranks.jsonl         # when a Slurm rank is terminated
     ... workload-owned checkpoints, metrics, and traces ...
   metrics/
+    workload.jsonl           # normalized owned training/inference results
   traces/
   faults.jsonl
   summary.json
@@ -3633,8 +3634,9 @@ results/<run-id>/
 
 `request.yaml` is absent only when `run` had no request file; the exact profile,
 ordered overlays, typed `--set` expressions, and fully resolved result still
-remain. Empty common `metrics/` and `traces/` directories reserve the portable
-schema while workload-native files remain unchanged under `workload/`.
+remain. The common `metrics/` directory contains normalized workload results;
+`traces/` reserves the portable trace schema. Workload-native files remain
+unchanged under `workload/`.
 `manifest.json` records the size and SHA-256 digest of every regular file other
 than the manifest itself. Files absent because a batch failed early are named
 in `summary.json.missingArtifacts`.
@@ -3678,6 +3680,22 @@ transport selection only. Correctness, counter interpretation, performance,
 and L0-L3 assignment remain separate gates so a matching string cannot promote
 a result by itself.
 
+`metrics/workload.jsonl` contains one normalized record for each distinct,
+successful, run-owned result found in workload files or container/batch logs.
+The collector deduplicates a result printed to logs and written to JSON, then
+records all original locations in `sourceFiles`. It accepts only
+`schemaVersion: 1`, the exact run ID, finite nonnegative values, and the known
+training or inference result shape. Unknown JSON and partial records remain in
+their original files but are not converted into measurements.
+
+Training records use seconds and samples per second and include world size,
+device, strategy, completed/resumed steps, and first/last loss. Inference
+records use seconds, requests per second, and output tokens per second and
+include request/token counts, min/median/p95/max latency, backend, and parallel
+degrees. `summary.json.workloadMetricRecords` gives the normalized record
+count. An empty JSONL file means no valid result was available; it is not a
+zero-valued measurement or a passing workload claim.
+
 Training metrics include tokens per second, step time, collective time,
 checkpoint time, loss, GPU use, host use, network counters, retries, and fault
 recovery.
@@ -3719,6 +3737,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
 | `make simulation-kubernetes-lifecycle-test` | The Kubernetes renderer requirements; no cluster, operator, or container engine | Exclusive run ownership, standard `kubectl apply/get/logs/delete` delegation, terminal and explicit incomplete snapshots, pod placement, per-container logs, per-pod UIB preflight verification, namespace cleanup, and SHA-256 evidence integrity using a fake kubectl executable |
 | `make simulation-transport-evidence-test` | Python 3, PyYAML, and `jsonschema`; no cluster or communication library | Bounded NCCL, RCCL, UCX, and libfabric positive-selection rules; forbidden fallback precedence; insufficient, single-rank, Gloo, and native classifications; and oversized-log skipping |
+| `make simulation-workload-metrics-test` | Python 3, PyYAML, and `jsonschema`; no cluster, model, or dataset | Training and inference result normalization, duplicate-source merging, units and key metrics, run ownership, and rejection of non-finite values |
 | `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, timed network-fault steps and evidence gates, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, RoCEv2/UET congestion settings, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |
 | `make simulation-slurm-lifecycle-test` | The Slurm renderer requirements; no Slurm installation or container engine | Exclusive ignored run ledgers, shared-path preflight, exact `sbatch --parsable` submission, recorded numeric job ownership, read-only `sacct` status and `scontrol` fallback including an empty pending node list, exact-ID `scancel`, retained failures, and rejection of result/ledger reuse or ambiguous submission output using fake standard commands |
 | `make simulation-slurm-collect-test` | The Slurm lifecycle requirements; no Slurm installation, container engine, or network access | Exact-ID `sacct` and `scontrol` evidence, terminal/incomplete policy, captured source inputs, scheduler/log/workload export, validated per-worker fault-evidence aggregation, ownership and symlink rejection, non-overwrite behavior, honest nonpromotion labels, and every SHA-256 manifest entry using fake standard commands |
@@ -3741,6 +3760,7 @@ make simulation-libvirt-test
 make simulation-kubernetes-render-test
 make simulation-kubernetes-lifecycle-test
 make simulation-transport-evidence-test
+make simulation-workload-metrics-test
 make simulation-slurm-render-test
 make simulation-slurm-lifecycle-test
 make simulation-slurm-collect-test

@@ -59,7 +59,21 @@ cat > "$run_results/status.json" <<'EOF'
 EOF
 printf '%s\n' node-01 node-02 > "$run_results/nodes.txt"
 printf '%s\n' 'JobId=7654 JobState=COMPLETED' > "$run_results/slurm-job.txt"
-printf '%s\n' '{"correctness":"passed"}' > "$run_results/result.json"
+cat > "$run_results/result.json" <<'EOF'
+{
+  "schemaVersion": 1,
+  "runId": "uib-collect",
+  "status": "passed",
+  "worldSize": 2,
+  "device": "cpu",
+  "strategy": "ddp",
+  "completedSteps": 4,
+  "resumedFromStep": 0,
+  "durationSeconds": 2.0,
+  "samplesPerSecond": 8.0,
+  "loss": {"first": 4.0, "last": 2.0}
+}
+EOF
 printf '%s\n' \
 	'{"schemaVersion":1,"phase":"apply","target":"worker-01/data","result":"ok"}' \
 	'{"schemaVersion":1,"phase":"recover","target":"worker-01/data","result":"ok"}' \
@@ -133,6 +147,14 @@ with (root / "transport-evidence.json").open(encoding="utf-8") as source:
 assert transport["classification"] == "confirmed"
 assert transport["positiveMatches"] == ["uib-library", "ib-data-path"]
 assert transport["forbiddenMatches"] == []
+with (root / "metrics" / "workload.jsonl").open(encoding="utf-8") as source:
+    metrics = [json.loads(line) for line in source]
+assert len(metrics) == 1
+assert metrics[0]["kind"] == "training"
+assert metrics[0]["worldSize"] == 2
+assert metrics[0]["samplesPerSecond"] == 8.0
+assert metrics[0]["sourceFiles"] == ["workload/result.json"]
+assert summary["workloadMetricRecords"] == 1
 with (root / "faults.jsonl").open(encoding="utf-8") as source:
     faults = [json.loads(line) for line in source]
 assert len(faults) == 5

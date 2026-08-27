@@ -375,6 +375,9 @@ simulation-kubernetes-lifecycle-test:
 simulation-transport-evidence-test:
 	./tests/run_transport_evidence_test.sh
 
+simulation-workload-metrics-test:
+	./tests/run_workload_metrics_test.sh
+
 simulation-slurm-render-test:
 	./tests/run_slurm_render_test.sh
 
@@ -1018,6 +1021,7 @@ clean:
 	simulation-kubernetes-render-test simulation-slurm-render-test \
 	simulation-kubernetes-lifecycle-test \
 	simulation-transport-evidence-test \
+	simulation-workload-metrics-test \
 	simulation-slurm-lifecycle-test simulation-slurm-collect-test \
 	simulation-libvirt-test \
 	simulation-libvirt-e2e-test \
