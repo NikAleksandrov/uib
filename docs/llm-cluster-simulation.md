@@ -3593,6 +3593,7 @@ results/<run-id>/
   images.json
   preflight.json
   transport-evidence.json
+  host-probes.json
   network-emulation.json      # when infrastructure supplied validated evidence
   manifest.json
   scheduler/
@@ -3696,6 +3697,15 @@ degrees. `summary.json.workloadMetricRecords` gives the normalized record
 count. An empty JSONL file means no valid result was available; it is not a
 zero-valued measurement or a passing workload claim.
 
+For Kubernetes, `host-probes.json` records the standard client/server version
+response plus each Node's name, architecture, operating system, OS image,
+kernel, container runtime, and kubelet version. The raw `kubectl version` and
+Node objects remain under `scheduler/` for auditability. A failed or malformed
+probe is listed in `summary.json.missingArtifacts`; it never changes workload
+success or becomes an invented version. Equivalent in-allocation Slurm node
+probes remain pending because completed allocations cannot be queried safely
+after the job has released its nodes.
+
 Training metrics include tokens per second, step time, collective time,
 checkpoint time, loss, GPU use, host use, network counters, retries, and fault
 recovery.
@@ -3735,7 +3745,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-libvirt-training-e2e-test` | The libvirt gate requirements, the local training image or image-build access, 32 GiB guest disks, roughly 12 GiB host memory, and about 3 GiB ignored host cache space for the current image | Everything in the libvirt gate, content-addressed SquashFS creation or verified cache reuse, real two-worker CPU DDP training through Slurm/Pyxis/Enroot, collected training and image ledgers, and complete cleanup; the workload uses Gloo, while the separate provisioning gate supplies actual UIB traffic |
 | `make simulation-libvirt-inference-e2e-test` | The libvirt gate requirements, the local inference image or build access, the downloaded SmolLM2 cache, 8 GiB per VM, 64 GiB guest disks, and about 8 GiB ignored host image-cache space | Everything in the libvirt gate, bounded-memory SquashFS staging, verified Hugging Face cache transfer, real offline four-request CPU serving through Slurm/Pyxis/Enroot, request trace and artifact ledgers, and cleanup; the one-task workload itself has no UIB traffic |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
-| `make simulation-kubernetes-lifecycle-test` | The Kubernetes renderer requirements; no cluster, operator, or container engine | Exclusive run ownership, standard `kubectl apply/get/logs/delete` delegation, terminal and explicit incomplete snapshots, pod placement, per-container logs, per-pod UIB preflight verification, namespace cleanup, and SHA-256 evidence integrity using a fake kubectl executable |
+| `make simulation-kubernetes-lifecycle-test` | The Kubernetes renderer requirements; no cluster, operator, or container engine | Exclusive run ownership, standard `kubectl apply/get/logs/version/delete` delegation, terminal and explicit incomplete snapshots, pod placement, per-container logs, per-pod UIB preflight, client/server and Node host probes, namespace cleanup, and SHA-256 evidence integrity using a fake kubectl executable |
 | `make simulation-transport-evidence-test` | Python 3, PyYAML, and `jsonschema`; no cluster or communication library | Bounded NCCL, RCCL, UCX, and libfabric positive-selection rules; forbidden fallback precedence; insufficient, single-rank, Gloo, and native classifications; and oversized-log skipping |
 | `make simulation-workload-metrics-test` | Python 3, PyYAML, and `jsonschema`; no cluster, model, or dataset | Training and inference result normalization, duplicate-source merging, units and key metrics, run ownership, and rejection of non-finite values |
 | `make simulation-slurm-render-test` | Python 3, PyYAML, `jsonschema`, and a POSIX shell; no Slurm installation or container engine | Training and one-task inference batch syntax, exact Slurm resources, Pyxis image/mount/environment arguments, timed network-fault steps and evidence gates, unchanged workload JSON, rank-specific UIB address/ports, UIB preflight, RoCEv2/UET congestion settings, native baseline, immutable-image enforcement, protected result directories, and execution against fake `scontrol`/`srun` commands |

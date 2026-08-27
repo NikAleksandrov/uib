@@ -25,7 +25,8 @@ with log.open("a", encoding="utf-8") as output:
     output.write(json.dumps(arguments) + "\n")
 
 command = next((item for item in arguments
-                if item in {"apply", "delete", "get", "logs"}), None)
+                if item in {"apply", "delete", "get", "logs", "version"}),
+               None)
 if command == "apply":
     print("namespace/uib-kubernetes created")
     print("trainjob.trainer.kubeflow.org/uib-kubernetes created")
@@ -76,6 +77,26 @@ elif command == "get" and "namespace" in arguments:
     print("apiVersion: v1\nkind: Namespace\nmetadata:\n  name: uib-kubernetes")
 elif command == "get" and "events" in arguments:
     print("apiVersion: v1\nkind: EventList\nitems: []")
+elif command == "get" and "nodes" in arguments:
+    items = []
+    for index in (1, 2):
+        items.append({
+            "metadata": {"name": f"worker-{index:02d}"},
+            "status": {"nodeInfo": {
+                "architecture": "amd64",
+                "operatingSystem": "linux",
+                "osImage": "Test Linux",
+                "kernelVersion": "6.12.0-test",
+                "containerRuntimeVersion": "containerd://2.1.0",
+                "kubeletVersion": "v1.35.0",
+            }},
+        })
+    print(json.dumps({"apiVersion": "v1", "kind": "NodeList", "items": items}))
+elif command == "version":
+    print(json.dumps({
+        "clientVersion": {"gitVersion": "v1.35.0"},
+        "serverVersion": {"gitVersion": "v1.35.0"},
+    }))
 else:
     print("unsupported fake kubectl invocation: " + repr(arguments),
           file=sys.stderr)
@@ -163,6 +184,14 @@ assert metrics[0]["kind"] == "training"
 assert metrics[0]["samplesPerSecond"] == 8.0
 assert len(metrics[0]["sourceFiles"]) == 2
 assert summary["workloadMetricRecords"] == 1
+with (root / "host-probes.json").open(encoding="utf-8") as source:
+    probes = json.load(source)
+assert summary["hostProbeNodes"] == 2
+assert [node["name"] for node in probes["nodes"]] == [
+    "worker-01", "worker-02"]
+assert probes["nodes"][0]["kernelVersion"] == "6.12.0-test"
+assert probes["nodes"][0]["containerRuntimeVersion"] == "containerd://2.1.0"
+assert probes["versions"]["serverVersion"]["gitVersion"] == "v1.35.0"
 with (root / "preflight.json").open(encoding="utf-8") as source:
     preflight = json.load(source)
 assert preflight["expectedPods"] == 2
