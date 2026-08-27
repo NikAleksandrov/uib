@@ -42,7 +42,7 @@ SBATCH_COMMAND="$test_dir/fake-bin/sbatch" \
 	--set "storage.uibRuntimePath=$test_dir/runtime" \
 	--set "storage.modelCachePath=$test_dir/cache" \
 	--set "storage.resultsPath=$test_dir/results" \
-	--set 'faults=[{"at":"1s","action":"packet-loss","target":"worker-01/data","percent":1,"duration":"1s"},{"at":"2s","action":"link-down","target":"worker-02/data","duration":"1s"}]' \
+	--set 'faults=[{"at":"1s","action":"packet-loss","target":"worker-01/data","percent":1,"duration":"1s"},{"at":"2s","action":"link-down","target":"worker-02/data","duration":"1s"},{"at":"3s","action":"terminate-rank","rank":0}]' \
 	> /dev/null
 
 run_results=$test_dir/results/uib-collect
@@ -52,7 +52,9 @@ cat > "$run_results/status.json" <<'EOF'
   "runId": "uib-collect",
   "scheduler": "slurm",
   "jobId": "7654",
-  "exitCode": 0
+  "exitCode": 0,
+  "workloadExitCode": 143,
+  "expectedFaultOutcome": true
 }
 EOF
 printf '%s\n' node-01 node-02 > "$run_results/nodes.txt"
@@ -66,6 +68,9 @@ printf '%s\n' \
 	'{"schemaVersion":1,"phase":"apply","target":"worker-02/data","result":"ok"}' \
 	'{"schemaVersion":1,"phase":"recover","target":"worker-02/data","result":"ok"}' \
 	> "$run_results/faults-node-02.jsonl"
+printf '%s\n' \
+	'{"schemaVersion":1,"phase":"apply","action":"terminate-rank","target":"rank-0","rank":0,"result":"applied"}' \
+	> "$run_results/faults-ranks.jsonl"
 printf '%s\n' 'UIB preflight passed' > "$test_dir/results/uib-collect-7654.out"
 : > "$test_dir/results/uib-collect-7654.err"
 printf '%s\n' 'must not be collected' > "$test_dir/results/unrelated.out"
@@ -105,22 +110,25 @@ assert summary["schedulerState"] == "COMPLETED"
 assert summary["completeSchedulerSnapshot"] is True
 assert summary["workloadStatusRecorded"] is True
 assert summary["workloadExitCode"] == 0
+assert summary["underlyingWorkloadExitCode"] == 143
+assert summary["expectedFaultOutcome"] is True
 assert summary["uibEnabled"] is True
 assert summary["protocol"] == "uet"
 assert summary["congestionControl"]["algorithm"] == "nscc"
 assert summary["validationLevel"] == "not-assigned"
 assert summary["uibTrafficEvidence"] == "not-evaluated"
-assert summary["faultEvidenceFiles"] == 2
-assert summary["faultEvidenceRecords"] == 4
+assert summary["faultEvidenceFiles"] == 3
+assert summary["faultEvidenceRecords"] == 5
 assert "fault-evidence/completed-targets" not in summary["missingArtifacts"]
+assert "fault-evidence/terminated-ranks" not in summary["missingArtifacts"]
 assert summary["promotionEligible"] is False
 with (root / "faults.jsonl").open(encoding="utf-8") as source:
     faults = [json.loads(line) for line in source]
-assert len(faults) == 4
+assert len(faults) == 5
 assert {item["target"] for item in faults} == {
-    "worker-01/data", "worker-02/data"}
+    "worker-01/data", "worker-02/data", "rank-0"}
 assert {item["sourceFile"] for item in faults} == {
-    "faults-node-01.jsonl", "faults-node-02.jsonl"}
+    "faults-node-01.jsonl", "faults-node-02.jsonl", "faults-ranks.jsonl"}
 with (root / "topology.json").open(encoding="utf-8") as source:
     topology = json.load(source)
 assert topology["allocatedNodes"] == ["node-01", "node-02"]

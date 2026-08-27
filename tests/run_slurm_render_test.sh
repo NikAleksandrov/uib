@@ -159,6 +159,8 @@ assert status == {
     "scheduler": "slurm",
     "jobId": "4242",
     "exitCode": 0,
+    "workloadExitCode": 0,
+    "expectedFaultOutcome": False,
 }
 PY
 
@@ -297,10 +299,28 @@ if render_training uib-slurm-ucx --overlay communication/ucx \
 	exit 1
 fi
 
-if render_training uib-slurm-rank-fault \
+render_training uib-slurm-rank-fault \
 	--set 'faults=[{"at":"1s","action":"terminate-rank","rank":0}]' \
+	> "$test_dir/rank-fault.sbatch"
+sh -n "$test_dir/rank-fault.sbatch"
+grep -F '/usr/local/libexec/uib-rank-schedule' \
+	"$test_dir/rank-fault.sbatch" > /dev/null
+grep -F 'marker=/results/.uib-terminate-rank-$RANK' \
+	"$test_dir/rank-fault.sbatch" > /dev/null
+grep -F '"expectedFaultOutcome": $RANK_FAULT_EXPECTED' \
+	"$test_dir/rank-fault.sbatch" > /dev/null
+
+render_training uib-slurm-combined-fault \
+	--set 'faults=[{"at":"1s","action":"add-delay","target":"worker-01/data","latency":"2ms","duration":"1s"},{"at":"2s","action":"terminate-rank","rank":0}]' \
+	> "$test_dir/combined-fault.sbatch"
+sh -n "$test_dir/combined-fault.sbatch"
+grep -F "trap 'stop_fault_step; stop_rank_fault' EXIT INT TERM" \
+	"$test_dir/combined-fault.sbatch" > /dev/null
+
+if render_training uib-slurm-invalid-rank \
+	--set 'faults=[{"at":"1s","action":"terminate-rank","rank":2}]' \
 	> /dev/null 2>&1; then
-	echo "a scheduler-specific rank fault was accepted" >&2
+	echo "an out-of-range workload rank was accepted" >&2
 	exit 1
 fi
 

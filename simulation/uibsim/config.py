@@ -468,6 +468,13 @@ def validate_faults(config):
                 r"0+(?:ns|us|ms|s)", fault["latency"]):
             raise ConfigurationError(
                 f"faults[{index}] latency must be nonzero")
+        if action == "terminate-rank":
+            workload = config.get("workload")
+            parallel = workload["parallelism"] if workload else None
+            if (parallel and fault["rank"] >=
+                    (parallel["nodes"] * parallel["processesPerNode"])):
+                raise ConfigurationError(
+                    f"faults[{index}] rank is outside the workload")
         if "percent" in fault and fault["percent"] <= 0:
             raise ConfigurationError(
                 f"faults[{index}] percent must be greater than zero")

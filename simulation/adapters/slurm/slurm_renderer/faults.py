@@ -3,7 +3,7 @@
 import shlex
 
 
-def task_wrapper(uib_enabled):
+def task_wrapper(uib_enabled, terminate_rank):
 	lines = [
 		"set -eu",
 		"export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -36,12 +36,24 @@ def task_wrapper(uib_enabled):
 			"export UIB_BIND_PORT=$((SLURM_UIB_BIND_PORT_BASE + LOCAL_RANK))",
 			"/opt/uib/bin/uib-preflight --library-only",
 		])
+	if terminate_rank:
+		lines.extend([
+			"rank_fault_pid=$$",
+			"(",
+			"\tmarker=/results/.uib-terminate-rank-$RANK",
+			"\twhile [ ! -e \"$marker\" ]; do sleep 0.05; done",
+			"\tprintf '%s\\n' \"$rank_fault_pid\" > \"$marker.ack\"",
+			"\tkill -TERM \"$rank_fault_pid\"",
+			") &",
+		])
 	lines.append('exec "$@"')
 	return "\n".join(lines)
 
 
 def fault_step(config):
-	if not config.get("faults"):
+	if not any(fault["action"] in (
+		"add-delay", "packet-loss", "link-down"
+	) for fault in config.get("faults", [])):
 		return []
 	parallel = config["workload"]["parallelism"]
 	provider = config["infrastructure"]["provider"]
@@ -105,12 +117,73 @@ def fault_step(config):
 	]
 
 
+def rank_fault_step(config):
+	if not any(fault["action"] == "terminate-rank"
+	           for fault in config.get("faults", [])):
+		return []
+	adapter = ("/run/uib-rank-schedule"
+	           if config["infrastructure"]["provider"] == "virtme"
+	           else "/usr/local/libexec/uib-rank-schedule")
+	command = [
+		adapter, "$RUN_DIR/resolved-simulation.json",
+		"--marker-dir", "$RUN_DIR", "--output",
+		"$RUN_DIR/faults-ranks.jsonl",
+	]
+	quoted = [f'"{argument}"' if argument.startswith("$") else
+	          shlex.quote(argument) for argument in command]
+	stop = "stop_rank_fault"
+	if any(fault["action"] in ("add-delay", "packet-loss", "link-down")
+	       for fault in config["faults"]):
+		stop = "stop_fault_step; stop_rank_fault"
+	return [
+		"RANK_FAULT_PID=",
+		"RANK_FAULT_STATUS=0",
+		"RANK_FAULT_INTERRUPTED=0",
+		"stop_rank_fault() {",
+		'\t[ -n "$RANK_FAULT_PID" ] || return 0',
+		"\trank_fault_wait=0",
+		'\twhile kill -0 "$RANK_FAULT_PID" 2>/dev/null && '
+		'[ "$rank_fault_wait" -lt 20 ]; do',
+		"\t\tsleep 0.05",
+		"\t\trank_fault_wait=$((rank_fault_wait + 1))",
+		"\tdone",
+		'\tif kill -0 "$RANK_FAULT_PID" 2>/dev/null; then',
+		"\t\tRANK_FAULT_INTERRUPTED=1",
+		'\t\tkill -TERM "$RANK_FAULT_PID" 2>/dev/null || true',
+		"\tfi",
+		'\tif wait "$RANK_FAULT_PID"; then',
+		"\t\trank_fault_rc=0",
+		"\telse",
+		"\t\trank_fault_rc=$?",
+		"\tfi",
+		"\tif [ \"$RANK_FAULT_INTERRUPTED\" -eq 0 ] && "
+		"[ \"$rank_fault_rc\" -ne 0 ]; then",
+		"\t\tRANK_FAULT_STATUS=$rank_fault_rc",
+		"\tfi",
+		"\tRANK_FAULT_PID=",
+		"}",
+		" \\\n\t".join(quoted) + " &",
+		"RANK_FAULT_PID=$!",
+		f"trap '{stop}' EXIT INT TERM",
+	]
+
+
 def fault_evidence(config):
 	if not config.get("faults"):
 		return []
-	return [
-		"stop_fault_step",
-		"trap - EXIT INT TERM",
+	network = any(fault["action"] in (
+		"add-delay", "packet-loss", "link-down"
+	) for fault in config["faults"])
+	rank = any(fault["action"] == "terminate-rank"
+	           for fault in config["faults"])
+	lines = []
+	if network:
+		lines.append("stop_fault_step")
+	if rank:
+		lines.append("stop_rank_fault")
+	lines.append("trap - EXIT INT TERM")
+	if network:
+		lines.extend([
 		"FAULT_EXPECTED_TARGETS=$(jq -r '[.faults[] | select(has(\"at\") and "
 		"(.action == \"add-delay\" or .action == \"packet-loss\" or "
 		".action == \"link-down\")) | .target] | unique | length' "
@@ -144,4 +217,35 @@ def fault_evidence(config):
 		'if [ "$FAULT_STEP_STATUS" -ne 0 ] && [ "$status" -eq 0 ]; then',
 		"\tstatus=$FAULT_STEP_STATUS",
 		"fi",
-	]
+		])
+	if rank:
+		lines.extend([
+			"RANK_FAULT_RANK=$(jq -r '[.faults[] | select(.action == "
+			"\"terminate-rank\")][0].rank' "
+			'"$RUN_DIR/resolved-simulation.json")',
+			"RANK_FAULT_APPLIED=$(jq -s '[.[] | select(.phase == "
+			"\"apply\" and .action == \"terminate-rank\" and "
+			".result == \"applied\")] | length' "
+			'"$RUN_DIR/faults-ranks.jsonl" 2>/dev/null || echo 0)',
+			'if [ "$RANK_FAULT_APPLIED" -ne 1 ]; then',
+			'\techo "rank termination did not execute" >&2',
+			"\tRANK_FAULT_STATUS=2",
+			"fi",
+			'if [ ! -s "$RUN_DIR/.uib-terminate-rank-'
+			'$RANK_FAULT_RANK.ack" ]; then',
+			'\techo "selected rank did not acknowledge termination" >&2',
+			"\tRANK_FAULT_STATUS=2",
+			"fi",
+			'if [ "$workload_status" -eq 0 ]; then',
+			'\techo "terminated rank did not fail the workload step" >&2',
+			"\tRANK_FAULT_STATUS=2",
+			"fi",
+			'if [ "$RANK_FAULT_STATUS" -eq 0 ]; then',
+			"\tRANK_FAULT_EXPECTED=true",
+			"\tstatus=0",
+			"else",
+			"\tstatus=$RANK_FAULT_STATUS",
+			"fi",
+			'rm -f "$RUN_DIR"/.uib-terminate-rank-*',
+		])
+	return lines

@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+
+import argparse
+import json
+import os
+import pathlib
+import re
+import signal
+import sys
+import time
+
+
+OFFSET = re.compile(r"^([0-9]+)(ms|s|m|h)$")
+
+
+class ScheduleError(Exception):
+    pass
+
+
+def seconds(value):
+    match = OFFSET.fullmatch(value)
+    if not match:
+        raise ScheduleError(f"invalid time offset: {value}")
+    return int(match.group(1)) * {
+        "ms": 0.001,
+        "s": 1,
+        "m": 60,
+        "h": 3600,
+    }[match.group(2)]
+
+
+def load_fault(path):
+    try:
+        with pathlib.Path(path).open(encoding="utf-8") as source:
+            config = json.load(source)
+    except (OSError, json.JSONDecodeError) as error:
+        raise ScheduleError(f"cannot load configuration: {error}") from error
+    selected = [
+        (index, fault) for index, fault in enumerate(config.get("faults", []))
+        if fault.get("action") == "terminate-rank"
+    ]
+    if len(selected) != 1:
+        raise ScheduleError("exactly one rank-termination fault is required")
+    index, fault = selected[0]
+    if "at" not in fault:
+        raise ScheduleError(f"faults[{index}] is event-relative")
+    return index, fault
+
+
+def append_record(output, record):
+    output.write(json.dumps(record, sort_keys=True) + "\n")
+    output.flush()
+
+
+def run(config_path, marker_dir, output):
+    index, fault = load_fault(config_path)
+    planned = seconds(fault["at"])
+    rank = fault["rank"]
+    target = f"rank-{rank}"
+    marker = marker_dir / f".uib-terminate-rank-{rank}"
+    began = time.monotonic()
+    remaining = began + planned - time.monotonic()
+    if remaining > 0:
+        time.sleep(remaining)
+    descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(f"{index}\n")
+    append_record(output, {
+        "schemaVersion": 1,
+        "sourceIndex": index,
+        "phase": "apply",
+        "action": "terminate-rank",
+        "target": target,
+        "rank": rank,
+        "plannedOffsetSeconds": planned,
+        "actualOffsetSeconds": time.monotonic() - began,
+        "marker": marker.name,
+        "result": "applied",
+    })
+
+
+def interrupted(signum, unused):
+    raise ScheduleError(f"interrupted by signal {signum}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="schedule one time-relative Slurm rank termination")
+    parser.add_argument("config", help="resolved uib-sim JSON")
+    parser.add_argument("--marker-dir", required=True,
+                        help="existing run-owned shared result directory")
+    parser.add_argument("--output", required=True,
+                        help="new JSONL evidence file")
+    args = parser.parse_args()
+    marker_dir = pathlib.Path(args.marker_dir)
+    output_path = pathlib.Path(args.output)
+    try:
+        signal.signal(signal.SIGINT, interrupted)
+        signal.signal(signal.SIGTERM, interrupted)
+        if not marker_dir.is_dir() or marker_dir.is_symlink():
+            raise ScheduleError("marker directory is not a normal directory")
+        with output_path.open("x", encoding="utf-8") as output:
+            run(args.config, marker_dir, output)
+    except (OSError, ScheduleError) as error:
+        print(f"rank-schedule: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

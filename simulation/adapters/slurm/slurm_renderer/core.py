@@ -131,7 +131,9 @@ def validate_config(config, run_id, allow_mutable_tags):
 	if gpus and gpus % parallel["processesPerNode"]:
 		raise RenderError("GPUs per worker must be divisible by processesPerNode")
 	for index, fault in enumerate(config.get("faults", [])):
-		if fault["action"] not in ("add-delay", "packet-loss", "link-down"):
+		if fault["action"] not in (
+			"add-delay", "packet-loss", "link-down", "terminate-rank"
+		):
 			raise RenderError(
 				f"faults[{index}] requires a scheduler-specific executor"
 			)
@@ -139,6 +141,9 @@ def validate_config(config, run_id, allow_mutable_tags):
 			raise RenderError(
 				f"faults[{index}] event-relative execution is not implemented"
 			)
+	if sum(fault["action"] == "terminate-rank"
+	       for fault in config.get("faults", [])) > 1:
+		raise RenderError("the Slurm adapter supports one rank termination")
 
 	kind = workload["kind"]
 	if kind == "training":

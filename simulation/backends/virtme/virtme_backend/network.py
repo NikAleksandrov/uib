@@ -14,6 +14,8 @@ def apply_network_shaping(config, topology_value, ssh, key):
         adapter = (SIMULATION / "network/netem").read_text(encoding="utf-8")
         schedule = (SIMULATION / "faults/network-schedule").read_text(
             encoding="utf-8")
+        rank_schedule = (SIMULATION / "faults/rank-schedule").read_text(
+            encoding="utf-8")
     except OSError as error:
         raise VirtmeError(
             f"cannot read the network adapters: {error}") from error
@@ -30,6 +32,8 @@ def apply_network_shaping(config, topology_value, ssh, key):
         remote_write(ssh, key, guest, "/run/uib-netem", adapter, mode="0755")
         remote_write(ssh, key, guest, "/run/uib-network-schedule", schedule,
                      mode="0755")
+        remote_write(ssh, key, guest, "/run/uib-rank-schedule",
+                     rank_schedule, mode="0755")
         remote_write(ssh, key, guest, "/run/uib-fault-target",
                      f"{target}\n")
         remote_write(

@@ -467,7 +467,7 @@ faults:
     target: worker-02/data
     percent: 1
     duration: 15s
-  - afterEvent: checkpoint-complete
+  - at: 6m
     action: terminate-rank
     rank: 7
 ```
@@ -488,8 +488,8 @@ then restores the resolved base network condition after each recovery. SIGINT,
 SIGTERM, and command failures also trigger restoration and a final `cleanup`
 record. The output path must be new. Every JSONL transition contains its source
 index, planned and actual monotonic offset, active faults, exact command result,
-and effective shaping. Event-relative faults and `terminate-rank` require the
-scheduler-specific executor because they depend on Kubernetes or Slurm state.
+and effective shaping. Event-relative faults still require a backend-specific
+event source.
 
 The virtme and libvirt backends install the scheduler on every worker and map
 workers, in hostname order, to `worker-01/data`, `worker-02/data`, and so on.
@@ -498,8 +498,14 @@ the same time origin as the workload. It stops the tasks after the workload,
 restores the base network condition, and fails the job if a requested target
 did not produce every `apply` and `recover` record. A fault window extending
 beyond the workload therefore fails rather than reporting a truncated test as
-complete. Only time-relative `add-delay`, `packet-loss`, and `link-down` faults
-are accepted by this path.
+complete. Time-relative `add-delay`, `packet-loss`, `link-down`, and one
+`terminate-rank` fault are accepted by the Slurm path. Rank termination uses a
+run-owned marker on the shared result mount; a small launcher wrapper sends
+SIGTERM to the selected rank without modifying the workload image or command.
+The batch succeeds only when the marker was emitted, the selected process made
+the workload step fail, and the rank evidence is complete. `status.json`
+retains the nonzero `workloadExitCode` and sets `expectedFaultOutcome: true`,
+so an intentional failure is distinct from an unexplained failure.
 
 Changing qdiscs or link state requires network-administration privilege. The
 virtme Slurm service and its jobs run as root inside disposable guests. The
@@ -511,10 +517,12 @@ install these files on every worker before accepting a request with `faults`:
 | Worker file | Required content |
 |---|---|
 | `/run/uib-network-schedule` | Executable copy of `simulation/faults/network-schedule` |
+| `/usr/local/libexec/uib-rank-schedule` | Executable copy of `simulation/faults/rank-schedule`; needed for rank faults |
 | `/run/uib-fault-target` | One stable target followed by a newline, such as `worker-01/data` |
 | `/usr/local/libexec/uib-netem` | Executable copy of `simulation/network/netem` |
 
-The job also requires `jq`, `tc`, `ip`, and noninteractive sudo permission for
+The job also requires Python 3 and `jq`. Network faults additionally require
+`tc`, `ip`, and noninteractive sudo permission for
 `/usr/local/libexec/uib-netem *` and `/usr/sbin/ip link set dev *`. Target names
 must be unique and must match the request exactly. A request without `faults`
 does not start a scheduler or require this setup.
@@ -713,6 +721,7 @@ nodes * processesPerNode == data * tensor * pipeline * expert
 | Gilbert-Elliott loss without all recovery/bad-state/good-state percentages | The four values define the complete reproducible burst model |
 | Gilbert-Elliott parameters with random loss, or random-loss correlation with `gemodel` | The two netem loss grammars are mutually exclusive |
 | Missing or action-inapplicable fault fields | Each fault has one unambiguous executor contract; network faults always include a recovery duration |
+| More than one Slurm rank termination | The current expected-failure classifier supports exactly one selected rank |
 | Correlation without its delay/loss/duplicate/corrupt/reorder parent | Invalid netem grammar |
 | Cell size without packet overhead; cell overhead without cell size | Invalid netem rate grammar |
 | Shaping an `existing` profile without `allowExistingMutations: true` | Protects real interfaces |
@@ -2291,11 +2300,12 @@ includes inputs, scheduler records, logs, workload output, topology, metadata,
 summaries, and a SHA-256 manifest; missing artifacts are explicit.
 
 For a timed network-fault run, each worker writes
-`workload/faults-<slurm-node>.jsonl`. Collection validates every record, adds
+`workload/faults-<slurm-node>.jsonl`; rank termination writes
+`workload/faults-ranks.jsonl`. Collection validates every record, adds
 its `sourceFile`, and merges the records into top-level `faults.jsonl`.
 `summary.json` records `faultEvidenceFiles` and `faultEvidenceRecords`; a
-requested target without both `apply` and `recover` records is listed as
-missing evidence.
+requested network target without both `apply` and `recover` records, or a
+requested rank without its `apply` record, is listed as missing evidence.
 
 The collector deliberately sets `validationLevel` to `not-assigned`,
 `uibTrafficEvidence` to `not-evaluated`, and `promotionEligible` to false.
@@ -3536,6 +3546,7 @@ results/<run-id>/
     nodes.txt
     slurm-job.txt
     faults-<slurm-node>.jsonl  # one per affected worker
+    faults-ranks.jsonl         # when a Slurm rank is terminated
     ... workload-owned checkpoints, metrics, and traces ...
   metrics/
   traces/
@@ -3593,6 +3604,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-cli-test` | Python 3, PyYAML, and `jsonschema` | Every profile, named layer replacement, schema and semantic rejection, typed `--set`, and the read-only `doctor` report |
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in uniform and per-worker network condition renders to the expected `tc netem` command; unsafe interfaces, targets, and invalid combinations are rejected; it does not modify a qdisc |
 | `make simulation-fault-schedule-test` | Python 3, `jq`, and the CLI requirements; no network privilege | Overlapping delay, loss, and link-down transitions, direct and noninteractive privileged command dispatch, exact JSONL evidence, base-condition recovery, missing targets, and signal-interruption cleanup through controlled standard-command adapters |
+| `make simulation-rank-fault-test` | Python 3 and POSIX shell tools; no Slurm installation or elevated privilege | Monotonic rank-fault timing, exclusive run-owned markers, JSONL evidence, invalid schedule rejection, and actual SIGTERM of an unchanged wrapped process |
 | `make simulation-fault-e2e-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | A timed 2 ms netem window carries the complete RoCEv2 UIB SEND, multi-packet, RDMA read/write, and atomic workload; nonzero qdisc counters, transition evidence, and exact recovery are required |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | RoCEv2 and UET SEND and RDMA read/write complete with actual netem conditions and built-in or plugin congestion control; the UET cases also cover atomics |
 | `make simulation-mtu-test` | Build dependencies, `ip`, `timeout`, `ibv_rc_pingpong`, and permission to create network namespaces and veth pairs | Actual 2051-byte multi-packet RoCEv2 traffic at link MTUs 576 and 1280, plus UET at 576; both endpoints use and advertise the automatically derived active MTU |
@@ -3617,11 +3629,13 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, admission, two-node torchrun rendezvous, distinct placement, UIB preflight, CPU DDP result, and complete run/operator/cluster cleanup; no UIB traffic |
 | `make simulation-kuberay-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, roughly 10 GB of image storage, four CPU cores and 8 GiB for the Ray head; network access for uncached images, source archives, chart, and model revision | Required actual two-worker UIB verbs traffic, portable-runtime compatibility, KubeRay v1.6.2 admission and Ray 2.58.0 readiness, offline cached SmolLM2 inference, four-result correctness, retained evidence, and complete cleanup; the single-rank inference portion itself sends no UIB traffic |
 
-Run the ten hardware-neutral gates:
+Run the twelve hardware-neutral gates:
 
 ```text
 make simulation-cli-test
 make simulation-netem-test
+make simulation-fault-schedule-test
+make simulation-rank-fault-test
 make simulation-congestion-test
 make simulation-kind-test
 make simulation-virtme-backend-test

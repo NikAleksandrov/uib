@@ -553,6 +553,11 @@ def command_collect(args):
                         not isinstance(workload_status.get("exitCode"), int)):
                     raise ConfigurationError(
                         f"workload status ownership mismatch: {status_path}")
+                if ("expectedFaultOutcome" in workload_status and
+                        not isinstance(
+                            workload_status["expectedFaultOutcome"], bool)):
+                    raise ConfigurationError(
+                        f"invalid fault outcome in {status_path}")
             if not remote:
                 copy_tree(workload_results, temporary / "workload")
         else:
@@ -595,6 +600,12 @@ def command_collect(args):
         if expected_fault_targets - (applied_fault_targets &
                                      recovered_fault_targets):
             missing.append("fault-evidence/completed-targets")
+        expected_rank_targets = {
+            f"rank-{fault['rank']}" for fault in config.get("faults", [])
+            if fault["action"] == "terminate-rank"
+        }
+        if expected_rank_targets - applied_fault_targets:
+            missing.append("fault-evidence/terminated-ranks")
 
         nodes = []
         nodes_path = ((temporary / "workload" / "nodes.txt") if remote else
@@ -647,6 +658,12 @@ def command_collect(args):
             "schedulerExitCode": scheduler["exitCode"],
             "workloadExitCode": (workload_status.get("exitCode")
                                  if workload_status else None),
+            "underlyingWorkloadExitCode": (
+                workload_status.get("workloadExitCode")
+                if workload_status else None),
+            "expectedFaultOutcome": (
+                workload_status.get("expectedFaultOutcome", False)
+                if workload_status else False),
             "workloadStatusRecorded": workload_status is not None,
             "uibEnabled": config["uib"]["enabled"],
             "protocol": config["uib"]["protocol"] if config["uib"]["enabled"] else None,

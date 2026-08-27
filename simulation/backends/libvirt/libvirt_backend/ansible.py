@@ -24,6 +24,8 @@ def common_ansible_values(config, values, state, run_id):
         "uib_netem_source": str(SIMULATION / "network" / "netem"),
         "uib_fault_schedule_source": str(
             SIMULATION / "faults" / "network-schedule"),
+        "uib_rank_schedule_source": str(
+            SIMULATION / "faults" / "rank-schedule"),
         "uib_fault_targets": targets,
         "uib_endpoint_shaping": {
             name: endpoint_shaping.get(target, default_shaping)

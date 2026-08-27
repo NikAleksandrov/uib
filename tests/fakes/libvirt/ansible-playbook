@@ -57,6 +57,8 @@ assert values["uib_network_shaping"] == {"enabled": False}
 assert values["uib_netem_source"].endswith("/simulation/network/netem")
 assert values["uib_fault_schedule_source"].endswith(
     "/simulation/faults/network-schedule")
+assert values["uib_rank_schedule_source"].endswith(
+    "/simulation/faults/rank-schedule")
 assert values["uib_fault_targets"] == {
     "worker-01": "worker-01/data",
     "worker-02": "worker-02/data",

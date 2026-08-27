@@ -327,6 +327,9 @@ simulation-netem-test:
 simulation-fault-schedule-test:
 	./tests/run_fault_schedule_test.sh
 
+simulation-rank-fault-test:
+	./tests/run_rank_schedule_test.sh
+
 simulation-fault-e2e-test: all $(TEST_BIN)
 	./tests/run_fault_schedule_e2e_test.sh
 
@@ -997,6 +1000,7 @@ clean:
 	diagnostic-sources diagnostic-image diagnostic-smoke-test \
 	diagnostic-uib-preflight-test diagnostic-gpu-test \
 	simulation-cli-test simulation-netem-test simulation-fault-schedule-test \
+	simulation-rank-fault-test \
 	simulation-fault-e2e-test simulation-congestion-test \
 	simulation-kind-test simulation-kind-e2e-test \
 	simulation-virtme-backend-test \

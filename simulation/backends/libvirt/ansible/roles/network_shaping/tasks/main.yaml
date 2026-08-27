@@ -17,6 +17,14 @@
     group: root
     mode: "0755"
 
+- name: Install the common rank fault scheduler
+  ansible.builtin.copy:
+    src: "{{ uib_rank_schedule_source }}"
+    dest: /usr/local/libexec/uib-rank-schedule
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Install the stable worker fault target
   ansible.builtin.copy:
     dest: /run/uib-fault-target

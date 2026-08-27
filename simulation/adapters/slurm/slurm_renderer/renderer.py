@@ -28,7 +28,7 @@ def workload_command(config):
 def render(config, run_id, allow_mutable_tags):
 	from .core import shell_assignment, validate_config
 	from .environment import container_mounts, directives, environment
-	from .faults import fault_evidence, fault_step, task_wrapper
+	from .faults import fault_evidence, fault_step, rank_fault_step, task_wrapper
 
 	validate_config(config, run_id, allow_mutable_tags)
 	config = copy.deepcopy(config)
@@ -98,7 +98,7 @@ def render(config, run_id, allow_mutable_tags):
 			'\texit 2',
 			'fi',
 		])
-	lines.extend(["", *fault_step(config)])
+	lines.extend(["", *fault_step(config), *rank_fault_step(config)])
 
 	mounts = container_mounts(config)
 	lines.extend([
@@ -124,7 +124,10 @@ def render(config, run_id, allow_mutable_tags):
 		f"--container-env={','.join(environment_names)}",
 		"/bin/sh",
 		"-c",
-		task_wrapper(config["uib"]["enabled"]),
+		task_wrapper(
+			config["uib"]["enabled"],
+			any(fault["action"] == "terminate-rank"
+			    for fault in config.get("faults", []))),
 		"uib-slurm",
 		*workload_command(config),
 	]
@@ -142,14 +145,18 @@ def render(config, run_id, allow_mutable_tags):
 			quoted.append(shlex.quote(argument))
 	lines.append(" \\\n\t".join(quoted) + " || status=$?")
 	lines.extend([
-		'status=${status:-0}',
+		'workload_status=${status:-0}',
+		'status=$workload_status',
+		'RANK_FAULT_EXPECTED=false',
 		*fault_evidence(config),
 		'cat > "$RUN_DIR/status.json" <<UIB_STATUS_JSON_EOF',
 		'{',
 		f'  "runId": "{run_id}",',
 		'  "scheduler": "slurm",',
 		'  "jobId": "$SLURM_JOB_ID",',
-		'  "exitCode": $status',
+		'  "exitCode": $status,',
+		'  "workloadExitCode": $workload_status,',
+		'  "expectedFaultOutcome": $RANK_FAULT_EXPECTED',
 		'}',
 		'UIB_STATUS_JSON_EOF',
 		'exit "$status"',

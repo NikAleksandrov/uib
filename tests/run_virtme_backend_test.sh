@@ -76,6 +76,7 @@ python3 "$project_dir/tests/cases/virtme_backend/lifecycle_status.py" "$test_dir
 grep -q 'server: https://127.0.0.1:23003' \
 	"$test_dir/exported-kubeconfig"
 [ "$(grep -c '/run/uib-network-schedule' "$test_dir/ssh.log")" -eq 2 ]
+[ "$(grep -c '/run/uib-rank-schedule' "$test_dir/ssh.log")" -eq 2 ]
 [ "$(grep -c '/run/uib-fault-target' "$test_dir/ssh.log")" -eq 2 ]
 grep -F -- '--target worker-01/data' "$test_dir/ssh.log" > /dev/null
 grep -F -- '--target worker-02/data' "$test_dir/ssh.log" > /dev/null
