@@ -52,7 +52,7 @@ def task_wrapper(uib_enabled, terminate_rank):
 
 def fault_step(config):
 	if not any(fault["action"] in (
-		"add-delay", "packet-loss", "link-down"
+		"add-delay", "packet-loss", "link-down", "partition"
 	) for fault in config.get("faults", [])):
 		return []
 	parallel = config["workload"]["parallelism"]
@@ -67,7 +67,7 @@ def fault_step(config):
 	selector = (
 		'.faults // [] | any(.target == $target and has("at") and '
 		'(.action == "add-delay" or .action == "packet-loss" or '
-		'.action == "link-down"))'
+		'.action == "link-down" or .action == "partition"))'
 	)
 	remote = (
 		"set -eu; target=$(cat /run/uib-fault-target); "
@@ -132,7 +132,8 @@ def rank_fault_step(config):
 	quoted = [f'"{argument}"' if argument.startswith("$") else
 	          shlex.quote(argument) for argument in command]
 	stop = "stop_rank_fault"
-	if any(fault["action"] in ("add-delay", "packet-loss", "link-down")
+	if any(fault["action"] in (
+		"add-delay", "packet-loss", "link-down", "partition")
 	       for fault in config["faults"]):
 		stop = "stop_fault_step; stop_rank_fault"
 	return [
@@ -172,7 +173,7 @@ def fault_evidence(config):
 	if not config.get("faults"):
 		return []
 	network = any(fault["action"] in (
-		"add-delay", "packet-loss", "link-down"
+		"add-delay", "packet-loss", "link-down", "partition"
 	) for fault in config["faults"])
 	rank = any(fault["action"] == "terminate-rank"
 	           for fault in config["faults"])
@@ -186,11 +187,13 @@ def fault_evidence(config):
 		lines.extend([
 		"FAULT_EXPECTED_TARGETS=$(jq -r '[.faults[] | select(has(\"at\") and "
 		"(.action == \"add-delay\" or .action == \"packet-loss\" or "
-		".action == \"link-down\")) | .target] | unique | length' "
+		".action == \"link-down\" or .action == \"partition\")) "
+		"| .target] | unique | length' "
 		'"$RUN_DIR/resolved-simulation.json")',
 		"FAULT_EXPECTED_EVENTS=$(jq -r '[.faults[] | select(has(\"at\") and "
 		"(.action == \"add-delay\" or .action == \"packet-loss\" or "
-		".action == \"link-down\"))] | length' "
+		".action == \"link-down\" or .action == \"partition\"))] "
+		"| length' "
 		'"$RUN_DIR/resolved-simulation.json")',
 		"FAULT_RECORDED=0",
 		"FAULT_APPLIED=0",

@@ -595,7 +595,8 @@ def command_collect(args):
                 collected_workload, temporary / "faults.jsonl")
         expected_fault_targets = {
             fault["target"] for fault in config.get("faults", [])
-            if fault["action"] in ("add-delay", "packet-loss", "link-down")
+            if fault["action"] in (
+                "add-delay", "packet-loss", "link-down", "partition")
         }
         if expected_fault_targets - (applied_fault_targets &
                                      recovered_fault_targets):

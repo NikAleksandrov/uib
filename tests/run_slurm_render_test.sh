@@ -192,6 +192,13 @@ grep -F -- 'FAULT_RECOVERED=' "$test_dir/fault.sbatch" > /dev/null
 grep -F -- "faults-\${SLURMD_NODENAME}.jsonl" \
 	"$test_dir/fault.sbatch" > /dev/null
 
+render_training uib-slurm-partition \
+	--set 'faults=[{"at":"1s","action":"partition","target":"worker-01/data","duration":"1s"}]' \
+	> "$test_dir/partition.sbatch"
+sh -n "$test_dir/partition.sbatch"
+grep -F -- '.action == "partition"' "$test_dir/partition.sbatch" \
+	> /dev/null
+
 "$cli" render-workload --profile virtme-slurm --request "$training" \
 	--run-id uib-virtme-fault --allow-mutable-tags \
 	--set "storage.uibRuntimePath=$test_dir/runtime" \

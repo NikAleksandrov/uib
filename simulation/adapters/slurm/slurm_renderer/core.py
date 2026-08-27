@@ -132,7 +132,8 @@ def validate_config(config, run_id, allow_mutable_tags):
 		raise RenderError("GPUs per worker must be divisible by processesPerNode")
 	for index, fault in enumerate(config.get("faults", [])):
 		if fault["action"] not in (
-			"add-delay", "packet-loss", "link-down", "terminate-rank"
+			"add-delay", "packet-loss", "link-down", "partition",
+			"terminate-rank"
 		):
 			raise RenderError(
 				f"faults[{index}] requires a scheduler-specific executor"

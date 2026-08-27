@@ -18,7 +18,7 @@ SIMULATION = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_NETEM = SIMULATION / "network" / "netem"
 INTERFACE = re.compile(r"^[A-Za-z0-9_.:@-]{1,32}$")
 OFFSET = re.compile(r"^([0-9]+)(ms|s|m|h)$")
-NETWORK_ACTIONS = {"add-delay", "packet-loss", "link-down"}
+NETWORK_ACTIONS = {"add-delay", "packet-loss", "link-down", "partition"}
 
 
 class ScheduleError(Exception):
@@ -56,6 +56,7 @@ def effective_config(config, active):
     effective = copy.deepcopy(config)
     shaping = copy.deepcopy(config["network"]["shaping"])
 
+    partitioned = False
     for _, fault in sorted(active.items()):
         if fault["action"] == "add-delay":
             shaping["enabled"] = True
@@ -68,6 +69,16 @@ def effective_config(config, active):
                     "lossCorrelationPercent", "lossRecoveryPercent",
                     "lossBadStatePercent", "lossGoodStatePercent"):
                 shaping.pop(name, None)
+        elif fault["action"] == "partition":
+            partitioned = True
+    if partitioned:
+        shaping["enabled"] = True
+        shaping["lossModel"] = "random"
+        shaping["lossPercent"] = 100
+        for name in (
+                "lossCorrelationPercent", "lossRecoveryPercent",
+                "lossBadStatePercent", "lossGoodStatePercent"):
+            shaping.pop(name, None)
     effective["network"]["shaping"] = shaping
     return effective
 

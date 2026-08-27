@@ -47,6 +47,10 @@ faults:
     action: link-down
     target: worker-01/data
     duration: 1ms
+  - at: 2ms
+    action: partition
+    target: worker-01/data
+    duration: 1ms
 EOF
 "$cli" render --profile virtme-kubernetes --overlay network/clean \
 	--request "$test_dir/faults.yaml" --format json \
@@ -65,16 +69,17 @@ import sys
 
 records = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text(
     encoding="utf-8").splitlines()]
-assert len(records) == 6
+assert len(records) == 8
 assert all(record["result"] == "applied" for record in records)
-assert [record["phase"] for record in records].count("apply") == 3
-assert [record["phase"] for record in records].count("recover") == 3
+assert [record["phase"] for record in records].count("apply") == 4
+assert [record["phase"] for record in records].count("recover") == 4
 assert records[-1]["activeFaults"] == []
 assert records[-1]["commands"][-1]["shaping"] == {
     "enabled": True, "latency": "7ms"}
 commands = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
 assert '"latency":"5ms"' in commands
 assert '"lossPercent":2' in commands
+assert '"lossPercent":100' in commands
 assert '"latency":"7ms"' in commands
 assert "ip link set dev eth-test down" in commands
 assert "ip link set dev eth-test up" in commands

@@ -445,6 +445,7 @@ def validate_faults(config):
         "add-delay": {"target", "latency", "duration"},
         "packet-loss": {"target", "percent", "duration"},
         "link-down": {"target", "duration"},
+        "partition": {"target", "duration"},
         "terminate-rank": {"rank"},
     }
     optional_fields = {"at", "afterEvent", "action"}

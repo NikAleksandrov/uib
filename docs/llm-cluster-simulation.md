@@ -467,6 +467,10 @@ faults:
     target: worker-02/data
     percent: 1
     duration: 15s
+  - at: 5m
+    action: partition
+    target: worker-02/data
+    duration: 10s
   - at: 6m
     action: terminate-rank
     rank: 7
@@ -483,13 +487,20 @@ simulation/faults/network-schedule /tmp/uib-config.json \
   --output /results/faults-worker-01.jsonl &
 ```
 
-The scheduler composes overlapping delay, random-loss, and link-down windows,
-then restores the resolved base network condition after each recovery. SIGINT,
+The scheduler composes overlapping delay, random-loss, partition, and
+link-down windows, then restores the resolved base network condition after
+each recovery. SIGINT,
 SIGTERM, and command failures also trigger restoration and a final `cleanup`
 record. The output path must be new. Every JSONL transition contains its source
 index, planned and actual monotonic offset, active faults, exact command result,
 and effective shaping. Event-relative faults still require a backend-specific
 event source.
+
+`partition` applies 100% random loss to the selected endpoint's egress and
+dominates any simultaneous loss setting. To isolate two groups, add one fault
+for every endpoint whose egress crosses the intended boundary. Recovery
+restores the other active faults first and then the resolved base condition;
+it does not infer topology or change an unselected interface.
 
 The virtme and libvirt backends install the scheduler on every worker and map
 workers, in hostname order, to `worker-01/data`, `worker-02/data`, and so on.
@@ -498,10 +509,11 @@ the same time origin as the workload. It stops the tasks after the workload,
 restores the base network condition, and fails the job if a requested target
 did not produce every `apply` and `recover` record. A fault window extending
 beyond the workload therefore fails rather than reporting a truncated test as
-complete. Time-relative `add-delay`, `packet-loss`, `link-down`, and one
-`terminate-rank` fault are accepted by the Slurm path. Rank termination uses a
-run-owned marker on the shared result mount; a small launcher wrapper sends
-SIGTERM to the selected rank without modifying the workload image or command.
+complete. Time-relative `add-delay`, `packet-loss`, `partition`, `link-down`,
+and one `terminate-rank` fault are accepted by the Slurm path. Rank
+termination uses a run-owned marker on the shared result mount; a small
+launcher wrapper sends SIGTERM to the selected rank without modifying the
+workload image or command.
 The batch succeeds only when the marker was emitted, the selected process made
 the workload step fail, and the rank evidence is complete. `status.json`
 retains the nonzero `workloadExitCode` and sets `expectedFaultOutcome: true`,
@@ -673,7 +685,7 @@ vice versa.
 | `measurement.steps` | Positive integer | Measured iterations |
 | `faults[].at` | Integer plus `ms`, `s`, `m`, or `h` | Time-relative fault |
 | `faults[].afterEvent` | Event name | Event-relative fault alternative |
-| `faults[].action` | `add-delay`, `packet-loss`, `link-down`, `terminate-rank` | Fault type |
+| `faults[].action` | `add-delay`, `packet-loss`, `partition`, `link-down`, `terminate-rank` | Fault type |
 | `faults[].target` | Backend endpoint name | Required by every network action |
 | `faults[].latency` | Nonzero netem duration | Required only by `add-delay` |
 | `faults[].percent` | Number greater than 0 and at most 100 | Required only by `packet-loss` |
@@ -3603,9 +3615,9 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 |---|---|---|
 | `make simulation-cli-test` | Python 3, PyYAML, and `jsonschema` | Every profile, named layer replacement, schema and semantic rejection, typed `--set`, and the read-only `doctor` report |
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in uniform and per-worker network condition renders to the expected `tc netem` command; unsafe interfaces, targets, and invalid combinations are rejected; it does not modify a qdisc |
-| `make simulation-fault-schedule-test` | Python 3, `jq`, and the CLI requirements; no network privilege | Overlapping delay, loss, and link-down transitions, direct and noninteractive privileged command dispatch, exact JSONL evidence, base-condition recovery, missing targets, and signal-interruption cleanup through controlled standard-command adapters |
+| `make simulation-fault-schedule-test` | Python 3, `jq`, and the CLI requirements; no network privilege | Overlapping delay, loss, partition, and link-down transitions, direct and noninteractive privileged command dispatch, exact JSONL evidence, base-condition recovery, missing targets, and signal-interruption cleanup through controlled standard-command adapters |
 | `make simulation-rank-fault-test` | Python 3 and POSIX shell tools; no Slurm installation or elevated privilege | Monotonic rank-fault timing, exclusive run-owned markers, JSONL evidence, invalid schedule rejection, and actual SIGTERM of an unchanged wrapped process |
-| `make simulation-fault-e2e-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | A timed 2 ms netem window carries the complete RoCEv2 UIB SEND, multi-packet, RDMA read/write, and atomic workload; nonzero qdisc counters, transition evidence, and exact recovery are required |
+| `make simulation-fault-e2e-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | A timed delay carries the complete RoCEv2 operation matrix; a separate 100% loss partition drops initial UIB traffic, then the unchanged workload completes after exact recovery. Nonzero qdisc counters and complete transition evidence are required |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | RoCEv2 and UET SEND and RDMA read/write complete with actual netem conditions and built-in or plugin congestion control; the UET cases also cover atomics |
 | `make simulation-mtu-test` | Build dependencies, `ip`, `timeout`, `ibv_rc_pingpong`, and permission to create network namespaces and veth pairs | Actual 2051-byte multi-packet RoCEv2 traffic at link MTUs 576 and 1280, plus UET at 576; both endpoints use and advertise the automatically derived active MTU |
 | `make rocev2-ecn-test` | Build dependencies and permission to open loopback UDP sockets | ECT(0) traffic produces an ACK but no CNP, while a valid CE-marked RoCEv2 packet produces exactly one ACK and one CNP; both io_uring multishot and batched receive metadata paths are tested |

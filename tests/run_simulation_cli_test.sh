@@ -215,6 +215,7 @@ for invalid_fault in \
 	'[{at: 1s, action: add-delay, target: worker-01/data, duration: 1s}]' \
 	'[{at: 1s, action: packet-loss, target: worker-01/data, percent: 0, duration: 1s}]' \
 	'[{at: 1s, action: link-down, target: worker-01/data, duration: 0s}]' \
+	'[{at: 1s, action: partition, target: worker-01/data, duration: 1s, percent: 100}]' \
 	'[{at: 1s, action: terminate-rank, rank: 1, target: worker-01/data}]'; do
 	if "$cli" render --profile kind-kubernetes \
 		--set "faults=$invalid_fault" > /dev/null 2>&1; then
