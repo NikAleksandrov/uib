@@ -30,6 +30,18 @@ struct uib_outstanding_pool {
 	int                 closing;
 };
 
+struct uib_srq {
+	struct uib_pd      *pd;
+	struct uib_rq_slot *rq;
+	uint32_t            rq_size;
+	uint32_t            rq_head;
+	uint32_t            rq_tail;
+	uint32_t            max_sge;
+	uint32_t            srq_limit;
+	uint32_t            refcnt;
+	pthread_mutex_t     lock;
+};
+
 static int psn_cmp(uint32_t a, uint32_t b);
 
 static size_t outstanding_pool_capacity(uint8_t pool_class)
@@ -160,10 +172,12 @@ struct uib_qp *uib_create_qp(struct uib_pd *pd,
 	qp->pd           = pd;
 	qp->send_cq      = attr->send_cq;
 	qp->recv_cq      = attr->recv_cq;
+	qp->srq          = attr->srq;
 	qp->qp_type      = attr->qp_type;
 	qp->state        = UIB_QPS_RESET;
 	qp->max_send_sge = attr->max_send_sge ? attr->max_send_sge : 1;
-	qp->max_recv_sge = attr->max_recv_sge ? attr->max_recv_sge : 1;
+	qp->max_recv_sge = attr->srq ? attr->srq->max_sge :
+		(attr->max_recv_sge ? attr->max_recv_sge : 1);
 	qp->path_mtu     = UIB_PMTU;
 	qp->out_pool     = outstanding_pool_create(attr->max_send_wr);
 	if (!qp->out_pool) {
@@ -171,18 +185,36 @@ struct uib_qp *uib_create_qp(struct uib_pd *pd,
 		return NULL;
 	}
 
-	qp->rq_size = attr->max_recv_wr ? (int)attr->max_recv_wr + 1 : 65;
-	qp->rq      = calloc(qp->rq_size, sizeof(*qp->rq));
-	if (!qp->rq) {
-		outstanding_pool_destroy(qp->out_pool);
-		free(qp);
-		return NULL;
+	if (attr->srq) {
+		if (attr->srq->pd != pd) {
+			outstanding_pool_destroy(qp->out_pool);
+			free(qp);
+			errno = EINVAL;
+			return NULL;
+		}
+		pthread_mutex_lock(&attr->srq->lock);
+		attr->srq->refcnt++;
+		pthread_mutex_unlock(&attr->srq->lock);
+	} else {
+		qp->rq_size = attr->max_recv_wr ?
+			(int)attr->max_recv_wr + 1 : 65;
+		qp->rq = calloc(qp->rq_size, sizeof(*qp->rq));
+		if (!qp->rq) {
+			outstanding_pool_destroy(qp->out_pool);
+			free(qp);
+			return NULL;
+		}
 	}
 
 	pthread_mutex_init(&qp->lock, NULL);
 
 	qp->qp_num = uib_register_qp(pd->ctx, qp);
 	if (qp->qp_num == 0) {
+		if (qp->srq) {
+			pthread_mutex_lock(&qp->srq->lock);
+			qp->srq->refcnt--;
+			pthread_mutex_unlock(&qp->srq->lock);
+		}
 		outstanding_pool_destroy(qp->out_pool);
 		free(qp->rq);
 		free(qp);
@@ -192,6 +224,11 @@ struct uib_qp *uib_create_qp(struct uib_pd *pd,
 	rc = qp->ctx->pops->qp_init ? qp->ctx->pops->qp_init(qp) : 0;
 	if (rc < 0) {
 		uib_unregister_qp(pd->ctx, qp);
+		if (qp->srq) {
+			pthread_mutex_lock(&qp->srq->lock);
+			qp->srq->refcnt--;
+			pthread_mutex_unlock(&qp->srq->lock);
+		}
 		pthread_mutex_destroy(&qp->lock);
 		free(qp->rq);
 		outstanding_pool_destroy(qp->out_pool);
@@ -377,18 +414,144 @@ int uib_destroy_qp(struct uib_qp *qp)
 	qp->frag_recv_mr = NULL;
 	uib_mr_put(qp->frag_write_mr);
 	qp->frag_write_mr = NULL;
-	for (i = 0; i < qp->rq_size; i++) {
-		if (qp->rq[i].valid)
-			uib_qp_release_recv(&qp->rq[i]);
+	if (!qp->srq) {
+		for (i = 0; i < qp->rq_size; i++) {
+			if (qp->rq[i].valid)
+				uib_qp_release_recv(&qp->rq[i]);
+		}
 	}
 	pthread_mutex_unlock(&qp->lock);
 
 	pthread_mutex_destroy(&qp->lock);
+	if (qp->srq) {
+		pthread_mutex_lock(&qp->srq->lock);
+		qp->srq->refcnt--;
+		pthread_mutex_unlock(&qp->srq->lock);
+	}
 	if (qp->pd)
 		qp->pd->refcnt--;
 	free(qp->rq);
 	outstanding_pool_destroy(qp->out_pool);
 	free(qp);
+	return 0;
+}
+
+/**
+ * uib_create_srq - Create a receive queue shared by multiple QPs.
+ * @pd: Protection domain
+ * @attr: Shared receive queue capacity and scatter/gather limits
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: A pointer to the new object on success, or NULL on failure.
+ */
+struct uib_srq *uib_create_srq(struct uib_pd *pd,
+			       const struct uib_srq_init_attr *attr)
+{
+	struct uib_srq *srq;
+
+	if (!pd || !attr || !attr->max_wr || !attr->max_sge ||
+	    attr->srq_limit > attr->max_wr ||
+	    attr->max_wr == UINT32_MAX) {
+		errno = EINVAL;
+		return NULL;
+	}
+	srq = calloc(1, sizeof(*srq));
+	if (!srq)
+		return NULL;
+	srq->rq_size = attr->max_wr + 1;
+	srq->rq = calloc(srq->rq_size, sizeof(*srq->rq));
+	if (!srq->rq) {
+		free(srq);
+		return NULL;
+	}
+	srq->pd = pd;
+	srq->max_sge = attr->max_sge;
+	srq->srq_limit = attr->srq_limit;
+	pthread_mutex_init(&srq->lock, NULL);
+	pd->refcnt++;
+	return srq;
+}
+
+/**
+ * uib_modify_srq - Change supported shared receive queue attributes.
+ * @srq: Shared receive queue
+ * @attr: New attribute values
+ * @attr_mask: Bitmask selecting attributes to change
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int uib_modify_srq(struct uib_srq *srq, const struct uib_srq_attr *attr,
+		   int attr_mask)
+{
+	if (!srq || !attr ||
+	    (attr_mask & ~(UIB_SRQ_MAX_WR | UIB_SRQ_LIMIT)))
+		return -EINVAL;
+	pthread_mutex_lock(&srq->lock);
+	if ((attr_mask & UIB_SRQ_MAX_WR) &&
+	    attr->max_wr != srq->rq_size - 1) {
+		pthread_mutex_unlock(&srq->lock);
+		return -EOPNOTSUPP;
+	}
+	if ((attr_mask & UIB_SRQ_LIMIT) &&
+	    attr->srq_limit > srq->rq_size - 1) {
+		pthread_mutex_unlock(&srq->lock);
+		return -EINVAL;
+	}
+	if (attr_mask & UIB_SRQ_LIMIT)
+		srq->srq_limit = attr->srq_limit;
+	pthread_mutex_unlock(&srq->lock);
+	return 0;
+}
+
+/**
+ * uib_query_srq - Read shared receive queue capacity and limits.
+ * @srq: Shared receive queue
+ * @attr: Output attribute structure
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int uib_query_srq(struct uib_srq *srq, struct uib_srq_attr *attr)
+{
+	if (!srq || !attr)
+		return -EINVAL;
+	pthread_mutex_lock(&srq->lock);
+	attr->max_wr = srq->rq_size - 1;
+	attr->max_sge = srq->max_sge;
+	attr->srq_limit = srq->srq_limit;
+	pthread_mutex_unlock(&srq->lock);
+	return 0;
+}
+
+/**
+ * uib_destroy_srq - Destroy an unused shared receive queue.
+ * @srq: Shared receive queue
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: 0 on success, or -EBUSY while a QP still uses the SRQ.
+ */
+int uib_destroy_srq(struct uib_srq *srq)
+{
+	uint32_t i;
+
+	if (!srq)
+		return -EINVAL;
+	pthread_mutex_lock(&srq->lock);
+	if (srq->refcnt) {
+		pthread_mutex_unlock(&srq->lock);
+		return -EBUSY;
+	}
+	for (i = 0; i < srq->rq_size; i++) {
+		if (srq->rq[i].valid)
+			uib_qp_release_recv(&srq->rq[i]);
+	}
+	pthread_mutex_unlock(&srq->lock);
+	pthread_mutex_destroy(&srq->lock);
+	if (srq->pd)
+		srq->pd->refcnt--;
+	free(srq->rq);
+	free(srq);
 	return 0;
 }
 
@@ -1383,43 +1546,47 @@ int uib_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 	return qp->ctx->pops->post_send(qp, wr, bad);
 }
 
-static int post_recv_internal(struct uib_qp *qp, struct uib_recv_wr *wr,
-			      struct uib_recv_wr **bad, void *private_data,
-			      void (*private_release)(void *private_data))
+static int post_recv_queue(struct uib_rq_slot *rq, uint32_t rq_size,
+			   uint32_t *rq_head, uint32_t *rq_tail,
+			   uint32_t max_sge, pthread_mutex_t *lock,
+			   struct uib_recv_wr *wr,
+			   struct uib_recv_wr **bad, void *private_data,
+			   void (*private_release)(void *private_data))
 {
 	struct uib_rq_slot *slot;
 	struct uib_recv_wr *cur;
 	uint32_t next;
 
-	if (!qp || !wr)
+	if (!wr)
 		return -EINVAL;
 
-	pthread_mutex_lock(&qp->lock);
+	pthread_mutex_lock(lock);
 	for (cur = wr; cur; cur = cur->next) {
-		next = (qp->rq_head + 1) % qp->rq_size;
+		if (cur->num_sge < 0 || (uint32_t)cur->num_sge > max_sge ||
+		    (cur->num_sge && !cur->sg_list)) {
+			pthread_mutex_unlock(lock);
+			if (bad)
+				*bad = cur;
+			return -EINVAL;
+		}
+		next = (*rq_head + 1) % rq_size;
 
-		if (next == qp->rq_tail) {
-			pthread_mutex_unlock(&qp->lock);
+		if (next == *rq_tail) {
+			pthread_mutex_unlock(lock);
 			if (bad)
 				*bad = cur;
 			return -ENOSPC;
 		}
-		slot = &qp->rq[qp->rq_head];
+		slot = &rq[*rq_head];
 
 		slot->wr_id = cur->wr_id;
 		slot->num_sge = cur->num_sge;
 		slot->heap_sge = cur->num_sge > UIB_RQ_INLINE_SGE;
-		if (private_data) {
-			slot->private_data = private_data;
-			slot->private_release = private_release;
-			private_data = NULL;
-			private_release = NULL;
-		}
 		if (slot->heap_sge) {
 			slot->sg_list = malloc((size_t)cur->num_sge *
 					       sizeof(*slot->sg_list));
 			if (!slot->sg_list) {
-				pthread_mutex_unlock(&qp->lock);
+				pthread_mutex_unlock(lock);
 				if (bad)
 					*bad = cur;
 				return -ENOMEM;
@@ -1427,13 +1594,31 @@ static int post_recv_internal(struct uib_qp *qp, struct uib_recv_wr *wr,
 		} else {
 			slot->sg_list = slot->inline_sge;
 		}
-		memcpy(slot->sg_list, cur->sg_list,
-		       cur->num_sge * sizeof(struct uib_sge));
+		if (cur->num_sge)
+			memcpy(slot->sg_list, cur->sg_list,
+			       cur->num_sge * sizeof(struct uib_sge));
+		if (private_data) {
+			slot->private_data = private_data;
+			slot->private_release = private_release;
+			private_data = NULL;
+			private_release = NULL;
+		}
 		slot->valid = 1;
-		qp->rq_head = next;
+		*rq_head = next;
 	}
-	pthread_mutex_unlock(&qp->lock);
+	pthread_mutex_unlock(lock);
 	return 0;
+}
+
+static int post_recv_internal(struct uib_qp *qp, struct uib_recv_wr *wr,
+			      struct uib_recv_wr **bad, void *private_data,
+			      void (*private_release)(void *private_data))
+{
+	if (!qp || qp->srq)
+		return -EINVAL;
+	return post_recv_queue(qp->rq, qp->rq_size, &qp->rq_head,
+			       &qp->rq_tail, qp->max_recv_sge, &qp->lock,
+			       wr, bad, private_data, private_release);
 }
 
 /**
@@ -1451,6 +1636,25 @@ int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
 	return post_recv_internal(qp, wr, bad, NULL, NULL);
 }
 
+/**
+ * uib_post_srq_recv - Post receive requests to a shared receive queue.
+ * @srq: Shared receive queue
+ * @wr: First work request in the chain
+ * @bad: Output pointer for the first unposted work request
+ * @uib-api: Queue pairs and data transfer
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int uib_post_srq_recv(struct uib_srq *srq, struct uib_recv_wr *wr,
+		      struct uib_recv_wr **bad)
+{
+	if (!srq)
+		return -EINVAL;
+	return post_recv_queue(srq->rq, srq->rq_size, &srq->rq_head,
+			       &srq->rq_tail, srq->max_sge, &srq->lock,
+			       wr, bad, NULL, NULL);
+}
+
 int uib_post_recv_owned(struct uib_qp *qp, struct uib_recv_wr *request,
 			void *private_data,
 			void (*private_release)(void *private_data))
@@ -1459,23 +1663,35 @@ int uib_post_recv_owned(struct uib_qp *qp, struct uib_recv_wr *request,
 				  private_release);
 }
 
-static int pop_recv_slot(struct uib_qp *qp, struct uib_rq_slot *out)
+static int pop_recv_queue(struct uib_rq_slot *rq, uint32_t rq_size,
+			  uint32_t *rq_head, uint32_t *rq_tail,
+			  pthread_mutex_t *lock, struct uib_rq_slot *out)
 {
-	pthread_mutex_lock(&qp->lock);
-	if (qp->rq_tail == qp->rq_head) {
-		pthread_mutex_unlock(&qp->lock);
+	pthread_mutex_lock(lock);
+	if (*rq_tail == *rq_head) {
+		pthread_mutex_unlock(lock);
 		return -ENOENT;
 	}
-	*out = qp->rq[qp->rq_tail];
+	*out = rq[*rq_tail];
 	if (!out->heap_sge)
 		out->sg_list = out->inline_sge;
-	qp->rq[qp->rq_tail].valid = 0;
-	qp->rq[qp->rq_tail].sg_list = NULL;
-	qp->rq[qp->rq_tail].private_data = NULL;
-	qp->rq[qp->rq_tail].private_release = NULL;
-	qp->rq_tail = (qp->rq_tail + 1) % qp->rq_size;
-	pthread_mutex_unlock(&qp->lock);
+	rq[*rq_tail].valid = 0;
+	rq[*rq_tail].sg_list = NULL;
+	rq[*rq_tail].private_data = NULL;
+	rq[*rq_tail].private_release = NULL;
+	*rq_tail = (*rq_tail + 1) % rq_size;
+	pthread_mutex_unlock(lock);
 	return 0;
+}
+
+static int pop_recv_slot(struct uib_qp *qp, struct uib_rq_slot *out)
+{
+	if (qp->srq)
+		return pop_recv_queue(qp->srq->rq, qp->srq->rq_size,
+				      &qp->srq->rq_head, &qp->srq->rq_tail,
+				      &qp->srq->lock, out);
+	return pop_recv_queue(qp->rq, qp->rq_size, &qp->rq_head,
+			      &qp->rq_tail, &qp->lock, out);
 }
 
 /**

@@ -1367,6 +1367,50 @@ Parameter \fBqp\fP: Queue pair
 .br
 Return value: 0 on success or a negative error code on failure.
 .TP
+.B uib_create_srq
+struct uib_srq *uib_create_srq(struct uib_pd *pd, const struct uib_srq_init_attr *attr);
+.br
+Create a receive queue shared by multiple QPs.
+.br
+Parameter \fBpd\fP: Protection domain
+.br
+Parameter \fBattr\fP: Shared receive queue capacity and scatter/gather limits
+.br
+Return value: A pointer to the new object on success, or NULL on failure.
+.TP
+.B uib_modify_srq
+int uib_modify_srq(struct uib_srq *srq, const struct uib_srq_attr *attr, int attr_mask);
+.br
+Change supported shared receive queue attributes.
+.br
+Parameter \fBsrq\fP: Shared receive queue
+.br
+Parameter \fBattr\fP: New attribute values
+.br
+Parameter \fBattr_mask\fP: Bitmask selecting attributes to change
+.br
+Return value: 0 on success or a negative error code on failure.
+.TP
+.B uib_query_srq
+int uib_query_srq(struct uib_srq *srq, struct uib_srq_attr *attr);
+.br
+Read shared receive queue capacity and limits.
+.br
+Parameter \fBsrq\fP: Shared receive queue
+.br
+Parameter \fBattr\fP: Output attribute structure
+.br
+Return value: 0 on success or a negative error code on failure.
+.TP
+.B uib_destroy_srq
+int uib_destroy_srq(struct uib_srq *srq);
+.br
+Destroy an unused shared receive queue.
+.br
+Parameter \fBsrq\fP: Shared receive queue
+.br
+Return value: 0 on success, or \-EBUSY while a QP still uses the SRQ.
+.TP
 .B uib_modify_qp
 int uib_modify_qp(struct uib_qp *qp, const struct uib_qp_attr *attr, int attr_mask);
 .br
@@ -1505,6 +1549,19 @@ int uib_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr, struct uib_recv_wr 
 Post one or more receive work requests.
 .br
 Parameter \fBqp\fP: Queue pair
+.br
+Parameter \fBwr\fP: First work request in the chain
+.br
+Parameter \fBbad\fP: Output pointer for the first unposted work request
+.br
+Return value: 0 on success or a negative error code on failure.
+.TP
+.B uib_post_srq_recv
+int uib_post_srq_recv(struct uib_srq *srq, struct uib_recv_wr *wr, struct uib_recv_wr **bad);
+.br
+Post receive requests to a shared receive queue.
+.br
+Parameter \fBsrq\fP: Shared receive queue
 .br
 Parameter \fBwr\fP: First work request in the chain
 .br
@@ -1972,6 +2029,63 @@ Parameter \fBn\fP: Maximum number of completions to return
 Parameter \fBwc\fP: Output array for completed work requests
 .br
 Return value: The number of completions written to @wc, or a negative error code.
+.TP
+.B uibv_create_srq
+struct uib_srq *uibv_create_srq(struct uib_pd *pd, struct uib_srq_init_attr *attr);
+.br
+Create a verbs\-facade shared receive queue.
+.br
+Parameter \fBpd\fP: Protection domain
+.br
+Parameter \fBattr\fP: Shared receive queue capacity and scatter/gather limits
+.br
+Return value: A pointer to the new object on success, or NULL on failure.
+.TP
+.B uibv_modify_srq
+int uibv_modify_srq(struct uib_srq *srq, struct uib_srq_attr *attr, int attr_mask);
+.br
+Change verbs\-facade shared receive queue attributes.
+.br
+Parameter \fBsrq\fP: Shared receive queue
+.br
+Parameter \fBattr\fP: New attribute values
+.br
+Parameter \fBattr_mask\fP: Bitmask selecting attributes to change
+.br
+Return value: 0 on success or a negative error code on failure.
+.TP
+.B uibv_query_srq
+int uibv_query_srq(struct uib_srq *srq, struct uib_srq_attr *attr);
+.br
+Read verbs\-facade shared receive queue attributes.
+.br
+Parameter \fBsrq\fP: Shared receive queue
+.br
+Parameter \fBattr\fP: Output attribute structure
+.br
+Return value: 0 on success or a negative error code on failure.
+.TP
+.B uibv_destroy_srq
+int uibv_destroy_srq(struct uib_srq *srq);
+.br
+Destroy an unused verbs\-facade shared receive queue.
+.br
+Parameter \fBsrq\fP: Shared receive queue
+.br
+Return value: 0 on success, or \-EBUSY while a QP still uses the SRQ.
+.TP
+.B uibv_post_srq_recv
+int uibv_post_srq_recv(struct uib_srq *srq, struct uib_recv_wr *wr, struct uib_recv_wr **bad);
+.br
+Post receives to a verbs\-facade shared receive queue.
+.br
+Parameter \fBsrq\fP: Shared receive queue
+.br
+Parameter \fBwr\fP: First work request in the chain
+.br
+Parameter \fBbad\fP: Output pointer for the first unposted work request
+.br
+Return value: 0 on success or a negative error code on failure.
 .TP
 .B uibv_create_qp
 struct uib_qp *uibv_create_qp(struct uib_pd *pd, struct uib_qp_init_attr *attr);

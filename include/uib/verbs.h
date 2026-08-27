@@ -40,6 +40,15 @@ int uibv_req_notify_cq(struct uib_cq *cq, int solicited_only);
 int            uibv_destroy_cq(struct uib_cq *cq);
 int            uibv_poll_cq(struct uib_cq *cq, int n, struct uib_wc *wc);
 
+struct uib_srq *uibv_create_srq(struct uib_pd *pd,
+				struct uib_srq_init_attr *attr);
+int uibv_modify_srq(struct uib_srq *srq, struct uib_srq_attr *attr,
+		    int attr_mask);
+int uibv_query_srq(struct uib_srq *srq, struct uib_srq_attr *attr);
+int uibv_destroy_srq(struct uib_srq *srq);
+int uibv_post_srq_recv(struct uib_srq *srq, struct uib_recv_wr *wr,
+		       struct uib_recv_wr **bad);
+
 struct uib_qp *uibv_create_qp(struct uib_pd *pd, struct uib_qp_init_attr *attr);
 int            uibv_modify_qp(struct uib_qp *qp,
 			      struct uib_qp_attr *attr, int mask);
@@ -56,12 +65,15 @@ int            uibv_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
 #define ibv_mr             uib_mr
 #define ibv_cq             uib_cq
 #define ibv_qp             uib_qp
+#define ibv_srq            uib_srq
 #define ibv_wc             uib_wc
 #define ibv_sge            uib_sge
 #define ibv_send_wr        uib_send_wr
 #define ibv_recv_wr        uib_recv_wr
 #define ibv_qp_init_attr   uib_qp_init_attr
 #define ibv_qp_attr        uib_qp_attr
+#define ibv_srq_init_attr  uib_srq_init_attr
+#define ibv_srq_attr       uib_srq_attr
 #define ibv_get_device_list  uibv_get_device_list
 #define ibv_free_device_list uibv_free_device_list
 #define ibv_open_device      uibv_open_device
@@ -79,6 +91,11 @@ int            uibv_post_recv(struct uib_qp *qp, struct uib_recv_wr *wr,
 #define ibv_req_notify_cq     uibv_req_notify_cq
 #define ibv_destroy_cq       uibv_destroy_cq
 #define ibv_poll_cq          uibv_poll_cq
+#define ibv_create_srq       uibv_create_srq
+#define ibv_modify_srq       uibv_modify_srq
+#define ibv_query_srq        uibv_query_srq
+#define ibv_destroy_srq      uibv_destroy_srq
+#define ibv_post_srq_recv    uibv_post_srq_recv
 #define ibv_create_qp        uibv_create_qp
 #define ibv_modify_qp        uibv_modify_qp
 #define ibv_destroy_qp       uibv_destroy_qp

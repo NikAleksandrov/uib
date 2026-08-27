@@ -52,6 +52,11 @@ struct uibv_mr_wrap {
 	struct uib_mr  *core;
 };
 
+struct uibv_srq_wrap {
+	struct ibv_srq  ibv;
+	struct uib_srq *core;
+};
+
 struct uibv_channel_wrap {
 	struct ibv_comp_channel  ibv;
 	struct uib_comp_channel *core;
@@ -113,6 +118,13 @@ static void                (*real_ack_cq_events)(struct ibv_cq *,
 static struct ibv_cq      *(*real_create_cq)(struct ibv_context *, int, void *,
 					      struct ibv_comp_channel *, int);
 static int                 (*real_destroy_cq)(struct ibv_cq *);
+static struct ibv_srq     *(*real_create_srq)(struct ibv_pd *,
+					      struct ibv_srq_init_attr *);
+static int                 (*real_modify_srq)(struct ibv_srq *,
+					      struct ibv_srq_attr *, int);
+static int                 (*real_query_srq)(struct ibv_srq *,
+					     struct ibv_srq_attr *);
+static int                 (*real_destroy_srq)(struct ibv_srq *);
 static struct ibv_qp      *(*real_create_qp)(struct ibv_pd *,
 					     struct ibv_qp_init_attr *);
 static struct ibv_ah      *(*real_create_ah)(struct ibv_pd *,
@@ -168,6 +180,10 @@ static void uibv_init(void)
 	real_ack_cq_events     = dlsym(RTLD_NEXT, "ibv_ack_cq_events");
 	real_create_cq         = dlsym(RTLD_NEXT, "ibv_create_cq");
 	real_destroy_cq        = dlsym(RTLD_NEXT, "ibv_destroy_cq");
+	real_create_srq        = dlsym(RTLD_NEXT, "ibv_create_srq");
+	real_modify_srq        = dlsym(RTLD_NEXT, "ibv_modify_srq");
+	real_query_srq         = dlsym(RTLD_NEXT, "ibv_query_srq");
+	real_destroy_srq       = dlsym(RTLD_NEXT, "ibv_destroy_srq");
 	real_create_qp         = dlsym(RTLD_NEXT, "ibv_create_qp");
 	real_create_ah         = dlsym(RTLD_NEXT, "ibv_create_ah");
 	real_destroy_ah        = dlsym(RTLD_NEXT, "ibv_destroy_ah");
@@ -505,9 +521,10 @@ static int provider_post_recv_ud(struct uibv_qp_wrap *qp,
 	return 0;
 }
 
-static int provider_post_recv_connected(struct uibv_qp_wrap *qp,
-					struct ibv_recv_wr *wr,
-					struct ibv_recv_wr **bad)
+static int provider_post_recv_queue(struct uib_qp *qp, struct uib_srq *srq,
+				    uint32_t max_wr,
+				    struct ibv_recv_wr *wr,
+				    struct ibv_recv_wr **bad)
 {
 	struct uib_recv_wr inline_items[UIBV_WR_INLINE_COUNT];
 	struct uib_recv_wr *new_items;
@@ -523,7 +540,7 @@ static int provider_post_recv_connected(struct uibv_qp_wrap *qp,
 	items = inline_items;
 	for (p = wr; p; p = p->next) {
 		if (count == capacity) {
-			size_t new_capacity = qp->cap.max_recv_wr;
+			size_t new_capacity = max_wr;
 
 			if (new_capacity <= capacity)
 				new_capacity = capacity * 2U;
@@ -566,7 +583,8 @@ static int provider_post_recv_connected(struct uibv_qp_wrap *qp,
 	if (!count)
 		return 0;
 
-	rc = uib_post_recv(qp->core, items, &bad_u);
+	rc = srq ? uib_post_srq_recv(srq, items, &bad_u) :
+		uib_post_recv(qp, items, &bad_u);
 
 	if (rc < 0 && bad_u && bad &&
 	    bad_u >= items && bad_u < items + count) {
@@ -580,6 +598,35 @@ out:
 	if (items != inline_items)
 		free(items);
 	return rc < 0 ? -rc : rc;
+}
+
+static int provider_post_recv_connected(struct uibv_qp_wrap *qp,
+					struct ibv_recv_wr *wr,
+					struct ibv_recv_wr **bad)
+{
+	return provider_post_recv_queue(qp->core, NULL,
+					qp->cap.max_recv_wr, wr, bad);
+}
+
+static int provider_post_srq_recv(struct ibv_srq *srq_ibv,
+				  struct ibv_recv_wr *wr,
+				  struct ibv_recv_wr **bad)
+{
+	struct uibv_srq_wrap *srq;
+	struct uib_srq_attr attr;
+
+	if (!srq_ibv || !ctx_is_ours(srq_ibv->context)) {
+		if (bad)
+			*bad = wr;
+		return EOPNOTSUPP;
+	}
+	srq = WRAP_OF(srq_ibv, struct uibv_srq_wrap, ibv);
+	if (uib_query_srq(srq->core, &attr)) {
+		if (bad)
+			*bad = wr;
+		return EINVAL;
+	}
+	return provider_post_recv_queue(NULL, srq->core, attr.max_wr, wr, bad);
 }
 
 static int provider_post_recv(struct ibv_qp *qp_ibv, struct ibv_recv_wr *wr,
@@ -739,6 +786,7 @@ struct ibv_context *ibv_open_device(struct ibv_device *dev)
 	pthread_mutex_init(&w->ibv.mutex, NULL);
 	w->ibv.ops.post_send       = provider_post_send;
 	w->ibv.ops.post_recv       = provider_post_recv;
+	w->ibv.ops.post_srq_recv   = provider_post_srq_recv;
 	w->ibv.ops.poll_cq         = provider_poll_cq;
 	w->ibv.ops.req_notify_cq   = provider_req_notify_cq;
 
@@ -965,8 +1013,111 @@ int ibv_dealloc_pd(struct ibv_pd *pd)
 	struct uibv_pd_wrap *w = WRAP_OF(pd, struct uibv_pd_wrap, ibv);
 	int rc = uib_dealloc_pd(w->core);
 
+	if (rc < 0)
+		return -rc;
 	free(w);
-	return rc < 0 ? -rc : 0;
+	return 0;
+}
+
+struct ibv_srq *ibv_create_srq(struct ibv_pd *pd,
+			       struct ibv_srq_init_attr *attr)
+{
+	struct uib_srq_init_attr core_attr;
+	struct uibv_srq_wrap *wrapper;
+	struct uibv_pd_wrap *pd_wrapper;
+	struct uib_srq *core;
+
+	if (!pd || !attr) {
+		errno = EINVAL;
+		return NULL;
+	}
+	if (!ctx_is_ours(pd->context))
+		return real_create_srq ? real_create_srq(pd, attr) : NULL;
+	core_attr.max_wr = attr->attr.max_wr;
+	core_attr.max_sge = attr->attr.max_sge;
+	core_attr.srq_limit = attr->attr.srq_limit;
+	pd_wrapper = WRAP_OF(pd, struct uibv_pd_wrap, ibv);
+	core = uib_create_srq(pd_wrapper->core, &core_attr);
+	if (!core)
+		return NULL;
+	wrapper = calloc(1, sizeof(*wrapper));
+	if (!wrapper) {
+		uib_destroy_srq(core);
+		return NULL;
+	}
+	wrapper->core = core;
+	wrapper->ibv.context = pd->context;
+	wrapper->ibv.srq_context = attr->srq_context;
+	wrapper->ibv.pd = pd;
+	pthread_mutex_init(&wrapper->ibv.mutex, NULL);
+	pthread_cond_init(&wrapper->ibv.cond, NULL);
+	return &wrapper->ibv;
+}
+
+int ibv_modify_srq(struct ibv_srq *srq, struct ibv_srq_attr *attr,
+		   int attr_mask)
+{
+	struct uib_srq_attr core_attr;
+	struct uibv_srq_wrap *wrapper;
+	int core_mask = 0;
+	int rc;
+
+	if (!srq || !attr)
+		return EINVAL;
+	if (!ctx_is_ours(srq->context))
+		return real_modify_srq ? real_modify_srq(srq, attr, attr_mask) :
+			EOPNOTSUPP;
+	if (attr_mask & ~(IBV_SRQ_MAX_WR | IBV_SRQ_LIMIT))
+		return EINVAL;
+	if (attr_mask & IBV_SRQ_MAX_WR)
+		core_mask |= UIB_SRQ_MAX_WR;
+	if (attr_mask & IBV_SRQ_LIMIT)
+		core_mask |= UIB_SRQ_LIMIT;
+	core_attr.max_wr = attr->max_wr;
+	core_attr.max_sge = attr->max_sge;
+	core_attr.srq_limit = attr->srq_limit;
+	wrapper = WRAP_OF(srq, struct uibv_srq_wrap, ibv);
+	rc = uib_modify_srq(wrapper->core, &core_attr, core_mask);
+	return rc < 0 ? -rc : rc;
+}
+
+int ibv_query_srq(struct ibv_srq *srq, struct ibv_srq_attr *attr)
+{
+	struct uib_srq_attr core_attr;
+	struct uibv_srq_wrap *wrapper;
+	int rc;
+
+	if (!srq || !attr)
+		return EINVAL;
+	if (!ctx_is_ours(srq->context))
+		return real_query_srq ? real_query_srq(srq, attr) : EOPNOTSUPP;
+	wrapper = WRAP_OF(srq, struct uibv_srq_wrap, ibv);
+	rc = uib_query_srq(wrapper->core, &core_attr);
+	if (rc < 0)
+		return -rc;
+	attr->max_wr = core_attr.max_wr;
+	attr->max_sge = core_attr.max_sge;
+	attr->srq_limit = core_attr.srq_limit;
+	return 0;
+}
+
+int ibv_destroy_srq(struct ibv_srq *srq)
+{
+	struct uibv_srq_wrap *wrapper;
+	int rc;
+
+	if (!srq)
+		return EINVAL;
+	if (!ctx_is_ours(srq->context))
+		return real_destroy_srq ? real_destroy_srq(srq) : EOPNOTSUPP;
+	wrapper = WRAP_OF(srq, struct uibv_srq_wrap, ibv);
+	rc = uib_destroy_srq(wrapper->core);
+	if (rc < 0)
+		return -rc;
+	pthread_cond_destroy(&wrapper->ibv.cond);
+	pthread_mutex_destroy(&wrapper->ibv.mutex);
+	free(wrapper);
+	return 0;
 }
 
 static struct ibv_mr *provider_reg_mr(struct ibv_pd *pd, void *addr,
@@ -1133,6 +1284,8 @@ int ibv_destroy_cq(struct ibv_cq *cq)
 
 struct ibv_qp *ibv_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
 {
+	struct uibv_srq_wrap *srq = NULL;
+
 	if (!ctx_is_ours(pd->context))
 		return real_create_qp ? real_create_qp(pd, attr) : NULL;
 	if (attr->cap.max_inline_data > UIBV_MAX_INLINE_DATA) {
@@ -1146,10 +1299,18 @@ struct ibv_qp *ibv_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
 		WRAP_OF(attr->recv_cq, struct uibv_cq_wrap, ibv) : NULL;
 
 	struct uib_qp_init_attr ia = {0};
+	if (attr->srq) {
+		if (!ctx_is_ours(attr->srq->context) || attr->srq->pd != pd) {
+			errno = EINVAL;
+			return NULL;
+		}
+		srq = WRAP_OF(attr->srq, struct uibv_srq_wrap, ibv);
+	}
 
 	ia.qp_type      = map_qpt_in(attr->qp_type);
 	ia.send_cq      = scw ? scw->core : NULL;
 	ia.recv_cq      = rcw ? rcw->core : NULL;
+	ia.srq          = srq ? srq->core : NULL;
 	ia.max_send_wr  = attr->cap.max_send_wr;
 	ia.max_recv_wr  = attr->cap.max_recv_wr;
 	ia.max_send_sge = attr->cap.max_send_sge;
@@ -1170,6 +1331,7 @@ struct ibv_qp *ibv_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
 	w->ibv.pd      = pd;
 	w->ibv.send_cq = attr->send_cq;
 	w->ibv.recv_cq = attr->recv_cq;
+	w->ibv.srq     = attr->srq;
 	w->ibv.qp_num  = core->qp_num;
 	w->ibv.qp_type = attr->qp_type;
 	w->ibv.state   = IBV_QPS_RESET;
@@ -1309,6 +1471,7 @@ int ibv_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr, int mask,
 	}
 	init_attr->send_cq = qp->send_cq;
 	init_attr->recv_cq = qp->recv_cq;
+	init_attr->srq = qp->srq;
 	init_attr->qp_type = qp->qp_type;
 	init_attr->cap = w->cap;
 	init_attr->sq_sig_all = w->sq_sig_all;
@@ -1386,6 +1549,9 @@ int ibv_query_device(struct ibv_context *ctx, struct ibv_device_attr *attr)
 	attr->max_cqe          = 65536;
 	attr->max_mr           = 1024;
 	attr->max_pd           = 1024;
+	attr->max_srq          = 1024;
+	attr->max_srq_wr       = 4096;
+	attr->max_srq_sge      = 16;
 	attr->max_qp_rd_atom   = 16;
 	attr->max_res_rd_atom  = 256;
 	attr->phys_port_cnt    = 1;

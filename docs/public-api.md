@@ -597,6 +597,105 @@ Return value:
 
 The number of completions written to @wc, or a negative error code.
 
+### [`uibv_create_srq`](../include/uib/verbs.h)
+
+```c
+struct uib_srq *uibv_create_srq(struct uib_pd *pd,
+				struct uib_srq_init_attr *attr);
+```
+
+Description:
+
+Create a verbs-facade shared receive queue.
+
+Parameters:
+
+- `pd` — Protection domain
+- `attr` — Shared receive queue capacity and scatter/gather limits
+
+Return value:
+
+A pointer to the new object on success, or NULL on failure.
+
+### [`uibv_modify_srq`](../include/uib/verbs.h)
+
+```c
+int uibv_modify_srq(struct uib_srq *srq, struct uib_srq_attr *attr,
+		    int attr_mask);
+```
+
+Description:
+
+Change verbs-facade shared receive queue attributes.
+
+Parameters:
+
+- `srq` — Shared receive queue
+- `attr` — New attribute values
+- `attr_mask` — Bitmask selecting attributes to change
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uibv_query_srq`](../include/uib/verbs.h)
+
+```c
+int uibv_query_srq(struct uib_srq *srq, struct uib_srq_attr *attr);
+```
+
+Description:
+
+Read verbs-facade shared receive queue attributes.
+
+Parameters:
+
+- `srq` — Shared receive queue
+- `attr` — Output attribute structure
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uibv_destroy_srq`](../include/uib/verbs.h)
+
+```c
+int uibv_destroy_srq(struct uib_srq *srq);
+```
+
+Description:
+
+Destroy an unused verbs-facade shared receive queue.
+
+Parameters:
+
+- `srq` — Shared receive queue
+
+Return value:
+
+0 on success, or -EBUSY while a QP still uses the SRQ.
+
+### [`uibv_post_srq_recv`](../include/uib/verbs.h)
+
+```c
+int uibv_post_srq_recv(struct uib_srq *srq, struct uib_recv_wr *wr,
+		       struct uib_recv_wr **bad);
+```
+
+Description:
+
+Post receives to a verbs-facade shared receive queue.
+
+Parameters:
+
+- `srq` — Shared receive queue
+- `wr` — First work request in the chain
+- `bad` — Output pointer for the first unposted work request
+
+Return value:
+
+0 on success or a negative error code on failure.
+
 ### [`uibv_create_qp`](../include/uib/verbs.h)
 
 ```c
@@ -1451,6 +1550,84 @@ Return value:
 
 0 on success or a negative error code on failure.
 
+### [`uib_create_srq`](../include/uib/qp.h)
+
+```c
+struct uib_srq *uib_create_srq(struct uib_pd *pd,
+			       const struct uib_srq_init_attr *attr);
+```
+
+Description:
+
+Create a receive queue shared by multiple QPs.
+
+Parameters:
+
+- `pd` — Protection domain
+- `attr` — Shared receive queue capacity and scatter/gather limits
+
+Return value:
+
+A pointer to the new object on success, or NULL on failure.
+
+### [`uib_modify_srq`](../include/uib/qp.h)
+
+```c
+int uib_modify_srq(struct uib_srq *srq, const struct uib_srq_attr *attr,
+		   int attr_mask);
+```
+
+Description:
+
+Change supported shared receive queue attributes.
+
+Parameters:
+
+- `srq` — Shared receive queue
+- `attr` — New attribute values
+- `attr_mask` — Bitmask selecting attributes to change
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_query_srq`](../include/uib/qp.h)
+
+```c
+int uib_query_srq(struct uib_srq *srq, struct uib_srq_attr *attr);
+```
+
+Description:
+
+Read shared receive queue capacity and limits.
+
+Parameters:
+
+- `srq` — Shared receive queue
+- `attr` — Output attribute structure
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_destroy_srq`](../include/uib/qp.h)
+
+```c
+int uib_destroy_srq(struct uib_srq *srq);
+```
+
+Description:
+
+Destroy an unused shared receive queue.
+
+Parameters:
+
+- `srq` — Shared receive queue
+
+Return value:
+
+0 on success, or -EBUSY while a QP still uses the SRQ.
+
 ### [`uib_modify_qp`](../include/uib/qp.h)
 
 ```c
@@ -1643,6 +1820,27 @@ Post one or more receive work requests.
 Parameters:
 
 - `qp` — Queue pair
+- `wr` — First work request in the chain
+- `bad` — Output pointer for the first unposted work request
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_post_srq_recv`](../include/uib/qp.h)
+
+```c
+int uib_post_srq_recv(struct uib_srq *srq, struct uib_recv_wr *wr,
+		      struct uib_recv_wr **bad);
+```
+
+Description:
+
+Post receive requests to a shared receive queue.
+
+Parameters:
+
+- `srq` — Shared receive queue
 - `wr` — First work request in the chain
 - `bad` — Output pointer for the first unposted work request
 

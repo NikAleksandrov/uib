@@ -12,6 +12,7 @@
 struct uib_context;
 struct uib_pd;
 struct uib_cq;
+struct uib_srq;
 struct uib_outstanding_pool;
 
 struct uib_sge {
@@ -64,12 +65,28 @@ struct uib_recv_wr {
 struct uib_qp_init_attr {
 	struct uib_cq *send_cq;
 	struct uib_cq *recv_cq;
+	struct uib_srq *srq;
 	enum uib_qp_type qp_type;
 	uint32_t       max_send_wr;
 	uint32_t       max_recv_wr;
 	uint32_t       max_send_sge;
 	uint32_t       max_recv_sge;
 };
+
+struct uib_srq_init_attr {
+	uint32_t max_wr;
+	uint32_t max_sge;
+	uint32_t srq_limit;
+};
+
+struct uib_srq_attr {
+	uint32_t max_wr;
+	uint32_t max_sge;
+	uint32_t srq_limit;
+};
+
+#define UIB_SRQ_MAX_WR (1u << 0)
+#define UIB_SRQ_LIMIT  (1u << 1)
 
 struct uib_qp_attr {
 	enum uib_qp_state  qp_state;
@@ -141,6 +158,7 @@ struct uib_qp {
 	struct uib_pd      *pd;
 	struct uib_cq      *send_cq;
 	struct uib_cq      *recv_cq;
+	struct uib_srq     *srq;
 	uint32_t            qp_num;
 	enum uib_qp_type    qp_type;
 	enum uib_qp_state   state;
@@ -204,6 +222,15 @@ struct uib_qp *uib_create_qp(struct uib_pd *pd,
 int uib_modify_qp(struct uib_qp *qp, const struct uib_qp_attr *attr,
 		  int attr_mask);
 int uib_destroy_qp(struct uib_qp *qp);
+
+struct uib_srq *uib_create_srq(struct uib_pd *pd,
+			       const struct uib_srq_init_attr *attr);
+int uib_modify_srq(struct uib_srq *srq, const struct uib_srq_attr *attr,
+		   int attr_mask);
+int uib_query_srq(struct uib_srq *srq, struct uib_srq_attr *attr);
+int uib_destroy_srq(struct uib_srq *srq);
+int uib_post_srq_recv(struct uib_srq *srq, struct uib_recv_wr *wr,
+		      struct uib_recv_wr **bad);
 
 int uib_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 		  struct uib_send_wr **bad);

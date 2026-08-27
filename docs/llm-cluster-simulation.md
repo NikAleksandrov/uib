@@ -840,20 +840,21 @@ and [NCCL environment documentation](https://docs.nvidia.com/deeplearning/nccl/u
 
 `make ucx-libfabric-test` is an actual two-process data-path gate. With UCX
 1.18.1 it runs tag, stream, UCP put/get, fetch-add, and compare-swap tests
-through `ud_verbs/uib0:1`. With libfabric 2.1.0 it discovers `uib0-dgram`,
-layers the standard RxD utility provider over verbs, and runs
-`fi_rdm_pingpong` with data-integrity checking at 1, 64, and 1024 bytes. The
-test requires the expected provider names in the logs and rejects TCP,
-sockets, shared-memory, and vendor-direct fallbacks.
+through `ud_verbs/uib0:1`. It separately pins the lower-level UCT API to
+`rc_verbs/uib0:1` and runs active-message latency, RDMA write, and RDMA read.
+With libfabric 2.1.0 it discovers `uib0-dgram`, layers the standard RxD utility
+provider over verbs, and runs `fi_rdm_pingpong` with data-integrity checking
+at 1, 64, and 1024 bytes. The test requires the expected provider names in
+the logs and rejects TCP, sockets, shared-memory, and vendor-direct fallbacks.
 
 The gate added the verbs semantics those front ends exercised: address
-handles, UD send/receive and GRH handling, `sq_sig_all`, bounded inline sends,
-QP capability queries, ECE rejection, and clean rejection of EFA-specific
-queries. This is local CPU compatibility evidence. The UCP RMA and atomic
-tests may use UCX protocol emulation over UD; they do not claim direct RC
-verbs RMA or atomic offload. Direct UCT/RC subsets, libfabric direct DGRAM
-coverage, MPI integration, and physical-node repetition remain separate
-promotion gates.
+handles, UD send/receive and GRH handling, basic shared receive queues,
+`sq_sig_all`, bounded inline sends, QP capability queries, ECE rejection, and
+clean rejection of EFA-specific queries. This is local CPU compatibility
+evidence. The UCP atomic tests use UCX protocol behavior over UD. Direct UCT
+RC active messages and RMA are validated, but direct RC atomics are not
+advertised or claimed. Libfabric direct DGRAM coverage, MPI integration, and
+physical-node repetition remain separate promotion gates.
 
 Both front ends inspect `/dev/infiniband/uib0` before opening the user-space
 device. It must be a readable and writable character device. UIB maps
@@ -866,8 +867,12 @@ for direct-container and host commands.
 The selectors used by the gate are:
 
 ```text
-UCX_TLS=rc,ud UCX_NET_DEVICES=uib0:1 \
+UCX_TLS=ud UCX_NET_DEVICES=uib0:1 \
 LD_PRELOAD=/opt/uib/lib/libuibv.so ucx_perftest <peer>
+
+UCX_RC_VERBS_FLUSH_MODE=fc \
+LD_PRELOAD=/opt/uib/lib/libuibv.so \
+ucx_perftest -x rc_verbs -d uib0:1 <peer>
 
 FI_PROVIDER='verbs;ofi_rxd' FI_VERBS_DGRAM_USE_NAME_SERVER=0 \
 LD_PRELOAD=/opt/uib/lib/libuibv.so \
@@ -3767,7 +3772,7 @@ not the UIB data plane.
 | `make provider-nccl-abi-test` | libibverbs development files | The provider exposes the versioned ABI and calls NCCL's required verbs entry points; no GPU is used |
 | `make nccl-test` | NVIDIA GPU and driver, CUDA MPS, MPI, `nccl-tests` `all_reduce_perf`, `setpriv`, `unshare`, and `timeout` | Two local NCCL ranks use `libuibv.so`, the NCCL IB network, and UIB traffic; Socket fallback and data errors fail the test |
 | `make rccl-test` | At least two accessible AMD GPU ranks, ROCm/RCCL, MPI-enabled `rccl-tests`, `rocminfo`, `setpriv`, `unshare`, and `timeout` | Two or more local RCCL ranks select the IB network through UIB without Socket fallback |
-| `make ucx-libfabric-test` | UCX 1.18.1-compatible `ucx_info`/`ucx_perftest`, libfabric/fabtests 2.1.0-compatible `fi_info`/`fi_rdm_pingpong`, `timeout`, and permission to expose the character-device anchor | Actual two-process UCX tag, stream, UCP RMA, and UCP atomic traffic over `ud_verbs/uib0:1`, plus data-checked libfabric RDM traffic over `verbs;ofi_rxd`; TCP, shared-memory, sockets, and native-verbs fallbacks fail the test |
+| `make ucx-libfabric-test` | UCX 1.18.1-compatible `ucx_info`/`ucx_perftest`, libfabric/fabtests 2.1.0-compatible `fi_info`/`fi_rdm_pingpong`, `timeout`, and permission to expose the character-device anchor | Actual two-process UCX tag, stream, UCP RMA, and UCP atomic traffic over `ud_verbs/uib0:1`; direct UCT active-message, write, and read traffic over `rc_verbs/uib0:1`; and data-checked libfabric RDM traffic over `verbs;ofi_rxd`. TCP, shared-memory, sockets, and native-verbs fallbacks fail the test |
 
 NCCL options:
 
@@ -3805,6 +3810,7 @@ UCX/libfabric options:
 | `COMM_TEST_BIND_PORT` | `19800` | UIB and UCX test port |
 | `COMM_TEST_MESSAGE_SIZES` | `l:1,64,1024` | Fabtests `-S` size expression; the default checks three payload sizes |
 | `COMM_TEST_UCX_TESTS` | `tag_lat stream_lat ucp_put_lat ucp_get ucp_fadd ucp_cswap` | Space-separated `ucx_perftest -t` matrix; each test must select `ud_verbs/uib0:1` |
+| `COMM_TEST_UCT_TESTS` | `am_lat put_lat get` | Space-separated direct UCT matrix pinned to `rc_verbs/uib0:1`; `get` uses bcopy and the other tests use short layout |
 
 Examples:
 
@@ -3823,8 +3829,8 @@ make ucx-libfabric-test
 `nccl-test` intentionally uses two ranks on one GPU through MPS. That is real
 NCCL/UIB traffic, but not multi-GPU or multi-node validation. `rccl-test`
 requires AMD hardware and was not run on the NVIDIA-only development host.
-The UCX/libfabric gate passed locally; direct UCT/RC operations, MPI, and
-physical-node repetition remain separate promotion work.
+The UCX/libfabric gate passed locally; MPI integration and physical-node
+repetition remain separate promotion work.
 
 ### Training tests
 
@@ -3972,11 +3978,12 @@ Cleanup must remain safe after interruption during every lifecycle stage.
 - UIB's versioned NCCL loader ABI and a two-rank, host-staged NCCL all-reduce
   are covered by repository tests. The actual collective test is opt-in
   because it requires CUDA, NCCL, MPI, MPS, a GPU, and UTS namespace access.
-- UCX tag, stream, UCP RMA, and UCP atomic tests over `ud_verbs`, plus
-  libfabric RDM traffic over `verbs;ofi_rxd`, passed the local CPU gate. This
-  does not claim direct UCX UCT/RC offload, libfabric MSG/RxM, MPI integration,
-  or physical-node qualification. RCCL remains unvalidated until AMD hardware
-  is available.
+- UCX tag, stream, UCP RMA, and UCP atomic tests over `ud_verbs`; direct UCT
+  active-message, RDMA-write, and RDMA-read tests over `rc_verbs`; and
+  libfabric RDM traffic over `verbs;ofi_rxd` passed the local CPU gate. This
+  does not claim direct RC atomics, libfabric MSG/RxM, MPI integration, or
+  physical-node qualification. RCCL remains unvalidated until AMD hardware is
+  available.
 - The common congestion-control registry is implemented for RoCEv2 and UET.
   The local matrix covers NSCC, `none`, a registered plug-in, constrained
   pending-send admission, deterministic retry loss, and named netem profiles.

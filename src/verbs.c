@@ -309,6 +309,75 @@ int uibv_poll_cq(struct uib_cq *cq, int n, struct uib_wc *wc)
 }
 
 /**
+ * uibv_create_srq - Create a verbs-facade shared receive queue.
+ * @pd: Protection domain
+ * @attr: Shared receive queue capacity and scatter/gather limits
+ * @uib-api: Native verbs compatibility API
+ *
+ * Return: A pointer to the new object on success, or NULL on failure.
+ */
+struct uib_srq *uibv_create_srq(struct uib_pd *pd,
+				struct uib_srq_init_attr *attr)
+{
+	return uib_create_srq(pd, attr);
+}
+
+/**
+ * uibv_modify_srq - Change verbs-facade shared receive queue attributes.
+ * @srq: Shared receive queue
+ * @attr: New attribute values
+ * @attr_mask: Bitmask selecting attributes to change
+ * @uib-api: Native verbs compatibility API
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int uibv_modify_srq(struct uib_srq *srq, struct uib_srq_attr *attr,
+		    int attr_mask)
+{
+	return uib_modify_srq(srq, attr, attr_mask);
+}
+
+/**
+ * uibv_query_srq - Read verbs-facade shared receive queue attributes.
+ * @srq: Shared receive queue
+ * @attr: Output attribute structure
+ * @uib-api: Native verbs compatibility API
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int uibv_query_srq(struct uib_srq *srq, struct uib_srq_attr *attr)
+{
+	return uib_query_srq(srq, attr);
+}
+
+/**
+ * uibv_destroy_srq - Destroy an unused verbs-facade shared receive queue.
+ * @srq: Shared receive queue
+ * @uib-api: Native verbs compatibility API
+ *
+ * Return: 0 on success, or -EBUSY while a QP still uses the SRQ.
+ */
+int uibv_destroy_srq(struct uib_srq *srq)
+{
+	return uib_destroy_srq(srq);
+}
+
+/**
+ * uibv_post_srq_recv - Post receives to a verbs-facade shared receive queue.
+ * @srq: Shared receive queue
+ * @wr: First work request in the chain
+ * @bad: Output pointer for the first unposted work request
+ * @uib-api: Native verbs compatibility API
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int uibv_post_srq_recv(struct uib_srq *srq, struct uib_recv_wr *wr,
+		       struct uib_recv_wr **bad)
+{
+	return uib_post_srq_recv(srq, wr, bad);
+}
+
+/**
  * uibv_create_qp - Create a verbs-facade queue pair.
  * @pd: Protection domain
  * @attr: Queue pair attributes

@@ -40,8 +40,12 @@ static const struct required_symbol required_symbols[] = {
 	{ "ibv_create_ah", "IBVERBS_1.1" },
 	{ "ibv_destroy_ah", "IBVERBS_1.1" },
 	{ "ibv_create_qp", "IBVERBS_1.1" },
+	{ "ibv_create_srq", "IBVERBS_1.1" },
 	{ "ibv_modify_qp", "IBVERBS_1.1" },
+	{ "ibv_modify_srq", "IBVERBS_1.1" },
+	{ "ibv_query_srq", "IBVERBS_1.1" },
 	{ "ibv_destroy_qp", "IBVERBS_1.1" },
+	{ "ibv_destroy_srq", "IBVERBS_1.1" },
 	{ "ibv_fork_init", "IBVERBS_1.1" },
 	{ "ibv_event_type_str", "IBVERBS_1.1" },
 };
@@ -75,6 +79,11 @@ int main(void)
 	struct ibv_qp *(*create_qp)(struct ibv_pd *,
 				    struct ibv_qp_init_attr *);
 	int (*destroy_qp)(struct ibv_qp *);
+	struct ibv_srq *(*create_srq)(struct ibv_pd *,
+				     struct ibv_srq_init_attr *);
+	int (*modify_srq)(struct ibv_srq *, struct ibv_srq_attr *, int);
+	int (*query_srq)(struct ibv_srq *, struct ibv_srq_attr *);
+	int (*destroy_srq)(struct ibv_srq *);
 	int (*query_qp)(struct ibv_qp *, struct ibv_qp_attr *, int,
 			struct ibv_qp_init_attr *);
 	int (*fork_init)(void);
@@ -82,12 +91,17 @@ int main(void)
 	struct ibv_qp_init_attr query_init_attr;
 	struct ibv_qp_init_attr qp_init_attr;
 	struct ibv_qp_attr qp_attr;
+	struct ibv_recv_wr recv_wr;
+	struct ibv_recv_wr *bad_recv;
+	struct ibv_srq_init_attr srq_init_attr;
+	struct ibv_srq_attr srq_attr;
 	struct ibv_async_event event;
 	struct ibv_device **devices = NULL;
 	struct ibv_context *context = NULL;
 	struct ibv_pd *pd = NULL;
 	struct ibv_cq *cq = NULL;
 	struct ibv_qp *qp = NULL;
+	struct ibv_srq *srq = NULL;
 	void *handle;
 	size_t i;
 	int flags;
@@ -122,6 +136,10 @@ int main(void)
 	destroy_cq = load_symbol(handle, "ibv_destroy_cq", "IBVERBS_1.1");
 	create_qp = load_symbol(handle, "ibv_create_qp", "IBVERBS_1.1");
 	destroy_qp = load_symbol(handle, "ibv_destroy_qp", "IBVERBS_1.1");
+	create_srq = load_symbol(handle, "ibv_create_srq", "IBVERBS_1.1");
+	modify_srq = load_symbol(handle, "ibv_modify_srq", "IBVERBS_1.1");
+	query_srq = load_symbol(handle, "ibv_query_srq", "IBVERBS_1.1");
+	destroy_srq = load_symbol(handle, "ibv_destroy_srq", "IBVERBS_1.1");
 	query_qp = load_symbol(handle, "ibv_query_qp", "IBVERBS_1.1");
 	fork_init = load_symbol(handle, "ibv_fork_init", "IBVERBS_1.1");
 	event_type_str = load_symbol(handle, "ibv_event_type_str",
@@ -196,9 +214,58 @@ int main(void)
 		fprintf(stderr, "provider discarded sq_sig_all\n");
 		goto out;
 	}
+	if (destroy_qp(qp)) {
+		fprintf(stderr, "provider UD QP destruction failed\n");
+		goto out;
+	}
+	qp = NULL;
+	memset(&srq_init_attr, 0, sizeof(srq_init_attr));
+	srq_init_attr.attr.max_wr = 8;
+	srq_init_attr.attr.max_sge = 1;
+	srq = create_srq(pd, &srq_init_attr);
+	if (!srq) {
+		fprintf(stderr, "provider SRQ creation failed\n");
+		goto out;
+	}
+	memset(&srq_attr, 0, sizeof(srq_attr));
+	if (query_srq(srq, &srq_attr) || srq_attr.max_wr < 8 ||
+	    srq_attr.max_sge < 1) {
+		fprintf(stderr, "provider SRQ query failed\n");
+		goto out;
+	}
+	srq_attr.srq_limit = 2;
+	if (modify_srq(srq, &srq_attr, IBV_SRQ_LIMIT)) {
+		fprintf(stderr, "provider SRQ modification failed\n");
+		goto out;
+	}
+	memset(&recv_wr, 0, sizeof(recv_wr));
+	recv_wr.wr_id = 0x51;
+	bad_recv = NULL;
+	if (ibv_post_srq_recv(srq, &recv_wr, &bad_recv) || bad_recv) {
+		fprintf(stderr, "provider SRQ receive posting failed\n");
+		goto out;
+	}
+	memset(&qp_init_attr, 0, sizeof(qp_init_attr));
+	qp_init_attr.send_cq = cq;
+	qp_init_attr.recv_cq = cq;
+	qp_init_attr.srq = srq;
+	qp_init_attr.cap.max_send_wr = 8;
+	qp_init_attr.cap.max_send_sge = 1;
+	qp_init_attr.qp_type = IBV_QPT_RC;
+	qp = create_qp(pd, &qp_init_attr);
+	if (!qp) {
+		fprintf(stderr, "provider SRQ-attached RC QP creation failed\n");
+		goto out;
+	}
+	if (destroy_srq(srq) != EBUSY) {
+		fprintf(stderr, "provider destroyed an attached SRQ\n");
+		goto out;
+	}
 	rc = EXIT_SUCCESS;
 out:
 	if (qp && destroy_qp(qp))
+		rc = EXIT_FAILURE;
+	if (srq && destroy_srq(srq))
 		rc = EXIT_FAILURE;
 	if (cq && destroy_cq(cq))
 		rc = EXIT_FAILURE;

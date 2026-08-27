@@ -13,11 +13,13 @@ IBVERBS_1.1 {
 		ibv_create_cq;
 		ibv_create_ah;
 		ibv_create_qp;
+		ibv_create_srq;
 		ibv_dealloc_pd;
 		ibv_dereg_mr;
 		ibv_destroy_cq;
 		ibv_destroy_ah;
 		ibv_destroy_qp;
+		ibv_destroy_srq;
 		ibv_event_type_str;
 		ibv_fork_init;
 		ibv_free_device_list;
@@ -26,12 +28,14 @@ IBVERBS_1.1 {
 		ibv_get_device_list;
 		ibv_get_device_name;
 		ibv_modify_qp;
+		ibv_modify_srq;
 		ibv_open_device;
 		ibv_query_device;
 		ibv_query_gid;
 		ibv_query_pkey;
 		ibv_query_port;
 		ibv_query_qp;
+		ibv_query_srq;
 		ibv_reg_mr;
 	local:
 		*;

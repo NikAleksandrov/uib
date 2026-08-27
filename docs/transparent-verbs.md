@@ -360,7 +360,9 @@ Important compatibility details are:
 - Port number `1`, GID index `0`, and P_Key index `0` describe the synthetic
   device. The GID is an IPv4-mapped address derived from `UIB_BIND_IP`.
 - UIB's common transparent data path is RC. It supports SEND/RECV, RDMA WRITE,
-  RDMA READ, immediate data, and standard 64-bit fetch-add and compare-swap.
+  RDMA READ, and immediate data. Atomic support is protocol-specific: UET
+  supports 64-bit fetch-add and compare-swap, while direct RoCEv2 atomics are
+  not advertised.
 - UD queue pairs support address handles and SEND/RECV, including the receive
   GRH prefix required by UCX and the libfabric verbs provider.
 - Host memory registered with `ibv_reg_mr_iova()` or `ibv_reg_mr_iova2()` must
@@ -370,8 +372,8 @@ Important compatibility details are:
   the selected transport and the DMA-BUF exporter's capabilities.
 - Completion channels expose a pollable file descriptor and support one-shot
   CQ notification, `ibv_get_cq_event()`, and event acknowledgment.
-- Device async events, shared receive queues, memory windows, XRC/DC, and
-  other extended verbs are not implemented for `uib0`.
+- Basic shared receive queues are supported. SRQ limit events, memory windows,
+  XRC/DC, and other extended verbs are not implemented for `uib0`.
 - Objects from `uib0` must not be mixed with PDs, CQs, QPs, or other objects
   belonging to a real device.
 
@@ -442,7 +444,8 @@ network namespaces. `rxe-tools-test` runs the UIB preload provider against a
 kernel RXE peer in raw RoCEv2 mode. The RXE test needs the appropriate kernel
 modules and administrative network privileges. `ucx-libfabric-test` runs
 actual two-process UCX tag, stream, UCP RMA, and UCP atomic traffic over
-`ud_verbs`, plus libfabric RDM traffic over `verbs;ofi_rxd`, with payload
+`ud_verbs`; direct UCT active-message, RDMA-write, and RDMA-read traffic over
+`rc_verbs`; plus libfabric RDM traffic over `verbs;ofi_rxd`, with payload
 checking and fallback rejection.
 
 ## Verbs hooked by `libuibv.so`
@@ -501,17 +504,25 @@ Queue pairs:
 - `ibv_modify_qp()`
 - `ibv_destroy_qp()`
 
+Shared receive queues:
+
+- `ibv_create_srq()`
+- `ibv_modify_srq()`
+- `ibv_query_srq()`
+- `ibv_destroy_srq()`
+
 Address handles:
 
 - `ibv_create_ah()`
 - `ibv_destroy_ah()`
 
-Four common data-path verbs are normally inline libibverbs wrappers rather
+Five common data-path verbs are normally inline libibverbs wrappers rather
 than exported functions. UIB hooks them through the operation table installed
 in the `uib0` context:
 
 - `ibv_post_send()`
 - `ibv_post_recv()`
+- `ibv_post_srq_recv()`
 - `ibv_poll_cq()`
 - `ibv_req_notify_cq()`
 
