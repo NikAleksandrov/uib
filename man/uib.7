@@ -2797,6 +2797,15 @@ Accepted values: A positive integer.
 .br
 Example: \fBUIB_TEST_ITERS=256 make uib\-tools\-test\fP
 .TP
+.B UIB_TEST_LINK_MTU
+Set both veth link MTUs used by standard ibverbs tool tests. The harness derives and advertises the largest UIB active MTU that fits the link.
+.br
+Default: 1500
+.br
+Accepted values: An integer from 576 through 65535.
+.br
+Example: \fBUIB_TEST_LINK_MTU=576 make uib\-tools\-test\fP
+.TP
 .B UIB_TEST_DROP_TX
 Inject one transmit loss to exercise protocol recovery.
 .br

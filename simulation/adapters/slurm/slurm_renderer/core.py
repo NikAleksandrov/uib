@@ -166,6 +166,13 @@ def string_value(value):
 	return str(value)
 
 
+def active_mtu(link_mtu):
+	for mtu in (4096, 2048, 1024, 512, 256):
+		if mtu + 64 <= link_mtu:
+			return mtu
+	raise RenderError("network.mtu is too small for UIB")
+
+
 def slurm_memory(quantity):
 	return quantity.replace("Mi", "M").replace("Gi", "G").replace("Ti", "T")
 

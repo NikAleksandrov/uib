@@ -89,6 +89,13 @@ class VirtmeError(Exception):
     pass
 
 
+def verbs_active_mtu(link_mtu):
+    for mtu in (4096, 2048, 1024, 512, 256):
+        if mtu + 64 <= link_mtu:
+            return mtu
+    raise VirtmeError("network MTU is too small for UIB")
+
+
 def load_config(path):
     try:
         with pathlib.Path(path).open(encoding="utf-8") as source:

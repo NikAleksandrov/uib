@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+network:
+  mtu: 576
+  shaping:
+    enabled: false

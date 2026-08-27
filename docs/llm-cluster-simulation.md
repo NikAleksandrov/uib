@@ -87,6 +87,7 @@ topology.
 | `make diagnostic-uib-preflight-test` | CPU | No | The common UIB runtime mounts into an independently built image |
 | `make diagnostic-gpu-test` | One NVIDIA GPU | No | CUDA visibility and a correctness-checked, single-rank NCCL collective |
 | `make simulation-kubernetes-uib-test` | CPU | No | Unchanged verbs programs exchange actual RC SEND/RECV and RDMA Write traffic through UIB between two Kind workers |
+| `make simulation-mtu-test` | CPU | No | 2051-byte RoCEv2 and UET messages cross real 576- and 1280-byte namespace links with the derived verbs MTU |
 | `make simulation-virtme-slurm-e2e-test` | CPU with KVM or QEMU emulation | No | Real controller/two-worker Slurm/Pyxis/Enroot lifecycle and 32-message, 2051-byte RC traffic through UIB both directly and inside Pyxis, with exact cleanup |
 | `make simulation-virtme-netem-e2e-test` | CPU with KVM or QEMU emulation | No | The same virtme Slurm UIB gate with a named netem condition active on both worker data interfaces and validated post-traffic evidence |
 | `make simulation-virtme-training-e2e-test` | CPU with KVM or QEMU emulation | No | The same cross-worker UIB gate plus real two-rank CPU DDP training through Slurm/Pyxis/Enroot; Gloo training is not UIB collective traffic |
@@ -554,11 +555,14 @@ use a small YAML overlay for a group of related values.
 | virtme network | `virtme-bridge` (optional; the profiles default to rootless socket networking) |
 | Communication | `communication/nccl`, `communication/rccl`, `communication/ucx`, `communication/libfabric` |
 | Protocol and congestion | `protocol/rocev2`, `protocol/rocev2-nscc-experimental`, `protocol/uet-nscc`, `protocol/uet-none` |
-| Network condition | `network/clean`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/bursty`, `network/reordered`, `network/ecn`, `network/asymmetric` |
+| Network condition | `network/clean`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/bursty`, `network/reordered`, `network/ecn`, `network/asymmetric`, `network/minimum-mtu`, `network/jumbo` |
 
-A later overlay from the same layer replaces the earlier layer settings. This
-makes interactive comparisons easy, but a committed request should specify
-only one communication, protocol, and network-condition overlay.
+A later overlay from the same layer replaces the earlier layer settings.
+Network overlays replace shaping and per-worker shaping; an overlay changes
+the link MTU only when it declares `network.mtu`, so an MTU profile can be
+followed by an impairment profile. A committed request should normally specify
+one communication and protocol overlay, plus one MTU and one impairment
+overlay when both are needed.
 
 ### Infrastructure and execution values
 
@@ -606,6 +610,7 @@ only one communication, protocol, and network-condition overlay.
 | `nodes.gpus.perWorker` | Integer 0-64 | GPUs available per worker |
 | `nodes.gpus.resourceName` | Scheduler resource name | For example `nvidia.com/gpu` |
 | `network.dataInterface` | Linux interface name, at most 15 characters | Slurm bind interface or the Kubernetes node/CNI data interface |
+| `network.mtu` | Integer 576-65535; default `1500` | Exact worker data-link MTU; UIB's active verbs MTU is derived automatically |
 | `network.shaping` | Complete shaping object | Default network condition for every worker |
 | `network.endpointShaping` | Map from `worker-NN/data` to complete shaping objects | Optional per-worker replacements; unknown workers are rejected |
 
@@ -2934,7 +2939,8 @@ make simulation-libvirt-netem-e2e-test
 
 Both targets default to `datacenter`; accepted values are `clean`,
 `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, `ecn`, and
-`asymmetric`. Uniform conditions apply to every worker data-interface egress.
+`asymmetric`, plus the unshaped `minimum-mtu` and `jumbo` link profiles.
+Uniform conditions apply to every worker data-interface egress.
 The asymmetric overlay resolves an optional per-worker replacement:
 
 ```yaml
@@ -2987,6 +2993,36 @@ The checked-in conditions are intentionally small and readable:
 | `network/reordered` | 2 ms delay, 500 us normal jitter, 10% reordering, 25% correlation, gap 5, seed 12345 |
 | `network/ecn` | 10 Gbit/s, 250 us delay, 2% loss decision model converted to ECN marks for ECN-capable packets, 512-packet queue, seed 12345 |
 | `network/asymmetric` | 250 us default; worker 1 uses 100 us, while worker 2 uses 1 Gbit/s and 5 ms |
+| `network/minimum-mtu` | Shaping disabled and link MTU 576 |
+| `network/jumbo` | Shaping disabled and link MTU 9000 |
+
+### Link and verbs MTU
+
+`network.mtu` is the exact data-interface MTU, not a verbs enumeration. UIB
+automatically selects the largest verbs MTU that leaves a conservative
+64-byte IP, UDP, and protocol-header allowance:
+
+| Link MTU | Advertised `UIB_ACTIVE_MTU` |
+|---:|---:|
+| 576-1087 | 512 |
+| 1088-2111 | 1024 |
+| 2112-4159 | 2048 |
+| 4160 or larger | 4096 |
+
+virtme and libvirt set the link before traffic and record both values in
+`network.json`. Generated Slurm jobs fail before starting the workload if the
+existing interface differs from `network.mtu`; this makes moving the same
+request to physical workers explicit. Kubernetes workloads receive the
+derived UIB value, but Kind rejects non-default link MTUs because its CNI link
+MTU is not yet controlled by this harness.
+
+MTU and shaping overlays compose when applied in that order. For example, the
+following uses minimum-size links with the datacenter qdisc:
+
+```text
+simulation/bin/uib-sim render --profile virtme-slurm \
+  --overlay network/minimum-mtu --overlay network/datacenter --format json
+```
 
 ### Netem configuration fields
 
@@ -3559,6 +3595,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-fault-schedule-test` | Python 3, `jq`, and the CLI requirements; no network privilege | Overlapping delay, loss, and link-down transitions, direct and noninteractive privileged command dispatch, exact JSONL evidence, base-condition recovery, missing targets, and signal-interruption cleanup through controlled standard-command adapters |
 | `make simulation-fault-e2e-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | A timed 2 ms netem window carries the complete RoCEv2 UIB SEND, multi-packet, RDMA read/write, and atomic workload; nonzero qdisc counters, transition evidence, and exact recovery are required |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | RoCEv2 and UET SEND and RDMA read/write complete with actual netem conditions and built-in or plugin congestion control; the UET cases also cover atomics |
+| `make simulation-mtu-test` | Build dependencies, `ip`, `timeout`, `ibv_rc_pingpong`, and permission to create network namespaces and veth pairs | Actual 2051-byte multi-packet RoCEv2 traffic at link MTUs 576 and 1280, plus UET at 576; both endpoints use and advertise the automatically derived active MTU |
 | `make rocev2-ecn-test` | Build dependencies and permission to open loopback UDP sockets | ECT(0) traffic produces an ACK but no CNP, while a valid CE-marked RoCEv2 packet produces exactly one ACK and one CNP; both io_uring multishot and batched receive metadata paths are tested |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Rootless socket and optional bridge rendering, IPv4/MAC/SSH allocation, exact virtme-ng launch vectors, worker fault-scheduler provisioning and stable targets, run-owned key/inventory creation, PID/start-time ownership, CLI `up/status/down`, bridge create/delete cleanup through fake standard commands, and invalid combination rejection |
@@ -3700,7 +3737,7 @@ and exact process cleanup.
 | `VIRTME_DOWNLOAD_CACHE` | `simulation/.artifacts/downloads/virtme` | Reusable verified package, source, runtime, plugin, and smoke-image cache |
 | `UIB_RUNTIME_SOURCE` | `simulation/.artifacts/uib-runtime` | Host path to the complete portable runtime shared read-only with every guest |
 | `VIRTME_MODEL_CACHE` | `simulation/.artifacts/huggingface` | Host path shared read-write at `storage.modelCachePath` in every guest |
-| `VIRTME_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty, `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, `ecn`, or `asymmetric`; uniform overlays apply to every worker egress, while `asymmetric` uses per-worker settings |
+| `VIRTME_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty or a checked-in network overlay: `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, `ecn`, `asymmetric`, `minimum-mtu`, or `jumbo` |
 | `VIRTME_SLURM_JOB_WAIT` | `120` | Positive seconds allowed for the end-to-end workload job to reach a terminal state |
 | `SLURM_IMAGE_CACHE` | `simulation/.artifacts/slurm-images` | Reusable verified host SquashFS cache shared with the virtme guests |
 | `PORTABLE_RUNTIME_CONTAINER_ENGINE` | `docker` | Docker-compatible engine used to build and verify the portable runtime dependency |
@@ -3775,7 +3812,7 @@ committed.
 |---|---|---|
 | `LIBVIRT_URI` | `qemu:///session` | Exact libvirt URI; rootless mode requires the session URI |
 | `LIBVIRT_NETWORK_MODE` | `rootless` | `rootless` for passt plus multicast, or `bridge` for managed networks |
-| `LIBVIRT_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty for the profile setting, or `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, `ecn`, or `asymmetric`; uniform overlays apply to every worker egress, while `asymmetric` uses per-worker settings |
+| `LIBVIRT_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty for the profile setting, or a checked-in network overlay: `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, `ecn`, `asymmetric`, `minimum-mtu`, or `jumbo` |
 | `LIBVIRT_POOL` | Unique run ID | Active pool name; the gate creates and later removes a missing session pool |
 | `LIBVIRT_POOL_DIR` | Ignored run-specific path | Directory backing a session pool created by the gate; not used for a pre-existing pool |
 | `LIBVIRT_WORKERS` | `2` | Positive worker count; two or more place the UIB traffic ranks on distinct VMs |

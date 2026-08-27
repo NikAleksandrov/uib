@@ -792,6 +792,20 @@
 #define UIB_ENV_TEST_ITERS "UIB_TEST_ITERS"
 
 /**
+ * DOC: UIB_TEST_LINK_MTU
+ * @uib-env: Test and scaling harnesses
+ * @default: `1500`
+ * @values: An integer from `576` through `65535`.
+ *
+ * Set both veth link MTUs used by standard ibverbs tool tests. The harness
+ * derives and advertises the largest UIB active MTU that fits the link.
+ *
+ * Example:
+ * UIB_TEST_LINK_MTU=576 make uib-tools-test
+ */
+#define UIB_ENV_TEST_LINK_MTU "UIB_TEST_LINK_MTU"
+
+/**
  * DOC: UIB_TEST_DROP_TX
  * @uib-env: Test and scaling harnesses
  * @default: Unset and disabled.

@@ -44,6 +44,9 @@ case "$command" in
 *'uname -r'*)
 	printf '%s\n' '6.12.0-test'
 	;;
+*'cat /sys/class/net/'*'/mtu'*)
+	printf '%s\n' "${VIRTME_TEST_MTU:-1500}"
+	;;
 *'get nodes -o name'*)
 	printf '%s\n' node/controller node/worker-01 node/worker-02
 	;;

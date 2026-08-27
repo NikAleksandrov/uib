@@ -104,6 +104,8 @@ def slurm_configuration(config, topology_value, node_records, runtime):
 
 
 def uib_verbs_smoke(config, server_address):
+    from .core import verbs_active_mtu
+
     runtime = config["storage"]["uibRuntimePath"]
     interface = config["network"]["dataInterface"]
     port = config["uib"]["bindPort"]
@@ -112,6 +114,7 @@ def uib_verbs_smoke(config, server_address):
     congestion = config["uib"]["congestionControl"]["algorithm"]
     congestion_variable = (
         "UIB_UET_CC" if protocol == "uet" else "UIB_ROCEV2_CC")
+    active_mtu = verbs_active_mtu(config["network"]["mtu"])
     return f"""#!/bin/sh
 set -eu
 
@@ -129,13 +132,14 @@ fi
 export LD_PRELOAD="$runtime/lib/libuibv.so"
 export UIB_BIND_IP="$bind_ip"
 export UIB_BIND_PORT=$(({port} + ${{SLURM_LOCALID:-0}}))
+export UIB_ACTIVE_MTU={active_mtu}
 export UIB_PROTOCOL={shlex.quote(protocol)}
 export UIB_TRANSPORT_MODE={shlex.quote(transport)}
 export UIB_ZEROCOPY=off
 export {congestion_variable}={shlex.quote(congestion)}
 
 set -- timeout -k 1 45 "$runtime/bin/ibv_rc_pingpong" -d uib0 -g 0 \
-	-m 1024 -s 2051 -n 32 -c
+	-m {active_mtu} -s 2051 -n 32 -c
 case ${{SLURM_PROCID:-}} in
 0)
 	exec "$@"

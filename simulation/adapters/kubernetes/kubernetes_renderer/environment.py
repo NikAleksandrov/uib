@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 def environment(config):
-    from .core import RenderError, string_value
+    from .core import RenderError, active_mtu, string_value
 
     uib = config["uib"]
     communication = config["communication"]
@@ -35,6 +35,9 @@ def environment(config):
             {
                 "LD_LIBRARY_PATH": "/opt/uib/lib",
                 "NCCL_IBVERBS_LIB": "/opt/uib/lib/libuibv.so",
+                "UIB_ACTIVE_MTU": string_value(
+                    active_mtu(config["network"]["mtu"])
+                ),
                 "UIB_BIND_PORT": string_value(uib["bindPort"]),
                 "UIB_PROTOCOL": uib["protocol"],
                 "UIB_TRANSPORT_MODE": uib["transport"],
@@ -53,6 +56,7 @@ def environment(config):
             values[f"{cc_prefix}_NSCC_MAX_WND"] = string_value(maximum)
 
         protected_uib = {
+            "UIB_ACTIVE_MTU",
             "UIB_BIND_IP",
             "UIB_BIND_PORT",
             "UIB_PROTOCOL",

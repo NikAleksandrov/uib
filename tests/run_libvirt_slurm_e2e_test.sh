@@ -46,10 +46,10 @@ network_condition=${LIBVIRT_NETWORK_CONDITION:-}
 case $network_condition in
 '')
 	;;
-clean|datacenter|constrained|lossy|bursty|reordered|ecn|asymmetric)
+clean|datacenter|constrained|lossy|bursty|reordered|ecn|asymmetric|minimum-mtu|jumbo)
 	;;
 *)
-	echo "LIBVIRT_NETWORK_CONDITION must be clean, datacenter, constrained, lossy, bursty, reordered, ecn, or asymmetric" >&2
+	echo "LIBVIRT_NETWORK_CONDITION must name a checked-in network overlay" >&2
 	exit 2
 	;;
 esac
@@ -242,10 +242,17 @@ with (root / "network-emulation.json").open(encoding="utf-8") as source:
 assert network["runId"] == sys.argv[2]
 assert network["scope"] == "worker-data-egress"
 assert network["interface"] == "eth1"
-expected_shaping = sys.argv[5] not in ("", "clean")
+expected_shaping = sys.argv[5] not in (
+    "", "clean", "minimum-mtu", "jumbo")
+expected_mtu = {"minimum-mtu": 576, "jumbo": 9000}.get(sys.argv[5], 1500)
+expected_active_mtu = 512 if expected_mtu == 576 else (
+    4096 if expected_mtu == 9000 else 1024)
+assert network["mtu"] == expected_mtu
+assert network["activeMtu"] == expected_active_mtu
 assert network["shaping"]["enabled"] is expected_shaping
 assert sorted(network["endpoints"]) == ["worker-01", "worker-02"]
 for endpoint in network["endpoints"].values():
+    assert endpoint["mtu"] == expected_mtu
     assert bool(endpoint["appliedCommand"])
     assert bool(endpoint["iproute2"])
     assert bool(endpoint["kernel"])

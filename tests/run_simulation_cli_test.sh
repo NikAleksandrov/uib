@@ -93,6 +93,25 @@ config = json.load(open(sys.argv[1], encoding="utf-8"))
 assert config["network"]["shaping"] == {"enabled": False}
 assert "endpointShaping" not in config["network"]
 PY
+"$cli" render --profile virtme-kubernetes --overlay network/minimum-mtu \
+	--overlay network/datacenter --format json > "$test_dir/minimum-mtu.json"
+python3 - "$test_dir/minimum-mtu.json" <<'PY'
+import json
+import sys
+
+config = json.load(open(sys.argv[1], encoding="utf-8"))
+assert config["network"]["mtu"] == 576
+assert config["network"]["shaping"]["enabled"] is True
+PY
+"$cli" render --profile virtme-kubernetes --overlay network/jumbo \
+	--overlay network/minimum-mtu --format json > "$test_dir/replaced-mtu.json"
+python3 - "$test_dir/replaced-mtu.json" <<'PY'
+import json
+import sys
+
+config = json.load(open(sys.argv[1], encoding="utf-8"))
+assert config["network"]["mtu"] == 576
+PY
 
 printf 'unknownTopLevel: true\n' > "$test_dir/unknown.yaml"
 if "$cli" render --profile kind-kubernetes \

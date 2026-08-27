@@ -45,6 +45,18 @@
     group: root
     mode: "0644"
 
+- name: Set the worker data-plane MTU
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/ip
+      - link
+      - set
+      - dev
+      - "{{ uib_data_interface }}"
+      - mtu
+      - "{{ uib_network_mtu | string }}"
+  changed_when: true
+
 - name: Apply worker data-plane network shaping
   ansible.builtin.command:
     argv:

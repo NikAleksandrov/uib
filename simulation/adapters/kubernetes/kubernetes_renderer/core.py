@@ -199,6 +199,13 @@ def string_value(value):
     return str(value)
 
 
+def active_mtu(link_mtu):
+    for mtu in (4096, 2048, 1024, 512, 256):
+        if mtu + 64 <= link_mtu:
+            return mtu
+    raise RenderError("network.mtu is too small for UIB")
+
+
 def labels(run_id):
     return {
         "app.kubernetes.io/instance": run_id,

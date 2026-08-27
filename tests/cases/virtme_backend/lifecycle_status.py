@@ -23,6 +23,8 @@ with open(os.path.join(state, "network.json"), encoding="utf-8") as source:
     network = json.load(source)
 assert network["scope"] == "worker-data-egress"
 assert network["interface"] == "eth1"
+assert network["mtu"] == 1280
+assert network["activeMtu"] == 1024
 assert network["shaping"]["enabled"] is True
 assert len(network["endpoints"]) == 2
 endpoints = {
@@ -32,6 +34,7 @@ endpoints = {
 assert endpoints["worker-01/data"]["shaping"]["latency"] == "100us"
 assert endpoints["worker-02/data"]["shaping"]["latency"] == "5ms"
 for endpoint in endpoints.values():
+    assert endpoint["mtu"] == 1280
     assert "qdisc netem " in endpoint["qdisc"]
     assert "Sent 4096 bytes" in endpoint["qdisc"]
     assert endpoint["seedApplied"] is True

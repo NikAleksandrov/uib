@@ -5,7 +5,7 @@ import yaml
 
 
 def common_ansible_values(config, values, state, run_id):
-    from .core import SIMULATION, quantity
+    from .core import SIMULATION, quantity, verbs_active_mtu
 
     manager = config["cluster"]["manager"]
     workers = sorted(
@@ -37,6 +37,8 @@ def common_ansible_values(config, values, state, run_id):
         "uib_enabled": config["uib"]["enabled"],
         "uib_ssh_user": config["libvirt"]["sshUser"],
         "uib_data_interface": config["network"]["dataInterface"],
+        "uib_network_mtu": config["network"]["mtu"],
+        "uib_active_mtu": verbs_active_mtu(config["network"]["mtu"]),
         "uib_network_shaping": config["network"]["shaping"],
         "uib_network_mode": config["libvirt"]["networkMode"],
         "uib_node_cpu": config["nodes"]["cpu"],

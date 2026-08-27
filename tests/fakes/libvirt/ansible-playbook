@@ -51,6 +51,8 @@ assert values["uib_run_id"] in (
     "uib-kubernetes-test", "uib-libvirt-test", "uib-libvirt-failed")
 assert values["uib_enabled"] is True
 assert values["uib_data_interface"] == "eth1"
+assert values["uib_network_mtu"] == 1500
+assert values["uib_active_mtu"] == 1024
 assert values["uib_network_shaping"] == {"enabled": False}
 assert values["uib_netem_source"].endswith("/simulation/network/netem")
 assert values["uib_fault_schedule_source"].endswith(
@@ -101,6 +103,7 @@ for node in ("worker-01", "worker-02"):
         "schemaVersion": 1,
         "node": node,
         "interface": values["uib_data_interface"],
+        "mtu": values["uib_network_mtu"],
         "target": values["uib_fault_targets"][node],
         "shaping": values["uib_endpoint_shaping"][node],
         "appliedCommand": "tc qdisc del dev eth1 root",

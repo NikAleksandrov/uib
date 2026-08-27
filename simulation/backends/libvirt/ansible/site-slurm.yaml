@@ -102,6 +102,7 @@
       environment:
         UIB_RUNTIME_PATH: "{{ uib_runtime_path }}"
         UIB_DATA_INTERFACE: "{{ uib_data_interface }}"
+        UIB_ACTIVE_MTU: "{{ uib_active_mtu }}"
       register: uib_verbs_smoke
       changed_when: false
 

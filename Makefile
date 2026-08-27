@@ -655,6 +655,9 @@ uib-tools-test: all
 uet-tools-test: all
 	UIB_TEST_PROTOCOL=uet UIB_TEST_PORT=5432 ./tests/run_uib_tools.sh
 
+simulation-mtu-test: all
+	./tests/run_simulation_mtu_test.sh
+
 provider-dmabuf-test: all $(PROVIDER_DMABUF_TEST)
 	LD_PRELOAD=$(CURDIR)/$(LIB_PROVIDER) UIB_BIND_PORT=19101 \
 		UIB_UDP_MODE=socket \
@@ -691,6 +694,7 @@ mpi-compat-test:
 endif
 else
 rxe-test-build rxe-test rxe-tools-test uib-tools-test uet-tools-test \
+	simulation-mtu-test \
 provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test nccl-test \
 rccl-test ucx-libfabric-test mpi-compat-test:
 	@echo "SKIP $@: libibverbs development files are unavailable"
@@ -1013,7 +1017,8 @@ clean:
 	simulation-kuberay-e2e-test \
 	docs-check examples clean install install-static test rxe-test-build \
 	rxe-test rxe-tools-test \
-	uib-tools-test uet-test uet-tools-test uet-loss-test rocev2-loss-test \
+	uib-tools-test uet-test uet-tools-test simulation-mtu-test \
+	uet-loss-test rocev2-loss-test \
 	rocev2-ecn-test \
 	uet-congestion-test uet-multipath-test examples-test \
 	examples-stress-test sync-transport-test dmabuf-e2e-test \

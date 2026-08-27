@@ -65,6 +65,7 @@ assert environment["NCCL_IBVERBS_LIB"]["value"] == \
     "/opt/uib/lib/libuibv.so"
 assert environment["UIB_PROTOCOL"]["value"] == "rocev2"
 assert environment["UIB_BIND_PORT"]["value"] == "4791"
+assert environment["UIB_ACTIVE_MTU"]["value"] == "1024"
 assert environment["UIB_BIND_IP"]["valueFrom"]["fieldRef"][
     "fieldPath"
 ] == "status.podIP"

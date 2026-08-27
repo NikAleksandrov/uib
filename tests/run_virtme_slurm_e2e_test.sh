@@ -50,7 +50,7 @@ fi
 network_condition=${VIRTME_NETWORK_CONDITION:-}
 case $network_condition in
 '') ;;
-clean|datacenter|constrained|lossy|bursty|reordered|ecn|asymmetric)
+clean|datacenter|constrained|lossy|bursty|reordered|ecn|asymmetric|minimum-mtu|jumbo)
 	profile_args="$profile_args --overlay network/$network_condition"
 	;;
 *)
@@ -134,12 +134,18 @@ assert all(os.path.isfile(path) for path in enroot["images"].values())
 with open(os.path.join(infrastructure, "network.json"),
           encoding="utf-8") as source:
     network = json.load(source)
-shaped = condition not in ("", "clean")
+shaped = condition not in ("", "clean", "minimum-mtu", "jumbo")
+expected_mtu = {"minimum-mtu": 576, "jumbo": 9000}.get(condition, 1500)
+expected_active_mtu = 512 if expected_mtu == 576 else (
+    4096 if expected_mtu == 9000 else 1024)
 assert network["scope"] == "worker-data-egress"
 assert network["interface"] == "eth1"
+assert network["mtu"] == expected_mtu
+assert network["activeMtu"] == expected_active_mtu
 assert network["shaping"]["enabled"] is shaped
 assert len(network["endpoints"]) == 2
 for endpoint in network["endpoints"].values():
+    assert endpoint["mtu"] == expected_mtu
     assert ("qdisc netem " in endpoint["qdisc"]) is shaped
     assert endpoint["appliedCommand"]
     assert endpoint["iproute2"]

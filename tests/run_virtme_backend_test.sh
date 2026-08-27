@@ -57,10 +57,12 @@ export VIRTME_TEST_IP_LOG="$test_dir/ip.log"
 export VIRTME_TEST_SSH_LOG="$test_dir/ssh.log"
 export VIRTME_API_FORWARD_CHECK_COMMAND=/bin/true
 export VIRTME_TEST_SHAPING=active
+export VIRTME_TEST_MTU=1280
 
 "$cli" up --profile virtme-kubernetes --overlay network/datacenter \
 	--run-id virtme-lifecycle \
 	--state-dir "$test_dir/runs" \
+	--set network.mtu=1280 \
 	--set 'network.endpointShaping={worker-02/data: {enabled: true, latency: 5ms, queueLimit: 4096, seed: 12345}}' \
 	> /dev/null
 "$cli" status --profile virtme-kubernetes --overlay network/datacenter \
@@ -77,12 +79,15 @@ grep -q 'server: https://127.0.0.1:23003' \
 [ "$(grep -c '/run/uib-fault-target' "$test_dir/ssh.log")" -eq 2 ]
 grep -F -- '--target worker-01/data' "$test_dir/ssh.log" > /dev/null
 grep -F -- '--target worker-02/data' "$test_dir/ssh.log" > /dev/null
+grep -F -- 'ip link set dev eth1 mtu 1280' "$test_dir/ssh.log" \
+	> /dev/null
 "$cli" down --profile virtme-kubernetes --overlay network/datacenter \
 	--run-id virtme-lifecycle \
 	--state-dir "$test_dir/runs"
 test "$(grep -c '/run/uib-netem clear eth1' "$test_dir/ssh.log")" -eq 2
 python3 "$project_dir/tests/cases/virtme_backend/network_evidence.py" "$test_dir/runs/virtme-lifecycle/infrastructure/ledger.json"
 unset VIRTME_TEST_SHAPING
+unset VIRTME_TEST_MTU
 
 "$backend" up "$test_dir/bridge-config.json" --name virtme-bridge-life \
 	--state-dir "$test_dir/bridge-state" > /dev/null

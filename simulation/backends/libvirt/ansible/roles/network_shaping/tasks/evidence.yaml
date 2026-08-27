@@ -31,6 +31,14 @@
   register: uib_netem_kernel
   changed_when: false
 
+- name: Read the worker data-plane MTU
+  ansible.builtin.command:
+    argv:
+      - cat
+      - "/sys/class/net/{{ uib_data_interface }}/mtu"
+  register: uib_network_mtu_evidence
+  changed_when: false
+
 - name: Require the requested post-traffic qdisc state
   ansible.builtin.assert:
     that:
@@ -40,6 +48,7 @@
       - >-
         not (uib_endpoint_shaping[inventory_hostname].enabled | bool) or
         (uib_netem_qdisc.stdout is regex('Sent [1-9][0-9]* bytes'))
+      - (uib_network_mtu_evidence.stdout | int) == (uib_network_mtu | int)
     fail_msg: >-
       post-traffic data-plane qdisc does not match the requested shaping or
       recorded no traffic: {{ uib_netem_qdisc.stdout }}
@@ -56,6 +65,7 @@
         'node': inventory_hostname,
         'target': uib_fault_targets[inventory_hostname],
         'interface': uib_data_interface,
+        'mtu': uib_network_mtu_evidence.stdout | int,
         'shaping': uib_endpoint_shaping[inventory_hostname],
         'appliedCommand': uib_netem_command.content | b64decode | trim,
         'qdisc': uib_netem_qdisc.stdout,

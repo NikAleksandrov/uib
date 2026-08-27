@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 def environment(config):
-	from .core import RenderError, string_value
+	from .core import RenderError, active_mtu, string_value
 
 	uib = config["uib"]
 	collective = config["communication"]["nccl"]
@@ -34,6 +34,9 @@ def environment(config):
 			"NCCL_IBVERBS_LIB": "/opt/uib/lib/libuibv.so",
 			"SLURM_UIB_BIND_PORT_BASE": string_value(uib["bindPort"]),
 			"SLURM_UIB_DATA_INTERFACE": config["network"]["dataInterface"],
+			"SLURM_UIB_NETWORK_MTU": string_value(config["network"]["mtu"]),
+			"UIB_ACTIVE_MTU": string_value(
+				active_mtu(config["network"]["mtu"])),
 			"UIB_PROTOCOL": uib["protocol"],
 			"UIB_TRANSPORT_MODE": uib["transport"],
 			"UIB_ZEROCOPY": "off",
@@ -46,6 +49,7 @@ def environment(config):
 		if maximum is not None:
 			values[f"{cc_prefix}_NSCC_MAX_WND"] = string_value(maximum)
 		protected_uib = {
+			"UIB_ACTIVE_MTU",
 			"UIB_BIND_IP",
 			"UIB_BIND_PORT",
 			"UIB_PROTOCOL",

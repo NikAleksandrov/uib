@@ -4,7 +4,7 @@ import re
 
 
 def record_network_evidence(state, config, values, run_id):
-    from .core import LibvirtError, read_json, write_json
+    from .core import LibvirtError, read_json, verbs_active_mtu, write_json
 
     root = state / "network"
     expected = {
@@ -32,7 +32,8 @@ def record_network_evidence(state, config, values, run_id):
                 evidence.get("node") != node or
                 evidence.get("target") != target or
                 evidence.get("interface") != interface or
-                evidence.get("shaping") != shaping):
+                evidence.get("shaping") != shaping or
+                evidence.get("mtu") != config["network"]["mtu"]):
             raise LibvirtError(f"network evidence mismatch for {node}")
         fields = ("appliedCommand", "qdisc", "iproute2", "kernel")
         if any(not isinstance(evidence.get(field), str) or
@@ -47,6 +48,7 @@ def record_network_evidence(state, config, values, run_id):
         endpoints[node] = {field: evidence[field] for field in fields}
         endpoints[node]["target"] = target
         endpoints[node]["shaping"] = shaping
+        endpoints[node]["mtu"] = evidence["mtu"]
         seed = shaping.get("seed")
         endpoints[node]["seedApplied"] = (
             None if seed is None else
@@ -58,6 +60,8 @@ def record_network_evidence(state, config, values, run_id):
         "runId": run_id,
         "scope": "worker-data-egress",
         "interface": interface,
+        "mtu": config["network"]["mtu"],
+        "activeMtu": verbs_active_mtu(config["network"]["mtu"]),
         "replaceExisting": True,
         "shaping": default_shaping,
         "endpoints": endpoints,

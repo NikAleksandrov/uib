@@ -81,6 +81,9 @@ assert "/opt/uib/lib/libuibv.so" in batch
 assert "LD_LIBRARY_PATH=/opt/uib/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" in batch
 assert "NCCL_IB_HCA='=uib0'" in batch
 assert "GLOO_SOCKET_IFNAME=eth1" in batch
+assert "UIB_ACTIVE_MTU=1024" in batch
+assert "SLURM_UIB_NETWORK_MTU=1500" in batch
+assert 'actual_mtu=$(/opt/uib/bin/ip -o link show dev ' in batch
 assert "UIB_BIND_PORT=$((SLURM_UIB_BIND_PORT_BASE + LOCAL_RANK))" in batch
 assert 'UIB_BIND_IP=$(/opt/uib/bin/ip -o -4 addr show dev "$SLURM_UIB_DATA_INTERFACE"' in batch
 assert "/opt/uib/bin/uib-preflight --library-only" in batch
@@ -163,6 +166,13 @@ render_training uib-slurm-uet --overlay protocol/uet-nscc \
 	> "$test_dir/uet.sbatch"
 grep -F 'export UIB_PROTOCOL=uet' "$test_dir/uet.sbatch" > /dev/null
 grep -F 'export UIB_UET_CC=nscc' "$test_dir/uet.sbatch" > /dev/null
+
+render_training uib-slurm-minimum-mtu --overlay network/minimum-mtu \
+	> "$test_dir/minimum-mtu.sbatch"
+grep -F 'export UIB_ACTIVE_MTU=512' "$test_dir/minimum-mtu.sbatch" \
+	> /dev/null
+grep -F 'export SLURM_UIB_NETWORK_MTU=576' \
+	"$test_dir/minimum-mtu.sbatch" > /dev/null
 
 render_training uib-slurm-fault \
 	--set 'faults=[{"at":"1s","action":"add-delay","target":"worker-01/data","latency":"2ms","duration":"1s"}]' \

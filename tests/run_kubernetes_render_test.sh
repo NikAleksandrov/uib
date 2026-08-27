@@ -21,6 +21,12 @@ if grep -Eq '[&*]id[0-9]+' "$test_dir/workload.yaml"; then
 	exit 1
 fi
 
+if "$cli" render --profile kind-kubernetes \
+	--overlay network/minimum-mtu > /dev/null 2>&1; then
+	echo "Kind accepted an unimplemented custom link MTU" >&2
+	exit 1
+fi
+
 digest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 "$cli" render-workload --profile kind-kubernetes --request "$request" \
 	--run-id uib-digest \

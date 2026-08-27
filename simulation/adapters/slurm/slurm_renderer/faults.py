@@ -15,6 +15,15 @@ def task_wrapper(uib_enabled):
 		lines.extend([
 			"export LD_LIBRARY_PATH=/opt/uib/lib"
 			"${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}",
+			"actual_mtu=$(/opt/uib/bin/ip -o link show dev "
+			"\"$SLURM_UIB_DATA_INTERFACE\" | awk '{ for (field = 1; "
+			"field <= NF; field++) if ($field == \"mtu\") { "
+			"print $(field + 1); exit } }')",
+			"if [ \"$actual_mtu\" != \"$SLURM_UIB_NETWORK_MTU\" ]; then",
+			"\techo \"$SLURM_UIB_DATA_INTERFACE has MTU $actual_mtu; "
+			"expected $SLURM_UIB_NETWORK_MTU\" >&2",
+			"\texit 2",
+			"fi",
 			"UIB_BIND_IP=$(/opt/uib/bin/ip -o -4 addr show dev "
 			"\"$SLURM_UIB_DATA_INTERFACE\" "
 			"scope global | awk 'NR == 1 { split($4, address, \"/\"); "

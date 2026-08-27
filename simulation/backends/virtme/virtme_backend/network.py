@@ -23,6 +23,10 @@ def apply_network_shaping(config, topology_value, ssh, key):
     targets = worker_targets(topology_value)
     for guest in worker_guests(topology_value):
         target = targets[guest["hostname"]]
+        remote_command(ssh, key, guest, shlex.join([
+            "ip", "link", "set", "dev", interface, "mtu",
+            str(config["network"]["mtu"]),
+        ]))
         remote_write(ssh, key, guest, "/run/uib-netem", adapter, mode="0755")
         remote_write(ssh, key, guest, "/run/uib-network-schedule", schedule,
                      mode="0755")
@@ -40,7 +44,7 @@ def apply_network_shaping(config, topology_value, ssh, key):
 
 
 def record_network_evidence(config, topology_value, ssh, key, commands, state):
-    from .core import VirtmeError, write_json
+    from .core import VirtmeError, verbs_active_mtu, write_json
     from .processes import remote_command, worker_guests, worker_targets
 
     default_shaping = config["network"]["shaping"]
@@ -60,6 +64,10 @@ def record_network_evidence(config, topology_value, ssh, key, commands, state):
             ssh, key, guest, "tc -Version", capture=True).stdout.strip()
         kernel = remote_command(
             ssh, key, guest, "uname -r", capture=True).stdout.strip()
+        mtu_output = remote_command(
+            ssh, key, guest,
+            f"cat /sys/class/net/{shlex.quote(interface)}/mtu",
+            capture=True).stdout.strip()
         applied = commands.get(hostname, "")
         if not all((applied, qdisc, iproute2, kernel)):
             raise VirtmeError(
@@ -70,6 +78,13 @@ def record_network_evidence(config, topology_value, ssh, key, commands, state):
         if active and not re.search(r"Sent [1-9][0-9]* bytes", qdisc):
             raise VirtmeError(
                 f"network evidence has no traffic for {hostname}")
+        try:
+            mtu = int(mtu_output)
+        except ValueError as error:
+            raise VirtmeError(
+                f"invalid link MTU evidence for {hostname}") from error
+        if mtu != config["network"]["mtu"]:
+            raise VirtmeError(f"unexpected link MTU for {hostname}")
         seed = shaping.get("seed")
         endpoints[hostname] = {
             "target": target,
@@ -78,6 +93,7 @@ def record_network_evidence(config, topology_value, ssh, key, commands, state):
             "qdisc": qdisc,
             "iproute2": iproute2,
             "kernel": kernel,
+            "mtu": mtu,
             "seedApplied": (
                 None if seed is None else f" seed {seed}" in applied),
         }
@@ -87,6 +103,8 @@ def record_network_evidence(config, topology_value, ssh, key, commands, state):
         "runId": topology_value["runId"],
         "scope": "worker-data-egress",
         "interface": interface,
+        "mtu": config["network"]["mtu"],
+        "activeMtu": verbs_active_mtu(config["network"]["mtu"]),
         "replaceExisting": True,
         "shaping": default_shaping,
         "endpoints": endpoints,

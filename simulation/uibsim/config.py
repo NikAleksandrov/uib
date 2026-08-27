@@ -89,6 +89,8 @@ def apply_overlay(config, name):
     if name.startswith("network/"):
         config["network"]["shaping"] = copy.deepcopy(
             overlay["network"]["shaping"])
+        if "mtu" in overlay["network"]:
+            config["network"]["mtu"] = overlay["network"]["mtu"]
         config["network"].pop("endpointShaping", None)
         if "endpointShaping" in overlay["network"]:
             config["network"]["endpointShaping"] = copy.deepcopy(
@@ -340,6 +342,9 @@ def validate_scheduler(config):
     if provider == "kind" and endpoint_shaping:
         raise ConfigurationError(
             "per-worker shaping is not implemented for Kind")
+    if provider == "kind" and config["network"]["mtu"] != 1500:
+        raise ConfigurationError(
+            "custom link MTUs are not implemented for Kind")
     expected_targets = {
         f"worker-{index:02d}/data"
         for index in range(1, config["nodes"]["workers"] + 1)
