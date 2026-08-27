@@ -46,10 +46,10 @@ network_condition=${LIBVIRT_NETWORK_CONDITION:-}
 case $network_condition in
 '')
 	;;
-clean|datacenter|constrained|lossy|reordered|ecn)
+clean|datacenter|constrained|lossy|bursty|reordered|ecn)
 	;;
 *)
-	echo "LIBVIRT_NETWORK_CONDITION must be clean, datacenter, constrained, lossy, reordered, or ecn" >&2
+	echo "LIBVIRT_NETWORK_CONDITION must be clean, datacenter, constrained, lossy, bursty, reordered, or ecn" >&2
 	exit 2
 	;;
 esac

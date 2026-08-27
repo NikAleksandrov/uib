@@ -507,7 +507,7 @@ use a small YAML overlay for a group of related values.
 | virtme network | `virtme-bridge` (optional; the profiles default to rootless socket networking) |
 | Communication | `communication/nccl`, `communication/rccl`, `communication/ucx`, `communication/libfabric` |
 | Protocol and congestion | `protocol/rocev2`, `protocol/rocev2-nscc-experimental`, `protocol/uet-nscc`, `protocol/uet-none` |
-| Network condition | `network/clean`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/reordered`, `network/ecn` |
+| Network condition | `network/clean`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/bursty`, `network/reordered`, `network/ecn` |
 
 A later overlay from the same layer replaces the earlier layer settings. This
 makes interactive comparisons easy, but a committed request should specify
@@ -651,6 +651,8 @@ nodes * processesPerNode == data * tensor * pipeline * expert
 | Jitter without latency; distribution without jitter | These netem options depend on the preceding delay options |
 | Reordering without latency | Netem needs delay for observable reordering |
 | ECN without nonzero loss | Netem uses a loss model to decide which packets to mark |
+| Gilbert-Elliott loss without all recovery/bad-state/good-state percentages | The four values define the complete reproducible burst model |
+| Gilbert-Elliott parameters with random loss, or random-loss correlation with `gemodel` | The two netem loss grammars are mutually exclusive |
 | Correlation without its delay/loss/duplicate/corrupt/reorder parent | Invalid netem grammar |
 | Cell size without packet overhead; cell overhead without cell size | Invalid netem rate grammar |
 | Shaping an `existing` profile without `allowExistingMutations: true` | Protects real interfaces |
@@ -2813,8 +2815,7 @@ Configurable link features include:
 
 - bandwidth and oversubscription;
 - base latency, jitter, correlation, and distribution;
-- random loss with optional correlation; state/Gilbert-Elliott burst models
-  remain a planned overlay extension;
+- random loss with optional correlation and Gilbert-Elliott burst loss;
 - reordering, duplication, and corruption;
 - queue capacity and MTU;
 - ECN where available;
@@ -2868,7 +2869,7 @@ make simulation-libvirt-netem-e2e-test
 ```
 
 Both targets default to `datacenter`; accepted values are `clean`,
-`datacenter`, `constrained`, `lossy`, `reordered`, and `ecn`. The condition is
+`datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, and `ecn`. The condition is
 applied symmetrically to the egress of every worker data interface. Because
 the guests and their interfaces are run-owned, each lifecycle explicitly
 replaces their initial root qdisc. After the cross-worker UIB gate, it requires
@@ -2891,6 +2892,7 @@ The checked-in conditions are intentionally small and readable:
 | `network/datacenter` | 25 Gbit/s, 100 us delay, 20 us normal jitter, 10% delay correlation, 8192-packet queue, seed 12345 |
 | `network/constrained` | 100 Mbit/s, 2 ms delay, 200 us normal jitter, 256-packet queue, seed 12345 |
 | `network/lossy` | 1 ms delay, 1% random loss, 25% loss correlation, 1024-packet queue, seed 12345 |
+| `network/bursty` | 1 ms delay and a Gilbert-Elliott model with 0.5% bad-state entry, 20% recovery, 80% loss while bad, 0.01% loss while good, 1024-packet queue, seed 12345 |
 | `network/reordered` | 2 ms delay, 500 us normal jitter, 10% reordering, 25% correlation, gap 5, seed 12345 |
 | `network/ecn` | 10 Gbit/s, 250 us delay, 2% loss decision model converted to ECN marks for ECN-capable packets, 512-packet queue, seed 12345 |
 
@@ -2908,8 +2910,12 @@ the corresponding case variants.
 | `jitter` | Unset | Second `delay` argument |
 | `delayCorrelationPercent` | Unset | Third `delay` argument |
 | `delayDistribution` | Unset | `uniform`, `normal`, `pareto`, or `paretonormal` |
-| `lossPercent` | Unset | `loss random PERCENT` |
+| `lossModel` | `random` | `random` or Gilbert-Elliott burst loss (`gemodel`) |
+| `lossPercent` | Unset | Random loss, or probability of entering the bad state with `gemodel` |
 | `lossCorrelationPercent` | Unset | Correlation for random loss |
+| `lossRecoveryPercent` | Unset | Gilbert-Elliott probability of leaving the bad state |
+| `lossBadStatePercent` | Unset | Gilbert-Elliott loss probability in the bad state |
+| `lossGoodStatePercent` | Unset | Gilbert-Elliott loss probability in the good state |
 | `duplicatePercent`, `duplicateCorrelationPercent` | Unset | Packet duplication and correlation |
 | `corruptPercent`, `corruptCorrelationPercent` | Unset | Random packet corruption and correlation |
 | `reorderPercent`, `reorderCorrelationPercent` | Unset | Percentage reordering and correlation |
@@ -2936,6 +2942,21 @@ network:
     corruptPercent: 0.01
     queueLimit: 512
     seed: 9001
+```
+
+For burst loss, select `lossModel: gemodel` and set all four loss fields. The
+following has an average bad-state run of five decisions because its recovery
+probability is 20%:
+
+```yaml
+network:
+  shaping:
+    enabled: true
+    lossModel: gemodel
+    lossPercent: 0.5
+    lossRecoveryPercent: 20
+    lossBadStatePercent: 80
+    lossGoodStatePercent: 0.01
 ```
 
 Apply egress shaping to every endpoint-facing interface whose traffic belongs
@@ -3581,7 +3602,7 @@ and exact process cleanup.
 | `VIRTME_DOWNLOAD_CACHE` | `simulation/.artifacts/downloads/virtme` | Reusable verified package, source, runtime, plugin, and smoke-image cache |
 | `UIB_RUNTIME_SOURCE` | `simulation/.artifacts/uib-runtime` | Host path to the complete portable runtime shared read-only with every guest |
 | `VIRTME_MODEL_CACHE` | `simulation/.artifacts/huggingface` | Host path shared read-write at `storage.modelCachePath` in every guest |
-| `VIRTME_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty, `clean`, `datacenter`, `constrained`, `lossy`, `reordered`, or `ecn`; the selected overlay applies to every worker data-interface egress |
+| `VIRTME_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty, `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, or `ecn`; the selected overlay applies to every worker data-interface egress |
 | `VIRTME_SLURM_JOB_WAIT` | `120` | Positive seconds allowed for the end-to-end workload job to reach a terminal state |
 | `SLURM_IMAGE_CACHE` | `simulation/.artifacts/slurm-images` | Reusable verified host SquashFS cache shared with the virtme guests |
 | `PORTABLE_RUNTIME_CONTAINER_ENGINE` | `docker` | Docker-compatible engine used to build and verify the portable runtime dependency |
@@ -3656,7 +3677,7 @@ committed.
 |---|---|---|
 | `LIBVIRT_URI` | `qemu:///session` | Exact libvirt URI; rootless mode requires the session URI |
 | `LIBVIRT_NETWORK_MODE` | `rootless` | `rootless` for passt plus multicast, or `bridge` for managed networks |
-| `LIBVIRT_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty for the profile setting, or `clean`, `datacenter`, `constrained`, `lossy`, `reordered`, or `ecn`; applied to every worker data-interface egress |
+| `LIBVIRT_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty for the profile setting, or `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, or `ecn`; applied to every worker data-interface egress |
 | `LIBVIRT_POOL` | Unique run ID | Active pool name; the gate creates and later removes a missing session pool |
 | `LIBVIRT_POOL_DIR` | Ignored run-specific path | Directory backing a session pool created by the gate; not used for a pre-existing pool |
 | `LIBVIRT_WORKERS` | `2` | Positive worker count; two or more place the UIB traffic ranks on distinct VMs |
@@ -3729,7 +3750,7 @@ never changes the host root qdisc. Its options are:
 
 | Variable | Default | Syntax and values |
 |---|---|---|
-| `SIMULATION_CC_MATRIX` | Experimental RoCEv2 clean/datacenter/lossy NSCC, constrained `none`, and plugin cases; UET clean/datacenter/constrained/lossy/reordered NSCC, constrained `none`, and plugin cases | Space-separated `protocol:algorithm:condition` entries. Protocol is `rocev2` or `uet`; test algorithms are `nscc`, `none`, and `test-pass`; RoCEv2+NSCC entries are experimental only; condition is any checked-in network overlay such as `clean`, `datacenter`, `constrained`, `lossy`, `reordered`, or `ecn` |
+| `SIMULATION_CC_MATRIX` | Experimental RoCEv2 clean/datacenter/lossy NSCC, constrained `none`, and plugin cases; UET clean/datacenter/constrained/lossy/bursty/reordered NSCC, constrained `none`, and plugin cases | Space-separated `protocol:algorithm:condition` entries. Protocol is `rocev2` or `uet`; test algorithms are `nscc`, `none`, and `test-pass`; RoCEv2+NSCC entries are experimental only; condition is any checked-in network overlay such as `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, or `ecn` |
 | `SIMULATION_CC_TIMEOUT` | `60` | Positive timeout in seconds for each matrix entry |
 | `SIMULATION_CC_MAX_WINDOW` | `65536` | NSCC maximum window in bytes |
 | `SIMULATION_NETNS_PRIVILEGE` | Unset | Optional command prefix used only to execute `unshare --net` when root and unprivileged user namespaces are unavailable |

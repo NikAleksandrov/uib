@@ -32,10 +32,20 @@ build_command()
 
 	value=$(jq -r '.lossPercent // empty' <<<"$shaping")
 	if [ -n "$value" ]; then
-		command+=(loss random "$value%")
-		correlation=$(jq -r '.lossCorrelationPercent // empty' \
-			<<<"$shaping")
-		[ -z "$correlation" ] || command+=("$correlation%")
+		loss_model=$(jq -r '.lossModel // "random"' <<<"$shaping")
+		if [ "$loss_model" = gemodel ]; then
+			command+=(loss gemodel "$value%")
+			for parameter in lossRecoveryPercent \
+				lossBadStatePercent lossGoodStatePercent; do
+				value=$(jq -r ".${parameter}" <<<"$shaping")
+				command+=("$value%")
+			done
+		else
+			command+=(loss random "$value%")
+			correlation=$(jq -r '.lossCorrelationPercent // empty' \
+				<<<"$shaping")
+			[ -z "$correlation" ] || command+=("$correlation%")
+		fi
 		[ "$(jq -r '.ecn // false' <<<"$shaping")" != true ] || \
 			command+=(ecn)
 	fi

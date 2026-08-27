@@ -269,8 +269,12 @@
             "delayDistribution": {
               "enum": ["uniform", "normal", "pareto", "paretonormal"]
             },
+            "lossModel": { "enum": ["random", "gemodel"] },
             "lossPercent": { "type": "number", "minimum": 0, "maximum": 100 },
             "lossCorrelationPercent": { "$ref": "#/$defs/percent" },
+            "lossRecoveryPercent": { "$ref": "#/$defs/percent" },
+            "lossBadStatePercent": { "$ref": "#/$defs/percent" },
+            "lossGoodStatePercent": { "$ref": "#/$defs/percent" },
             "duplicatePercent": { "$ref": "#/$defs/percent" },
             "duplicateCorrelationPercent": { "$ref": "#/$defs/percent" },
             "corruptPercent": { "$ref": "#/$defs/percent" },

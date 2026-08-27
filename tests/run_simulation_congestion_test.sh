@@ -13,7 +13,7 @@ if [ -z "$matrix" ]; then
 	matrix='rocev2:nscc:clean rocev2:nscc:datacenter
 rocev2:nscc:lossy rocev2:none:constrained rocev2:test-pass:datacenter
 uet:nscc:clean uet:nscc:datacenter uet:nscc:constrained
-uet:nscc:lossy uet:nscc:reordered uet:none:constrained
+uet:nscc:lossy uet:nscc:bursty uet:nscc:reordered uet:none:constrained
 uet:test-pass:datacenter'
 fi
 timeout_seconds=${SIMULATION_CC_TIMEOUT:-60}

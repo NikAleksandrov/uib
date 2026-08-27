@@ -322,6 +322,27 @@ def validate_communication(config):
         raise ConfigurationError("packet reordering requires latency")
     if shaping.get("ecn", False) and not shaping.get("lossPercent", 0):
         raise ConfigurationError("netem ECN requires a nonzero loss model")
+    loss_model = shaping.get("lossModel", "random")
+    burst_parameters = {
+        "lossRecoveryPercent",
+        "lossBadStatePercent",
+        "lossGoodStatePercent",
+    }
+    configured_burst = burst_parameters & set(shaping)
+    if loss_model == "gemodel":
+        if not shaping.get("lossPercent", 0):
+            raise ConfigurationError(
+                "netem gemodel requires a nonzero lossPercent")
+        missing = burst_parameters - configured_burst
+        if missing:
+            raise ConfigurationError(
+                f"netem gemodel requires {sorted(missing)[0]}")
+        if "lossCorrelationPercent" in shaping:
+            raise ConfigurationError(
+                "lossCorrelationPercent applies only to random loss")
+    elif configured_burst:
+        raise ConfigurationError(
+            "burst-loss parameters require lossModel=gemodel")
     correlation_requirements = {
         "delayCorrelationPercent": "jitter",
         "lossCorrelationPercent": "lossPercent",
