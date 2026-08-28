@@ -19,7 +19,7 @@ an independently expressed userspace implementation under Apache-2.0.
 The RoCEv2 implementation follows the InfiniBand Architecture Specification
 and its RoCEv2 annex published by the InfiniBand Trade Association.
 
-The UET wire protocol and NSCC implementation are based on selected mechanisms described
+The UET wire protocol, NSCC, and RCCC implementations are based on selected mechanisms described
 in Ultra Ethernet Specification 1.0.2. UIB is an independent project, is
 not affiliated with or certified by the Ultra Ethernet Consortium, and does
 not claim complete specification conformance or interoperability with
