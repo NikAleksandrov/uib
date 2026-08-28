@@ -41,7 +41,7 @@ def command_doctor(args):
 
 
 def invoke_backend(config, arguments):
-    from .core import ConfigurationError, KIND_BACKEND, VIRTME_BACKEND
+    from .core import ConfigurationError, KIND_BACKEND, VIRTME_BACKEND, run_backend
 
     provider = config["infrastructure"]["provider"]
     backends = {
@@ -55,29 +55,18 @@ def invoke_backend(config, arguments):
                                      prefix="uib-sim-", suffix=".json") as output:
         json.dump(config, output, indent=2, sort_keys=True)
         output.flush()
-        try:
-            result = subprocess.run(
-                [str(backends[provider]), *arguments(output.name)], check=False)
-            return result.returncode
-        except OSError as error:
-            raise ConfigurationError(
-                f"cannot invoke {provider} backend: {error}") from error
+        return run_backend(
+            [str(backends[provider]), *arguments(output.name)])
 
 
 def invoke_libvirt(config, arguments):
-    from .core import ConfigurationError, LIBVIRT_BACKEND
+    from .core import LIBVIRT_BACKEND, run_backend
 
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8",
                                      prefix="uib-sim-", suffix=".json") as output:
         json.dump(config, output, indent=2, sort_keys=True)
         output.flush()
-        try:
-            result = subprocess.run(
-                [str(LIBVIRT_BACKEND), *arguments(output.name)], check=False)
-        except OSError as error:
-            raise ConfigurationError(
-                f"cannot invoke libvirt backend: {error}") from error
-    return result.returncode
+        return run_backend([str(LIBVIRT_BACKEND), *arguments(output.name)])
 
 
 def command_up(args):

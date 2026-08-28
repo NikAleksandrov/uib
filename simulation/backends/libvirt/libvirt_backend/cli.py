@@ -2,11 +2,12 @@
 
 import argparse
 import os
+import signal
 import sys
 
 
 def main():
-    from .core import DEFAULT_CACHE, LibvirtError
+    from .core import DEFAULT_CACHE, LibvirtError, interrupt_lifecycle
     from .lifecycle import command_down, command_kubeconfig, command_render, command_status, command_up
 
     parser = argparse.ArgumentParser(
@@ -50,9 +51,17 @@ def main():
     down.set_defaults(handler=command_down)
 
     args = parser.parse_args()
+    previous_handlers = {}
+    if args.command in {"up", "down"}:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.signal(
+                signum, interrupt_lifecycle)
     try:
         result = args.handler(args)
         return result if result is not None else 0
     except (LibvirtError, OSError) as error:
         print(f"uib-libvirt: {error}", file=sys.stderr)
         return 2
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)

@@ -6,6 +6,7 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import tempfile
 
 
@@ -87,6 +88,15 @@ CONTAINER_ARTIFACTS = (
 
 class VirtmeError(Exception):
     pass
+
+
+class LifecycleInterrupted(VirtmeError):
+    pass
+
+
+def interrupt_lifecycle(signum, unused_frame):
+    raise LifecycleInterrupted(
+        f"interrupted by {signal.Signals(signum).name}")
 
 
 def verbs_active_mtu(link_mtu):

@@ -3756,6 +3756,8 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make rocev2-ecn-test` | Build dependencies and permission to open loopback UDP sockets | ECT(0) traffic produces an ACK but no CNP, while a valid CE-marked RoCEv2 packet produces exactly one ACK and one CNP; both io_uring multishot and batched receive metadata paths are tested |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Rootless socket and optional bridge rendering, IPv4/MAC/SSH allocation, exact virtme-ng launch vectors, worker fault-scheduler provisioning and stable targets, run-owned key/inventory creation, PID/start-time ownership, CLI `up/status/down`, bridge create/delete cleanup through fake standard commands, and invalid combination rejection |
+| `make simulation-lifecycle-interruption-test` | Python 3 and POSIX shell tools; no cluster, hypervisor, or elevated privilege | SIGTERM propagation through the public CLI, Kind default cleanup and `--retain`, libvirt interruption during OpenTofu apply with owned destroy, and virtme interruption after guest launch with process and network cleanup |
+| `make simulation-workload-interruption-test` | Python 3 and POSIX shell tools; no scheduler or cluster | Kubernetes apply interruption with exact namespace cleanup, partial collection removal and successful retry, interrupted cleanup retry, and conservative Slurm `submission-unknown` recording when no numeric job ID was returned |
 | `make simulation-virtme-kubernetes-e2e-test` | virtme-ng 1.35, SSH, kubectl, QEMU with KVM or TCG, about 4 GiB memory for the two reduced-size guests, and download access for the pinned k3s binary on first use | A real controller and worker under separate virtme kernels, rootless socket data traffic, pinned k3s/containerd startup without systemd PID 1, both nodes Ready, host API access through an owned SSH forward, cached download reuse, and exact process cleanup |
 | `make simulation-virtme-slurm-e2e-test` | virtme-ng 1.35, SSH/SCP, QEMU with KVM or TCG, `jq`, `tc`, Slurm/Pyxis build tools, a Docker-compatible engine for the portable runtime and workload image, about 6 GiB memory, and download access on the first run | A real controller/two-worker Slurm/Pyxis/Enroot lifecycle, direct and containerized cross-worker UIB traffic, automatic pinned-image staging, remote two-rank `run`/`status`/`collect`, clean network evidence, portable-runtime preflight, and exact cleanup |
 | `make simulation-virtme-netem-e2e-test` | The virtme Slurm gate requirements | The same complete workload lifecycle while the selected condition is active on both worker data interfaces; exact qdisc/kernel/iproute2 evidence and cleanup are validated |
@@ -3788,6 +3790,8 @@ make simulation-rank-fault-test
 make simulation-congestion-test
 make simulation-kind-test
 make simulation-virtme-backend-test
+make simulation-lifecycle-interruption-test
+make simulation-workload-interruption-test
 make simulation-libvirt-test
 make simulation-kubernetes-render-test
 make simulation-kubernetes-lifecycle-test
@@ -4305,7 +4309,19 @@ as it is created.
 - shared Kubernetes operators, Slurm configuration, Pyxis, Enroot, GPU/RDMA
   operators, partitions, caches, and unrelated jobs are never removed.
 
-Cleanup must remain safe after interruption during every lifecycle stage.
+During `uib-sim up`, SIGINT and SIGTERM are forwarded to the isolated backend
+process group. Kind deletes the exact cluster name, libvirt runs `tofu destroy`
+from the owned state, and virtme restores shaping and terminates only processes
+whose PID and start time still match the ledger. The command exits with the
+usual `128 + signal` status after cleanup. `--retain` deliberately suppresses
+automatic create-failure cleanup for inspection; it never broadens ownership.
+Run `make simulation-lifecycle-interruption-test` to verify these contracts
+without creating a cluster or VM. The companion
+`make simulation-workload-interruption-test` verifies scheduler submission,
+collection, and cleanup interruption. Kubernetes can delete its exact owned
+namespace after an interrupted apply. An interrupted Slurm submission without
+a returned numeric job ID is deliberately recorded as `submission-unknown`;
+UIB never guesses a job to cancel.
 
 ## Limitations
 

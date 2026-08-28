@@ -3,14 +3,13 @@
 import pathlib
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 
 
 def command_slurm_run(args):
     from .config import resolve
-    from .core import ConfigurationError, SLURM_RENDERER
+    from .core import ConfigurationError, LifecycleInterrupted, SLURM_RENDERER, run_command
     from .scheduler import remote_path_exists, run_scheduler, scheduler_remote
     from .state import prepare_run_directory, record_run_inputs, utc_now, write_json
 
@@ -64,8 +63,14 @@ def command_slurm_run(args):
     try:
         with batch_path.open("w", encoding="utf-8") as batch, \
                 render_error.open("w", encoding="utf-8") as errors:
-            rendered = subprocess.run(
-                command, stdout=batch, stderr=errors, check=False)
+            rendered = run_command(
+                command, stdout=batch, stderr=errors)
+    except LifecycleInterrupted as error:
+        ledger["state"] = "interrupted"
+        ledger["interruptedStage"] = "render"
+        ledger["error"] = str(error)
+        write_json(ledger_path, ledger)
+        raise
     except OSError as error:
         ledger["state"] = "render-failed"
         ledger["error"] = str(error)
@@ -98,6 +103,11 @@ def command_slurm_run(args):
                 ["--parsable", str(batch_path)], text=True,
                 capture_output=True)
             ledger["schedulerTransport"] = "local"
+    except LifecycleInterrupted as error:
+        ledger["state"] = "submission-unknown"
+        ledger["error"] = str(error)
+        write_json(ledger_path, ledger)
+        raise
     except (ConfigurationError, OSError) as error:
         ledger["state"] = "submission-not-started"
         ledger["error"] = str(error)

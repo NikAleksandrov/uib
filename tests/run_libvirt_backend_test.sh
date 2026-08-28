@@ -220,6 +220,11 @@ cat > "$remote_run/status.json" <<'EOF'
 }
 EOF
 printf '%s\n' worker-01 worker-02 > "$remote_run/nodes.txt"
+printf '%s\n' \
+	'worker-01|Linux|6.12.0-test|x86_64' \
+	'worker-02|Linux|6.12.0-test|x86_64' \
+	> "$remote_run/host-probes.psv"
+printf '%s\n' 'slurm 23.11.4' > "$remote_run/scheduler-tools.txt"
 printf '%s\n' '{"result":"passed"}' > "$remote_run/result.json"
 printf '%s\n' 'UIB runtime preflight: PASS' \
 	> "$LIBVIRT_REMOTE_ROOT/results/uib-libvirt-test-7654.out"

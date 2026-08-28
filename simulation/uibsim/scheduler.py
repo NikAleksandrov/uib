@@ -135,7 +135,7 @@ def ssh_command(remote):
 
 
 def run_scheduler(args, variable, program, arguments, **kwargs):
-    from .core import ConfigurationError
+    from .core import ConfigurationError, run_command
 
     remote = scheduler_remote(args)
     if remote:
@@ -145,7 +145,7 @@ def run_scheduler(args, variable, program, arguments, **kwargs):
     else:
         command = [slurm_command(variable, program), *arguments]
     try:
-        return subprocess.run(command, check=False, **kwargs)
+        return run_command(command, **kwargs)
     except OSError as error:
         raise ConfigurationError(f"cannot invoke {program}: {error}") from error
 
@@ -169,7 +169,7 @@ def remote_path_exists(args, path, kind):
 
 
 def copy_remote_path(args, source, destination, recursive=False):
-    from .core import ConfigurationError
+    from .core import ConfigurationError, run_command
 
     remote = scheduler_remote(args)
     if not remote:
@@ -190,7 +190,7 @@ def copy_remote_path(args, source, destination, recursive=False):
         command.append("-r")
     command.extend([f"{remote['target']}:{source}", str(destination)])
     try:
-        result = subprocess.run(command, check=False)
+        result = run_command(command)
     except OSError as error:
         raise ConfigurationError(f"cannot invoke scp: {error}") from error
     if result.returncode:

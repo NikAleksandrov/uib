@@ -340,6 +340,12 @@ simulation-kind-test:
 simulation-virtme-backend-test:
 	./tests/run_virtme_backend_test.sh
 
+simulation-lifecycle-interruption-test:
+	./tests/run_lifecycle_interruption_test.sh
+
+simulation-workload-interruption-test:
+	./tests/run_workload_interruption_test.sh
+
 simulation-virtme-kubernetes-e2e-test:
 	./tests/run_virtme_kubernetes_e2e_test.sh
 
@@ -1018,6 +1024,8 @@ clean:
 	simulation-fault-e2e-test simulation-congestion-test \
 	simulation-kind-test simulation-kind-e2e-test \
 	simulation-virtme-backend-test \
+	simulation-lifecycle-interruption-test \
+	simulation-workload-interruption-test \
 	simulation-virtme-kubernetes-e2e-test \
 	simulation-virtme-slurm-e2e-test \
 	simulation-virtme-training-e2e-test \

@@ -6,6 +6,7 @@ import os
 import pathlib
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 
@@ -36,6 +37,32 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 class LibvirtError(Exception):
     pass
+
+
+class LifecycleInterrupted(LibvirtError):
+    pass
+
+
+def interrupt_lifecycle(signum, unused_frame):
+    raise LifecycleInterrupted(
+        f"interrupted by {signal.Signals(signum).name}")
+
+
+def terminate_child(process):
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
 
 
 def verbs_active_mtu(link_mtu):
@@ -150,18 +177,24 @@ def run_logged(command, log, environment=None, capture=False):
         with log.open("a", encoding="utf-8") as output:
             output.write("$ " + " ".join(command) + "\n")
             output.flush()
-            result = subprocess.run(
-                command, text=True, stdout=subprocess.PIPE if capture else output,
-                stderr=output, env=environment, check=False)
-            if capture and result.stdout:
-                output.write(result.stdout)
+            process = subprocess.Popen(
+                command, text=True,
+                stdout=subprocess.PIPE if capture else output,
+                stderr=output, env=environment, start_new_session=True)
+            try:
+                stdout, unused_stderr = process.communicate()
+            except BaseException:
+                terminate_child(process)
+                raise
+            if capture and stdout:
+                output.write(stdout)
     except OSError as error:
         raise LibvirtError(f"cannot execute {command[0]}: {error}") from error
-    if result.returncode:
+    if process.returncode:
         raise LibvirtError(
             f"{pathlib.Path(command[0]).name} failed with status "
-            f"{result.returncode}; inspect {log}")
-    return result.stdout if capture else ""
+            f"{process.returncode}; inspect {log}")
+    return stdout if capture else ""
 
 
 def load_ledger(state, run_id):

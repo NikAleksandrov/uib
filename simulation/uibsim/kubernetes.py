@@ -4,7 +4,6 @@ import json
 import pathlib
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 
@@ -91,7 +90,7 @@ def query_kubernetes_status(args, config, resource=None):
 
 def command_kubernetes_run(args):
     from .config import resolve
-    from .core import ConfigurationError, KUBERNETES_RENDERER
+    from .core import ConfigurationError, KUBERNETES_RENDERER, LifecycleInterrupted, run_command
     from .faults import run_kubectl
     from .state import prepare_run_directory, record_run_inputs, utc_now, write_json
 
@@ -137,8 +136,14 @@ def command_kubernetes_run(args):
     try:
         with manifest.open("w", encoding="utf-8") as output, \
                 render_error.open("w", encoding="utf-8") as errors:
-            rendered = subprocess.run(
-                command, stdout=output, stderr=errors, check=False)
+            rendered = run_command(
+                command, stdout=output, stderr=errors)
+    except LifecycleInterrupted as error:
+        ledger["state"] = "interrupted"
+        ledger["interruptedStage"] = "render"
+        ledger["error"] = str(error)
+        write_json(ledger_path, ledger)
+        raise
     except OSError as error:
         ledger["state"] = "render-failed"
         ledger["error"] = str(error)
@@ -154,8 +159,23 @@ def command_kubernetes_run(args):
 
     ledger["state"] = "rendered"
     write_json(ledger_path, ledger)
-    submitted = run_kubectl(args, config, ["apply", "-f", str(manifest)],
-                            text=True, capture_output=True)
+    try:
+        submitted = run_kubectl(
+            args, config, ["apply", "-f", str(manifest)],
+            text=True, capture_output=True)
+    except LifecycleInterrupted as error:
+        ledger["state"] = "interrupted"
+        ledger["interruptedStage"] = "submission"
+        ledger["error"] = str(error)
+        cleanup = run_kubectl(args, config, [
+            "delete", "namespace", args.run_id, "--ignore-not-found",
+            "--wait=false",
+        ])
+        ledger["cleanup"] = (
+            "requested" if cleanup.returncode == 0 else "failed")
+        ledger["cleanupExitCode"] = cleanup.returncode
+        write_json(ledger_path, ledger)
+        raise
     (run_dir / "kubectl-apply.stdout").write_text(
         submitted.stdout, encoding="utf-8")
     (run_dir / "kubectl-apply.stderr").write_text(

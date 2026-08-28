@@ -2,7 +2,6 @@
 
 import os
 import pathlib
-import subprocess
 
 
 def kubectl_command(args, config):
@@ -31,10 +30,10 @@ def kubectl_command(args, config):
 
 
 def run_kubectl(args, config, arguments, **kwargs):
-    from .core import ConfigurationError
+    from .core import ConfigurationError, run_command
 
     command = [*kubectl_command(args, config), *arguments]
     try:
-        return subprocess.run(command, check=False, **kwargs)
+        return run_command(command, **kwargs)
     except OSError as error:
         raise ConfigurationError(f"cannot invoke kubectl: {error}") from error

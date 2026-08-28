@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import pathlib
 import re
+import signal
+import subprocess
 
 
 SIMULATION = pathlib.Path(__file__).resolve().parents[1]
@@ -83,3 +86,84 @@ KUBERNETES_TERMINAL_STATES = {"COMPLETED", "FAILED"}
 
 class ConfigurationError(Exception):
     pass
+
+
+class LifecycleInterrupted(ConfigurationError):
+    def __init__(self, signum):
+        super().__init__(f"interrupted by {signal.Signals(signum).name}")
+        self.signum = signum
+
+
+def interrupt_lifecycle(signum, unused_frame):
+    raise LifecycleInterrupted(signum)
+
+
+def terminate_command(process):
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+
+
+def run_command(command, **kwargs):
+    input_value = kwargs.pop("input", None)
+    timeout = kwargs.pop("timeout", None)
+    text = kwargs.pop("text", False)
+    capture = kwargs.pop("capture_output", False)
+    kwargs.pop("check", None)
+    if capture:
+        if "stdout" in kwargs or "stderr" in kwargs:
+            raise ValueError("capture_output conflicts with stdout or stderr")
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.PIPE
+    if input_value is not None:
+        if "stdin" in kwargs:
+            raise ValueError("input conflicts with stdin")
+        kwargs["stdin"] = subprocess.PIPE
+    process = subprocess.Popen(
+        command, text=text, start_new_session=True, **kwargs)
+    try:
+        stdout, stderr = process.communicate(
+            input=input_value, timeout=timeout)
+    except LifecycleInterrupted:
+        terminate_command(process)
+        raise
+    except subprocess.TimeoutExpired:
+        terminate_command(process)
+        raise
+    return subprocess.CompletedProcess(
+        command, process.returncode, stdout, stderr)
+
+
+def run_backend(command):
+    try:
+        process = subprocess.Popen(command, start_new_session=True)
+    except OSError as error:
+        raise ConfigurationError(
+            f"cannot invoke {pathlib.Path(command[0]).name}: {error}") from error
+    try:
+        return process.wait()
+    except LifecycleInterrupted:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=300)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+        raise

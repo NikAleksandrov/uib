@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import argparse
+import signal
 import sys
 
 
@@ -29,7 +30,7 @@ def add_state_dir_arg(parser):
 
 
 def main():
-    from .core import ConfigurationError, DEFAULT_HUGGINGFACE_CACHE
+    from .core import ConfigurationError, DEFAULT_HUGGINGFACE_CACHE, LifecycleInterrupted, interrupt_lifecycle
     from .lifecycle import command_collect, command_doctor, command_down, command_kubeconfig, command_load_cache, command_load_image, command_render, command_render_workload, command_run, command_status, command_up
 
     parser = argparse.ArgumentParser(
@@ -116,8 +117,19 @@ def main():
         help="also remove same-run Kubernetes infrastructure")
     down.set_defaults(handler=command_down)
     args = parser.parse_args()
+    previous_handlers = {}
+    if args.command in {"up", "run", "collect", "down"}:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.signal(
+                signum, interrupt_lifecycle)
     try:
         return args.handler(args)
+    except LifecycleInterrupted as error:
+        print(f"uib-sim: {error}", file=sys.stderr)
+        return 128 + error.signum
     except ConfigurationError as error:
         print(f"uib-sim: {error}", file=sys.stderr)
         return 2
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)

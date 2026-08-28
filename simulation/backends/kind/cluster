@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import re
+import signal
 import shlex
 import shutil
 import subprocess
@@ -23,6 +24,32 @@ IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]*$")
 
 class KindError(Exception):
     pass
+
+
+class LifecycleInterrupted(KindError):
+    pass
+
+
+def interrupt_lifecycle(signum, unused_frame):
+    raise LifecycleInterrupted(
+        f"interrupted by {signal.Signals(signum).name}")
+
+
+def terminate_child(process):
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
 
 
 def load_config(path):
@@ -86,10 +113,21 @@ def kind_command():
 def run(command, capture=False):
     print(shlex.join(command), file=sys.stderr)
     try:
-        return subprocess.run(command, check=True, text=True,
-                              capture_output=capture)
-    except subprocess.CalledProcessError as error:
-        raise KindError(f"command failed with status {error.returncode}") from error
+        process = subprocess.Popen(
+            command, text=True, stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE if capture else None,
+            start_new_session=True)
+        try:
+            stdout, stderr = process.communicate()
+        except BaseException:
+            terminate_child(process)
+            raise
+    except OSError as error:
+        raise KindError(f"cannot execute {command[0]}: {error}") from error
+    if process.returncode:
+        raise KindError(f"command failed with status {process.returncode}")
+    return subprocess.CompletedProcess(command, process.returncode,
+                                       stdout, stderr)
 
 
 def command_render(args):
@@ -113,7 +151,13 @@ def command_up(args):
             command.extend(["--kubeconfig", args.kubeconfig])
         if args.retain:
             command.append("--retain")
-        run(command)
+        try:
+            run(command)
+        except LifecycleInterrupted:
+            if not args.retain:
+                run([kind_command(), "delete", "cluster", "--name",
+                     args.name])
+            raise
 
 
 def command_status(args):
@@ -188,12 +232,20 @@ def main():
     down.set_defaults(handler=command_down)
 
     args = parser.parse_args()
+    previous_handlers = {}
+    if args.command in {"up", "down"}:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous_handlers[signum] = signal.signal(
+                signum, interrupt_lifecycle)
     try:
         result = args.handler(args)
         return result if result is not None else 0
     except KindError as error:
         print(f"uib-kind: {error}", file=sys.stderr)
         return 2
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
 
 
 if __name__ == "__main__":
