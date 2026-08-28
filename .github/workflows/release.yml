@@ -1,0 +1,185 @@
+name: Version release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate version tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out UIB
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Match tag to configure version
+        id: version
+        run: |
+          version=$(sed -n \
+            's/^AC_INIT(\[uib\], \[\([^]]*\)\].*/\1/p' configure.ac)
+          test -n "$version"
+          test "$GITHUB_REF_NAME" = "v$version"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  packages:
+    name: ${{ matrix.name }} package
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu 24.04
+            variant: ubuntu-24.04
+            image: ubuntu:24.04
+            kind: deb
+          - name: Ubuntu 26.04
+            variant: ubuntu-26.04
+            image: ubuntu:26.04
+            kind: deb
+          - name: Debian 13
+            variant: debian-13
+            image: debian:13
+            kind: deb
+          - name: Fedora Server 44
+            variant: fedora-44
+            image: fedora:44
+            kind: rpm
+          - name: Alpine Linux 3.24
+            variant: alpine-3.24
+            image: alpine:3.24
+            kind: apk
+
+    steps:
+      - name: Check out UIB
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Build and test native package
+        env:
+          UIB_CI_IMAGE: ${{ matrix.image }}
+          UIB_PACKAGE_KIND: ${{ matrix.kind }}
+          UIB_PACKAGE_VARIANT: ${{ matrix.variant }}
+        run: |
+          mkdir -p "dist/$UIB_PACKAGE_VARIANT"
+          docker run --rm \
+            --security-opt seccomp=unconfined \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --workdir /src \
+            --env UIB_TEST_JOBS=4 \
+            --env UIB_PACKAGE_KIND \
+            --env UIB_PACKAGE_VARIANT \
+            "$UIB_CI_IMAGE" \
+            sh -eux -c '
+              ./scripts/install-ci-dependencies.sh
+              git config --global --add safe.directory /src
+              make distribution-compat-test
+              ./scripts/build-release-package.sh \
+                "$UIB_PACKAGE_KIND" "$UIB_PACKAGE_VARIANT" \
+                "/src/dist/$UIB_PACKAGE_VARIANT"
+            '
+
+      - name: Upload native package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: uib-package-${{ matrix.variant }}
+          path: dist/${{ matrix.variant }}/*
+          if-no-files-found: error
+
+  static:
+    name: Portable static archive
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out UIB
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Install build driver dependencies
+        run: sudo ./scripts/install-ci-dependencies.sh
+
+      - name: Build and test standalone archive
+        run: make -j4 runtime-bundle-portable-test
+
+      - name: Package standalone archive
+        run: |
+          ./scripts/build-release-package.sh static static-linux-amd64 \
+            "$GITHUB_WORKSPACE/dist/static-linux-amd64"
+
+      - name: Upload standalone archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: uib-static-linux-amd64
+          path: dist/static-linux-amd64/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs:
+      - validate
+      - packages
+      - static
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: uib-*
+          path: dist
+          merge-multiple: true
+
+      - name: Add source archive and checksums
+        env:
+          UIB_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          git archive --format=tar --prefix="uib-$UIB_VERSION/" \
+            "$GITHUB_SHA" |
+            gzip -n > "dist/uib-$UIB_VERSION-source.tar.gz"
+          (
+            cd dist
+            find . -maxdepth 1 -type f ! -name SHA256SUMS \
+              -printf '%P\n' |
+              sort |
+              xargs sha256sum
+          ) > dist/SHA256SUMS
+          (cd dist && sha256sum --check SHA256SUMS)
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UIB_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --verify-tag \
+              --title "UIB $UIB_VERSION" \
+              --generate-notes
+          fi
