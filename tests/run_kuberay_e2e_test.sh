@@ -19,12 +19,14 @@ kubectl_command=${KUBECTL_COMMAND:-kubectl}
 helm_command=${HELM_COMMAND:-helm}
 results_root=${SIMULATION_KUBERAY_RESULTS:-$project_dir/simulation/.artifacts/results}
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-kuberay-e2e.XXXXXX")
-state_dir=$test_dir/state
+state_dir=${SIMULATION_STATE_DIR:-$test_dir/state}
 evidence=$results_root/$name
 bundle=$evidence/bundle
 logs=$evidence/inference.log
 created=0
 SIMULATION_KUBERNETES_WORKERS=${SIMULATION_KUBERNETES_WORKERS:-1}
+SIMULATION_KUBERNETES_WORKLOAD_CPU=${SIMULATION_KUBERNETES_WORKLOAD_CPU:-1}
+SIMULATION_KUBERNETES_WORKLOAD_MEMORY=${SIMULATION_KUBERNETES_WORKLOAD_MEMORY:-3Gi}
 . "$project_dir/tests/kubernetes_e2e_cluster.sh"
 
 collect_diagnostics()
@@ -144,7 +146,7 @@ kubernetes_load_image "$cache_image"
 	--state-dir "$state_dir" --kubeconfig "$kubeconfig" \
 	--set "workload.image=$inference_image" \
 	--set "uib.bundle=$runtime_image" \
-	--set "storage.modelCacheImage=$cache_image" $kubernetes_profile_args
+	--set "storage.modelCacheImage=$cache_image" $kubernetes_workload_args
 
 phase=provisioning
 deadline=$(($(date +%s) + provisioning_timeout))
@@ -176,7 +178,7 @@ done
 # shellcheck disable=SC2086
 "$cli" status --profile "$kubernetes_profile" --run-id "$run_id" \
 	--state-dir "$state_dir" --kubeconfig "$kubeconfig" \
-	$kubernetes_profile_args > "$evidence/status.json"
+	> "$evidence/status.json"
 "$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
 	--kubeconfig "$kubeconfig" --output-dir "$bundle"
 collect_diagnostics

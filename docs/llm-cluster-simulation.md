@@ -618,7 +618,7 @@ overlay when both are needed.
 | `launcher.inference` | `kuberay`, `vllm-multiprocessing`, `slurm-ray` | Inference submitter |
 | `slurm.partition` | Letters, digits, `.`, `_`, or `-` | Required target partition |
 | `slurm.account`, `.qos`, `.reservation`, `.constraint` | Optional Slurm name | Site allocation or placement selection |
-| `slurm.memory` | Integer plus `Mi`, `Gi`, or `Ti`, such as `12Gi` | Optional workload memory request per node; omit it to use the partition or site default. For libvirt it cannot exceed `nodes.memory - 512Mi` |
+| `slurm.memory` | Integer plus `Mi`, `Gi`, or `Ti`, such as `12Gi` | Optional Slurm-specific memory override per node; it takes precedence over `workload.resources.memory`. For libvirt it cannot exceed `nodes.memory - 512Mi` |
 | `slurm.timeLimit` | `[days-]HH:MM:SS`, with valid clock fields | Batch time limit |
 | `slurm.rendezvousPort` | Integer 1-65535 | PyTorch rendezvous port; default profiles use 29500 |
 | `slurm.exclusive` | `true`, `false` | Request whole nodes for the job |
@@ -671,6 +671,8 @@ vice versa.
 | `workload.entrypoint` | Absolute or image-relative executable | Unchanged command |
 | `workload.arguments` | String list | Command arguments |
 | `workload.model`, `.dataset` | `{id, revision}` | Dynamically cached immutable artifact |
+| `workload.resources.cpu` | Positive integer | Scheduler-neutral CPU request per worker; it cannot exceed `nodes.cpu` and must divide evenly among local processes |
+| `workload.resources.memory` | Integer plus `Mi`, `Gi`, or `Ti` | Scheduler-neutral memory request per worker; it cannot exceed `nodes.memory` |
 | `workload.parallelism.nodes` | Positive integer | Participating worker nodes |
 | `workload.parallelism.processesPerNode` | Positive integer | Ranks per node |
 | `workload.parallelism.data`, `.tensor`, `.pipeline`, `.expert` | Positive integers | Parallel degrees |
@@ -1632,10 +1634,17 @@ install the same chart, submit the same TrainJob through `uib-sim`, and require
 distinct worker placement, UIB preflight in both pods, CPU/Gloo world size
 two, four steps, evidence collection, and cleanup.
 
+Each virtme worker receives a sparse ext4 disk of `nodes.disk` mounted at
+`/var/lib/rancher/k3s`. Worker containerd uses its normal overlayfs snapshotter
+on that disk, so a layered training image is not copied repeatedly as it would
+be by the native snapshotter. The control-plane guest is tainted against
+workload placement. `down`, failed `up`, and an interrupted gate remove every
+recorded worker disk after stopping the guests.
+
 The validated local tool set is Kind v0.31.0, kubectl v1.35.0, Helm v3.21.3,
 Kubernetes v1.35.0, and Kubeflow Trainer v2.2.1. Required host resources are a
 working Kind container engine, enough disk for the approximately 9 GB training
-image in each node, and enough CPU and memory for two training pods. The first
+image on each worker, and enough CPU and memory for two training pods. The first
 run needs network access for the pinned node image, operator chart, and
 operator images. Those remain in the normal Docker/containerd and Helm caches;
 the training/runtime images are reused from the host cache. The generated
@@ -1648,18 +1657,26 @@ workload downloads no model or dataset.
 | `SIMULATION_KUBEFLOW_TRAINER_VERSION` | `2.2.1` | OCI chart version; another value is unvalidated and changes the compatibility claim |
 | `SIMULATION_KUBEFLOW_OPERATOR_TIMEOUT` | `10m` | Helm install/readiness timeout |
 | `SIMULATION_KUBEFLOW_WORKLOAD_TIMEOUT` | `10m` | TrainJob and namespace-deletion timeout |
-| `SIMULATION_KUBEFLOW_TRAINING_IMAGE` | `uib-training:test` | Existing host image loaded into every disposable node |
-| `SIMULATION_KUBEFLOW_RUNTIME_IMAGE` | `uib-runtime:test` | Existing host UIB runtime image loaded into every disposable node |
+| `SIMULATION_KUBEFLOW_TRAINING_IMAGE` | `uib-training:test` | Existing host image loaded into every disposable worker |
+| `SIMULATION_KUBEFLOW_RUNTIME_IMAGE` | `uib-runtime:test` | Existing host UIB runtime image loaded into every disposable worker |
+| `SIMULATION_KUBEFLOW_RESULTS` | `simulation/.artifacts/results` | Ignored persistent root for success and failure evidence |
+| `SIMULATION_STATE_DIR` | Per-run temporary directory | Optional retained infrastructure/workload state root for diagnostics |
 | `SIMULATION_KUBERNETES_PROFILE` | `kind-kubernetes` | `kind-kubernetes`, `virtme-kubernetes`, or `libvirt-kubernetes`; existing-cluster profiles are rejected because this gate owns infrastructure and operator installation |
 | `SIMULATION_KUBERNETES_WORKERS` | `2` | Worker count; training requires at least two for distinct placement |
-| `SIMULATION_KUBERNETES_CPU` | `2` | CPUs per disposable node |
-| `SIMULATION_KUBERNETES_MEMORY` | `2Gi` | Memory per disposable node |
+| `SIMULATION_KUBERNETES_CPU` | `4` | CPUs per disposable node; the virtme Make target uses `2` |
+| `SIMULATION_KUBERNETES_MEMORY` | `8Gi` | Memory per disposable node; the virtme Make target uses `2Gi` |
 | `SIMULATION_KUBERNETES_DISK` | `32Gi` | Disk per disposable VM; ignored by Kind |
+| `SIMULATION_KUBERNETES_WORKLOAD_CPU` | `1` | CPU requested by each training worker; must fit the node after system overhead |
+| `SIMULATION_KUBERNETES_WORKLOAD_MEMORY` | `1Gi` | Memory requested by each training worker; must not exceed node capacity |
+| `SIMULATION_VIRTME_SSH_PORT_BASE` | `23000` | First controller/worker host-forward port for virtme; select another free range when it conflicts |
 | `KIND_COMMAND` | `kind` | Exact Kind executable; used only by the Kind profile |
 | `KUBECTL_COMMAND` | `kubectl` | Exact kubectl executable |
 | `HELM_COMMAND` | `helm` | Exact Helm executable |
 
-Changing either local image is useful for development but does not create an
+Success and failure evidence is retained below
+`SIMULATION_KUBEFLOW_RESULTS/<cluster-name>`. On failure it includes the
+TrainJob, pods, descriptions, namespace resources, and operator logs before
+cleanup. Changing either local image is useful for development but does not create an
 immutable promotion result. Published-cluster runs use image digests through
 the renderer and pull from a registry instead of this local Kind staging path.
 This gate needs two Kubernetes workers but not two physical machines or GPUs:
@@ -1754,15 +1771,19 @@ KubeRay gate options:
 | `SIMULATION_KUBERAY_OPERATOR_TIMEOUT` | `10m` | Helm duration for operator installation |
 | `SIMULATION_KUBERAY_PROVISIONING_TIMEOUT` | `1800` | Positive seconds allowed after RayJob creation for image unpacking and RayCluster readiness |
 | `SIMULATION_KUBERAY_WORKLOAD_TIMEOUT` | `900` | Positive seconds allowed after the deployment enters `Running` |
-| `SIMULATION_KUBERAY_INFERENCE_IMAGE` | `uib-inference:test` | Existing host image loaded into every disposable node |
-| `SIMULATION_KUBERAY_RUNTIME_IMAGE` | `uib-runtime:test` | Portable UIB init image loaded into every disposable node |
+| `SIMULATION_KUBERAY_INFERENCE_IMAGE` | `uib-inference:test` | Existing host image loaded into every disposable worker |
+| `SIMULATION_KUBERAY_RUNTIME_IMAGE` | `uib-runtime:test` | Portable UIB init image loaded into every disposable worker |
 | `SIMULATION_KUBERAY_MODEL_CACHE_IMAGE` | `uib-model-cache:test` | Disposable image built from the ignored Hugging Face cache |
 | `SIMULATION_KUBERAY_RESULTS` | `simulation/.artifacts/results` | Ignored persistent root for success and failure evidence |
+| `SIMULATION_STATE_DIR` | Per-run temporary directory | Optional retained infrastructure/workload state root for diagnostics |
 | `SIMULATION_KUBERNETES_PROFILE` | `kind-kubernetes` | Same owned-backend selection as training; `make simulation-virtme-kuberay-e2e-test` selects virtme |
 | `SIMULATION_KUBERNETES_WORKERS` | `1` | Worker guests or Kind workers; the checked-in single-head request has no distributed worker group |
-| `SIMULATION_KUBERNETES_CPU` | `2` | CPUs per disposable node |
-| `SIMULATION_KUBERNETES_MEMORY` | `2Gi` | Memory per node; the virtme target raises this to `4Gi` |
+| `SIMULATION_KUBERNETES_CPU` | `4` | CPUs per disposable node; the virtme target uses `2` |
+| `SIMULATION_KUBERNETES_MEMORY` | `8Gi` | Memory per node; the virtme target uses `4Gi` |
 | `SIMULATION_KUBERNETES_DISK` | `32Gi` | Disk per disposable VM; ignored by Kind |
+| `SIMULATION_KUBERNETES_WORKLOAD_CPU` | `1` | CPU requested by the Ray head |
+| `SIMULATION_KUBERNETES_WORKLOAD_MEMORY` | `3Gi` | Memory requested by the Ray head; it must leave capacity for k3s and the operator |
+| `SIMULATION_VIRTME_SSH_PORT_BASE` | `23000` | First controller/worker host-forward port for virtme; all required ports must be free |
 | `KIND_COMMAND`, `KUBECTL_COMMAND`, `HELM_COMMAND` | Standard command names | Exact clients; Kind is required only by the Kind profile |
 
 Timeouts are separate intentionally: large local images may take minutes to
@@ -1931,7 +1952,7 @@ simulation/bin/uib-sim down --profile libvirt-kubernetes \
 ```
 
 Before installing an operator, local development images can be loaded into
-every node of an owned virtme or libvirt k3s lab:
+every worker of an owned virtme or libvirt k3s lab:
 
 ```text
 simulation/bin/uib-sim load-image --profile virtme-kubernetes \
@@ -1941,7 +1962,7 @@ simulation/bin/uib-sim load-image --profile virtme-kubernetes \
 
 `CONTAINER_ENGINE_COMMAND` selects the Docker-compatible local engine. The
 command exports each image once, imports it through the ordinary `k3s ctr`
-interface on every recorded node, and writes `kubernetes-images.json` in the
+interface on every recorded worker, and writes `kubernetes-images.json` in the
 run's infrastructure state. Immutable digest references remain the default;
 mutable tags are only for local development. Existing clusters are not
 modified by this command and should pull the same digest from their registry.
@@ -3899,11 +3920,15 @@ does not retain QEMU processes or the SSH API forward.
 | `KUBECTL_COMMAND` | `kubectl` | kubectl executable used only for the host-facing node check |
 | `SIMULATION_STATE_DIR` | `simulation/.artifacts/runs` | Ignored or external run-ledger directory |
 | `VIRTME_DOWNLOAD_CACHE` | `simulation/.artifacts/downloads/virtme` | Reusable verified k3s download cache |
+| `VIRTME_E2E_SSH_PORT_BASE` | `23000` | First of the controller, worker, and API-forward host ports used by this gate |
 | `VIRTME_SSH_WAIT` | `90` | Positive seconds allowed for each guest SSH endpoint |
 | `VIRTME_KUBERNETES_WAIT` | `300` | Positive seconds allowed for the API and node join |
 
 The test fixes one worker, two vCPUs, and 2 GiB per guest to keep the local gate
-small. Use normal `uib-sim up` with `--set nodes.*` for larger experiments.
+small. Each worker mounts its configured run-owned `nodes.disk` at the k3s
+containerd data path, so production-sized local images do not consume the
+small ephemeral guest root. Use normal `uib-sim up` with `--set nodes.*` for
+larger experiments.
 
 ### virtme Slurm test
 

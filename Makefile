@@ -427,6 +427,8 @@ simulation-kubeflow-e2e-test:
 
 simulation-virtme-kubeflow-e2e-test: runtime-image training-image
 	SIMULATION_KUBERNETES_PROFILE=virtme-kubernetes \
+	SIMULATION_KUBERNETES_CPU=2 \
+	SIMULATION_KUBERNETES_MEMORY=2Gi \
 	KUBECTL_COMMAND='$(CURDIR)/simulation/.artifacts/tools/bin/kubectl' \
 	HELM_COMMAND='$(CURDIR)/simulation/.artifacts/tools/bin/helm' \
 		./tests/run_kubeflow_e2e_test.sh

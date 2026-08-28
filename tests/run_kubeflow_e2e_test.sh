@@ -15,12 +15,36 @@ runtime_image=${SIMULATION_KUBEFLOW_RUNTIME_IMAGE:-uib-runtime:test}
 kind_command=${KIND_COMMAND:-kind}
 kubectl_command=${KUBECTL_COMMAND:-kubectl}
 helm_command=${HELM_COMMAND:-helm}
+results_root=${SIMULATION_KUBEFLOW_RESULTS:-$project_dir/simulation/.artifacts/results}
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-kubeflow-e2e.XXXXXX")
-state_dir=$test_dir/state
-bundle=$test_dir/bundle
-logs=$test_dir/training.log
+state_dir=${SIMULATION_STATE_DIR:-$test_dir/state}
+evidence=$results_root/$name
+bundle=$evidence/bundle
+logs=$evidence/training.log
 created=0
+SIMULATION_KUBERNETES_WORKLOAD_CPU=${SIMULATION_KUBERNETES_WORKLOAD_CPU:-1}
+SIMULATION_KUBERNETES_WORKLOAD_MEMORY=${SIMULATION_KUBERNETES_WORKLOAD_MEMORY:-1Gi}
 . "$project_dir/tests/kubernetes_e2e_cluster.sh"
+
+collect_diagnostics()
+{
+	[ -s "$kubeconfig" ] || return 0
+	"$kubectl_command" --kubeconfig "$kubeconfig" get trainjob "$run_id" \
+		--namespace "$run_id" -o yaml > "$evidence/trainjob.yaml" \
+		2>/dev/null || true
+	"$kubectl_command" --kubeconfig "$kubeconfig" get all \
+		--namespace "$run_id" -o wide > "$evidence/resources.txt" \
+		2>&1 || true
+	"$kubectl_command" --kubeconfig "$kubeconfig" get pods \
+		--namespace "$run_id" -o yaml > "$evidence/pods.yaml" \
+		2>&1 || true
+	"$kubectl_command" --kubeconfig "$kubeconfig" describe pods \
+		--namespace "$run_id" > "$evidence/pods-describe.txt" \
+		2>&1 || true
+	"$kubectl_command" --kubeconfig "$kubeconfig" logs \
+		--namespace kubeflow-system deployment/kubeflow-trainer-controller-manager \
+		--all-containers > "$evidence/operator.log" 2>&1 || true
+}
 
 cleanup()
 {
@@ -37,7 +61,22 @@ cleanup()
 	fi
 	rm -rf -- "$test_dir"
 }
-trap cleanup EXIT INT TERM
+
+finish()
+{
+	status=$?
+	trap - EXIT INT TERM
+	if [ "$status" -ne 0 ]; then
+		collect_diagnostics
+	fi
+	cleanup
+	if [ "$status" -ne 0 ]; then
+		echo "Kubeflow evidence retained at $evidence" >&2
+	fi
+	exit "$status"
+}
+trap finish EXIT
+trap 'exit 130' INT TERM
 
 require_command()
 {
@@ -58,6 +97,11 @@ if test "$kubernetes_profile" = kind-kubernetes && \
 	echo "required Kubeflow E2E command not found: $kind_command" >&2
 	exit 1
 fi
+if [ -e "$evidence" ]; then
+	echo "Kubeflow evidence path already exists: $evidence" >&2
+	exit 1
+fi
+mkdir -p "$evidence"
 
 created=1
 kubernetes_up
@@ -75,21 +119,21 @@ kubernetes_load_image "$runtime_image"
 	--run-id "$run_id" --allow-mutable-tags \
 	--state-dir "$state_dir" --kubeconfig "$kubeconfig" \
 	--set "workload.image=$training_image" \
-	--set "uib.bundle=$runtime_image" $kubernetes_profile_args
+	--set "uib.bundle=$runtime_image" $kubernetes_workload_args
 "$kubectl_command" --kubeconfig "$kubeconfig" wait \
 	--namespace "$run_id" --for=condition=Complete \
 	"trainjob/$run_id" --timeout "$workload_timeout"
 # shellcheck disable=SC2086
 "$cli" status --profile "$kubernetes_profile" --run-id "$run_id" \
 	--state-dir "$state_dir" --kubeconfig "$kubeconfig" \
-	$kubernetes_profile_args > "$test_dir/status.json"
+	> "$evidence/status.json"
 "$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
 	--kubeconfig "$kubeconfig" --output-dir "$bundle"
 
 "$kubectl_command" --kubeconfig "$kubeconfig" get pods \
 	--namespace "$run_id" --selector "uib.dev/run-id=$run_id" \
-	-o json > "$test_dir/pods.json"
-python3 - "$test_dir/pods.json" <<'PY'
+	-o json > "$evidence/pods.json"
+python3 - "$evidence/pods.json" <<'PY'
 import json
 import sys
 
@@ -158,7 +202,7 @@ assert result["transport"]["ncclNetwork"] == "IB"
 PY
 
 "$kubectl_command" --kubeconfig "$kubeconfig" get trainjob "$run_id" \
-	--namespace "$run_id" -o yaml > "$test_dir/trainjob-result.yaml"
+	--namespace "$run_id" -o yaml > "$evidence/trainjob-result.yaml"
 "$kubectl_command" --kubeconfig "$kubeconfig" delete namespace "$run_id" \
 	--wait --timeout "$workload_timeout"
 if "$kubectl_command" --kubeconfig "$kubeconfig" get namespace "$run_id" \
