@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ipaddress
+import subprocess
 
 
 def data_network(config, node_count):
@@ -143,3 +144,26 @@ def topology(config, run_id):
             config["virtme"]["sshPortBase"] +
             config["nodes"]["workers"] + 1)
     return value
+
+
+def create_node_disk(config, guest, root, label):
+    from .core import VirtmeError, quantity_mib
+
+    image = root / f"{guest['role']}-{guest['index']:02d}.ext4"
+    try:
+        with image.open("xb") as output:
+            output.truncate(quantity_mib(config["nodes"]["disk"]) * 1024 * 1024)
+    except OSError as error:
+        raise VirtmeError(
+            f"cannot prepare virtme node storage: {error}") from error
+    try:
+        formatted = subprocess.run([
+            "/sbin/mkfs.ext4", "-q", "-F", "-m", "0",
+            "-L", label, str(image),
+        ], check=False)
+    except OSError as error:
+        raise VirtmeError(f"cannot invoke mkfs.ext4: {error}") from error
+    if formatted.returncode:
+        raise VirtmeError(f"cannot format virtme node storage: {image}")
+    guest["command"].extend(["--disk", str(image)])
+    return image

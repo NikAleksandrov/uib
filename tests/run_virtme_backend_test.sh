@@ -82,12 +82,14 @@ grep -q 'server: https://127.0.0.1:23003' \
 "$cli" load-image --profile virtme-kubernetes --overlay network/datacenter \
 	--run-id virtme-lifecycle --state-dir "$test_dir/runs" \
 	--allow-mutable-tags --image uib-training:test
-test "$(wc -l < "$test_dir/image-imports.log")" -eq 3
+test "$(wc -l < "$test_dir/image-imports.log")" -eq 2
 python3 "$project_dir/tests/cases/virtme_backend/network_evidence.py" \
 	"$test_dir/runs/virtme-lifecycle/infrastructure/kubernetes-images.json"
 [ "$(grep -c '/run/uib-network-schedule' "$test_dir/ssh.log")" -eq 2 ]
 [ "$(grep -c '/run/uib-rank-schedule' "$test_dir/ssh.log")" -eq 2 ]
 [ "$(grep -c '/run/uib-fault-target' "$test_dir/ssh.log")" -eq 2 ]
+[ "$(grep -c -- '--snapshotter overlayfs' "$test_dir/ssh.log")" -eq 2 ]
+[ "$(grep -c -- '--snapshotter native' "$test_dir/ssh.log")" -eq 1 ]
 grep -F -- '--target worker-01/data' "$test_dir/ssh.log" > /dev/null
 grep -F -- '--target worker-02/data' "$test_dir/ssh.log" > /dev/null
 grep -F -- 'ip link set dev eth1 mtu 1280' "$test_dir/ssh.log" \
@@ -96,7 +98,8 @@ grep -F -- 'ip link set dev eth1 mtu 1280' "$test_dir/ssh.log" \
 	--run-id virtme-lifecycle \
 	--state-dir "$test_dir/runs"
 test "$(grep -c '/run/uib-netem clear eth1' "$test_dir/ssh.log")" -eq 2
-python3 "$project_dir/tests/cases/virtme_backend/topology_state.py" "$test_dir/runs/virtme-lifecycle/infrastructure/ledger.json"
+python3 "$project_dir/tests/cases/virtme_backend/topology_state.py" "$test_dir/runs/virtme-lifecycle/infrastructure/ledger.json" \
+	"$test_dir/runs/virtme-lifecycle/infrastructure/topology.json"
 unset VIRTME_TEST_SHAPING
 unset VIRTME_TEST_MTU
 

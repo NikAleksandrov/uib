@@ -70,8 +70,8 @@ def embedded(start, end):
 assert "#SBATCH --nodes=2" in batch
 assert "#SBATCH --ntasks=2" in batch
 assert "#SBATCH --ntasks-per-node=1" in batch
-assert "#SBATCH --cpus-per-task=8" in batch
-assert "#SBATCH --mem=" not in batch
+assert "#SBATCH --cpus-per-task=1" in batch
+assert "#SBATCH --mem=1G" in batch
 assert "#SBATCH --exclusive" in batch
 assert "--container-image=uib-training:test" in batch
 assert "--no-container-entrypoint" in batch
@@ -106,6 +106,16 @@ assert resolved["cluster"]["manager"] == "slurm"
 assert resolved["workload"]["entrypoint"] == "/opt/uib-training/bin/train"
 assert resolved["workload"]["parallelism"]["nodes"] == 2
 PY
+
+render_training uib-slurm-resources \
+	--set workload.resources.cpu=2 \
+	--set workload.resources.memory=1Gi \
+	> "$test_dir/resources.sbatch"
+grep -F '#SBATCH --cpus-per-task=2' "$test_dir/resources.sbatch" \
+	> /dev/null
+grep -F '#SBATCH --mem=1G' "$test_dir/resources.sbatch" > /dev/null
+test "$(grep -c -F -- '--cpus-per-task=2' \
+	"$test_dir/resources.sbatch")" -eq 2
 
 cat > "$test_dir/fake-bin/scontrol" <<'EOF'
 #!/bin/sh
@@ -235,15 +245,17 @@ grep -F '#SBATCH --mem=12G' "$test_dir/memory.sbatch" > /dev/null
 
 render_training uib-slurm-local \
 	--set workload.parallelism.processesPerNode=2 \
-	--set workload.parallelism.data=4 > "$test_dir/local-ranks.sbatch"
+	--set workload.parallelism.data=4 \
+	--set workload.resources.cpu=2 > "$test_dir/local-ranks.sbatch"
 grep -F '#SBATCH --ntasks-per-node=2' "$test_dir/local-ranks.sbatch" > /dev/null
-grep -F '#SBATCH --cpus-per-task=4' "$test_dir/local-ranks.sbatch" > /dev/null
+grep -F '#SBATCH --cpus-per-task=1' "$test_dir/local-ranks.sbatch" > /dev/null
 grep -F 'UIB_BIND_PORT=$((SLURM_UIB_BIND_PORT_BASE + LOCAL_RANK))' \
 	"$test_dir/local-ranks.sbatch" > /dev/null
 
 render_training uib-slurm-gpus \
 	--set workload.parallelism.processesPerNode=2 \
 	--set workload.parallelism.data=4 \
+	--set workload.resources.cpu=2 \
 	--set nodes.gpus.vendor=nvidia --set nodes.gpus.perWorker=2 \
 	> "$test_dir/gpus.sbatch"
 grep -F '#SBATCH --gpus-per-node=2' "$test_dir/gpus.sbatch" > /dev/null
@@ -290,7 +302,8 @@ grep -F -- "--container-image=example.invalid/training@sha256:$digest" \
 
 if render_training uib-slurm-overflow --set uib.bindPort=65535 \
 	--set workload.parallelism.processesPerNode=2 \
-	--set workload.parallelism.data=4 > /dev/null 2>&1; then
+	--set workload.parallelism.data=4 \
+	--set workload.resources.cpu=2 > /dev/null 2>&1; then
 	echo "overflowing rank-specific UIB ports were accepted" >&2
 	exit 1
 fi
@@ -298,6 +311,7 @@ fi
 if render_training uib-slurm-gpu-split \
 	--set workload.parallelism.processesPerNode=2 \
 	--set workload.parallelism.data=4 \
+	--set workload.resources.cpu=2 \
 	--set nodes.gpus.vendor=nvidia --set nodes.gpus.perWorker=1 \
 	> /dev/null 2>&1; then
 	echo "a fractional per-task GPU allocation was accepted" >&2

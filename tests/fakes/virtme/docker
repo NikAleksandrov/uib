@@ -6,7 +6,7 @@ case "$1 $2" in
 	printf '%s\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 	;;
 'image save')
-	printf '%s\n' fake-oci-archive > "$4"
+	printf '%s\n' fake-oci-archive
 	;;
 *)
 	echo "unexpected container command: $*" >&2

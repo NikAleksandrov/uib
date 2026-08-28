@@ -88,19 +88,23 @@ def directives(config, run_id):
 	slurm = config["slurm"]
 	parallel = config["workload"]["parallelism"]
 	nodes = config["nodes"]
+	resources = config["workload"].get("resources")
+	cpu = resources["cpu"] if resources else nodes["cpu"]
 	result = [
 		f"#SBATCH --job-name={run_id}",
 		f"#SBATCH --partition={slurm['partition']}",
 		f"#SBATCH --nodes={parallel['nodes']}",
 		f"#SBATCH --ntasks={parallel['nodes'] * parallel['processesPerNode']}",
 		f"#SBATCH --ntasks-per-node={parallel['processesPerNode']}",
-		f"#SBATCH --cpus-per-task={nodes['cpu'] // parallel['processesPerNode']}",
+		f"#SBATCH --cpus-per-task={cpu // parallel['processesPerNode']}",
 		f"#SBATCH --time={slurm['timeLimit']}",
 		f"#SBATCH --output={config['storage']['resultsPath']}/%x-%j.out",
 		f"#SBATCH --error={config['storage']['resultsPath']}/%x-%j.err",
 	]
-	if "memory" in slurm:
-		result.insert(7, f"#SBATCH --mem={slurm_memory(slurm['memory'])}")
+	memory = slurm.get(
+		"memory", resources["memory"] if resources else None)
+	if memory:
+		result.insert(7, f"#SBATCH --mem={slurm_memory(memory)}")
 	for key, option in (
 		("account", "account"),
 		("qos", "qos"),

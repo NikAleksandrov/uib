@@ -11,6 +11,34 @@ import tempfile
 import urllib.request
 
 
+def configure_kubernetes_storage(config, topology_value, state):
+    from .core import VirtmeError
+    from .topology import create_node_disk
+
+    root = state / "node-storage" / "k3s"
+    try:
+        root.mkdir(parents=True)
+    except OSError as error:
+        raise VirtmeError(
+            f"cannot prepare virtme Kubernetes storage: {error}") from error
+    images = {}
+    topology_value["nodeStorage"] = {
+        "k3s": {
+            "guest": "/var/lib/rancher/k3s",
+            "device": "/dev/vda",
+            "filesystem": "ext4",
+            "images": images,
+            "mode": "node-local",
+            "size": config["nodes"]["disk"],
+        },
+    }
+    for name, guest in topology_value["guests"].items():
+        if guest["role"] != "worker":
+            continue
+        images[name] = str(create_node_disk(
+            config, guest, root, f"uib-k3s-{guest['index']}"))
+
+
 def configure_slurm_storage(config, topology_value, state):
     from .core import DEFAULT_IMAGE_CACHE, DEFAULT_MODEL_CACHE, DEFAULT_RUNTIME, VirtmeError, quantity_mib
 

@@ -20,6 +20,13 @@ assert all(item["pid"] > 1 and item["startTime"]
            for item in topology["ownership"]["processes"])
 assert topology["ownership"]["processes"][-1]["node"] == \
     "kubernetes-api-forward"
+storage = topology["nodeStorage"]["k3s"]
+assert storage["guest"] == "/var/lib/rancher/k3s"
+assert storage["device"] == "/dev/vda"
+assert storage["filesystem"] == "ext4"
+assert storage["size"] == "32Gi"
+assert sorted(storage["images"]) == ["worker-01", "worker-02"]
+assert all(os.path.isfile(path) for path in storage["images"].values())
 with open(os.path.join(state, "network.json"), encoding="utf-8") as source:
     network = json.load(source)
 assert network["scope"] == "worker-data-egress"

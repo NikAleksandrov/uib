@@ -7,7 +7,8 @@ cli=$project_dir/simulation/bin/uib-sim
 kubectl_command=${KUBECTL_COMMAND:-kubectl}
 run_id=uib-vk8s-$$
 state_dir=${SIMULATION_STATE_DIR:-$project_dir/simulation/.artifacts/runs}
-profile_args='--set nodes.workers=1 --set nodes.cpu=2 --set nodes.memory=2Gi'
+ssh_port_base=${VIRTME_E2E_SSH_PORT_BASE:-23000}
+profile_args="--set nodes.workers=1 --set nodes.cpu=2 --set nodes.memory=2Gi --set virtme.sshPortBase=$ssh_port_base"
 created=false
 
 cleanup()
@@ -35,6 +36,7 @@ if printf '%s\n' "$nodes" | grep -vq '|True$'; then
 	exit 1
 fi
 
+# shellcheck disable=SC2086
 "$cli" status --profile virtme-kubernetes --run-id "$run_id" \
 	--state-dir "$state_dir" $profile_args > /dev/null
 cleanup

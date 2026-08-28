@@ -37,6 +37,7 @@ def render(config, run_id, allow_mutable_tags):
 	workload_config["runId"] = run_id
 	storage = config["storage"]
 	parallel = config["workload"]["parallelism"]
+	resources = config["workload"].get("resources", config["nodes"])
 	values = environment(config)
 	environment_names = sorted(values)
 	environment_names.extend([
@@ -124,7 +125,7 @@ def render(config, run_id, allow_mutable_tags):
 		f"--nodes={parallel['nodes']}",
 		f"--ntasks={parallel['nodes'] * parallel['processesPerNode']}",
 		f"--ntasks-per-node={parallel['processesPerNode']}",
-		f"--cpus-per-task={config['nodes']['cpu'] // parallel['processesPerNode']}",
+		f"--cpus-per-task={resources['cpu'] // parallel['processesPerNode']}",
 		f"--container-image={config['workload']['image']}",
 		'--container-mounts=$MOUNTS',
 		"--container-workdir=/results",

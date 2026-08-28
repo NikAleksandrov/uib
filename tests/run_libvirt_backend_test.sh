@@ -97,7 +97,7 @@ CONTAINER_ENGINE_COMMAND=$test_dir/bin/docker \
 	--run-id uib-kubernetes-test --state-dir "$test_dir/state" \
 	--image example.invalid/uib@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
 	> /dev/null
-test "$(wc -l < "$test_dir/log/kubernetes-imports")" -eq 3
+test "$(wc -l < "$test_dir/log/kubernetes-imports")" -eq 2
 python3 "$project_dir/tests/cases/libvirt_backend/kubernetes_status.py" "$kubernetes_infra/kubernetes-images.json"
 "$cli" down --profile libvirt-kubernetes --run-id uib-kubernetes-test \
 	--state-dir "$test_dir/state" \

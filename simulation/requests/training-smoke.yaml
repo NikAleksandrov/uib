@@ -8,6 +8,9 @@ workload:
   arguments:
     - --config
     - /etc/uib-workload/workload.json
+  resources:
+    cpu: 1
+    memory: 1Gi
   parallelism:
     nodes: 2
     processesPerNode: 1

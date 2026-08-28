@@ -50,9 +50,16 @@ def bootstrap_command(config, node, public_key):
     interface = config["network"]["dataInterface"]
     address = f"{node['dataAddress']}/{node['dataPrefix']}"
     key = shlex.quote(str(public_key))
+    storage = ""
+    if (config["cluster"]["manager"] == "kubernetes" and
+            node["role"] == "worker"):
+        storage = (
+            "install -d -m 0700 /var/lib/rancher/k3s; "
+            "mount -t ext4 /dev/vda /var/lib/rancher/k3s; ")
     return (
         f"set -eu; ip address replace {address} dev {interface}; "
         f"ip link set dev {interface} up; "
+        f"{storage}"
         f"cat {key} > /run/sshd/etc/ssh/authorized_keys; "
         "chmod 600 /run/sshd/etc/ssh/authorized_keys; "
         "exec sleep infinity")

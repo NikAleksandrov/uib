@@ -504,6 +504,20 @@ def validate_workload(config):
                    parallel["pipeline"] * parallel["expert"])
         if parallel["nodes"] > config["nodes"]["workers"]:
             raise ConfigurationError("workload nodes exceed profile workers")
+        resources = workload.get("resources", config["nodes"])
+        if resources["cpu"] > config["nodes"]["cpu"]:
+            raise ConfigurationError(
+                "workload.resources.cpu exceeds node CPU capacity")
+        if quantity_mib(resources["memory"]) > quantity_mib(
+                config["nodes"]["memory"]):
+            raise ConfigurationError(
+                "workload.resources.memory exceeds node memory capacity")
+        if resources["cpu"] < parallel["processesPerNode"]:
+            raise ConfigurationError(
+                "workload resources provide less than one CPU per process")
+        if resources["cpu"] % parallel["processesPerNode"]:
+            raise ConfigurationError(
+                "workload CPU resources must divide evenly among processes")
         if ranks != degrees:
             raise ConfigurationError(
                 "parallel degrees must multiply to the total rank count")

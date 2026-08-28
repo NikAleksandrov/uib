@@ -58,6 +58,10 @@ assert '--node-rank="$PET_NODE_RANK"' in trainer["args"][0]
 assert '--no-python "$@"' in trainer["args"][0]
 assert trainer["numNodes"] == 2
 assert trainer["numProcPerNode"] == 1
+assert trainer["resourcesPerNode"] == {
+    "limits": {"cpu": "1", "memory": "1Gi"},
+    "requests": {"cpu": "1", "memory": "1Gi"},
+}
 environment = {entry["name"]: entry for entry in trainer["env"]}
 assert environment["NCCL_NET"]["value"] == "IB"
 assert environment["NCCL_IB_HCA"]["value"] == "=uib0"

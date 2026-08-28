@@ -50,7 +50,10 @@ def owned_kubernetes_nodes(args):
     try:
         all_hosts = inventory["all"]
         variables = all_hosts["vars"]
-        hosts = all_hosts["children"]["kubernetes_cluster"]["hosts"]
+        children = all_hosts["children"]
+        workers = children["kubernetes_workers"]["hosts"]
+        cluster = children["kubernetes_cluster"]["hosts"]
+        hosts = {name: cluster[name] for name in workers}
         user = variables["ansible_user"]
         key = pathlib.Path(
             variables["ansible_ssh_private_key_file"]).resolve()
@@ -180,9 +183,9 @@ def stage_kubernetes_image(args, reference, allow_mutable_tags):
                 prefix="uib-kubernetes-image-", suffix=".tar",
                 delete=False) as output:
             archive = pathlib.Path(output.name)
-        exported = run_command([
-            engine, "image", "save", "--output", str(archive), reference,
-        ], text=True, capture_output=True)
+            exported = run_command(
+                [engine, "image", "save", reference], stdout=output,
+                stderr=subprocess.PIPE, text=True)
         if exported.returncode:
             if exported.stderr:
                 print(exported.stderr, file=sys.stderr, end="")

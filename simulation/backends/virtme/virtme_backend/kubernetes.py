@@ -68,6 +68,7 @@ def provision_kubernetes(config, topology_value, ssh, key, binary):
     server = [
         "server", *common,
         "--advertise-address", controller["dataAddress"],
+        "--node-taint", "node-role.kubernetes.io/control-plane=true:NoSchedule",
         "--tls-san", "127.0.0.1",
         "--cluster-cidr", config["kubernetes"]["podCIDR"],
         "--service-cidr", config["kubernetes"]["serviceCIDR"],
@@ -86,7 +87,7 @@ def provision_kubernetes(config, topology_value, ssh, key, binary):
             "--token", token,
             "--node-ip", guest["dataAddress"],
             "--flannel-iface", config["network"]["dataInterface"],
-            "--snapshotter", "native",
+            "--snapshotter", "overlayfs",
         ]
         remote_command(
             ssh, key, guest,

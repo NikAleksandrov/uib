@@ -302,6 +302,15 @@
         "arguments": { "type": "array", "items": { "type": "string" } },
         "model": { "$ref": "#/$defs/artifact" },
         "dataset": { "$ref": "#/$defs/artifact" },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cpu", "memory"],
+          "properties": {
+            "cpu": { "type": "integer", "minimum": 1 },
+            "memory": { "$ref": "#/$defs/quantity" }
+          }
+        },
         "parallelism": {
           "type": "object",
           "additionalProperties": false,

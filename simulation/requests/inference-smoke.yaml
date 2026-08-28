@@ -5,6 +5,9 @@ workload:
   kind: inference
   image: uib-inference:test
   entrypoint: /opt/uib-inference/bin/inference
+  resources:
+    cpu: 1
+    memory: 3Gi
   parallelism:
     nodes: 1
     processesPerNode: 1

@@ -8,25 +8,32 @@ import subprocess
 def delete_node_storage(topology_value, state):
     from .core import VirtmeError
 
-    storage = topology_value.get("nodeStorage", {}).get("enroot")
-    if storage is None:
-        return
-    images = storage.get("images")
-    if not isinstance(images, dict):
+    storages = topology_value.get("nodeStorage", {})
+    if not isinstance(storages, dict):
         raise VirtmeError("virtme topology has invalid node storage")
-    root = (state / "node-storage" / "enroot").resolve()
-    for value in images.values():
-        if not isinstance(value, str):
-            raise VirtmeError("virtme topology has invalid node storage path")
-        image = pathlib.Path(value)
-        try:
-            if image.resolve().parent != root or image.suffix != ".ext4":
+    if not storages:
+        return
+    for name, storage in storages.items():
+        if name not in {"enroot", "k3s"} or not isinstance(storage, dict):
+            raise VirtmeError("virtme topology has invalid node storage")
+        images = storage.get("images")
+        if not isinstance(images, dict):
+            raise VirtmeError("virtme topology has invalid node storage")
+        root = (state / "node-storage" / name).resolve()
+        for value in images.values():
+            if not isinstance(value, str):
                 raise VirtmeError(
-                    f"virtme node storage escapes its owned root: {image}")
-            image.unlink(missing_ok=True)
-        except OSError as error:
-            raise VirtmeError(
-                f"cannot remove virtme node storage {image}: {error}") from error
+                    "virtme topology has invalid node storage path")
+            image = pathlib.Path(value)
+            try:
+                if image.resolve().parent != root or image.suffix != ".ext4":
+                    raise VirtmeError(
+                        f"virtme node storage escapes its owned root: {image}")
+                image.unlink(missing_ok=True)
+            except OSError as error:
+                raise VirtmeError(
+                    f"cannot remove virtme node storage {image}: {error}") \
+                    from error
 
 
 def load_ledger(state, run_id):
@@ -50,7 +57,7 @@ def command_render(args):
 
 
 def command_up(args):
-    from .artifacts import acquire_k3s, acquire_slurm_packages, configure_slurm_storage, create_container_smoke_image, extract_slurm_runtime, prepare_container_runtime
+    from .artifacts import acquire_k3s, acquire_slurm_packages, configure_kubernetes_storage, configure_slurm_storage, create_container_smoke_image, extract_slurm_runtime, prepare_container_runtime
     from .core import ENROOT_VERSION, PYXIS_VERSION, SLURM_VERSION, VirtmeError, executable, load_config, validate_name, write_json
     from .kubernetes import inventory, provision_kubernetes, write_kubeconfig
     from .network import apply_network_shaping, clear_network_shaping, create_network, delete_network, record_network_evidence
@@ -84,7 +91,10 @@ def command_up(args):
     network_created = False
     shaping_commands = {}
     try:
-        if config["cluster"]["manager"] == "slurm":
+        if config["cluster"]["manager"] == "kubernetes":
+            configure_kubernetes_storage(config, topology_value, state)
+            write_json(state / "topology.json", topology_value)
+        elif config["cluster"]["manager"] == "slurm":
             configure_slurm_storage(config, topology_value, state)
             write_json(state / "topology.json", topology_value)
         key = state / "id_ed25519"

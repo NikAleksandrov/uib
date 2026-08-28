@@ -216,9 +216,10 @@ def labels(run_id):
 
 def resources(config):
     nodes = config["nodes"]
+    workload = config["workload"].get("resources", nodes)
     values = {
-        "cpu": string_value(nodes["cpu"]),
-        "memory": nodes["memory"],
+        "cpu": string_value(workload["cpu"]),
+        "memory": workload["memory"],
     }
     gpu = nodes["gpus"]
     if gpu["vendor"] != "none":
