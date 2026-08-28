@@ -4,9 +4,207 @@ import hashlib
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
+
+
+def validate_image_reference(reference, allow_mutable_tags):
+    from .core import ConfigurationError, IMAGE_DIGEST, IMAGE_REFERENCE
+
+    if (not isinstance(reference, str) or
+            not IMAGE_REFERENCE.fullmatch(reference)):
+        raise ConfigurationError(f"invalid image reference: {reference}")
+    if not allow_mutable_tags and not IMAGE_DIGEST.fullmatch(reference):
+        raise ConfigurationError(
+            f"image reference is not digest-pinned: {reference}; "
+            "use --allow-mutable-tags only for local development images")
+
+
+def owned_kubernetes_nodes(args):
+    from .config import load
+    from .core import ConfigurationError
+    from .state import read_json, state_path
+
+    infrastructure = state_path(args) / "infrastructure"
+    ledger_path = infrastructure / "ledger.json"
+    if not ledger_path.is_file():
+        raise ConfigurationError("owned Kubernetes infrastructure is not ready")
+    ledger = read_json(ledger_path, "infrastructure ledger")
+    provider = ledger.get("provider")
+    if (ledger.get("schemaVersion") != 1 or
+            ledger.get("runId") != args.run_id or
+            provider not in {"libvirt", "virtme"} or
+            ledger.get("clusterManager") != "kubernetes"):
+        raise ConfigurationError(
+            f"Kubernetes infrastructure ownership mismatch: {ledger_path}")
+    if ledger.get("state") != "ready":
+        raise ConfigurationError(
+            f"{provider} infrastructure is not ready: {ledger.get('state')}")
+
+    inventory_name = (
+        "inventory.json" if provider == "virtme" else "inventory.yaml")
+    inventory_path = infrastructure / inventory_name
+    inventory = load(inventory_path)
+    try:
+        all_hosts = inventory["all"]
+        variables = all_hosts["vars"]
+        hosts = all_hosts["children"]["kubernetes_cluster"]["hosts"]
+        user = variables["ansible_user"]
+        key = pathlib.Path(
+            variables["ansible_ssh_private_key_file"]).resolve()
+    except (KeyError, TypeError) as error:
+        raise ConfigurationError(
+            f"invalid {provider} Kubernetes inventory: {inventory_path}") from error
+    expected_key = (infrastructure / "id_ed25519").resolve()
+    if key != expected_key or not key.is_file():
+        raise ConfigurationError(
+            f"{provider} Kubernetes key ownership mismatch: {key}")
+    if (not isinstance(user, str) or
+            not re.fullmatch(r"[a-z_][a-z0-9_-]*", user) or
+            not isinstance(hosts, dict) or not hosts):
+        raise ConfigurationError(
+            f"invalid {provider} Kubernetes inventory: {inventory_path}")
+
+    result = []
+    for name, endpoint in sorted(hosts.items()):
+        if not isinstance(endpoint, dict):
+            raise ConfigurationError(
+                f"invalid {provider} Kubernetes node: {name}")
+        host = endpoint.get("ansible_host")
+        port = endpoint.get("ansible_port")
+        if (not isinstance(host, str) or not host or isinstance(port, bool) or
+                not isinstance(port, int) or port < 1 or port > 65535):
+            raise ConfigurationError(
+                f"invalid {provider} Kubernetes endpoint: {name}")
+        result.append({
+            "host": host,
+            "key": key,
+            "name": name,
+            "port": port,
+            "provider": provider,
+            "target": f"{user}@{host}",
+        })
+
+    if provider == "virtme":
+        binary = ledger.get("k3sBinary")
+        if not isinstance(binary, str) or not pathlib.Path(binary).is_file():
+            raise ConfigurationError("virtme k3s binary is not recorded")
+    else:
+        binary = "/usr/local/bin/k3s"
+    return result, binary
+
+
+def node_ssh_command(node):
+    from .scheduler import command_executable
+
+    return [
+        command_executable("SSH_COMMAND", "ssh"),
+        "-o", "BatchMode=yes",
+        "-o", "IdentitiesOnly=yes",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-o", "ConnectTimeout=10",
+        "-i", str(node["key"]),
+        "-p", str(node["port"]),
+        node["target"],
+    ]
+
+
+def inspect_local_image(engine, reference):
+    from .core import ConfigurationError, HEX_DIGEST, run_command
+
+    try:
+        inspected = run_command([
+            engine, "image", "inspect", "--format={{.Id}}", reference,
+        ], text=True, capture_output=True)
+        if inspected.returncode:
+            pulled = run_command(
+                [engine, "pull", reference], text=True, capture_output=True)
+            if pulled.returncode:
+                if pulled.stderr:
+                    print(pulled.stderr, file=sys.stderr, end="")
+                raise ConfigurationError(f"cannot pull image: {reference}")
+            inspected = run_command([
+                engine, "image", "inspect", "--format={{.Id}}", reference,
+            ], text=True, capture_output=True)
+    except OSError as error:
+        raise ConfigurationError(
+            f"cannot invoke container engine: {error}") from error
+    image_id = inspected.stdout.strip()
+    if (inspected.returncode or not image_id.startswith("sha256:") or
+            not HEX_DIGEST.fullmatch(image_id[7:])):
+        if inspected.stderr:
+            print(inspected.stderr, file=sys.stderr, end="")
+        raise ConfigurationError(f"cannot inspect local image: {reference}")
+    return image_id
+
+
+def record_kubernetes_image(args, reference, image_id, nodes):
+    from .core import ConfigurationError
+    from .state import read_json, state_path, utc_now, write_json
+
+    path = state_path(args) / "infrastructure" / "kubernetes-images.json"
+    if path.is_file():
+        record = read_json(path, "Kubernetes image ledger")
+        if (record.get("schemaVersion") != 1 or
+                record.get("runId") != args.run_id):
+            raise ConfigurationError(
+                f"Kubernetes image ledger ownership mismatch: {path}")
+    else:
+        record = {"schemaVersion": 1, "runId": args.run_id, "images": {}}
+    images = record.get("images")
+    if not isinstance(images, dict):
+        raise ConfigurationError(f"invalid Kubernetes image ledger: {path}")
+    images[reference] = {
+        "imageId": image_id,
+        "nodes": [node["name"] for node in nodes],
+        "stagedAt": utc_now(),
+    }
+    write_json(path, record)
+
+
+def stage_kubernetes_image(args, reference, allow_mutable_tags):
+    from .core import ConfigurationError, run_command
+    from .scheduler import command_executable
+
+    validate_image_reference(reference, allow_mutable_tags)
+    nodes, binary = owned_kubernetes_nodes(args)
+    engine = command_executable("CONTAINER_ENGINE_COMMAND", "docker")
+    image_id = inspect_local_image(engine, reference)
+    archive = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                prefix="uib-kubernetes-image-", suffix=".tar",
+                delete=False) as output:
+            archive = pathlib.Path(output.name)
+        exported = run_command([
+            engine, "image", "save", "--output", str(archive), reference,
+        ], text=True, capture_output=True)
+        if exported.returncode:
+            if exported.stderr:
+                print(exported.stderr, file=sys.stderr, end="")
+            raise ConfigurationError(f"cannot export image: {reference}")
+        for node in nodes:
+            remote = [binary, "ctr", "images", "import", "-"]
+            if node["provider"] == "libvirt":
+                remote = ["sudo", "-n", *remote]
+            with archive.open("rb") as source:
+                imported = run_command(
+                    [*node_ssh_command(node), shlex.join(remote)], stdin=source)
+            if imported.returncode:
+                raise ConfigurationError(
+                    f"cannot import image on Kubernetes node {node['name']}: "
+                    f"{reference}")
+    except OSError as error:
+        raise ConfigurationError(
+            f"cannot stage Kubernetes image {reference}: {error}") from error
+    finally:
+        if archive is not None:
+            archive.unlink(missing_ok=True)
+    record_kubernetes_image(args, reference, image_id, nodes)
 
 
 def sha256_file(path):
@@ -238,15 +436,10 @@ def record_slurm_image_cache(cache_root, reference, image_id, cache):
 
 
 def stage_slurm_image(args, reference, allow_mutable_tags):
-    from .core import ConfigurationError, DEFAULT_SLURM_IMAGE_CACHE, HEX_DIGEST, IMAGE_DIGEST, IMAGE_REFERENCE
+    from .core import ConfigurationError, DEFAULT_SLURM_IMAGE_CACHE, HEX_DIGEST
     from .scheduler import command_executable, scheduler_remote
 
-    if not isinstance(reference, str) or not IMAGE_REFERENCE.fullmatch(reference):
-        raise ConfigurationError(f"invalid image reference: {reference}")
-    if not allow_mutable_tags and not IMAGE_DIGEST.fullmatch(reference):
-        raise ConfigurationError(
-            f"image reference is not digest-pinned: {reference}; "
-            "use --allow-mutable-tags only for local development images")
+    validate_image_reference(reference, allow_mutable_tags)
     remote = scheduler_remote(args)
     if not remote:
         raise ConfigurationError("owned Slurm infrastructure is not ready")

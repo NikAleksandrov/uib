@@ -157,18 +157,16 @@ def command_kubeconfig(args):
 
 def command_load_image(args):
     from .config import resolve
-    from .core import ConfigurationError
-    from .images import stage_slurm_image
+    from .images import stage_kubernetes_image, stage_slurm_image
 
     config = resolve(args)
 
     if config["infrastructure"]["provider"] in {"libvirt", "virtme"}:
-        if config["cluster"]["manager"] != "slurm":
-            raise ConfigurationError(
-                "Kubernetes image loading is not implemented for this "
-                "provider; "
-                "use a registry or an immutable image already present on "
-                "nodes")
+        if config["cluster"]["manager"] == "kubernetes":
+            for reference in args.image:
+                stage_kubernetes_image(
+                    args, reference, args.allow_mutable_tags)
+            return 0
         for reference in args.image:
             print(stage_slurm_image(args, reference,
                                     args.allow_mutable_tags))

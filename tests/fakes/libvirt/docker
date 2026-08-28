@@ -7,6 +7,9 @@ case "$1 $2" in
 'image inspect')
 	echo "sha256:$digest"
 	;;
+'image save')
+	printf '%s\n' fake-oci-archive > "$4"
+	;;
 'create uib-training:test')
 	echo "$container"
 	;;

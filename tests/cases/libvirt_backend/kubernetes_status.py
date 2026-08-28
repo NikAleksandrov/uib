@@ -5,10 +5,7 @@ import sys
 
 
 with open(sys.argv[1], encoding="utf-8") as source:
-    ledger = json.load(source)
-assert ledger["schemaVersion"] == 1
-assert ledger["runId"] == "uib-libvirt-test"
-assert ledger["provider"] == "libvirt"
-assert ledger["clusterManager"] == "slurm"
-assert ledger["state"] == "ready"
-assert ledger["networkEvidence"] == "network.json"
+    images = json.load(source)["images"]
+entry = images[next(iter(images))]
+assert entry["imageId"] == "sha256:" + "a" * 64
+assert entry["nodes"] == ["controller", "worker-01", "worker-02"]

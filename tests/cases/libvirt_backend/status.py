@@ -5,19 +5,11 @@ import sys
 
 
 with open(sys.argv[1], encoding="utf-8") as source:
-    summary = json.load(source)
-assert summary["schedulerEvidenceSource"] == "scontrol"
-assert summary["schedulerState"] == "COMPLETED"
-assert summary["workloadExitCode"] == 0
-assert summary["missingArtifacts"] == []
-assert summary["networkEmulation"] == "network-emulation.json"
-with open(sys.argv[2], encoding="utf-8") as source:
-    images = json.load(source)
-assert images["stagedImages"] == "staged-images.json"
-assert images["stagedCaches"] == "staged-caches.json"
-with open(sys.argv[3], encoding="utf-8") as source:
-    network = json.load(source)
-assert network["shaping"] == {"enabled": False}
-assert sorted(network["endpoints"]) == ["worker-01", "worker-02"]
-assert all(endpoint["seedApplied"] is None
-           for endpoint in network["endpoints"].values())
+    inventory = json.load(source)
+image_id = "sha256:" + "a" * 64
+image = inventory["images"][image_id]
+assert image["cacheKey"] == "a" * 64 + ".sqsh"
+assert image["reference"] == "uib-training:test"
+assert image["size"] > 0
+assert len(image["checksum"]) == 64
+assert "/" not in image["cacheKey"]

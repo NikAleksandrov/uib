@@ -42,19 +42,23 @@ cp "$project_dir/tests/fakes/virtme/ssh-keygen" "$test_dir/fakes/ssh-keygen"
 cp "$project_dir/tests/fakes/virtme/vng" "$test_dir/fakes/vng"
 cp "$project_dir/tests/fakes/virtme/ssh" "$test_dir/fakes/ssh"
 cp "$project_dir/tests/fakes/virtme/k3s" "$test_dir/fakes/k3s"
+cp "$project_dir/tests/fakes/virtme/docker" "$test_dir/fakes/docker"
 cp "$project_dir/tests/fakes/virtme/ip" "$test_dir/fakes/ip"
 chmod +x "$test_dir/fakes/ssh-keygen" "$test_dir/fakes/vng" \
-	"$test_dir/fakes/ssh" "$test_dir/fakes/ip" "$test_dir/fakes/k3s"
+	"$test_dir/fakes/ssh" "$test_dir/fakes/ip" "$test_dir/fakes/k3s" \
+	"$test_dir/fakes/docker"
 
 export SSH_KEYGEN_COMMAND="$test_dir/fakes/ssh-keygen"
 export VNG_COMMAND="$test_dir/fakes/vng"
 export SSH_COMMAND="$test_dir/fakes/ssh"
 export IP_COMMAND="$test_dir/fakes/ip"
 export K3S_BINARY="$test_dir/fakes/k3s"
+export CONTAINER_ENGINE_COMMAND="$test_dir/fakes/docker"
 export VIRTME_SSH_WAIT=2
 export VIRTME_TEST_VNG_LOG="$test_dir/vng.log"
 export VIRTME_TEST_IP_LOG="$test_dir/ip.log"
 export VIRTME_TEST_SSH_LOG="$test_dir/ssh.log"
+export VIRTME_TEST_IMAGE_IMPORTS="$test_dir/image-imports.log"
 export VIRTME_API_FORWARD_CHECK_COMMAND=/bin/true
 export VIRTME_TEST_SHAPING=active
 export VIRTME_TEST_MTU=1280
@@ -75,6 +79,12 @@ python3 "$project_dir/tests/cases/virtme_backend/lifecycle_status.py" "$test_dir
 	--state-dir "$test_dir/runs" > "$test_dir/exported-kubeconfig"
 grep -q 'server: https://127.0.0.1:23003' \
 	"$test_dir/exported-kubeconfig"
+"$cli" load-image --profile virtme-kubernetes --overlay network/datacenter \
+	--run-id virtme-lifecycle --state-dir "$test_dir/runs" \
+	--allow-mutable-tags --image uib-training:test
+test "$(wc -l < "$test_dir/image-imports.log")" -eq 3
+python3 "$project_dir/tests/cases/virtme_backend/network_evidence.py" \
+	"$test_dir/runs/virtme-lifecycle/infrastructure/kubernetes-images.json"
 [ "$(grep -c '/run/uib-network-schedule' "$test_dir/ssh.log")" -eq 2 ]
 [ "$(grep -c '/run/uib-rank-schedule' "$test_dir/ssh.log")" -eq 2 ]
 [ "$(grep -c '/run/uib-fault-target' "$test_dir/ssh.log")" -eq 2 ]
@@ -86,7 +96,7 @@ grep -F -- 'ip link set dev eth1 mtu 1280' "$test_dir/ssh.log" \
 	--run-id virtme-lifecycle \
 	--state-dir "$test_dir/runs"
 test "$(grep -c '/run/uib-netem clear eth1' "$test_dir/ssh.log")" -eq 2
-python3 "$project_dir/tests/cases/virtme_backend/network_evidence.py" "$test_dir/runs/virtme-lifecycle/infrastructure/ledger.json"
+python3 "$project_dir/tests/cases/virtme_backend/topology_state.py" "$test_dir/runs/virtme-lifecycle/infrastructure/ledger.json"
 unset VIRTME_TEST_SHAPING
 unset VIRTME_TEST_MTU
 

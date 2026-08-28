@@ -144,6 +144,7 @@ def command_up(args):
             kubeconfig = write_kubeconfig(
                 state, kubeconfig_value, topology_value["kubernetesApiPort"])
             ledger["kubeconfig"] = kubeconfig.name
+            ledger["k3sBinary"] = str(k3s)
         elif slurm_runtime:
             ledger["state"] = "provisioning"
             write_json(ledger_path, ledger)

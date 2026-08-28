@@ -1442,15 +1442,14 @@ v1.35.0; use a matching Kind executable through `KIND_COMMAND` when the host
 has another version. `up`, `status`, `kubeconfig`, and `down` invoke the real
 Kind CLI and always require an explicit, validated cluster name. The rendered
 YAML can be passed directly to `kind create cluster` when debugging. The
-top-level `uib-sim` lifecycle commands currently delegate only the Kind
-profile; other providers fail explicitly as unimplemented.
+top-level `uib-sim` lifecycle commands use the same run ID and ownership
+contract for Kind, virtme, and libvirt.
 
 `load-image` delegates to `kind load docker-image` and requires digest-pinned
 references by default. Local development tags require the explicit
-`--allow-mutable-tags` option. KubeRay installation and pod network-namespace
-shaping are later deployment phases; the current Kind adapter does not claim
-those steps. The Kubernetes UIB gate preserves ignored evidence, but generic
-lifecycle commands do not yet collect arbitrary workload results.
+`--allow-mutable-tags` option. Operator installation remains a separate Helm
+layer. Workload submission, evidence collection, and exact namespace cleanup
+use the common Kubernetes lifecycle described below.
 
 Kind nodes share one host kernel and compute capacity. Results are L0 unless a
 separate GPU capability has been proven.
@@ -1915,6 +1914,22 @@ KUBECONFIG=/tmp/uib-k8s-lab.kubeconfig kubectl get nodes
 simulation/bin/uib-sim down --profile libvirt-kubernetes \
   --run-id uib-k8s-lab --overlay network/datacenter
 ```
+
+Before installing an operator, local development images can be loaded into
+every node of an owned virtme or libvirt k3s lab:
+
+```text
+simulation/bin/uib-sim load-image --profile virtme-kubernetes \
+  --run-id uib-k8s-lab --allow-mutable-tags \
+  --image uib-runtime:test --image uib-training:test
+```
+
+`CONTAINER_ENGINE_COMMAND` selects the Docker-compatible local engine. The
+command exports each image once, imports it through the ordinary `k3s ctr`
+interface on every recorded node, and writes `kubernetes-images.json` in the
+run's infrastructure state. Immutable digest references remain the default;
+mutable tags are only for local development. Existing clusters are not
+modified by this command and should pull the same digest from their registry.
 
 This profile requires `libvirt.networkMode: bridge`; rootless passt management
 networks isolate the guests from the controller endpoint. Its real VM

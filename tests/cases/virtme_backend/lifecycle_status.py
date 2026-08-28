@@ -11,6 +11,7 @@ with open(os.path.join(state, "ledger.json"), encoding="utf-8") as source:
 assert ledger["state"] == "ready"
 assert ledger["provider"] == "virtme"
 assert ledger["kubeconfig"] == "kubeconfig"
+assert ledger["k3sBinary"].endswith("/fakes/k3s")
 assert ledger["networkEvidence"] == "network.json"
 with open(os.path.join(state, "topology.json"), encoding="utf-8") as source:
     topology = json.load(source)

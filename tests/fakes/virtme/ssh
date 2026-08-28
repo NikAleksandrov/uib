@@ -63,5 +63,9 @@ kind: Config
 users: []
 CONFIG
 	;;
+*'ctr images import -'*)
+	cat > /dev/null
+	printf '%s\n' imported >> "$VIRTME_TEST_IMAGE_IMPORTS"
+	;;
 esac
 exit 0

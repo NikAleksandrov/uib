@@ -12,6 +12,10 @@ case "$command" in
 'test -d /var/lib/uib/results/uib-libvirt-test')
 	exit 0
 	;;
+'sudo -n /usr/local/bin/k3s ctr images import -')
+	cat > /dev/null
+	printf '%s\n' imported >> "$LIBVIRT_TEST_LOG/kubernetes-imports"
+	;;
 'sudo -n /usr/local/libexec/uib-stage-image check aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 	image=$LIBVIRT_REMOTE_ROOT/images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sqsh
 	[ -f "$image" ] || exit 3
