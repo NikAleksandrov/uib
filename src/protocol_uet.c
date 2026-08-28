@@ -9,6 +9,7 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <arpa/inet.h>
+#include <endian.h>
 #include <netinet/ip.h>
 
 #include "uib/uet.h"

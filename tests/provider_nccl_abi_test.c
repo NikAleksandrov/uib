@@ -56,10 +56,19 @@ static void *load_symbol(void *handle, const char *name, const char *version)
 	const char *error;
 
 	dlerror();
+#ifdef __GLIBC__
 	symbol = dlvsym(handle, name, version);
+#else
+	symbol = dlsym(handle, name);
+#endif
 	error = dlerror();
-	if (error)
+	if (error) {
+#ifdef __GLIBC__
 		fprintf(stderr, "%s@%s: %s\n", name, version, error);
+#else
+		fprintf(stderr, "%s: %s\n", name, error);
+#endif
+	}
 	return symbol;
 }
 

@@ -127,6 +127,7 @@ STANDALONE_BUILDER := scripts/build-standalone-archive.sh
 STATIC_LINK_TEST := tests/static_link_test
 RUNTIME_BUNDLE_TEST := tests/run_runtime_bundle_test.sh
 PORTABLE_RUNTIME_BUNDLE_TEST := tests/run_portable_runtime_bundle_test.sh
+DISTRIBUTION_COMPAT_TEST := tests/run_distribution_compat_test.sh
 RUNTIME_ARTIFACT_DIR ?= simulation/.artifacts
 RUNTIME_IMAGE ?= uib-runtime:test
 RUNTIME_CONTAINER_ENGINE ?= docker
@@ -215,6 +216,10 @@ runtime-bundle-portable-test: runtime-bundle-portable
 
 runtime-bundle-test: all static
 	$(RUNTIME_BUNDLE_TEST)
+
+distribution-compat-test:
+	UIB_TEST_JOBS='$(if $(UIB_TEST_JOBS),$(UIB_TEST_JOBS),4)' \
+		$(DISTRIBUTION_COMPAT_TEST)
 
 runtime-image: runtime-bundle-portable
 	$(RUNTIME_CONTAINER_ENGINE) build --progress=plain \
@@ -1040,7 +1045,7 @@ clean:
 
 .PHONY: shared-abi-test all license-check static static-test runtime-bundle runtime-bundle-portable \
 	runtime-bundle-portable-test \
-	runtime-bundle-test \
+	runtime-bundle-test distribution-compat-test \
 	runtime-image model-cache-image \
 	training-image training-smoke-test FORCE docs \
 	training-public-test training-production-cpu-test training-gpu-test \

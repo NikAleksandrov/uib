@@ -1,0 +1,99 @@
+name: Distribution compatibility
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: distribution-compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pull-request:
+    if: github.event_name == 'pull_request'
+    name: Unprivileged pull request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out UIB
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Install fixed build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf build-essential libmnl-dev liburing-dev \
+            liburcu-dev pkg-config python3 zlib1g-dev
+          sudo useradd --create-home --user-group --shell /bin/bash uib-ci
+          sudo chown -R uib-ci:uib-ci "$GITHUB_WORKSPACE"
+
+      - name: Build and test without elevated privileges
+        run: |
+          sudo --set-home -u uib-ci -- bash -euxo pipefail -c '
+            cd "$1"
+            ./configure --disable-provider --disable-af-xdp --disable-devmem
+            make -j2 all
+            make test
+            make docs-check
+          ' _ "$GITHUB_WORKSPACE"
+
+  distribution:
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 45
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu 24.04
+            variant: ubuntu-24.04
+            image: ubuntu:24.04
+          - name: Ubuntu 26.04
+            variant: ubuntu-26.04
+            image: ubuntu:26.04
+          - name: Debian 13
+            variant: debian-13
+            image: debian:13
+          - name: Fedora Server 44
+            variant: fedora-44
+            image: fedora:44
+          - name: Alpine Linux 3.24
+            variant: alpine-3.24
+            image: alpine:3.24
+
+    steps:
+      - name: Check out UIB
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Test stock distribution libraries
+        env:
+          UIB_CI_IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm \
+            --security-opt seccomp=unconfined \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --workdir /src \
+            --env UIB_TEST_JOBS=4 \
+            "$UIB_CI_IMAGE" \
+            sh -eux -c '
+              ./scripts/install-ci-dependencies.sh
+              make distribution-compat-test
+            '
+
+      - name: Upload dependency and feature report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: distribution-report-${{ matrix.variant }}
+          path: distribution-compatibility.txt
+          if-no-files-found: error
