@@ -85,6 +85,10 @@ def apply_overlay(config, name):
         config["uib"]["bindPort"] = protocol["bindPort"]
         config["uib"]["congestionControl"] = copy.deepcopy(
             protocol["congestionControl"])
+        config["uib"].pop("environment", None)
+        if "environment" in protocol:
+            config["uib"]["environment"] = copy.deepcopy(
+                protocol["environment"])
         return config
     if name.startswith("network/"):
         config["network"]["shaping"] = copy.deepcopy(
@@ -178,6 +182,77 @@ def validate_shaping(shaping, path):
     if "cellOverheadBytes" in shaping and "cellSizeBytes" not in shaping:
         raise ConfigurationError(
             f"{path}.cellOverheadBytes requires cellSizeBytes")
+
+
+def validate_unsigned_parameter(parameters, name, maximum=(1 << 64) - 1):
+    from .core import ConfigurationError
+
+    value = parameters.get(name)
+
+    if value is None:
+        return
+    if (isinstance(value, bool) or not isinstance(value, int) or
+            value < 1 or value > maximum):
+        raise ConfigurationError(
+            f"congestion-control {name} must be an integer from 1 to {maximum}")
+
+
+def validate_congestion(config):
+    from .core import ConfigurationError
+
+    uib = config["uib"]
+    algorithm = uib["congestionControl"]["algorithm"]
+    parameters = uib["congestionControl"]["parameters"]
+    allowed = {
+        "nscc": {"maxWindowBytes"},
+        "dcqcn": {
+            "initialRateBytesPerSecond",
+            "minimumRateBytesPerSecond",
+            "maximumRateBytesPerSecond",
+            "additiveIncreaseBytesPerSecond",
+            "recoveryIntervalNs",
+            "alphaGainQ16",
+        },
+        "rccc": {
+            "maxWindowBytes",
+            "creditQuantumBytes",
+            "linkRateBytesPerSecond",
+            "baseRttNs",
+        },
+    }
+    names = allowed.get(algorithm, set())
+    unknown = set(parameters) - names
+
+    if unknown:
+        raise ConfigurationError(
+            f"unknown {algorithm} parameter: {sorted(unknown)[0]}")
+    for name in names:
+        validate_unsigned_parameter(parameters, name)
+    if algorithm == "nscc":
+        validate_unsigned_parameter(parameters, "maxWindowBytes", 4294967295)
+    elif algorithm == "dcqcn":
+        experimental = uib.get("environment", {}).get(
+            "UIB_UET_CC_EXPERIMENTAL", "")
+        if uib["protocol"] == "uet" and str(experimental).lower() != "on":
+            raise ConfigurationError(
+                "DCQCN with UET requires UIB_UET_CC_EXPERIMENTAL=on")
+        minimum = parameters.get("minimumRateBytesPerSecond", 12500000)
+        initial = parameters.get("initialRateBytesPerSecond", 12500000000)
+        maximum = parameters.get("maximumRateBytesPerSecond", 12500000000)
+        alpha = parameters.get("alphaGainQ16", 256)
+        if minimum > initial or initial > maximum:
+            raise ConfigurationError(
+                "DCQCN rates require minimum <= initial <= maximum")
+        if alpha > 65536:
+            raise ConfigurationError(
+                "DCQCN alphaGainQ16 must be an integer from 1 to 65536")
+    elif algorithm == "rccc":
+        if uib["protocol"] != "uet":
+            raise ConfigurationError("RCCC is available only with UET")
+    elif parameters:
+        raise ConfigurationError(
+            "registered congestion-control algorithms do not accept "
+            "parameters through the common schema")
 
 
 def validate_infrastructure(config):
@@ -382,22 +457,7 @@ def validate_communication(config):
             lock = json.load(source)
         if lock["limitations"]["gpuDirect"] != "validated":
             raise ConfigurationError("GPU-direct is not validated")
-    cc = uib["congestionControl"]
-    parameters = cc["parameters"]
-    if cc["algorithm"] == "nscc":
-        unknown = set(parameters) - {"maxWindowBytes"}
-        if unknown:
-            raise ConfigurationError(
-                f"unknown NSCC parameter: {sorted(unknown)[0]}")
-        maximum = parameters.get("maxWindowBytes")
-        if (maximum is not None and
-                (isinstance(maximum, bool) or not isinstance(maximum, int) or
-                 maximum < 1 or maximum > 4294967295)):
-            raise ConfigurationError(
-                "NSCC maxWindowBytes must be an integer from 1 to 4294967295")
-    elif parameters:
-        raise ConfigurationError(
-            "congestion-control parameters require algorithm=nscc")
+    validate_congestion(config)
 
 
 

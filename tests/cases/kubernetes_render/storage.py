@@ -6,14 +6,12 @@ import yaml
 
 
 with open(sys.argv[1], encoding="utf-8") as source:
-    job = list(yaml.safe_load_all(source))[2]
-workers = job["spec"]["rayClusterSpec"]["workerGroupSpecs"]
-assert len(workers) == 1
-assert workers[0]["replicas"] == 1
-assert workers[0]["minReplicas"] == 1
-assert workers[0]["maxReplicas"] == 1
-pod = workers[0]["template"]["spec"]
-assert pod["containers"][0]["name"] == "ray-worker"
-assert pod["affinity"]["podAntiAffinity"][
-    "requiredDuringSchedulingIgnoredDuringExecution"
-][0]["topologyKey"] == "kubernetes.io/hostname"
+    runtime = list(yaml.safe_load_all(source))[2]
+pod = runtime["spec"]["template"]["spec"]["replicatedJobs"][0][
+    "template"
+]["spec"]["template"]["spec"]
+volumes = {volume["name"]: volume for volume in pod["volumes"]}
+assert volumes["model-cache"]["persistentVolumeClaim"]["claimName"] == \
+    "uib-model-cache"
+assert volumes["results"]["persistentVolumeClaim"]["claimName"] == \
+    "uib-results"

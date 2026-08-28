@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+uib:
+  protocol: uet
+  bindPort: 5432
+  environment:
+    UIB_UET_CC_EXPERIMENTAL: "on"
+  congestionControl:
+    algorithm: dcqcn
+    abi: 1
+    parameters: {}

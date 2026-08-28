@@ -239,6 +239,29 @@ grep -F 'export UIB_ROCEV2_CC=nscc' "$test_dir/rocev2-nscc.sbatch" \
 grep -F 'export UIB_ROCEV2_NSCC_MAX_WND=65536' \
 	"$test_dir/rocev2-nscc.sbatch" > /dev/null
 
+render_training uib-slurm-rocev2-dcqcn \
+	--overlay protocol/rocev2-dcqcn \
+	--set uib.congestionControl.parameters.recoveryIntervalNs=100000 \
+	--set uib.congestionControl.parameters.alphaGainQ16=512 \
+	> "$test_dir/rocev2-dcqcn.sbatch"
+grep -F 'export UIB_ROCEV2_CC=dcqcn' \
+	"$test_dir/rocev2-dcqcn.sbatch" > /dev/null
+grep -F 'export UIB_DCQCN_RECOVERY_INTERVAL=100000' \
+	"$test_dir/rocev2-dcqcn.sbatch" > /dev/null
+grep -F 'export UIB_DCQCN_ALPHA_GAIN=512' \
+	"$test_dir/rocev2-dcqcn.sbatch" > /dev/null
+
+render_training uib-slurm-uet-rccc \
+	--overlay protocol/uet-rccc \
+	--set uib.congestionControl.parameters.linkRateBytesPerSecond=50000000000 \
+	--set uib.congestionControl.parameters.baseRttNs=20000 \
+	> "$test_dir/uet-rccc.sbatch"
+grep -F 'export UIB_UET_CC=rccc' "$test_dir/uet-rccc.sbatch" > /dev/null
+grep -F 'export UIB_UET_RCCC_LINK_RATE=50000000000' \
+	"$test_dir/uet-rccc.sbatch" > /dev/null
+grep -F 'export UIB_UET_RCCC_BASE_RTT=20000' \
+	"$test_dir/uet-rccc.sbatch" > /dev/null
+
 render_training uib-slurm-memory --set slurm.memory=12Gi \
 	> "$test_dir/memory.sbatch"
 grep -F '#SBATCH --mem=12G' "$test_dir/memory.sbatch" > /dev/null

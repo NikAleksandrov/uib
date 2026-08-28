@@ -1,42 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import json
 import sys
 
 import yaml
 
 
 with open(sys.argv[1], encoding="utf-8") as source:
-    documents = list(yaml.safe_load_all(source))
-assert [document["kind"] for document in documents] == [
-    "Namespace", "ConfigMap", "RayJob"
-]
-namespace, config_map, job = documents
-assert namespace["metadata"]["name"] == "uib-inference"
-config = json.loads(config_map["data"]["workload.json"])
-assert config["runId"] == "uib-inference"
-assert config["backend"] == "transformers"
-assert config["model"]["revision"] == \
-    "12fd25f77366fa6b3b4b768ec3050bf629380bac"
-assert job["apiVersion"] == "ray.io/v1"
-assert job["spec"]["shutdownAfterJobFinishes"] is False
-assert "ttlSecondsAfterFinished" not in job["spec"]
-assert job["spec"]["entrypoint"].startswith("/bin/sh -c ")
-assert "inference serve" in job["spec"]["entrypoint"]
-assert "inference probe" in job["spec"]["entrypoint"]
-cluster = job["spec"]["rayClusterSpec"]
-assert cluster["rayVersion"] == "2.58.0"
-assert "workerGroupSpecs" not in cluster
-pod = cluster["headGroupSpec"]["template"]["spec"]
-assert pod["containers"][0]["name"] == "ray-head"
-assert [container["name"] for container in pod["initContainers"]] == [
-    "uib-runtime", "uib-runtime-check"
-]
-environment = {
-    entry["name"]: entry for entry in pod["containers"][0]["env"]
-}
-assert environment["NCCL_IBVERBS_LIB"]["value"] == \
-    "/opt/uib/lib/libuibv.so"
-assert environment["UIB_BIND_IP"]["valueFrom"]["fieldRef"][
-    "fieldPath"
-] == "status.podIP"
+    job = list(yaml.safe_load_all(source))[3]
+environment = {entry["name"]: entry for entry in job["spec"]["trainer"]["env"]}
+assert environment["UIB_UET_CC"]["value"] == "rccc"
+assert environment["UIB_UET_RCCC_MAX_WND"]["value"] == "262144"
+assert environment["UIB_UET_RCCC_CREDIT_QUANTUM"]["value"] == "16384"

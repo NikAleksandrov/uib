@@ -102,15 +102,31 @@ python3 "$project_dir/tests/cases/kubernetes_render/uet.py" "$test_dir/uet.yaml"
 python3 "$project_dir/tests/cases/kubernetes_render/rocev2_nscc.py" "$test_dir/rocev2-nscc.yaml"
 
 "$cli" render-workload --profile kind-kubernetes --request "$request" \
+	--run-id uib-rocev2-dcqcn --allow-mutable-tags \
+	--overlay protocol/rocev2-dcqcn \
+	--set uib.congestionControl.parameters.initialRateBytesPerSecond=1000000000 \
+	--set uib.congestionControl.parameters.alphaGainQ16=512 \
+	> "$test_dir/rocev2-dcqcn.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/rocev2_dcqcn.py" "$test_dir/rocev2-dcqcn.yaml"
+
+"$cli" render-workload --profile kind-kubernetes --request "$request" \
+	--run-id uib-uet-rccc --allow-mutable-tags \
+	--overlay protocol/uet-rccc \
+	--set uib.congestionControl.parameters.maxWindowBytes=262144 \
+	--set uib.congestionControl.parameters.creditQuantumBytes=16384 \
+	> "$test_dir/uet-rccc.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/uet_rccc.py" "$test_dir/uet-rccc.yaml"
+
+"$cli" render-workload --profile kind-kubernetes --request "$request" \
 	--run-id uib-storage --allow-mutable-tags \
 	--set storage.modelCacheClaim=uib-model-cache \
 	--set storage.resultsClaim=uib-results > "$test_dir/storage.yaml"
-python3 "$project_dir/tests/cases/kubernetes_render/rocev2_dcqcn.py" "$test_dir/storage.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/storage.py" "$test_dir/storage.yaml"
 
 "$cli" render-workload --profile kind-kubernetes \
 	--request "$inference_request" --run-id uib-inference \
 	--allow-mutable-tags > "$test_dir/inference.yaml"
-python3 "$project_dir/tests/cases/kubernetes_render/uet_rccc.py" "$test_dir/inference.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/inference.py" "$test_dir/inference.yaml"
 
 "$cli" render-workload --profile kind-kubernetes \
 	--request "$inference_request" --run-id uib-inference-two \
@@ -123,7 +139,7 @@ python3 "$project_dir/tests/cases/kubernetes_render/uet_rccc.py" "$test_dir/infe
 	--set nodes.gpus.vendor=nvidia --set nodes.gpus.perWorker=1 \
 	--set nodes.gpus.resourceName=nvidia.com/gpu \
 	> "$test_dir/inference-two.yaml"
-python3 "$project_dir/tests/cases/kubernetes_render/storage.py" "$test_dir/inference-two.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/inference_virtme.py" "$test_dir/inference-two.yaml"
 
 if "$cli" render-workload --profile kind-kubernetes \
 	--request "$inference_request" --run-id uib-inference-ranks \
@@ -146,7 +162,7 @@ fi
 	--allow-mutable-tags \
 	--set storage.modelCacheImage=uib-model-cache:test \
 	> "$test_dir/inference-cache.yaml"
-python3 "$project_dir/tests/cases/kubernetes_render/inference.py" "$test_dir/inference-cache.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/inference_two.py" "$test_dir/inference-cache.yaml"
 
 if "$cli" render-workload --profile kind-kubernetes \
 	--request "$inference_request" --run-id uib-inference-cache-conflict \

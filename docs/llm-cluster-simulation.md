@@ -28,6 +28,7 @@ configuration.
 - [Available deployment compositions](#available-deployment-compositions)
 - [Communication compatibility comes first](#communication-compatibility-comes-first)
 - [Congestion-control experiments](#congestion-control-experiments)
+- [Protocol and congestion-control resilience benchmark](#protocol-and-congestion-control-resilience-benchmark)
 - [Transparent UIB injection](#transparent-uib-injection)
 - [Runtime artifact](#runtime-artifact)
 - [Diagnostic image](#diagnostic-image)
@@ -574,8 +575,8 @@ use a small YAML overlay for a group of related values.
 | Infrastructure profiles | `kind-kubernetes`, `virtme-kind`, `virtme-kubernetes`, `virtme-slurm`, `libvirt-kubernetes`, `libvirt-slurm`, `real-kubernetes`, `real-slurm` |
 | virtme network | `virtme-bridge` (optional; the profiles default to rootless socket networking) |
 | Communication | `communication/nccl`, `communication/rccl`, `communication/ucx`, `communication/libfabric` |
-| Protocol and congestion | `protocol/rocev2`, `protocol/rocev2-nscc-experimental`, `protocol/uet-nscc`, `protocol/uet-none` |
-| Network condition | `network/clean`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/bursty`, `network/reordered`, `network/ecn`, `network/asymmetric`, `network/minimum-mtu`, `network/jumbo` |
+| Protocol and congestion | `protocol/rocev2`, `protocol/rocev2-dcqcn`, `protocol/rocev2-nscc-experimental`, `protocol/uet-nscc`, `protocol/uet-rccc`, `protocol/uet-none`, `protocol/uet-dcqcn-experimental` |
+| Network condition | `network/clean`, `network/latency`, `network/drops`, `network/reordered`, `network/drops-reordered`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/bursty`, `network/ecn`, `network/asymmetric`, `network/minimum-mtu`, `network/jumbo` |
 
 A later overlay from the same layer replaces the earlier layer settings.
 Network overlays replace shaping and per-worker shaping; an overlay changes
@@ -645,9 +646,9 @@ overlay when both are needed.
 | `uib.transport` | `udp-sync`, `udp-io-uring`, `udp-zc-afxdp`, `tcp-devmem` | Packet-I/O backend |
 | `uib.memoryMode` | `host-staged`, `gpu-direct` | Collective buffer path/result class |
 | `uib.environment` | Map whose keys start with `UIB_` | Validated advanced UIB settings |
-| `uib.congestionControl.algorithm` | `none`, `nscc`, or registered name matching `[a-z][a-z0-9_-]+` | Per-QP algorithm |
+| `uib.congestionControl.algorithm` | `none`, `nscc`, `dcqcn`, `rccc`, or registered name matching `[a-z][a-z0-9_-]+` | Per-QP algorithm; RCCC is UET-only, DCQCN is native to RoCEv2 and experimental on UET, and NSCC on RoCEv2 is experimental |
 | `uib.congestionControl.abi` | `1` | Required congestion operations ABI |
-| `uib.congestionControl.parameters` | Algorithm-specific scalar map | `nscc` currently accepts `maxWindowBytes` |
+| `uib.congestionControl.parameters` | Algorithm-specific scalar map | Valid names and ranges are listed under congestion-control experiments |
 | `communication.frontend` | `nccl`, `rccl`, `ucx`, `libfabric` | Application-facing communication library |
 | `communication.fallbackPolicy` | `fail` | Software/native fallback is never accepted for validation |
 | `communication.transportAllowlist` | Non-empty list | Only data transports/providers that may satisfy the run |
@@ -1013,21 +1014,29 @@ NCCL / RCCL / UCX / libfabric
                 |
        +--------+---------+
        | congestion ops   |
-       | nscc (UET)       |
+       | DCQCN (RoCEv2)   |
+       | NSCC/RCCC (UET)  |
        | none | plug-in X |
        +------------------+
 ```
 
-RoCEv2 and UET use this operations contract. UET defaults to `nscc`; RoCEv2
-defaults to `none` to preserve its original behavior. `none` is an unsafe
-comparison baseline for congestion experiments:
+RoCEv2 and UET use this operations contract. DCQCN is the native RoCEv2
+implementation. NSCC and receiver-credit congestion control (RCCC) are native
+UET choices. UET defaults to `nscc`; RoCEv2 keeps `none` as its compatibility
+default, while the `rocev2-dcqcn` overlay selects DCQCN explicitly. `none`
+removes congestion admission and is suitable only as a comparison baseline.
+Cross-protocol choices are always explicit: NSCC on RoCEv2 is experimental,
+and DCQCN on UET additionally requires `UIB_UET_CC_EXPERIMENTAL=on`.
 
 ```text
 UIB_PROTOCOL=uet UIB_UET_CC=nscc app
+UIB_PROTOCOL=uet UIB_UET_CC=rccc app
 UIB_PROTOCOL=uet UIB_UET_CC=none app
 UIB_PROTOCOL=uet UIB_UET_CC=my_algorithm app
-# Experimental only: NSCC was not designed for RoCEv2.
+UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=dcqcn unchanged-application
+# Experimental cross-protocol comparisons:
 UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc unchanged-application
+UIB_PROTOCOL=uet UIB_UET_CC=dcqcn UIB_UET_CC_EXPERIMENTAL=on app
 UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=my_algorithm app
 ```
 
@@ -1071,7 +1080,9 @@ The same metadata sets UET's congestion-mark flag in its response. The shared
 ABI does not imply that every algorithm is suitable for every protocol: NSCC
 remains a UET algorithm, and its RoCEv2 selector is experimental only.
 
-The common request form is independent of UET-specific environment names:
+The common configuration form is independent of protocol-specific environment
+names. The adapters validate it and render the corresponding `UIB_*`
+variables:
 
 ```yaml
 uib:
@@ -1085,11 +1096,93 @@ uib:
 
 The adapter renders the experimental example to `UIB_ROCEV2_CC=nscc` and
 `UIB_ROCEV2_NSCC_MAX_WND=262144`; UET uses the corresponding `UIB_UET_*`
-names. `maxWindowBytes` is valid only with `algorithm: nscc`. It must be an
-integer from 1 through 4294967295, and the runtime rejects a value smaller than
-the active path MTU plus wire overhead. Other algorithms require an empty
-`parameters` map. Each result records the resolved algorithm, parameters,
-protocol, workload, and network condition.
+names.
+
+| Algorithm | Parameter | Value |
+|---|---|---|
+| `nscc` | `maxWindowBytes` | Integer 1 through 4294967295 |
+| `dcqcn` | `minimumRateBytesPerSecond`, `initialRateBytesPerSecond`, `maximumRateBytesPerSecond` | Positive integers with minimum <= initial <= maximum |
+| `dcqcn` | `additiveIncreaseBytesPerSecond`, `recoveryIntervalNs` | Positive integers |
+| `dcqcn` | `alphaGainQ16` | Integer 1 through 65536; 256 is 1/256 |
+| `rccc` | `maxWindowBytes`, `creditQuantumBytes`, `linkRateBytesPerSecond`, `baseRttNs` | Positive integers; rates are bytes/second and RTT is nanoseconds |
+| `none` or a registered plug-in | none | The common schema rejects parameters; configure a plug-in through its own documented environment if needed |
+
+For example, tune native RoCEv2 DCQCN without changing the workload:
+
+```text
+simulation/bin/uib-sim render --profile libvirt-slurm \
+  --overlay protocol/rocev2-dcqcn \
+  --set uib.congestionControl.parameters.minimumRateBytesPerSecond=125000000 \
+  --set uib.congestionControl.parameters.initialRateBytesPerSecond=25000000000 \
+  --set uib.congestionControl.parameters.maximumRateBytesPerSecond=50000000000 \
+  --set uib.congestionControl.parameters.alphaGainQ16=512
+```
+
+Select and tune UET RCCC independently of the infrastructure layer:
+
+```text
+simulation/bin/uib-sim render --profile virtme-slurm \
+  --overlay protocol/uet-rccc \
+  --set uib.congestionControl.parameters.maxWindowBytes=262144 \
+  --set uib.congestionControl.parameters.creditQuantumBytes=16384 \
+  --set uib.congestionControl.parameters.linkRateBytesPerSecond=50000000000 \
+  --set uib.congestionControl.parameters.baseRttNs=20000
+```
+
+Each result records the resolved algorithm, parameters, protocol, workload,
+and network condition.
+
+## Protocol and congestion-control resilience benchmark
+
+`make benchmark-congestion` compares the same host-memory traffic under clean,
+latency, drop, reordering, and combined drop-plus-reordering conditions. Each
+case runs in a disposable network namespace, applies the checked-in netem
+overlay to loopback, and writes `congestion-comparison.csv`. `make
+benchmark-all` includes this matrix, and `make benchmark-report` adds it to the
+text and Markdown reports.
+
+The default matrix is:
+
+| Protocol | Algorithms | Conditions |
+|---|---|---|
+| RoCEv2 | `dcqcn`, `none` | `clean`, `latency`, `drops`, `reordered`, `drops-reordered` |
+| UET | `rccc`, `nscc`, `none` | The same five conditions |
+
+The UET/DCQCN cross-protocol experiment is supported but intentionally omitted
+from defaults. Select it by its explicit `dcqcn-experimental` name.
+
+| Variable | Default | Syntax |
+|---|---|---|
+| `UIB_CC_BENCH_VARIANTS` | Native/default algorithms above | Space-separated `protocol:algorithm` entries |
+| `UIB_CC_BENCH_CONDITIONS` | Five conditions above | Space-separated checked-in network overlay names |
+| `UIB_CC_BENCH_MATRIX` | Cartesian product of variants and conditions | Space-separated exact `protocol:algorithm:condition` entries |
+| `UIB_CC_BENCH_ITERATIONS` | `1000` | Positive operation count |
+| `UIB_CC_BENCH_SIZE` | `16384` | Positive message size in bytes |
+| `UIB_CC_BENCH_WINDOW` | `16` | Positive in-flight operation window |
+| `UIB_CC_BENCH_MTU` | `1500` | Positive active MTU |
+| `UIB_CC_BENCH_TIMEOUT` | `120` | Positive timeout per case in seconds |
+
+`UIB_CC_BENCH_MATRIX` cannot be combined with either variant or condition
+selectors. Supported pairs are `rocev2:dcqcn`, `rocev2:none`, `uet:rccc`,
+`uet:nscc`, `uet:none`, and `uet:dcqcn-experimental`. Unsupported protocol and
+algorithm combinations fail before traffic starts.
+
+```text
+# Compare native algorithms only under loss and reordering.
+UIB_CC_BENCH_VARIANTS='rocev2:dcqcn uet:rccc uet:nscc' \
+UIB_CC_BENCH_CONDITIONS='drops reordered drops-reordered' \
+make benchmark-congestion
+
+# Run exact cases, including the explicit cross-protocol experiment.
+UIB_CC_BENCH_MATRIX='rocev2:dcqcn:drops uet:rccc:drops uet:dcqcn-experimental:drops' \
+UIB_CC_BENCH_ITERATIONS=10000 UIB_CC_BENCH_SIZE=65536 \
+make benchmark-congestion
+```
+
+A workload-level `FAIL` row is retained in the CSV so algorithms remain
+comparable under conditions they cannot recover from. Missing commands or
+network-namespace privilege produce a `SKIP` row. Infrastructure errors still
+fail the report command.
 
 ## Transparent UIB injection
 
@@ -3823,6 +3916,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-rank-fault-test` | Python 3 and POSIX shell tools; no Slurm installation or elevated privilege | Monotonic rank-fault timing, exclusive run-owned markers, JSONL evidence, invalid schedule rejection, and actual SIGTERM of an unchanged wrapped process |
 | `make simulation-fault-e2e-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | A timed delay carries the complete RoCEv2 operation matrix; a separate 100% loss partition drops initial UIB traffic, then the unchanged workload completes after exact recovery. Nonzero qdisc counters and complete transition evidence are required |
 | `make simulation-congestion-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | RoCEv2 and UET SEND and RDMA read/write complete with actual netem conditions and built-in or plugin congestion control; the UET cases also cover atomics |
+| `make uet-error-test` | Build dependencies and permission to open loopback UDP sockets | Exact UET SES return codes reach the initiator through `vendor_err`; bad key/address/access, unaligned atomic, session identity, no-match, and too-long receive errors are covered. A second run drops the first request and guaranteed error response to verify cached retransmission and Clear processing |
 | `make simulation-mtu-test` | Build dependencies, `ip`, `timeout`, `ibv_rc_pingpong`, and permission to create network namespaces and veth pairs | Actual 2051-byte multi-packet RoCEv2 traffic at link MTUs 576 and 1280, plus UET at 576; both endpoints use and advertise the automatically derived active MTU |
 | `make rocev2-ecn-test` | Build dependencies and permission to open loopback UDP sockets | ECT(0) traffic produces an ACK but no CNP, while a valid CE-marked RoCEv2 packet produces exactly one ACK and one CNP; both io_uring multishot and batched receive metadata paths are tested |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
@@ -3861,6 +3955,7 @@ make simulation-netem-test
 make simulation-fault-schedule-test
 make simulation-rank-fault-test
 make simulation-congestion-test
+make uet-error-test
 make simulation-kind-test
 make simulation-virtme-backend-test
 make simulation-lifecycle-interruption-test

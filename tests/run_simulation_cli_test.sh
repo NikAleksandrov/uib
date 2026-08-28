@@ -160,6 +160,43 @@ if "$cli" render --profile kind-kubernetes \
 	echo "an unknown NSCC parameter was accepted" >&2
 	exit 1
 fi
+"$cli" render --profile kind-kubernetes --format json \
+	--overlay protocol/rocev2-dcqcn \
+	--set uib.congestionControl.parameters.minimumRateBytesPerSecond=25000000 \
+	--set uib.congestionControl.parameters.initialRateBytesPerSecond=1000000000 \
+	--set uib.congestionControl.parameters.maximumRateBytesPerSecond=2000000000 \
+	--set uib.congestionControl.parameters.alphaGainQ16=512 \
+	> "$test_dir/rocev2-dcqcn.json"
+"$cli" render --profile kind-kubernetes --format json \
+	--overlay protocol/uet-rccc \
+	--set uib.congestionControl.parameters.maxWindowBytes=262144 \
+	--set uib.congestionControl.parameters.creditQuantumBytes=16384 \
+	--set uib.congestionControl.parameters.linkRateBytesPerSecond=50000000000 \
+	--set uib.congestionControl.parameters.baseRttNs=20000 \
+	> "$test_dir/uet-rccc.json"
+"$cli" render --profile kind-kubernetes --format json \
+	--overlay protocol/uet-dcqcn-experimental \
+	> "$test_dir/uet-dcqcn-experimental.json"
+if "$cli" render --profile kind-kubernetes \
+	--overlay protocol/rocev2-dcqcn \
+	--set uib.congestionControl.parameters.minimumRateBytesPerSecond=200 \
+	--set uib.congestionControl.parameters.initialRateBytesPerSecond=100 \
+	> /dev/null 2>&1; then
+	echo "invalid DCQCN rate ordering was accepted" >&2
+	exit 1
+fi
+if "$cli" render --profile kind-kubernetes \
+	--set uib.protocol=rocev2 \
+	--set uib.congestionControl.algorithm=rccc > /dev/null 2>&1; then
+	echo "RCCC with RoCEv2 was accepted" >&2
+	exit 1
+fi
+if "$cli" render --profile kind-kubernetes \
+	--set uib.protocol=uet \
+	--set uib.congestionControl.algorithm=dcqcn > /dev/null 2>&1; then
+	echo "DCQCN with UET was accepted without its experimental gate" >&2
+	exit 1
+fi
 
 if "$cli" render --profile libvirt-slurm \
 	--set nodes.memory=512Mi > /dev/null 2>&1; then

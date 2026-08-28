@@ -1,22 +1,42 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import sys
 
 import yaml
 
 
 with open(sys.argv[1], encoding="utf-8") as source:
-    job = list(yaml.safe_load_all(source))[2]
-pod = job["spec"]["rayClusterSpec"]["headGroupSpec"]["template"]["spec"]
-initializers = {item["name"]: item for item in pod["initContainers"]}
-assert initializers["model-cache"]["image"] == "uib-model-cache:test"
-assert initializers["model-cache"]["args"] == [
-    "mkdir -p /cache/huggingface && "
-    "cp -a /model-cache/huggingface/. /cache/huggingface/"
+    documents = list(yaml.safe_load_all(source))
+assert [document["kind"] for document in documents] == [
+    "Namespace", "ConfigMap", "RayJob"
+]
+namespace, config_map, job = documents
+assert namespace["metadata"]["name"] == "uib-inference"
+config = json.loads(config_map["data"]["workload.json"])
+assert config["runId"] == "uib-inference"
+assert config["backend"] == "transformers"
+assert config["model"]["revision"] == \
+    "12fd25f77366fa6b3b4b768ec3050bf629380bac"
+assert job["apiVersion"] == "ray.io/v1"
+assert job["spec"]["shutdownAfterJobFinishes"] is False
+assert "ttlSecondsAfterFinished" not in job["spec"]
+assert job["spec"]["entrypoint"].startswith("/bin/sh -c ")
+assert "inference serve" in job["spec"]["entrypoint"]
+assert "inference probe" in job["spec"]["entrypoint"]
+cluster = job["spec"]["rayClusterSpec"]
+assert cluster["rayVersion"] == "2.58.0"
+assert "workerGroupSpecs" not in cluster
+pod = cluster["headGroupSpec"]["template"]["spec"]
+assert pod["containers"][0]["name"] == "ray-head"
+assert [container["name"] for container in pod["initContainers"]] == [
+    "uib-runtime", "uib-runtime-check"
 ]
 environment = {
-    item["name"]: item["value"] for item in pod["containers"][0]["env"]
-    if "value" in item
+    entry["name"]: entry for entry in pod["containers"][0]["env"]
 }
-assert environment["HF_HUB_OFFLINE"] == "1"
-assert environment["TRANSFORMERS_OFFLINE"] == "1"
+assert environment["NCCL_IBVERBS_LIB"]["value"] == \
+    "/opt/uib/lib/libuibv.so"
+assert environment["UIB_BIND_IP"]["valueFrom"]["fieldRef"][
+    "fieldPath"
+] == "status.podIP"
