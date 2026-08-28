@@ -103,6 +103,51 @@ assert streaming["status"] == "passed"
 assert streaming["requests"] == 4
 PY
 
+if [ "${INFERENCE_PRODUCTION_CPU_TEST:-0}" = 1 ]; then
+	production=$project_dir/simulation/inference/configs/production-cpu.json
+	# The command string expands $server inside the container shell.
+	# shellcheck disable=SC2016
+	run_container --rm --shm-size=1g \
+		-e HF_HOME=/cache/huggingface \
+		-v "$cache:/cache/huggingface" \
+		-v "$test_dir/results:/results" \
+		-v "$production:/production.json:ro" \
+		--entrypoint /bin/sh "$image" -c '
+			set -eu
+			inference serve --config /production.json &
+			server=$!
+			cleanup() { kill "$server" >/dev/null 2>&1 || true; }
+			trap cleanup EXIT INT TERM
+			inference probe --config /production.json
+			kill "$server" >/dev/null 2>&1 || true
+			wait "$server" || true
+			trap - EXIT INT TERM
+		'
+	python3 - "$test_dir/results/production-shaped-inference-cpu" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+result = json.loads((root / "result.json").read_text())
+trace = json.loads((root / "request-trace.json").read_text())
+load = result["load"]
+assert result["status"] == "passed"
+assert result["backend"] == "transformers"
+assert result["requests"] == load["configuredRequests"] == 16
+assert result["outputTokens"] == 128
+assert load["concurrency"] == 4
+assert load["requestRate"] == 4
+assert load["promptTokens"] == 16
+assert load["maximumOutputTokens"] == 8
+assert load["streaming"] is True
+assert load["warmupRequests"] == 2
+assert len(trace["requests"]) == 16
+assert trace["requests"][-1]["scheduledOffsetSeconds"] == 3.75
+assert result["latencySeconds"]["p95"] > 0
+PY
+fi
+
 sed -e 's/"backend": "transformers"/"backend": "vllm"/' \
 	-e 's/"distributedExecutor": null/"distributedExecutor": "ray"/' \
 	"$project_dir/simulation/inference/configs/tiny-public.json" \

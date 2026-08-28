@@ -245,6 +245,11 @@ training-public-test:
 	TRAINING_CONTAINER_ENGINE='$(TRAINING_CONTAINER_ENGINE)' \
 		$(TRAINING_IMAGE_TEST)
 
+training-production-cpu-test:
+	TRAINING_PRODUCTION_CPU_TEST=1 TRAINING_IMAGE=$(TRAINING_IMAGE) \
+	TRAINING_CONTAINER_ENGINE='$(TRAINING_CONTAINER_ENGINE)' \
+		$(TRAINING_IMAGE_TEST)
+
 training-gpu-test:
 	TRAINING_GPU_TEST=1 \
 	TRAINING_GPU_DEVICE='$(TRAINING_GPU_DEVICE)' \
@@ -275,6 +280,11 @@ inference-image:
 
 inference-smoke-test:
 	INFERENCE_IMAGE=$(INFERENCE_IMAGE) \
+	INFERENCE_CONTAINER_ENGINE='$(INFERENCE_CONTAINER_ENGINE)' \
+		$(INFERENCE_IMAGE_TEST)
+
+inference-production-cpu-test:
+	INFERENCE_PRODUCTION_CPU_TEST=1 INFERENCE_IMAGE=$(INFERENCE_IMAGE) \
 	INFERENCE_CONTAINER_ENGINE='$(INFERENCE_CONTAINER_ENGINE)' \
 		$(INFERENCE_IMAGE_TEST)
 
@@ -1033,9 +1043,11 @@ clean:
 	runtime-bundle-test \
 	runtime-image model-cache-image \
 	training-image training-smoke-test FORCE docs \
-	training-public-test training-gpu-test training-uib-preflight-test \
+	training-public-test training-production-cpu-test training-gpu-test \
+	training-uib-preflight-test \
 	training-uib-test \
-	inference-image inference-smoke-test inference-gpu-test \
+	inference-image inference-smoke-test inference-production-cpu-test \
+	inference-gpu-test \
 	diagnostic-sources diagnostic-image diagnostic-smoke-test \
 	diagnostic-uib-preflight-test diagnostic-gpu-test \
 	simulation-cli-test simulation-netem-test simulation-fault-schedule-test \

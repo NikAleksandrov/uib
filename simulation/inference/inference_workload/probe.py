@@ -86,6 +86,15 @@ def run_probe(config):
 				"tensorParallel", "pipelineParallel", "dataParallel", "replicas"
 			)
 		},
+		"load": {
+			"configuredRequests": load["requests"],
+			"concurrency": load["concurrency"],
+			"requestRate": load["requestRate"],
+			"promptTokens": load["promptTokens"],
+			"maximumOutputTokens": load["outputTokens"],
+			"streaming": load["streaming"],
+			"warmupRequests": load["warmupRequests"],
+		},
 		"requests": len(responses),
 		"outputTokens": output_tokens,
 		"durationSeconds": duration,

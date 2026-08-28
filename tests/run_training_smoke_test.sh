@@ -84,6 +84,59 @@ if [ "${TRAINING_PUBLIC_TEST:-0}" = 1 ]; then
 		"$test_dir/public/tiny-public-cpu/result.json" >/dev/null
 fi
 
+if [ "${TRAINING_PRODUCTION_CPU_TEST:-0}" = 1 ]; then
+	cache=${TRAINING_HF_CACHE:-$project_dir/simulation/.artifacts/huggingface}
+	config=$project_dir/simulation/training/configs/production-cpu.json
+	mkdir -p "$cache" "$test_dir/production-full" \
+		"$test_dir/production-restart"
+	sed 's/"steps": 8/"steps": 4/' "$config" \
+		> "$test_dir/production-restart/first.json"
+	sed 's#"resume": null#"resume": "/results/checkpoints/step-00000004.pt"#' \
+		"$config" > "$test_dir/production-restart/second.json"
+	for stage in full first second; do
+		case $stage in
+		full)
+			results=$test_dir/production-full
+			stage_config=$config
+			;;
+		*)
+			results=$test_dir/production-restart
+			stage_config=$test_dir/production-restart/$stage.json
+			;;
+		esac
+		run_container --rm -e HF_HOME=/cache/huggingface \
+			-v "$cache:/cache/huggingface" \
+			-v "$results:/results" \
+			-v "$stage_config:/config.json:ro" \
+			--entrypoint torchrun "$image" --standalone \
+			--nproc-per-node=2 --no-python \
+			/opt/uib-training/bin/train --config /config.json
+	done
+	python3 - "$test_dir" <<'PY'
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+full = json.loads((
+	root / "production-full/production-shaped-training-cpu/result.json"
+).read_text())
+restart = json.loads((
+	root / "production-restart/production-shaped-training-cpu/result.json"
+).read_text())
+shape = full["trainingShape"]
+assert full["status"] == "passed" and full["worldSize"] == 2
+assert full["completedSteps"] == 8 and full["resumedFromStep"] == 0
+assert shape["sequenceLength"] == 64
+assert shape["microBatchSize"] == 1
+assert shape["globalBatchSize"] == 8
+assert shape["gradientAccumulationSteps"] == 4
+assert shape["gradientCheckpointing"] is True
+assert restart["resumedFromStep"] == 4
+assert restart["modelChecksum"] == full["modelChecksum"]
+PY
+fi
+
 if [ "${TRAINING_GPU_TEST:-0}" = 1 ]; then
 	gpu_device=${TRAINING_GPU_DEVICE:-nvidia.com/gpu=all}
 	gpu_processes=${TRAINING_GPU_PROCESSES:-1}

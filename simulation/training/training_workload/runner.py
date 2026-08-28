@@ -148,6 +148,13 @@ def train(config):
 			"worldSize": world_size,
 			"device": device.type,
 			"strategy": config["parallelism"]["strategy"],
+			"trainingShape": {
+				"sequenceLength": training["sequenceLength"],
+				"microBatchSize": training["microBatchSize"],
+				"globalBatchSize": training["globalBatchSize"],
+				"gradientAccumulationSteps": accumulation,
+				"gradientCheckpointing": training["gradientCheckpointing"],
+			},
 			"completedSteps": training["steps"],
 			"resumedFromStep": start_step,
 			"loss": {"first": losses[0], "last": losses[-1]},

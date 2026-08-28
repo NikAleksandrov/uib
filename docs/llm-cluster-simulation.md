@@ -2642,6 +2642,7 @@ Build it and run the mandatory offline CPU checks with:
 ```text
 make training-image
 make training-smoke-test
+make training-production-cpu-test
 make training-gpu-test       # opt-in; needs NVIDIA CDI and a GPU
 make training-uib-preflight-test
 make training-uib-test       # opt-in; actual two-rank traffic through UIB
@@ -2650,6 +2651,13 @@ make training-uib-test       # opt-in; actual two-rank traffic through UIB
 The CPU smoke target checks two-rank DDP, checkpoint/restart equivalence, and
 the pinned NCCL ABI. Set `TRAINING_SKIP_BUILD=1` to reuse an existing image or
 `TRAINING_IMAGE=registry/image@sha256:<digest>` to test a published image.
+
+The production-shaped CPU target uses the pinned public tiny model and
+streaming dataset with two DDP ranks, global batch eight, four accumulation
+steps per optimizer step, activation checkpointing, warmup, clipping, periodic
+checkpoints, and restart at step four. It compares the resumed eight-step
+model with an uninterrupted run. This validates training control flow on CPU;
+Gloo traffic is not a UIB or GPU-performance result.
 
 The opt-in GPU target uses standard CDI, initializes NCCL, and checks FSDP
 checkpoint/restart. Set `TRAINING_GPU_DEVICE` to another CDI device name when
@@ -2714,7 +2722,9 @@ docker run --rm \
 `configs/smoke.json` constructs a tiny GPT-2 architecture and deterministic
 token stream in memory. It is the network-independent CI profile; it does not
 pretend to validate model or dataset distribution. The public profile is the
-CPU end-to-end loading check.
+CPU end-to-end loading check. `configs/production-cpu.json` keeps those public
+immutable inputs but exercises the production controls listed above. Copy
+that complete file when preparing a larger GPU configuration.
 
 Large GPU tests change only `model.id`, `model.revision`, `dataset.id`,
 `dataset.revision`, and sizing fields in an external JSON file. Always use a
@@ -2816,7 +2826,9 @@ variables selected UIB; the later cluster evidence gate must additionally
 prove NCCL chose `NET/IB` and `uib0` rather than sockets.
 
 Each successful run writes `<result.directory>/<runId>/result.json` with the
-workload identity, world size, device, strategy, starting and completed steps,
+effective sequence, micro/global batch, accumulation, and activation
+checkpointing shape alongside the workload identity, world size, device,
+strategy, starting and completed steps,
 loss, model checksum, throughput, checkpoint path, resolved framework/CUDA/NCCL
 versions, and transport-selection environment. Checkpoints are written through
 a temporary file and atomically renamed.
@@ -2876,6 +2888,7 @@ Build and test the image with:
 ```text
 make inference-image
 make inference-smoke-test
+make inference-production-cpu-test
 make inference-gpu-test       # opt-in; needs NVIDIA CDI and a GPU
 ```
 
@@ -2883,6 +2896,12 @@ The smoke target checks Ray plus the CPU backend's health, model, completion,
 and streaming paths. The GPU target applies the same deterministic probe to a
 real vLLM server and saves the unmodified `vllm bench serve` result beside the
 common evidence.
+
+The production-shaped CPU target uses the same pinned model for 16 streaming
+requests at concurrency four and four requests per second, after two warmups.
+It validates the deterministic trace, configured load shape, token totals,
+latency distribution, and throughput. The intentionally serial CPU model
+backend makes this a serving-control test, not a vLLM capacity claim.
 
 ### Small default and production models
 
@@ -2924,8 +2943,9 @@ settings when the CPU backend is selected.
 | `result.directory` | Shared evidence root |
 
 The common result includes the image stack, model revision, workload identity,
-parallelism, request count, token count, latency distribution, throughput,
-response hashes, trace path, and injected transport environment. The trace
+parallelism, configured concurrency/rate/streaming/warmup shape, request count,
+token count, latency distribution, throughput, response hashes, trace path,
+and injected transport environment. The trace
 stores prompts and scheduled offsets so native-verbs and UIB runs can receive
 identical application traffic.
 
@@ -4258,6 +4278,7 @@ remains separate promotion work.
 |---|---|---|
 | `make training-smoke-test` | Container engine; image build access on first run | CPU DDP with two Gloo ranks, checkpoint/restart equivalence, and pinned NCCL library loading |
 | `make training-public-test` | The smoke-test requirements and model-download access on first run | Small public Hugging Face model/dataset training on CPU; downloads persist in the ignored cache |
+| `make training-production-cpu-test` | The public-test requirements | Two-rank public-model DDP with four-way gradient accumulation, activation checkpointing, optimizer checkpoints, and deterministic interrupted/resumed equivalence; Gloo is not UIB traffic |
 | `make training-gpu-test` | NVIDIA driver, accessible GPU or GPUs, and container GPU support | DDP or FSDP on CUDA plus checkpoint/restart; multiple processes use multiple visible GPUs when available |
 | `make training-uib-preflight-test` | Container engine and runtime bundle dependencies | The training image can mount and load the UIB runtime without a GPU |
 | `make training-uib-test` | NVIDIA GPU, CUDA MPS, MPI, container GPU support, `nvidia-cuda-mps-control`, `nvidia-smi`, and `timeout` | Two unmodified PyTorch DDP ranks send NCCL gradient traffic through UIB and reject Socket fallback |
@@ -4301,6 +4322,7 @@ on one GPU through MPS and therefore does not use that variable.
 | Target | Requirements | What it validates |
 |---|---|---|
 | `make inference-smoke-test` | Container engine and model-download access on first run | CPU Transformers serving, streaming and non-streaming OpenAI-compatible probes, local Ray, and generated vLLM arguments |
+| `make inference-production-cpu-test` | The smoke-test requirements | Pinned-model streaming load with 16 requests, concurrency four, a four-request-per-second schedule, two warmups, deterministic trace, token totals, latency percentiles, and throughput |
 | `make inference-gpu-test` | NVIDIA driver, container GPU support, and enough visible GPUs for the selected parallel product | Actual vLLM serving, deterministic request probe, and standard `vllm bench serve` result generation |
 
 Inference options:
