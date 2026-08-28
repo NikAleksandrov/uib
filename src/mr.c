@@ -206,14 +206,85 @@ struct uib_mr *uib_reg_mr_dmabuf(struct uib_pd *pd, int dmabuf_fd,
 				     UIB_DMABUF_ALLOW_DEVICE);
 }
 
+static int dmabuf_registration_valid(struct uib_pd *pd, int dmabuf_fd,
+				     size_t offset, size_t length,
+				     uint32_t flags)
+{
+	if (!pd || dmabuf_fd < 0 || !length)
+		return -EINVAL;
+	if (offset > SIZE_MAX - length)
+		return -EOVERFLOW;
+	if (flags & ~(UIB_DMABUF_ALLOW_MMAP | UIB_DMABUF_ALLOW_DEVICE |
+		      UIB_DMABUF_REQUIRE_ZEROCOPY))
+		return -EINVAL;
+	return 0;
+}
+
+static int dmabuf_set_iova(struct uib_mr *mr, uint64_t requested_iova,
+			   int fixed_iova)
+{
+	uint64_t span;
+
+	if (mr->length > UINT64_MAX - 0xfffULL)
+		return -EOVERFLOW;
+	span = ((uint64_t)mr->length + 0xfffULL) & ~0xfffULL;
+	if (!fixed_iova) {
+		mr->iova = __atomic_fetch_add(&iova_next, span,
+					     __ATOMIC_RELAXED);
+		return 0;
+	}
+	if (requested_iova > UINT64_MAX - mr->length)
+		return -EOVERFLOW;
+	mr->iova = requested_iova;
+	return 0;
+}
+
+static int dmabuf_enable_backends(struct uib_mr *mr)
+{
+	struct uib_pd *pd = mr->pd;
+	int rc = -EOPNOTSUPP;
+
+	if (mr->dmabuf_flags & UIB_DMABUF_ALLOW_MMAP)
+		rc = dmabuf_map(mr);
+	if ((mr->dmabuf_flags & UIB_DMABUF_ALLOW_DEVICE) && pd->ctx &&
+	    pd->ctx->tops && pd->ctx->tops->mr_capabilities &&
+	    pd->ctx->tops->mr_register &&
+	    !pd->ctx->tops->mr_register(pd->ctx, mr)) {
+		mr->capabilities |= pd->ctx->tops->mr_capabilities;
+		rc = 0;
+	}
+	if (!(mr->capabilities & (UIB_MR_CAP_CPU_MAPPED |
+				 UIB_MR_CAP_DEVICE_RX | UIB_MR_CAP_DEVICE_TX)))
+		return -EOPNOTSUPP;
+	if ((mr->dmabuf_flags & UIB_DMABUF_REQUIRE_ZEROCOPY) &&
+	    !(mr->capabilities & (UIB_MR_CAP_DEVICE_RX |
+				  UIB_MR_CAP_DEVICE_TX)))
+		return -EOPNOTSUPP;
+	return rc;
+}
+
+static void dmabuf_registration_cleanup(struct uib_mr *mr)
+{
+	struct uib_pd *pd = mr->pd;
+
+	if (mr->backend_mr && pd->ctx && pd->ctx->tops &&
+	    pd->ctx->tops->mr_deregister)
+		pd->ctx->tops->mr_deregister(pd->ctx, mr);
+	if (mr->map_base)
+		munmap(mr->map_base, mr->map_length);
+	if (mr->dmabuf_fd >= 0)
+		close(mr->dmabuf_fd);
+	mr_lifetime_destroy(mr);
+	free(mr);
+}
+
 static struct uib_mr *reg_mr_dmabuf(struct uib_pd *pd, int dmabuf_fd,
 				    size_t offset, size_t length,
 				    uint64_t requested_iova, int fixed_iova,
 				    int access, uint32_t flags)
 {
 	struct uib_mr *mr;
-	uint64_t span;
-	int rc = -EOPNOTSUPP;
+	int rc;
 
 #ifndef UIB_HAVE_DMABUF
 	(void)offset;
@@ -227,17 +298,9 @@ static struct uib_mr *reg_mr_dmabuf(struct uib_pd *pd, int dmabuf_fd,
 		errno = EOPNOTSUPP;
 	return NULL;
 #endif
-	if (!pd || dmabuf_fd < 0 || !length) {
-		errno = EINVAL;
-		return NULL;
-	}
-	if (offset > SIZE_MAX - length) {
-		errno = EOVERFLOW;
-		return NULL;
-	}
-	if (flags & ~(UIB_DMABUF_ALLOW_MMAP | UIB_DMABUF_ALLOW_DEVICE |
-		      UIB_DMABUF_REQUIRE_ZEROCOPY)) {
-		errno = EINVAL;
+	rc = dmabuf_registration_valid(pd, dmabuf_fd, offset, length, flags);
+	if (rc < 0) {
+		errno = -rc;
 		return NULL;
 	}
 	mr = calloc(1, sizeof(*mr));
@@ -258,67 +321,26 @@ static struct uib_mr *reg_mr_dmabuf(struct uib_pd *pd, int dmabuf_fd,
 	mr->dmabuf_fd     = fcntl(dmabuf_fd, F_DUPFD_CLOEXEC, 0);
 	if (mr->dmabuf_fd < 0) {
 		rc = -errno;
-		goto err_free;
+		goto err;
 	}
 	mr->dmabuf_offset = offset;
 	mr->dmabuf_flags  = flags;
 	mr->capabilities  = UIB_MR_CAP_DMABUF;
 	mr->lkey          = __atomic_fetch_add(&key_next, 1, __ATOMIC_RELAXED);
 	mr->rkey          = mr->lkey;
-	if (length > UINT64_MAX - 0xfffULL) {
-		rc = -EOVERFLOW;
-		goto err_fd;
-	}
-	span = ((uint64_t)length + 0xfffULL) & ~0xfffULL;
-	if (fixed_iova) {
-		if (requested_iova > UINT64_MAX - length) {
-			rc = -EOVERFLOW;
-			goto err_fd;
-		}
-		mr->iova = requested_iova;
-	} else {
-		mr->iova = __atomic_fetch_add(&iova_next, span,
-					      __ATOMIC_RELAXED);
-	}
-
-	if (flags & UIB_DMABUF_ALLOW_MMAP)
-		rc = dmabuf_map(mr);
-
-	if ((flags & UIB_DMABUF_ALLOW_DEVICE) && pd->ctx && pd->ctx->tops &&
-	    pd->ctx->tops->mr_capabilities &&
-	    pd->ctx->tops->mr_register &&
-	    !pd->ctx->tops->mr_register(pd->ctx, mr)) {
-		mr->capabilities |= pd->ctx->tops->mr_capabilities;
-		rc = 0;
-	}
-	if (!(mr->capabilities & (UIB_MR_CAP_CPU_MAPPED |
-				 UIB_MR_CAP_DEVICE_RX |
-				 UIB_MR_CAP_DEVICE_TX))) {
-		rc = -EOPNOTSUPP;
-		goto err_backend;
-	}
-	if ((flags & UIB_DMABUF_REQUIRE_ZEROCOPY) &&
-	    !(mr->capabilities & (UIB_MR_CAP_DEVICE_RX |
-				 UIB_MR_CAP_DEVICE_TX))) {
-		rc = -EOPNOTSUPP;
-		goto err_backend;
-	}
+	rc = dmabuf_set_iova(mr, requested_iova, fixed_iova);
+	if (rc < 0)
+		goto err;
+	rc = dmabuf_enable_backends(mr);
+	if (rc < 0)
+		goto err;
 	rc = uib_pd_attach_mr(pd, mr);
 	if (rc < 0)
-		goto err_backend;
+		goto err;
 	return mr;
 
-err_backend:
-	if (mr->backend_mr && pd->ctx && pd->ctx->tops &&
-	    pd->ctx->tops->mr_deregister)
-		pd->ctx->tops->mr_deregister(pd->ctx, mr);
-	if (mr->map_base)
-		munmap(mr->map_base, mr->map_length);
-err_fd:
-	close(mr->dmabuf_fd);
-err_free:
-	mr_lifetime_destroy(mr);
-	free(mr);
+err:
+	dmabuf_registration_cleanup(mr);
 	errno = -rc;
 	return NULL;
 }

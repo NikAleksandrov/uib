@@ -346,6 +346,15 @@ Parameter \fBbytes\fP: Nominal bytes in the prospective transmission
 .br
 Return value: Nonzero when the algorithm admits the transmission, otherwise 0.
 .TP
+.B uib_congestion_next_send_ns
+uint64_t uib_congestion_next_send_ns( const struct uib_congestion *congestion);
+.br
+Read a time\-based admission deadline.
+.br
+Parameter \fBcongestion\fP: Initialized congestion\-control object
+.br
+Return value: The next monotonic send time, or 0 when the algorithm is not paced.
+.TP
 .B uib_congestion_ack_request
 int uib_congestion_ack_request(const struct uib_congestion *congestion, uint32_t trigger);
 .br
@@ -392,6 +401,210 @@ Report explicit negative acknowledgement feedback.
 Parameter \fBcongestion\fP: Initialized congestion\-control object
 .br
 Parameter \fBnack\fP: Protocol\-neutral NACK event
+.TP
+.B uib_dcqcn_config_default
+void uib_dcqcn_config_default(struct uib_dcqcn_config *config, uint32_t mtu);
+.br
+Fill default DCQCN settings.
+.br
+Parameter \fBconfig\fP: Configuration to fill
+.br
+Parameter \fBmtu\fP: Nominal packet size in bytes
+.TP
+.B uib_dcqcn_init
+int uib_dcqcn_init(struct uib_dcqcn *dcqcn, const struct uib_dcqcn_config *config, uint64_t now_ns);
+.br
+Initialize a DCQCN source.
+.br
+Parameter \fBdcqcn\fP: State to initialize
+.br
+Parameter \fBconfig\fP: Configuration to apply
+.br
+Parameter \fBnow_ns\fP: Current monotonic time in nanoseconds
+.br
+Return value: 0 on success or \-EINVAL for invalid configuration.
+.TP
+.B uib_dcqcn_can_send
+int uib_dcqcn_can_send(const struct uib_dcqcn *dcqcn, size_t bytes, uint64_t now_ns);
+.br
+Test whether DCQCN pacing admits a packet.
+.br
+Parameter \fBdcqcn\fP: Initialized source state
+.br
+Parameter \fBbytes\fP: Prospective nominal packet size
+.br
+Parameter \fBnow_ns\fP: Current monotonic time in nanoseconds
+.br
+Return value: Nonzero when the packet may be sent, otherwise 0.
+.TP
+.B uib_dcqcn_on_send
+void uib_dcqcn_on_send(struct uib_dcqcn *dcqcn, size_t bytes, uint64_t now_ns);
+.br
+Account one paced transmission.
+.br
+Parameter \fBdcqcn\fP: Initialized source state
+.br
+Parameter \fBbytes\fP: Nominal transmitted bytes
+.br
+Parameter \fBnow_ns\fP: Current monotonic time in nanoseconds
+.TP
+.B uib_dcqcn_on_ack
+void uib_dcqcn_on_ack(struct uib_dcqcn *dcqcn, size_t bytes, uint64_t now_ns);
+.br
+Apply non\-congested acknowledgement feedback.
+.br
+Parameter \fBdcqcn\fP: Initialized source state
+.br
+Parameter \fBbytes\fP: Newly acknowledged bytes
+.br
+Parameter \fBnow_ns\fP: Current monotonic time in nanoseconds
+.TP
+.B uib_dcqcn_on_cnp
+void uib_dcqcn_on_cnp(struct uib_dcqcn *dcqcn, uint64_t now_ns);
+.br
+Apply one congestion notification packet.
+.br
+Parameter \fBdcqcn\fP: Initialized source state
+.br
+Parameter \fBnow_ns\fP: Current monotonic time in nanoseconds
+.TP
+.B uib_dcqcn_on_loss
+void uib_dcqcn_on_loss(struct uib_dcqcn *dcqcn, size_t bytes, uint64_t now_ns);
+.br
+Apply loss and remove bytes from flight.
+.br
+Parameter \fBdcqcn\fP: Initialized source state
+.br
+Parameter \fBbytes\fP: Lost nominal bytes
+.br
+Parameter \fBnow_ns\fP: Current monotonic time in nanoseconds
+.TP
+.B uib_uet_rccc_config_default
+void uib_uet_rccc_config_default(struct uib_uet_rccc_config *config, uint32_t mtu);
+.br
+Fill default RCCC settings.
+.br
+Parameter \fBconfig\fP: Configuration to fill
+.br
+Parameter \fBmtu\fP: Nominal packet size in bytes
+.TP
+.B uib_uet_rccc_init
+int uib_uet_rccc_init(struct uib_uet_rccc *rccc, const struct uib_uet_rccc_config *config);
+.br
+Initialize RCCC source state.
+.br
+Parameter \fBrccc\fP: Source state to initialize
+.br
+Parameter \fBconfig\fP: Configuration to apply
+.br
+Return value: 0 on success or \-EINVAL for invalid configuration.
+.TP
+.B uib_uet_rccc_on_new_data
+void uib_uet_rccc_on_new_data(struct uib_uet_rccc *rccc, size_t bytes);
+.br
+Add newly posted source demand.
+.br
+Parameter \fBrccc\fP: Initialized source state
+.br
+Parameter \fBbytes\fP: Newly posted bytes
+.TP
+.B uib_uet_rccc_on_cancel_data
+void uib_uet_rccc_on_cancel_data(struct uib_uet_rccc *rccc, size_t bytes);
+.br
+Remove source demand that was not queued.
+.br
+Parameter \fBrccc\fP: Initialized source state
+.br
+Parameter \fBbytes\fP: Cancelled nominal bytes
+.TP
+.B uib_uet_rccc_credit_target
+uint32_t uib_uet_rccc_credit_target(struct uib_uet_rccc *rccc);
+.br
+Calculate cumulative requested credit.
+.br
+Parameter \fBrccc\fP: Initialized source state
+.br
+Return value: Cumulative credit target in wrapping 256\-byte units.
+.TP
+.B uib_uet_rccc_can_send
+int uib_uet_rccc_can_send(struct uib_uet_rccc *rccc, size_t bytes);
+.br
+Test whether source credit admits a packet.
+.br
+Parameter \fBrccc\fP: Initialized source state
+.br
+Parameter \fBbytes\fP: Prospective nominal packet size
+.br
+Return value: Nonzero when sufficient credit is available, otherwise 0.
+.TP
+.B uib_uet_rccc_mark_target_sent
+void uib_uet_rccc_mark_target_sent(struct uib_uet_rccc *rccc);
+.br
+Record target delivery to the peer.
+.br
+Parameter \fBrccc\fP: Initialized source state
+.TP
+.B uib_uet_rccc_on_send
+void uib_uet_rccc_on_send(struct uib_uet_rccc *rccc, size_t bytes);
+.br
+Consume source credit.
+.br
+Parameter \fBrccc\fP: Initialized source state
+.br
+Parameter \fBbytes\fP: Nominal transmitted bytes
+.TP
+.B uib_uet_rccc_on_ack
+void uib_uet_rccc_on_ack(struct uib_uet_rccc *rccc, size_t bytes);
+.br
+Apply acknowledgement feedback.
+.br
+Parameter \fBrccc\fP: Initialized source state
+.br
+Parameter \fBbytes\fP: Newly acknowledged bytes
+.TP
+.B uib_uet_rccc_on_loss
+void uib_uet_rccc_on_loss(struct uib_uet_rccc *rccc, size_t bytes);
+.br
+Return lost data to the retransmit backlog.
+.br
+Parameter \fBrccc\fP: Initialized source state
+.br
+Parameter \fBbytes\fP: Nominal lost bytes
+.TP
+.B uib_uet_rccc_on_credit
+void uib_uet_rccc_on_credit(struct uib_uet_rccc *rccc, uint32_t cumulative_credit);
+.br
+Apply a cumulative destination grant.
+.br
+Parameter \fBrccc\fP: Initialized source state
+.br
+Parameter \fBcumulative_credit\fP: Wrapping cumulative credit in 256\-byte units
+.TP
+.B uib_uet_rccc_destination_init
+int uib_uet_rccc_destination_init( struct uib_uet_rccc_destination *destination, const struct uib_uet_rccc_config *config, uint64_t now_ns);
+.br
+Initialize a destination scheduler.
+.br
+Parameter \fBdestination\fP: Destination state to initialize
+.br
+Parameter \fBconfig\fP: Configuration to apply
+.br
+Parameter \fBnow_ns\fP: Current monotonic time in nanoseconds
+.br
+Return value: 0 on success or \-EINVAL for invalid configuration.
+.TP
+.B uib_uet_rccc_destination_update
+uint32_t uib_uet_rccc_destination_update( struct uib_uet_rccc_destination *destination, uint32_t credit_target, uint64_t now_ns);
+.br
+Pace credit for observed demand.
+.br
+Parameter \fBdestination\fP: Initialized destination state
+.br
+Parameter \fBcredit_target\fP: Source cumulative target in 256\-byte units
+.br
+Parameter \fBnow_ns\fP: Current monotonic time in nanoseconds
+.br
+Return value: Cumulative destination credit in 256\-byte units.
 .SS "Contexts and QP dispatch"
 .TP
 .B uib_open_device
@@ -1096,6 +1309,50 @@ Parameter \fBrestore\fP: Output for the restore\-window flag
 Parameter \fBpenalty\fP: Output for the congestion\-window penalty
 .br
 Parameter \fBreceived_units\fP: Output for the decoded receive counter units
+.br
+Parameter \fBout_of_order\fP: Output for the out\-of\-order packet count
+.TP
+.B uib_uet_rccc_request_pack
+uint32_t uib_uet_rccc_request_pack(uint8_t ccc_id, uint32_t credit_target);
+.br
+Encode RCCC request state.
+.br
+Parameter \fBccc_id\fP: Source congestion\-control context identifier
+.br
+Parameter \fBcredit_target\fP: Cumulative credit target in 256\-byte units
+.br
+Return value: The packed request state in network byte order.
+.TP
+.B uib_uet_rccc_request_unpack
+void uib_uet_rccc_request_unpack(uint32_t state, uint8_t *ccc_id, uint32_t *credit_target);
+.br
+Decode RCCC request state.
+.br
+Parameter \fBstate\fP: Packed request state in network byte order
+.br
+Parameter \fBccc_id\fP: Output for the source congestion\-control context identifier
+.br
+Parameter \fBcredit_target\fP: Output for the cumulative 256\-byte credit target
+.TP
+.B uib_uet_rccc_wire_pack
+void uib_uet_rccc_wire_pack(struct uib_uet_rccc_wire_state *state, uint32_t cumulative_credit, uint16_t out_of_order);
+.br
+Encode an RCCC cumulative credit grant.
+.br
+Parameter \fBstate\fP: Credit acknowledgement state to fill
+.br
+Parameter \fBcumulative_credit\fP: Cumulative credit in 256\-byte units
+.br
+Parameter \fBout_of_order\fP: Out\-of\-order packet count
+.TP
+.B uib_uet_rccc_wire_unpack
+void uib_uet_rccc_wire_unpack(const struct uib_uet_rccc_wire_state *state, uint32_t *cumulative_credit, uint16_t *out_of_order);
+.br
+Decode an RCCC cumulative credit grant.
+.br
+Parameter \fBstate\fP: Credit acknowledgement state to decode
+.br
+Parameter \fBcumulative_credit\fP: Output for cumulative credit in 256\-byte units
 .br
 Parameter \fBout_of_order\fP: Output for the out\-of\-order packet count
 .TP
@@ -2451,13 +2708,22 @@ Example: \fBUIB_VIRTME_KERNEL=/boot/vmlinuz\-test make host\-zc\-virtme\-test\fP
 .SS "Ultra Ethernet"
 .TP
 .B UIB_UET_CC
-Select the congestion\-control algorithm for UET queue pairs. Use none only as an experimental baseline because it removes congestion\-window admission control.
+Select the congestion\-control algorithm for UET queue pairs. Use none only as an experimental baseline because it removes congestion\-window admission control. DCQCN is native to RoCEv2 and requires UIB_UET_CC_EXPERIMENTAL=on when selected for UET.
 .br
 Default: nscc
 .br
-Accepted values: nscc, none, or a name registered with uib_congestion_register()
+Accepted values: nscc, rccc, none, experimental dcqcn, or a registered name
 .br
 Example: \fBUIB_PROTOCOL=uet UIB_UET_CC=none ./examples/stress_bench\fP
+.TP
+.B UIB_UET_CC_EXPERIMENTAL
+Permit a congestion algorithm that is native to another protocol. This gate is required for DCQCN\-on\-UET research and does not affect UET\-native NSCC or RCCC.
+.br
+Default: off
+.br
+Accepted values: off or on
+.br
+Example: \fBUIB_PROTOCOL=uet UIB_UET_CC=dcqcn UIB_UET_CC_EXPERIMENTAL=on app\fP
 .TP
 .B UIB_UET_NSCC_MAX_WND
 Cap the initial NSCC congestion window for experiments.
@@ -2494,14 +2760,51 @@ Default: Unset and disabled.
 Accepted values: Any non\-empty value enables logging.
 .br
 Example: \fBUIB_PROTOCOL=uet UIB_UET_DEBUG=1 ./tests/loopback\fP
+.SS "Ultra Ethernet RCCC"
+.TP
+.B UIB_UET_RCCC_MAX_WND
+Set the RCCC speculative and outstanding byte window.
+.br
+Default: One and a half times the configured bandwidth\-delay product.
+.br
+Accepted values: A byte count no smaller than the active MTU.
+.br
+Example: \fBUIB_UET_CC=rccc UIB_UET_RCCC_MAX_WND=262144 app\fP
+.TP
+.B UIB_UET_RCCC_CREDIT_QUANTUM
+Set the amount of source credit issued by one destination scheduling turn.
+.br
+Default: Four active\-MTU packets.
+.br
+Accepted values: A byte count no smaller than the active MTU.
+.br
+Example: \fBUIB_UET_CC=rccc UIB_UET_RCCC_CREDIT_QUANTUM=16384 app\fP
+.TP
+.B UIB_UET_RCCC_LINK_RATE
+Set the source and destination link rate used for RCCC credit pacing.
+.br
+Default: 12500000000 bytes per second.
+.br
+Accepted values: A positive byte\-per\-second rate.
+.br
+Example: \fBUIB_UET_CC=rccc UIB_UET_RCCC_LINK_RATE=50000000000 app\fP
+.TP
+.B UIB_UET_RCCC_BASE_RTT
+Set the base RTT used to derive the RCCC bandwidth\-delay product.
+.br
+Default: 12000 nanoseconds.
+.br
+Accepted values: A positive nanosecond duration.
+.br
+Example: \fBUIB_UET_CC=rccc UIB_UET_RCCC_BASE_RTT=20000 app\fP
 .SS "RoCEv2"
 .TP
 .B UIB_ROCEV2_CC
-Select the congestion\-control algorithm for RoCEv2 RC queue pairs. NSCC was designed for Ultra Ethernet, not RoCEv2; selecting it here is an experimental\-only cross\-protocol research mode, not a deployment default or recommendation. RoCEv2 defaults to none.
+Select the congestion\-control algorithm for RoCEv2 RC queue pairs. DCQCN is the protocol\-native implementation. NSCC was designed for Ultra Ethernet, not RoCEv2; selecting it here is an experimental\-only cross\-protocol research mode, not a deployment default or recommendation. RoCEv2 defaults to none.
 .br
 Default: none
 .br
-Accepted values: none, a registered name, or experimental nscc
+Accepted values: none, dcqcn, a registered name, or experimental nscc
 .br
 Example: \fBUIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc app\fP
 .TP
@@ -2513,6 +2816,61 @@ Default: The maximum window calculated by NSCC configuration.
 Accepted values: A byte count no smaller than the active MTU plus wire overhead.
 .br
 Example: \fBUIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc UIB_ROCEV2_NSCC_MAX_WND=65536 app\fP
+.SS "DCQCN"
+.TP
+.B UIB_DCQCN_INITIAL_RATE
+Set the DCQCN source rate before congestion feedback arrives.
+.br
+Default: 12500000000 bytes per second.
+.br
+Accepted values: A positive rate between the configured minimum and maximum.
+.br
+Example: \fBUIB_ROCEV2_CC=dcqcn UIB_DCQCN_INITIAL_RATE=50000000000 app\fP
+.TP
+.B UIB_DCQCN_MINIMUM_RATE
+Set the minimum rate retained after congestion feedback.
+.br
+Default: 12500000 bytes per second.
+.br
+Accepted values: A positive rate no greater than the initial rate.
+.br
+Example: \fBUIB_ROCEV2_CC=dcqcn UIB_DCQCN_MINIMUM_RATE=125000000 app\fP
+.TP
+.B UIB_DCQCN_MAXIMUM_RATE
+Cap DCQCN rate recovery at the configured link rate.
+.br
+Default: 12500000000 bytes per second.
+.br
+Accepted values: A positive rate no smaller than the initial rate.
+.br
+Example: \fBUIB_ROCEV2_CC=dcqcn UIB_DCQCN_MAXIMUM_RATE=50000000000 app\fP
+.TP
+.B UIB_DCQCN_ADDITIVE_INCREASE
+Set the target\-rate increase after DCQCN fast recovery.
+.br
+Default: 625000 bytes per second per recovery interval.
+.br
+Accepted values: A positive byte\-per\-second rate increment.
+.br
+Example: \fBUIB_ROCEV2_CC=dcqcn UIB_DCQCN_ADDITIVE_INCREASE=1250000 app\fP
+.TP
+.B UIB_DCQCN_RECOVERY_INTERVAL
+Set the DCQCN alpha update and rate\-recovery interval.
+.br
+Default: 55000 nanoseconds.
+.br
+Accepted values: A positive nanosecond duration.
+.br
+Example: \fBUIB_ROCEV2_CC=dcqcn UIB_DCQCN_RECOVERY_INTERVAL=100000 app\fP
+.TP
+.B UIB_DCQCN_ALPHA_GAIN
+Set the EWMA gain used for the DCQCN congestion estimate.
+.br
+Default: 256, or 1/256 in Q16 fixed\-point units.
+.br
+Accepted values: An integer from 1 through 65536.
+.br
+Example: \fBUIB_ROCEV2_CC=dcqcn UIB_DCQCN_ALPHA_GAIN=512 app\fP
 .SS "Stress benchmark executable"
 .TP
 .B UIB_BENCH_PROTOCOL
@@ -2722,6 +3080,78 @@ Default: 5 percent
 Accepted values: A non\-negative percentage.
 .br
 Example: \fBUIB_BENCH_MAX_REGRESSION_PERCENT=3 make benchmark\-doc\fP
+.TP
+.B UIB_CC_BENCH_VARIANTS
+Select protocol and congestion\-control pairs for the resilience matrix. UET with DCQCN must use the explicit dcqcn\-experimental name.
+.br
+Default: rocev2:dcqcn rocev2:none uet:rccc uet:nscc uet:none
+.br
+Accepted values: Space\-separated protocol:algorithm pairs supported by the runner.
+.br
+Example: \fBUIB_CC_BENCH_VARIANTS='rocev2:dcqcn uet:rccc' make benchmark\-all\fP
+.TP
+.B UIB_CC_BENCH_CONDITIONS
+Select the netem conditions applied to every selected congestion variant.
+.br
+Default: clean latency drops reordered drops\-reordered
+.br
+Accepted values: Space\-separated checked\-in network profile names.
+.br
+Example: \fBUIB_CC_BENCH_CONDITIONS='clean drops reordered' make benchmark\-all\fP
+.TP
+.B UIB_CC_BENCH_MATRIX
+Replace the Cartesian product with an exact resilience benchmark matrix. Do not set this together with variant or condition selectors.
+.br
+Default: Unset; the variants and conditions form a Cartesian product.
+.br
+Accepted values: Space\-separated protocol:algorithm:condition entries.
+.br
+Example: \fBUIB_CC_BENCH_MATRIX='rocev2:dcqcn:drops uet:rccc:reordered' make benchmark\-all\fP
+.TP
+.B UIB_CC_BENCH_ITERATIONS
+Set measured operations per resilience matrix entry.
+.br
+Default: 1000
+.br
+Accepted values: A positive 32\-bit integer.
+.br
+Example: \fBUIB_CC_BENCH_ITERATIONS=10000 make benchmark\-all\fP
+.TP
+.B UIB_CC_BENCH_SIZE
+Set the payload size for resilience matrix operations.
+.br
+Default: 16384 bytes
+.br
+Accepted values: A positive 32\-bit byte count.
+.br
+Example: \fBUIB_CC_BENCH_SIZE=65536 make benchmark\-all\fP
+.TP
+.B UIB_CC_BENCH_WINDOW
+Set the maximum in\-flight operation count for each resilience entry.
+.br
+Default: 16
+.br
+Accepted values: A positive operation count.
+.br
+Example: \fBUIB_CC_BENCH_WINDOW=64 make benchmark\-all\fP
+.TP
+.B UIB_CC_BENCH_MTU
+Set one common path MTU for all resilience matrix entries.
+.br
+Default: 1500 bytes
+.br
+Accepted values: A positive path MTU no larger than 4096 for RoCEv2 comparisons.
+.br
+Example: \fBUIB_CC_BENCH_MTU=4096 make benchmark\-all\fP
+.TP
+.B UIB_CC_BENCH_TIMEOUT
+Set the per\-entry timeout, including retry delays caused by impairments.
+.br
+Default: 120 seconds
+.br
+Accepted values: A positive integer number of seconds.
+.br
+Example: \fBUIB_CC_BENCH_TIMEOUT=300 make benchmark\-all\fP
 .SS "Namespace benchmark harness"
 .TP
 .B UIB_NAMESPACE_KEEP_ON_FAILURE
@@ -2823,6 +3253,24 @@ Default: Unset and disabled.
 Accepted values: Any non\-empty value drops one eligible packet.
 .br
 Example: \fBUIB_TEST_DROP_TX=1 ./tests/loopback\fP
+.TP
+.B UIB_UET_ERROR_TEST
+Run UET semantic error checks after the normal loopback operation matrix.
+.br
+Default: Unset and disabled.
+.br
+Accepted values: Any non\-empty value.
+.br
+Example: \fBUIB_PROTOCOL=uet UIB_UET_ERROR_TEST=1 ./tests/loopback\fP
+.TP
+.B UIB_UET_ERROR_ONLY
+Run only UET semantic error checks. This keeps deterministic loss injection available for the first request and its guaranteed response.
+.br
+Default: Unset and disabled.
+.br
+Accepted values: Any non\-empty value.
+.br
+Example: \fBUIB_PROTOCOL=uet UIB_UET_ERROR_ONLY=1 UIB_TEST_DROP_TX=1 ./tests/loopback\fP
 .TP
 .B UIB_TEST_GPU_DMABUF_FD
 Supply an external GPU DMA\-BUF descriptor to the import test.

@@ -2,6 +2,7 @@
 
 UIB_PRIVATE_0.1 {
 	global:
+		uib_parse_u64;
 		uib_post_recv_owned;
 };
 
@@ -24,6 +25,7 @@ UIB_0.1 {
 		uib_congestion_enabled;
 		uib_congestion_init;
 		uib_congestion_name;
+		uib_congestion_next_send_ns;
 		uib_congestion_on_ack;
 		uib_congestion_on_loss;
 		uib_congestion_on_nack;
@@ -176,6 +178,10 @@ UIB_0.1 {
 		uib_uet_rccc_on_loss;
 		uib_uet_rccc_on_new_data;
 		uib_uet_rccc_on_send;
+		uib_uet_rccc_request_pack;
+		uib_uet_rccc_request_unpack;
+		uib_uet_rccc_wire_pack;
+		uib_uet_rccc_wire_unpack;
 		uib_uet_ses_fragment_info;
 		uib_uet_ses_message_offset;
 		uib_uet_ses_payload_len;

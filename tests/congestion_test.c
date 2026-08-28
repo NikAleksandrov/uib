@@ -5,6 +5,8 @@
 #include <string.h>
 
 #include "uib/congestion.h"
+#include "uib/dcqcn.h"
+#include "uib/uet_rccc.h"
 
 struct test_state {
 	uint32_t mtu;
@@ -85,6 +87,75 @@ static const struct uib_congestion_ops test_ops = {
 	.on_nack = test_on_nack,
 };
 
+static void test_dcqcn(void)
+{
+	struct uib_dcqcn_config config;
+	struct uib_dcqcn dcqcn;
+	uint64_t initial_rate;
+
+	uib_dcqcn_config_default(&config, 1000);
+	config.initial_rate = 1000000000ULL;
+	config.minimum_rate = 100000000ULL;
+	config.maximum_rate = 1000000000ULL;
+	config.additive_increase = 100000000ULL;
+	config.recovery_interval_ns = 1000;
+	config.alpha_gain_q16 = UIB_DCQCN_SCALE / 2;
+	check("dcqcn.init", !uib_dcqcn_init(&dcqcn, &config, 100));
+	initial_rate = dcqcn.current_rate;
+	check("dcqcn.initial-admission",
+	      uib_dcqcn_can_send(&dcqcn, 1000, 100));
+	uib_dcqcn_on_send(&dcqcn, 1000, 100);
+	check("dcqcn.pacing", !uib_dcqcn_can_send(&dcqcn, 1000, 1099) &&
+	      uib_dcqcn_can_send(&dcqcn, 1000, 1100));
+	uib_dcqcn_on_cnp(&dcqcn, 1100);
+	check("dcqcn.cnp-decrease",
+	      dcqcn.current_rate < initial_rate && dcqcn.cnp_events == 1);
+	uib_dcqcn_on_ack(&dcqcn, 1000, 7100);
+	check("dcqcn.recovery", dcqcn.inflight == 0 &&
+	      dcqcn.current_rate > initial_rate / 2 &&
+	      dcqcn.current_rate <= config.maximum_rate);
+	uib_dcqcn_on_loss(&dcqcn, 1000, 7200);
+	check("dcqcn.loss-feedback", dcqcn.cnp_events == 2);
+}
+
+static void test_rccc(void)
+{
+	struct uib_uet_rccc_destination destination;
+	struct uib_uet_rccc_config config;
+	struct uib_uet_rccc rccc;
+	uint32_t credit;
+	uint32_t target;
+	int i;
+
+	uib_uet_rccc_config_default(&config, 1024);
+	config.max_wnd = 4096;
+	config.credit_quantum = 2048;
+	config.credit_interval_ns = 1000;
+	check("rccc.init", !uib_uet_rccc_init(&rccc, &config));
+	uib_uet_rccc_on_new_data(&rccc, 8192);
+	for (i = 0; i < 4; i++) {
+		check("rccc.speculative-admission",
+		      uib_uet_rccc_can_send(&rccc, 1024));
+		uib_uet_rccc_on_send(&rccc, 1024);
+	}
+	check("rccc.credit-stall", !uib_uet_rccc_can_send(&rccc, 1024));
+	target = uib_uet_rccc_credit_target(&rccc);
+	check("rccc.credit-target", target != 0);
+	check("rccc.destination-init",
+	      !uib_uet_rccc_destination_init(&destination, &config, 100));
+	credit = uib_uet_rccc_destination_update(&destination, target, 1100);
+	check("rccc.destination-grant", credit != 0 &&
+	      destination.grants == 1);
+	uib_uet_rccc_on_ack(&rccc, 1024);
+	uib_uet_rccc_on_credit(&rccc, credit);
+	check("rccc.credit-update", !rccc.speculating &&
+	      rccc.credit_updates == 1 &&
+	      uib_uet_rccc_can_send(&rccc, 1024));
+	uib_uet_rccc_on_send(&rccc, 1024);
+	uib_uet_rccc_on_loss(&rccc, 1024);
+	check("rccc.loss-backlog", rccc.retransmit_backlog == 1024);
+}
+
 int main(void)
 {
 	struct uib_congestion_ack ack = {
@@ -121,6 +192,12 @@ int main(void)
 	      !uib_congestion_init(&congestion, "none", NULL, 1024, 1));
 	check("none.disabled", !uib_congestion_enabled(&congestion));
 	check("none.unlimited", uib_congestion_can_send(&congestion, SIZE_MAX));
+	check("builtin.dcqcn",
+	      !uib_congestion_init(&congestion, "dcqcn", NULL, 1024, 1));
+	check("builtin.rccc",
+	      !uib_congestion_init(&congestion, "rccc", NULL, 1024, 1));
+	test_dcqcn();
+	test_rccc();
 
 	return failures ? 1 : 0;
 }

@@ -23,5 +23,7 @@
 uint64_t uib_now_ns(void);
 uint64_t uib_mul_div_u64(uint64_t a, uint64_t b, uint64_t divisor);
 size_t uib_align_up(size_t value, size_t alignment);
+int uib_parse_u64(const char *text, unsigned int base, uint64_t *value);
+int uib_env_u64(const char *name, uint64_t *value);
 
 #endif

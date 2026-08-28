@@ -204,6 +204,7 @@ static int afxdp_send_entropy(struct uib_context *ctx,
 	struct uib_afxdp_backend *be = ctx->backend;
 	struct uib_frame_hdr hi;
 	struct uib_wire_meta meta;
+	struct xdp_desc *txd;
 	uint32_t idx = 0;
 	uint64_t addr;
 	uint8_t *frame;
@@ -256,8 +257,7 @@ static int afxdp_send_entropy(struct uib_context *ctx,
 		goto out;
 	}
 
-	struct xdp_desc *txd = xsk_ring_prod__tx_desc(&be->tx, idx);
-
+	txd = xsk_ring_prod__tx_desc(&be->tx, idx);
 	txd->addr = addr;
 	txd->len  = (uint32_t)flen;
 	xsk_ring_prod__submit(&be->tx, 1);
@@ -302,117 +302,141 @@ static void afxdp_fini(struct uib_context *ctx)
 	ctx->backend = NULL;
 }
 
+static int afxdp_configure(struct uib_context *ctx,
+			   struct uib_afxdp_backend *be,
+			   struct xsk_socket_config *socket_config,
+			   const char *interface, const char *queue,
+			   const char *peer_mac)
+{
+	int rc;
+
+	be->port = htons(ctx->bind_port ? ctx->bind_port :
+			 ctx->pops->default_port);
+	be->queue_id = queue ? (uint32_t)atoi(queue) : 0;
+	be->zerocopy = ctx->zerocopy.mode != UIB_ZEROCOPY_OFF;
+	socket_config->bind_flags |= be->zerocopy ? XDP_ZEROCOPY : XDP_COPY;
+	rc = uib_afxdp_parse_mac(peer_mac, be->peer_mac);
+	if (rc)
+		return rc;
+	if (get_if_mac(interface, be->src_mac) < 0)
+		return -errno;
+	if (ctx->bind_ip[0])
+		inet_pton(AF_INET, ctx->bind_ip, &be->local_ip);
+	else if (get_if_ip(interface, &be->local_ip) < 0)
+		return -errno;
+	ctx->local_addr.sin_family = AF_INET;
+	ctx->local_addr.sin_addr.s_addr = be->local_ip;
+	ctx->local_addr.sin_port = be->port;
+	return 0;
+}
+
+static int afxdp_socket_init(struct uib_context *ctx,
+			     struct uib_afxdp_backend *be,
+			     const char *interface, uint64_t umem_size,
+			     const struct xsk_umem_config *umem_config,
+			     struct xsk_socket_config *socket_config)
+{
+	int rc;
+
+	if (posix_memalign(&be->umem_area, sysconf(_SC_PAGESIZE), umem_size))
+		return -ENOMEM;
+	rc = xsk_umem__create(&be->umem, be->umem_area, umem_size,
+			      &be->fq, &be->cq, umem_config);
+	if (rc)
+		return rc < 0 ? rc : -rc;
+	rc = xsk_socket__create(&be->xsk, interface, be->queue_id, be->umem,
+				&be->rx, &be->tx, socket_config);
+	if (rc && ctx->zerocopy.mode == UIB_ZEROCOPY_AUTO) {
+		be->zerocopy = 0;
+		socket_config->bind_flags &= ~XDP_ZEROCOPY;
+		socket_config->bind_flags |= XDP_COPY;
+		rc = xsk_socket__create(&be->xsk, interface, be->queue_id,
+					be->umem, &be->rx, &be->tx,
+					socket_config);
+	}
+	return rc < 0 ? rc : -rc;
+}
+
+static int afxdp_frame_pool_init(struct uib_afxdp_backend *be)
+{
+	uint32_t index;
+	uint32_t i;
+
+	be->tx_free = calloc(UIB_AFXDP_NUM_FRAMES, sizeof(*be->tx_free));
+	if (!be->tx_free)
+		return -ENOMEM;
+	index = 0;
+	if (xsk_ring_prod__reserve(&be->fq, UIB_AFXDP_FILL_FRAMES, &index) !=
+	    UIB_AFXDP_FILL_FRAMES)
+		return -EIO;
+	for (i = 0; i < UIB_AFXDP_FILL_FRAMES; i++)
+		*xsk_ring_prod__fill_addr(&be->fq, index + i) =
+			(uint64_t)i * UIB_AFXDP_FRAME_SIZE;
+	xsk_ring_prod__submit(&be->fq, UIB_AFXDP_FILL_FRAMES);
+	for (i = UIB_AFXDP_FILL_FRAMES; i < UIB_AFXDP_NUM_FRAMES; i++)
+		be->tx_free[be->tx_free_n++] = (uint64_t)i * UIB_AFXDP_FRAME_SIZE;
+	return 0;
+}
+
+static void afxdp_timer_init(struct uib_afxdp_backend *be)
+{
+	struct itimerspec interval;
+
+	be->timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+	if (be->timer_fd < 0)
+		return;
+	memset(&interval, 0, sizeof(interval));
+	interval.it_interval.tv_nsec = UIB_TIMER_TICK_MS * 1000000L;
+	interval.it_value = interval.it_interval;
+	timerfd_settime(be->timer_fd, 0, &interval, NULL);
+}
+
 static int afxdp_init(struct uib_context *ctx)
 {
-	struct uib_afxdp_backend *be;
-	struct xsk_umem_config ucfg = {
+	struct xsk_umem_config umem_config = {
 		.fill_size = UIB_AFXDP_FILL_FRAMES,
 		.comp_size = UIB_AFXDP_TX_FRAMES,
 		.frame_size = UIB_AFXDP_FRAME_SIZE,
-		.frame_headroom = 0,
-		.flags = 0,
 	};
-	struct xsk_socket_config scfg = {
+	struct xsk_socket_config socket_config = {
 		.rx_size = UIB_AFXDP_RX_FRAMES,
 		.tx_size = UIB_AFXDP_TX_FRAMES,
-		.libxdp_flags = 0,
-		.xdp_flags = 0,
 		.bind_flags = XDP_USE_NEED_WAKEUP,
 	};
-	const char *ifn = getenv(UIB_ENV_AFXDP_IFACE);
-	const char *qs  = getenv(UIB_ENV_AFXDP_QUEUE);
-	const char *pm  = getenv(UIB_ENV_AFXDP_PEER_MAC);
-	uint64_t umem_sz = (uint64_t)UIB_AFXDP_NUM_FRAMES * UIB_AFXDP_FRAME_SIZE;
-	uint32_t idx = 0, i;
+	const char *interface = getenv(UIB_ENV_AFXDP_IFACE);
+	const char *queue = getenv(UIB_ENV_AFXDP_QUEUE);
+	const char *peer_mac = getenv(UIB_ENV_AFXDP_PEER_MAC);
+	uint64_t umem_size;
+	struct uib_afxdp_backend *be;
 	int rc;
 
-	if (!ifn || !*ifn)
+	if (!interface || !*interface)
 		return -ENODEV;
-
 	be = calloc(1, sizeof(*be));
 	if (!be)
 		return -ENOMEM;
 	be->timer_fd = -1;
-	be->port = htons(ctx->bind_port ? ctx->bind_port :
-			 ctx->pops->default_port);
-	be->queue_id = qs ? (uint32_t)atoi(qs) : 0;
-	be->zerocopy = ctx->zerocopy.mode != UIB_ZEROCOPY_OFF;
-	scfg.bind_flags |= be->zerocopy ? XDP_ZEROCOPY : XDP_COPY;
 	ctx->backend = be;
 	pthread_mutex_init(&be->tx_lock, NULL);
-
-	rc = uib_afxdp_parse_mac(pm, be->peer_mac);
-	if (rc)
+	rc = afxdp_configure(ctx, be, &socket_config, interface, queue,
+			     peer_mac);
+	if (rc < 0)
 		goto err;
-	if (get_if_mac(ifn, be->src_mac) < 0) {
-		rc = -errno;
+	umem_size = (uint64_t)UIB_AFXDP_NUM_FRAMES * UIB_AFXDP_FRAME_SIZE;
+	rc = afxdp_socket_init(ctx, be, interface, umem_size, &umem_config,
+			       &socket_config);
+	if (rc < 0)
 		goto err;
-	}
-	if (ctx->bind_ip[0])
-		inet_pton(AF_INET, ctx->bind_ip, &be->local_ip);
-	else if (get_if_ip(ifn, &be->local_ip) < 0) {
-		rc = -errno;
+	rc = afxdp_frame_pool_init(be);
+	if (rc < 0)
 		goto err;
-	}
-	ctx->local_addr.sin_family = AF_INET;
-	ctx->local_addr.sin_addr.s_addr = be->local_ip;
-	ctx->local_addr.sin_port = be->port;
-
-	if (posix_memalign(&be->umem_area, sysconf(_SC_PAGESIZE), umem_sz) != 0) {
-		rc = -ENOMEM;
-		goto err;
-	}
-	rc = xsk_umem__create(&be->umem, be->umem_area, umem_sz,
-			      &be->fq, &be->cq, &ucfg);
-	if (rc) {
-		rc = rc < 0 ? rc : -rc;
-		goto err;
-	}
-	rc = xsk_socket__create(&be->xsk, ifn, be->queue_id, be->umem,
-				&be->rx, &be->tx, &scfg);
-	if (rc && ctx->zerocopy.mode == UIB_ZEROCOPY_AUTO) {
-		be->zerocopy = 0;
-		scfg.bind_flags &= ~XDP_ZEROCOPY;
-		scfg.bind_flags |= XDP_COPY;
-		rc = xsk_socket__create(&be->xsk, ifn, be->queue_id, be->umem,
-					&be->rx, &be->tx, &scfg);
-	}
-	if (rc) {
-		rc = rc < 0 ? rc : -rc;
-		goto err;
-	}
-
-	be->tx_free = calloc(UIB_AFXDP_NUM_FRAMES, sizeof(*be->tx_free));
-	if (!be->tx_free) {
-		rc = -ENOMEM;
-		goto err;
-	}
-	if (xsk_ring_prod__reserve(&be->fq, UIB_AFXDP_FILL_FRAMES, &idx)
-	    != UIB_AFXDP_FILL_FRAMES) {
-		rc = -EIO;
-		goto err;
-	}
-	for (i = 0; i < UIB_AFXDP_FILL_FRAMES; i++)
-		*xsk_ring_prod__fill_addr(&be->fq, idx + i) =
-			(uint64_t)i * UIB_AFXDP_FRAME_SIZE;
-	xsk_ring_prod__submit(&be->fq, UIB_AFXDP_FILL_FRAMES);
-
-	for (i = UIB_AFXDP_FILL_FRAMES; i < UIB_AFXDP_NUM_FRAMES; i++)
-		be->tx_free[be->tx_free_n++] = (uint64_t)i * UIB_AFXDP_FRAME_SIZE;
-
-	be->timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
-	if (be->timer_fd >= 0) {
-		struct itimerspec its = {0};
-
-		its.it_interval.tv_nsec = UIB_TIMER_TICK_MS * 1000000L;
-		its.it_value = its.it_interval;
-		timerfd_settime(be->timer_fd, 0, &its, NULL);
-	}
+	afxdp_timer_init(be);
 
 	__atomic_store_n(&be->worker_run, 1, __ATOMIC_RELEASE);
-	if (pthread_create(&be->worker, NULL, worker_loop, ctx) != 0) {
+	rc = pthread_create(&be->worker, NULL, worker_loop, ctx);
+	if (rc) {
 		__atomic_store_n(&be->worker_run, 0, __ATOMIC_RELEASE);
-		rc = -errno;
+		rc = -rc;
 		goto err;
 	}
 	return 0;

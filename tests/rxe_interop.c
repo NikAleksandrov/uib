@@ -69,11 +69,13 @@ static int recv_byte(int fd, char expected)
 
 static int open_control(int server, const char *host)
 {
-	int i;
 	int fd = socket(AF_INET, SOCK_STREAM, 0);
 	struct sockaddr_in addr = { .sin_family = AF_INET,
 		.sin_port = htons(CTRL_PORT) };
+	struct timespec delay = { .tv_nsec = 20000000 };
+	int accepted;
 	int one = 1;
+	int i;
 
 	if (fd < 0)
 		return -1;
@@ -83,7 +85,7 @@ static int open_control(int server, const char *host)
 			close(fd);
 			return -1;
 		}
-		int accepted = accept(fd, NULL, NULL);
+		accepted = accept(fd, NULL, NULL);
 
 		close(fd);
 		return accepted;
@@ -97,8 +99,6 @@ static int open_control(int server, const char *host)
 			return fd;
 		if (errno != ECONNREFUSED)
 			break;
-		struct timespec delay = { .tv_nsec = 20000000 };
-
 		nanosleep(&delay, NULL);
 	}
 	close(fd);

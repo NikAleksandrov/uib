@@ -1,11 +1,12 @@
 UIB userspace RDMA
 ==================
 
-UIB implements RDMA wire protocols and packet transports in userspace. It
-provides a native API and `libuibv.so`, a compatibility provider that lets
-dynamically linked libibverbs applications run unchanged. It is useful for
-CI, protocol validation and deployment simulation. UIB has been tested with
-software RXE and hardware (Mellanox NICs).
+UIB implements RDMA wire protocols, packet transports and congestion-control
+algorithms in userspace. It provides a native API and `libuibv.so`, a
+compatibility provider that lets dynamically linked libibverbs applications
+run unchanged. It is useful for CI, protocol validation and deployment
+simulation. UIB has been tested with software RXE and hardware (Mellanox
+NICs).
 
 Example: transparently running libibverbs software with UIB
 -----------------------------------------------------------
@@ -17,7 +18,8 @@ first, so `-d uib0` is optional.
 Build UIB, then run a server whose data-plane address is `192.0.2.1`:
 
     env LD_PRELOAD="$PWD/libuibv.so" \
-      UIB_PROTOCOL=rocev2 UIB_TRANSPORT_MODE=udp-io-uring \
+      UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=dcqcn \
+      UIB_TRANSPORT_MODE=udp-io-uring \
       UIB_BIND_IP=192.0.2.1 UIB_BIND_PORT=4791 \
       ib_write_bw -i 1 -x 0 --connection=RC --size=65536 \
       --iters=10000 --report_gbits -F
@@ -25,15 +27,33 @@ Build UIB, then run a server whose data-plane address is `192.0.2.1`:
 Run the client on `192.0.2.2`:
 
     env LD_PRELOAD="$PWD/libuibv.so" \
-      UIB_PROTOCOL=rocev2 UIB_TRANSPORT_MODE=udp-io-uring \
+      UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=dcqcn \
+      UIB_TRANSPORT_MODE=udp-io-uring \
       UIB_BIND_IP=192.0.2.2 UIB_BIND_PORT=4791 \
+      ib_write_bw -i 1 -x 0 --connection=RC --size=65536 \
+      --iters=10000 --report_gbits -F 192.0.2.1
+
+For Ultra Ethernet with NSCC, start the server with the UET service port:
+
+    env LD_PRELOAD="$PWD/libuibv.so" \
+      UIB_PROTOCOL=uet UIB_UET_CC=nscc \
+      UIB_TRANSPORT_MODE=udp-io-uring \
+      UIB_BIND_IP=192.0.2.1 UIB_BIND_PORT=5432 \
+      ib_write_bw -i 1 -x 0 --connection=RC --size=65536 \
+      --iters=10000 --report_gbits -F
+
+Run the matching UET/NSCC client on `192.0.2.2`:
+
+    env LD_PRELOAD="$PWD/libuibv.so" \
+      UIB_PROTOCOL=uet UIB_UET_CC=nscc \
+      UIB_TRANSPORT_MODE=udp-io-uring \
+      UIB_BIND_IP=192.0.2.2 UIB_BIND_PORT=5432 \
       ib_write_bw -i 1 -x 0 --connection=RC --size=65536 \
       --iters=10000 --report_gbits -F 192.0.2.1
 
 Both endpoints must use the same protocol and service port. Socket-mode
 UIB-to-UIB traffic works without raw-socket privileges; raw mode is only for
-kernel RXE interoperability and requires `CAP_NET_RAW`. To use UET, set
-`UIB_PROTOCOL=uet` and port 5432 on both hosts. See the
+kernel RXE interoperability and requires `CAP_NET_RAW`. See the
 [transparent verbs guide](docs/transparent-verbs.md) for provider behavior
 and deployment details.
 
@@ -79,8 +99,16 @@ Protocols and transports
 | Value | Description |
 |---|---|
 | `rocev2` | InfiniBand RC over RoCEv2; default, port 4791 |
-| `uet` | Ultra Ethernet PDS/PDC, SES and NSCC; port 5432 |
+| `uet` | Ultra Ethernet PDS/PDC and SES with NSCC or RCCC; port 5432 |
 | `dummy` | Minimal SEND protocol for abstraction tests |
+
+The implemented congestion-control algorithms are:
+
+| Value | Description |
+|---|---|
+| `nscc` | UET sender-window control driven by receiver feedback; UET default |
+| `rccc` | UET receiver-credit control with paced destination grants |
+| `dcqcn` | RoCEv2 rate control driven by ECN congestion feedback |
 
 `UIB_TRANSPORT_MODE` independently selects packet I/O:
 
@@ -204,8 +232,10 @@ Common targets are:
 
 The benchmark matrix covers all protocols, available transports, host and
 DMA-BUF memory, copy and zero-copy modes, pinned and unpinned processes, and
-MTUs 1500, 4096 and 8192 where valid. It records actual bandwidth, latency,
-CPU time and zero-copy fallbacks. Results are split into like-for-like tables
+MTUs 1500, 4096 and 8192 where valid. A resilience section compares
+RoCEv2/DCQCN and UET algorithms under latency, loss, reordering, and combined
+impairments. It records actual bandwidth, latency, CPU time and zero-copy
+fallbacks. Results are split into like-for-like tables
 in the [benchmark report](docs/benchmark-results.md); the focused mode
 comparison is in the [sync/async report](docs/sync-async-benchmark.md).
 

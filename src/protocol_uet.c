@@ -13,15 +13,20 @@
 #include <netinet/ip.h>
 
 #include "uib/uet.h"
+#include "uib/dcqcn.h"
+#include "uib/uet_rccc.h"
 #include "uib/uet_nscc.h"
 #include "uib/protocol.h"
 #include "uib/qp.h"
+#include "uib/pd.h"
 #include "uib/context.h"
 #include "uib/congestion.h"
 #include "uib/env.h"
 #include "uib/transport.h"
 #include "uib/mr.h"
+#include "congestion_internal.h"
 #include "host_zc_internal.h"
+#include "qp_internal.h"
 #include "utils.h"
 
 #define UIB_UET_OUT_INDEX_MIN 64U
@@ -52,6 +57,7 @@ struct uib_uet_wr_track {
 	uint32_t read_received;
 	uint8_t uet_atomic;
 	uint8_t atomic_datatype;
+	uint8_t response_code;
 };
 
 struct uib_uet_out_pool;
@@ -99,6 +105,8 @@ struct uib_uet_qp {
 	uint16_t next_msg_id;
 	uint32_t next_psn;
 	uint32_t rx_base_psn;
+	uint32_t tx_clear_psn;
+	uint32_t rx_clear_psn;
 	uint64_t rx_bitmap[2];
 	uint32_t out_count;
 	uint32_t sent_count;
@@ -113,8 +121,11 @@ struct uib_uet_qp {
 	struct uib_psn_index out_index;
 	uint32_t unindexed_count;
 	struct uib_congestion congestion;
+	struct uib_uet_rccc_destination rccc_destination;
+	uint64_t credit_request_deadline_ns;
 	uint32_t receiver_bytes;
 	uint32_t previous_received_units;
+	int rccc_enabled;
 	int debug;
 	struct uib_uet_session_config session;
 	enum uib_uet_optimized_mode optimized_mode;
@@ -148,6 +159,16 @@ struct uib_uet_qp {
 		uint8_t data[16];
 		int valid;
 	} response_cache[UIB_UET_PDC_MPR];
+	struct {
+		uint32_t psn;
+		int valid;
+	} guaranteed[UIB_UET_PDC_MPR];
+	struct {
+		uint32_t first_psn;
+		uint16_t msg_id;
+		uint8_t response_code;
+		int valid;
+	} message_error[UIB_UET_PDC_MPR];
 };
 
 static size_t uet_out_pool_capacity(uint8_t pool_class)
@@ -434,6 +455,75 @@ void uib_uet_nscc_wire_unpack(const struct uib_uet_nscc_wire_state *state,
 }
 
 /**
+ * uib_uet_rccc_request_pack - Encode RCCC request state.
+ * @ccc_id: Source congestion-control context identifier
+ * @credit_target: Cumulative credit target in 256-byte units
+ * @uib-api: Ultra Ethernet extensions
+ *
+ * Return: The packed request state in network byte order.
+ */
+uint32_t uib_uet_rccc_request_pack(uint8_t ccc_id, uint32_t credit_target)
+{
+	return htonl((uint32_t)ccc_id << 24 |
+		     (credit_target & UIB_UET_RCCC_COUNTER_MASK));
+}
+
+/**
+ * uib_uet_rccc_request_unpack - Decode RCCC request state.
+ * @state: Packed request state in network byte order
+ * @ccc_id: Output for the source congestion-control context identifier
+ * @credit_target: Output for the cumulative 256-byte credit target
+ * @uib-api: Ultra Ethernet extensions
+ */
+void uib_uet_rccc_request_unpack(uint32_t state, uint8_t *ccc_id,
+				 uint32_t *credit_target)
+{
+	uint32_t value = ntohl(state);
+
+	if (ccc_id)
+		*ccc_id = value >> 24;
+	if (credit_target)
+		*credit_target = value & UIB_UET_RCCC_COUNTER_MASK;
+}
+
+/**
+ * uib_uet_rccc_wire_pack - Encode an RCCC cumulative credit grant.
+ * @state: Credit acknowledgement state to fill
+ * @cumulative_credit: Cumulative credit in 256-byte units
+ * @out_of_order: Out-of-order packet count
+ * @uib-api: Ultra Ethernet extensions
+ */
+void uib_uet_rccc_wire_pack(struct uib_uet_rccc_wire_state *state,
+			    uint32_t cumulative_credit,
+			    uint16_t out_of_order)
+{
+	cumulative_credit &= UIB_UET_RCCC_COUNTER_MASK;
+	state->credit[0] = cumulative_credit >> 16;
+	state->credit[1] = cumulative_credit >> 8;
+	state->credit[2] = cumulative_credit;
+	memset(state->reserved, 0, sizeof(state->reserved));
+	state->out_of_order_count = htons(out_of_order);
+}
+
+/**
+ * uib_uet_rccc_wire_unpack - Decode an RCCC cumulative credit grant.
+ * @state: Credit acknowledgement state to decode
+ * @cumulative_credit: Output for cumulative credit in 256-byte units
+ * @out_of_order: Output for the out-of-order packet count
+ * @uib-api: Ultra Ethernet extensions
+ */
+void uib_uet_rccc_wire_unpack(const struct uib_uet_rccc_wire_state *state,
+			      uint32_t *cumulative_credit,
+			      uint16_t *out_of_order)
+{
+	if (cumulative_credit)
+		*cumulative_credit = (uint32_t)state->credit[0] << 16 |
+			(uint32_t)state->credit[1] << 8 | state->credit[2];
+	if (out_of_order)
+		*out_of_order = ntohs(state->out_of_order_count);
+}
+
+/**
  * uib_uet_ses_fragment_info - Encode SES fragment length and message offset.
  * @payload_len: Fragment payload length in bytes
  * @message_offset: Offset of the fragment in the complete message
@@ -534,11 +624,17 @@ static int uet_packet_qpn(const void *packet, size_t len, uint32_t *qpn)
 		return -EINVAL;
 	type = uib_uet_prologue_type(prologue);
 	switch (type) {
-	case UIB_UET_PDS_TYPE_RUD_REQ: {
+	case UIB_UET_PDS_TYPE_RUD_REQ:
+	case UIB_UET_PDS_TYPE_RUD_CC_REQ: {
 		const struct uib_uet_pds_req *req = packet;
+		size_t pds_len;
 		uint8_t next;
 
 		if (len < sizeof(*req))
+			return -EBADMSG;
+		pds_len = type == UIB_UET_PDS_TYPE_RUD_CC_REQ ?
+			sizeof(struct uib_uet_pds_cc_req) : sizeof(*req);
+		if (len < pds_len)
 			return -EBADMSG;
 		*qpn = ntohs(req->dpdcid);
 		if (!*qpn) {
@@ -552,9 +648,10 @@ static int uet_packet_qpn(const void *packet, size_t len, uint32_t *qpn)
 				sizeof(struct uib_uet_ses_req_medium) :
 				next == UIB_UET_NEXT_REQ_STD ?
 				sizeof(struct uib_uet_ses_req) : 0;
-			if (!header_len || len < sizeof(*req) + header_len)
+			if (!header_len || len < pds_len + header_len)
 				return -EBADMSG;
-			ses = (const struct uib_uet_ses_req_small *)(req + 1);
+			ses = (const struct uib_uet_ses_req_small *)
+				((const uint8_t *)req + pds_len);
 			*qpn = ntohs(ses->pid_on_fep) & UIB_UET_SES_PID_MASK;
 		}
 		return *qpn ? 0 : -ENOENT;
@@ -576,6 +673,14 @@ static int uet_packet_qpn(const void *packet, size_t len, uint32_t *qpn)
 		*qpn = ntohs(nack->dpdcid);
 		return *qpn ? 0 : -ENOENT;
 	}
+	case UIB_UET_PDS_TYPE_CTRL_MSG: {
+		const struct uib_uet_pds_control *control = packet;
+
+		if (len < sizeof(*control))
+			return -EBADMSG;
+		*qpn = ntohs(control->dpdcid);
+		return *qpn ? 0 : -ENOENT;
+	}
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -583,9 +688,13 @@ static int uet_packet_qpn(const void *packet, size_t len, uint32_t *qpn)
 
 static int uet_congestion_init(struct uib_qp *qp, struct uib_uet_qp *uet)
 {
-	struct uib_uet_nscc_config config;
+	struct uib_uet_nscc_config nscc_config;
+	struct uib_uet_rccc_config rccc_config;
+	struct uib_dcqcn_config dcqcn_config;
 	const char *cc;
 	const void *configuration = NULL;
+	uint32_t mtu = qp->path_mtu + 40;
+	int rc;
 
 	cc = getenv(UIB_ENV_UET_CC);
 	if (!cc)
@@ -593,16 +702,36 @@ static int uet_congestion_init(struct uib_qp *qp, struct uib_uet_qp *uet)
 	if (!strcmp(cc, "nscc")) {
 		const char *max_wnd;
 
-		uib_uet_nscc_config_default(&config, qp->path_mtu + 40);
+		uib_uet_nscc_config_default(&nscc_config, mtu);
 		max_wnd = getenv(UIB_ENV_UET_NSCC_MAX_WND);
-		if (max_wnd && strtoull(max_wnd, NULL, 0) >= config.mtu) {
-			config.max_wnd = (uint32_t)strtoull(max_wnd, NULL, 0);
-			config.bdp = config.max_wnd;
+		if (max_wnd && strtoull(max_wnd, NULL, 0) >= nscc_config.mtu) {
+			nscc_config.max_wnd = (uint32_t)strtoull(max_wnd, NULL, 0);
+			nscc_config.bdp = nscc_config.max_wnd;
 		}
-		configuration = &config;
+		configuration = &nscc_config;
+	} else if (!strcmp(cc, "dcqcn")) {
+		const char *experimental = getenv(UIB_ENV_UET_CC_EXPERIMENTAL);
+
+		if (!experimental || strcmp(experimental, "on"))
+			return -EPERM;
+		if (uib_dcqcn_config_from_env(&dcqcn_config, mtu))
+			return -EINVAL;
+		configuration = &dcqcn_config;
+	} else if (!strcmp(cc, "rccc")) {
+		if (uib_uet_rccc_config_from_env(&rccc_config, mtu))
+			return -EINVAL;
+		configuration = &rccc_config;
 	}
-	return uib_congestion_init(&uet->congestion, cc, configuration,
-				   qp->path_mtu + 40, uib_now_ns());
+	rc = uib_congestion_init(&uet->congestion, cc, configuration, mtu,
+				 uib_now_ns());
+	if (rc)
+		return rc;
+	uet->rccc_enabled = !strcmp(cc, "rccc");
+	if (uet->rccc_enabled)
+		return uib_uet_rccc_destination_init(&uet->rccc_destination,
+						     &rccc_config,
+						     uib_now_ns());
+	return 0;
 }
 
 static int uet_qp_init(struct uib_qp *qp)
@@ -1151,12 +1280,12 @@ static void uet_track_done(struct uib_qp *qp, struct uib_uet_wr_track *track,
 	if (track->pending)
 		return;
 
-	uib_qp_emit_send(qp, track->wr_id, track->opcode,
-			 track->signaled, status,
-			 track->opcode == UIB_WR_RDMA_READ ||
-			 track->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
-			 track->opcode == UIB_WR_ATOMIC_CMP_SWAP ?
-			 track->total_len : 0);
+	qp_emit_send_vendor(qp, track->wr_id, track->opcode,
+			    track->signaled, status,
+			    track->opcode == UIB_WR_RDMA_READ ||
+			    track->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
+			    track->opcode == UIB_WR_ATOMIC_CMP_SWAP ?
+			    track->total_len : 0, track->response_code);
 	uet_free_track(track);
 }
 
@@ -1233,6 +1362,62 @@ static void uet_select_path(struct uib_uet_qp *uet,
 	}
 }
 
+static uint32_t uet_rccc_credit_pack(uint32_t credit)
+{
+	return htonl((credit & UIB_UET_RCCC_COUNTER_MASK) << 8);
+}
+
+static uint32_t uet_rccc_credit_unpack(uint32_t payload)
+{
+	return ntohl(payload) >> 8;
+}
+
+static int uet_send_control(struct uib_qp *qp,
+			    const struct sockaddr_in *destination,
+			    uint8_t control_type, uint32_t payload)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_pds_control control = {0};
+	struct sockaddr_in dst = *destination;
+
+	control.prologue.type_next_flags = uib_uet_prologue_pack(
+		UIB_UET_PDS_TYPE_CTRL_MSG, control_type, 0);
+	control.spdcid = htons(uet->spdcid);
+	control.dpdcid = htons((uint16_t)qp->dest_qp_num);
+	control.payload = payload;
+	if (!dst.sin_port)
+		dst.sin_port = htons(UIB_UET_DEFAULT_PORT);
+	return uib_transport_send_entropy(qp->ctx, &dst, &control,
+					  sizeof(control), 0);
+}
+
+static int uet_send_credit_request_locked(struct uib_qp *qp,
+					  uint64_t now_ns)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_rccc *rccc;
+	uint32_t payload;
+	uint32_t target;
+	int rc;
+
+	if (!uet->rccc_enabled)
+		return 0;
+	rccc = (struct uib_uet_rccc *)uet->congestion.state.bytes;
+	if (rccc->credit_target_sent &&
+	    now_ns < uet->credit_request_deadline_ns)
+		return 0;
+	target = uib_uet_rccc_credit_target(rccc);
+	payload = uib_uet_rccc_request_pack((uint8_t)uet->spdcid, target);
+	rc = uet_send_control(qp, &qp->remote_addr,
+			      UIB_UET_CONTROL_CREDIT_REQUEST, payload);
+	if (rc < 0)
+		return rc;
+	uib_uet_rccc_mark_target_sent(rccc);
+	uet->credit_request_deadline_ns = now_ns + UIB_UET_RTX_NS;
+	uib_qp_retry_schedule(qp, uet->credit_request_deadline_ns);
+	return 0;
+}
+
 static int uet_drain_locked(struct uib_qp *qp)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
@@ -1275,8 +1460,20 @@ static int uet_drain_locked(struct uib_qp *qp)
 		while (candidate && candidate->sent)
 			candidate = candidate->next;
 	}
-	if (!count)
+	if (!count) {
+		if (candidate && uet->rccc_enabled) {
+			rc = uet_send_credit_request_locked(qp, now_ns);
+			if (rc < 0)
+				return rc;
+		}
+		deadline = uib_congestion_next_send_ns(&uet->congestion);
+		if (candidate && deadline) {
+			if (deadline <= now_ns)
+				deadline = now_ns + 1;
+			uib_qp_retry_schedule(qp, deadline);
+		}
 		return 0;
+	}
 	rc = uib_transport_send_ref_batch(qp->ctx, refs, count);
 	if (rc < 0) {
 		uet->congestion = congestion_before;
@@ -1296,118 +1493,227 @@ static int uet_drain_locked(struct uib_qp *qp)
 		}
 	}
 	uet->tx_cursor = candidate;
+	if (candidate) {
+		uint64_t next = uib_congestion_next_send_ns(&uet->congestion);
+
+		if (next && next < deadline)
+			deadline = next;
+	}
 	if (!qp->retry_scheduled || deadline < qp->retry_deadline_ns)
 		uib_qp_retry_schedule(qp, deadline);
 	return 0;
+}
+
+static uint8_t uet_response_next_header(uint32_t data_len,
+					uint8_t request_header)
+{
+	if (!data_len)
+		return UIB_UET_NEXT_RSP;
+	return request_header == UIB_UET_NEXT_REQ_STD ?
+		UIB_UET_NEXT_RSP_DATA : UIB_UET_NEXT_RSP_DATA_SMALL;
+}
+
+static size_t uet_response_header_len(uint8_t next)
+{
+	if (next == UIB_UET_NEXT_RSP_DATA_SMALL)
+		return sizeof(struct uib_uet_ses_rsp_data_small);
+	if (next == UIB_UET_NEXT_RSP_DATA)
+		return sizeof(struct uib_uet_ses_rsp_data);
+	return sizeof(struct uib_uet_ses_rsp);
+}
+
+struct uet_response_encoding {
+	uint8_t opcode;
+	uint8_t response_code;
+	uint8_t guaranteed_delivery;
+};
+
+static struct uet_response_encoding
+uet_response_construct(uint8_t response_code, uint32_t data_len,
+			uint32_t modified_len, uint32_t requested_len,
+			int guarantee_error)
+{
+	struct uet_response_encoding response;
+
+	response.response_code = response_code;
+	if (response_code != UIB_UET_SES_RC_OK)
+		response.guaranteed_delivery = guarantee_error;
+	else
+		response.guaranteed_delivery = data_len ||
+			modified_len != requested_len;
+	if (data_len)
+		response.opcode = UIB_UET_SES_RSP_WITH_DATA;
+	else if (response.guaranteed_delivery)
+		response.opcode = UIB_UET_SES_RSP_RESPONSE;
+	else
+		response.opcode = UIB_UET_SES_RSP_DEFAULT;
+	return response;
+}
+
+static void uet_fill_response_cc(struct uib_qp *qp,
+				 struct uib_uet_pds_ack_ext *extension,
+				 uint64_t receive_time_ns)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_rccc_wire_state *credit_state;
+	struct uib_uet_nscc_wire_state *cc_state;
+
+	if (!uet->rccc_enabled) {
+		extension->cc_type_flags_mpr = htons(
+			UIB_UET_CC_TYPE_NSCC << UIB_UET_CC_TYPE_SHIFT);
+		cc_state = (struct uib_uet_nscc_wire_state *)
+			&extension->ack_cc_state;
+		uib_uet_nscc_wire_pack(
+			cc_state, (uint32_t)(uib_now_ns() - receive_time_ns),
+			0, 0, uet->receiver_bytes, UINT16_MAX);
+		return;
+	}
+	extension->cc_type_flags_mpr = htons(
+		UIB_UET_CC_TYPE_CREDIT << UIB_UET_CC_TYPE_SHIFT);
+	credit_state = (struct uib_uet_rccc_wire_state *)
+		&extension->ack_cc_state;
+	pthread_mutex_lock(&qp->lock);
+	uib_uet_rccc_wire_pack(credit_state,
+			       uet->rccc_destination.cumulative_credit,
+			       UINT16_MAX);
+	pthread_mutex_unlock(&qp->lock);
+}
+
+static void uet_fill_small_response(struct uib_qp *qp, void *wire,
+				    const struct uib_uet_pds_req *request,
+				    const struct uib_uet_ses_req *ses_request,
+				    uint8_t response_code, const void *data,
+				    uint32_t data_len)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_ses_rsp_data_small *response = wire;
+	uint32_t identity;
+
+	identity = ntohl(ses_request->index_gen_job_id);
+	response->list_opcode_version_rc = uet_ses_rsp_pack(
+		UIB_UET_SES_RSP_WITH_DATA, response_code);
+	response->payload_len = htons(data_len & UIB_UET_SES_LENGTH_MASK);
+	response->index_gen_job_id = htonl(identity);
+	response->request_psn = request->psn;
+	memcpy(response + 1, data, data_len);
+	pthread_mutex_lock(&qp->lock);
+	uet->optimized_stats.small_responses++;
+	pthread_mutex_unlock(&qp->lock);
+}
+
+static void uet_fill_data_response(struct uib_qp *qp, void *wire,
+				   const struct uib_uet_ses_req *request,
+				   uint8_t response_code, const void *data,
+				   uint32_t data_len, uint32_t modified_len,
+				   uint32_t message_offset)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_ses_rsp_data *response = wire;
+	uint32_t identity;
+
+	identity = ntohl(request->index_gen_job_id);
+	response->list_opcode_version_rc = uet_ses_rsp_pack(
+		UIB_UET_SES_RSP_WITH_DATA, response_code);
+	pthread_mutex_lock(&qp->lock);
+	response->response_msg_id = htons(uet->next_msg_id++);
+	pthread_mutex_unlock(&qp->lock);
+	response->index_gen_job_id = htonl(identity);
+	response->request_msg_id = request->msg_id;
+	response->payload_len = htons(data_len & UIB_UET_SES_LENGTH_MASK);
+	response->modified_len = htonl(modified_len);
+	response->message_offset = htonl(message_offset);
+	memcpy(response + 1, data, data_len);
+}
+
+static void uet_fill_plain_response(struct uib_qp *qp, void *wire,
+				    const struct uib_uet_ses_req *request,
+				    const struct uet_response_encoding *encoding,
+				    uint32_t modified_len)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_ses_rsp *response = wire;
+	uint32_t identity;
+
+	response->list_opcode_version_rc = uet_ses_rsp_pack(
+		encoding->opcode, encoding->response_code);
+	response->msg_id = request->msg_id;
+	if (encoding->response_code == UIB_UET_SES_RC_BAD_GENERATION) {
+		identity = ntohl(request->index_gen_job_id);
+		identity &= UIB_UET_SES_JOB_ID_MASK;
+		identity |= (uint32_t)uet->session.resource_generation << 24;
+		response->index_gen_job_id = htonl(identity);
+	} else {
+		response->index_gen_job_id = request->index_gen_job_id;
+	}
+	response->modified_len = htonl(modified_len);
 }
 
 static int uet_send_one_response(struct uib_qp *qp,
 				 const struct sockaddr_in *destination,
 				 const struct uib_uet_pds_req *request,
 				 const struct uib_uet_ses_req *ses_request,
-				 uint32_t cack_psn, uint8_t response_code,
+				 uint32_t cack_psn,
+				 const struct uet_response_encoding *encoding,
 				 const void *data, uint32_t data_len,
 				 uint32_t modified_len, uint32_t message_offset,
 				 uint64_t receive_time_ns, int ecn_marked,
 				 uint8_t request_header)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
-	struct sockaddr_in dst = *destination;
 	struct uib_uet_pds_ack_ext *extension;
-	struct uib_uet_nscc_wire_state *cc_state;
-	struct uib_uet_ses_rsp *response;
-	struct uib_uet_ses_rsp_data *response_data;
-	struct uib_uet_ses_rsp_data_small *small_response;
-	uint8_t packet_storage[UIB_RECV_BUF_LEN];
-	uint8_t *packet = packet_storage;
-	size_t packet_len;
+	struct uib_uet_pds_ack *ack;
+	struct sockaddr_in dst = *destination;
+	uint8_t packet[UIB_RECV_BUF_LEN];
 	size_t response_len;
+	size_t packet_len;
 	uint8_t next;
+	void *wire;
 	int rc;
 
-	next = data_len && request_header != UIB_UET_NEXT_REQ_STD ?
-		UIB_UET_NEXT_RSP_DATA_SMALL :
-		data_len ? UIB_UET_NEXT_RSP_DATA : UIB_UET_NEXT_RSP;
-	response_len = next == UIB_UET_NEXT_RSP_DATA_SMALL ?
-		sizeof(*small_response) :
-		data_len ? sizeof(*response_data) : sizeof(*response);
-	packet_len = sizeof(struct uib_uet_pds_ack) + sizeof(*extension) +
-		response_len + data_len;
-	if (packet_len > sizeof(packet_storage))
+	next = uet_response_next_header(data_len, request_header);
+	response_len = uet_response_header_len(next);
+	packet_len = sizeof(*ack) + sizeof(*extension) + response_len + data_len;
+	if (packet_len > sizeof(packet))
 		return -EMSGSIZE;
-	memset(packet, 0, sizeof(struct uib_uet_pds_ack) +
-	       sizeof(*extension) + response_len);
+	memset(packet, 0, sizeof(*ack) + sizeof(*extension) + response_len);
 	rc = uib_uet_build_ack(packet, packet_len, cack_psn,
 			       ntohl(request->psn), uet->spdcid,
 			       ntohs(request->spdcid), next);
 	if (rc < 0)
 		return rc;
-	((struct uib_uet_pds_ack *)packet)->prologue.type_next_flags =
-		uib_uet_prologue_pack(UIB_UET_PDS_TYPE_ACK_CC, next,
-				       ecn_marked ? UIB_UET_ACK_FLAG_M : 0);
+	ack = (struct uib_uet_pds_ack *)packet;
+	ack->prologue.type_next_flags = uib_uet_prologue_pack(
+		UIB_UET_PDS_TYPE_ACK_CC, next,
+		(ecn_marked ? UIB_UET_ACK_FLAG_M : 0) |
+		(encoding->guaranteed_delivery ?
+		 UIB_UET_ACK_FLAG_REQ_CLEAR : 0));
 	extension = (struct uib_uet_pds_ack_ext *)(packet + rc);
-	extension->cc_type_flags_mpr = htons(0);
-	cc_state = (struct uib_uet_nscc_wire_state *)&extension->ack_cc_state;
-	uib_uet_nscc_wire_pack(cc_state,
-			       (uint32_t)(uib_now_ns() - receive_time_ns), 0, 0,
-			       uet->receiver_bytes, UINT16_MAX);
-	if (next == UIB_UET_NEXT_RSP_DATA_SMALL) {
-		uint32_t identity = ntohl(ses_request->index_gen_job_id);
-
-		small_response = (struct uib_uet_ses_rsp_data_small *)
-			(extension + 1);
-		small_response->list_opcode_version_rc =
-			uet_ses_rsp_pack(UIB_UET_SES_RSP_WITH_DATA,
-					 response_code);
-		small_response->payload_len =
-			htons(data_len & UIB_UET_SES_LENGTH_MASK);
-		small_response->index_gen_job_id =
-			htonl(identity & UIB_UET_SES_JOB_ID_MASK);
-		small_response->request_psn = request->psn;
-		memcpy(small_response + 1, data, data_len);
-		pthread_mutex_lock(&qp->lock);
-		uet->optimized_stats.small_responses++;
-		pthread_mutex_unlock(&qp->lock);
-	} else if (data_len) {
-		uint32_t identity = ntohl(ses_request->index_gen_job_id);
-
-		response_data = (struct uib_uet_ses_rsp_data *)(extension + 1);
-		response_data->list_opcode_version_rc =
-			uet_ses_rsp_pack(UIB_UET_SES_RSP_WITH_DATA,
-					 response_code);
-		pthread_mutex_lock(&qp->lock);
-		response_data->response_msg_id = htons(uet->next_msg_id++);
-		pthread_mutex_unlock(&qp->lock);
-		response_data->index_gen_job_id =
-			htonl(identity & UIB_UET_SES_JOB_ID_MASK);
-		response_data->request_msg_id = ses_request->msg_id;
-		response_data->payload_len =
-			htons(data_len & UIB_UET_SES_LENGTH_MASK);
-		response_data->modified_len = htonl(modified_len);
-		response_data->message_offset = htonl(message_offset);
-		memcpy(response_data + 1, data, data_len);
-	} else {
-		response = (struct uib_uet_ses_rsp *)(extension + 1);
-		response->list_opcode_version_rc =
-			uet_ses_rsp_pack(UIB_UET_SES_RSP_RESPONSE,
-					 response_code);
-		response->msg_id = ses_request->msg_id;
-		response->index_gen_job_id = ses_request->index_gen_job_id;
-		response->modified_len = htonl(modified_len);
-	}
+	uet_fill_response_cc(qp, extension, receive_time_ns);
+	wire = extension + 1;
+	if (next == UIB_UET_NEXT_RSP_DATA_SMALL)
+		uet_fill_small_response(qp, wire, request, ses_request,
+					encoding->response_code, data, data_len);
+	else if (next == UIB_UET_NEXT_RSP_DATA)
+		uet_fill_data_response(qp, wire, ses_request,
+				       encoding->response_code,
+				       data, data_len, modified_len,
+				       message_offset);
+	else
+		uet_fill_plain_response(qp, wire, ses_request, encoding,
+					modified_len);
 	dst.sin_port = qp->remote_addr.sin_port;
 	if (!dst.sin_port)
 		dst.sin_port = htons(UIB_UET_DEFAULT_PORT);
-	rc = uib_transport_send_entropy(qp->ctx, &dst, packet, packet_len,
-					ntohs(destination->sin_port));
-	return rc;
+	return uib_transport_send_entropy(qp->ctx, &dst, packet, packet_len,
+					  ntohs(destination->sin_port));
 }
 
 static int uet_send_response(struct uib_qp *qp,
 			     const struct sockaddr_in *destination,
 			     const struct uib_uet_pds_req *request,
 			     const struct uib_uet_ses_req *ses_request,
-			     uint32_t cack_psn, uint8_t response_code,
+			     uint32_t cack_psn,
+			     const struct uet_response_encoding *encoding,
 			     const void *data, size_t data_len,
 				     uint32_t modified_len,
 				     uint64_t receive_time_ns, int ecn_marked,
@@ -1420,7 +1726,7 @@ static int uet_send_response(struct uib_qp *qp,
 	if (!data_len)
 		return uet_send_one_response(qp, destination, request,
 					     ses_request, cack_psn,
-					     response_code, NULL, 0,
+					     encoding, NULL, 0,
 					     modified_len, 0,
 					     receive_time_ns, ecn_marked,
 					     request_header);
@@ -1434,7 +1740,7 @@ static int uet_send_response(struct uib_qp *qp,
 			return -EMSGSIZE;
 		return uet_send_one_response(qp, destination, request,
 					     ses_request, cack_psn,
-					     response_code, data,
+					     encoding, data,
 					     (uint32_t)data_len, modified_len,
 					     0, receive_time_ns, ecn_marked,
 					     request_header);
@@ -1453,7 +1759,7 @@ static int uet_send_response(struct uib_qp *qp,
 			chunk = response_mtu;
 		rc = uet_send_one_response(qp, destination, request,
 					   ses_request, cack_psn,
-					   response_code,
+					   encoding,
 					   (const uint8_t *)data + offset,
 					   chunk, modified_len, offset,
 					   receive_time_ns, ecn_marked,
@@ -1502,10 +1808,81 @@ static int uet_rx_mark(struct uib_uet_qp *uet, uint32_t psn, int *duplicate)
 	return 0;
 }
 
+static int uet_mr_contains(const struct uib_mr *mr, uint64_t address,
+			   size_t length)
+{
+	uint64_t base;
+
+	base = mr->kind == UIB_MR_HOST ?
+		(uint64_t)(uintptr_t)mr->addr : mr->iova;
+	if (address < base || length > mr->length)
+		return 0;
+	return address - base <= mr->length - length;
+}
+
+static struct uib_mr *uet_lookup_remote_mr(struct uib_qp *qp,
+					   uint32_t rkey,
+					   uint64_t address,
+					   size_t length, int access,
+					   int address_only,
+					   uint8_t *response_code)
+{
+	struct uib_mr *mr;
+
+	if (address_only) {
+		mr = uib_pd_lookup_address(qp->pd, address, length, 0);
+		if (!mr) {
+			*response_code = UIB_UET_SES_RC_BAD_ADDR;
+			return NULL;
+		}
+	} else {
+		mr = uib_pd_lookup_rkey(qp->pd, rkey);
+		if (!mr || mr->rkey != rkey) {
+			if (mr)
+				uib_mr_put(mr);
+			*response_code = UIB_UET_SES_RC_BAD_MKEY;
+			return NULL;
+		}
+		if (!uet_mr_contains(mr, address, length)) {
+			uib_mr_put(mr);
+			*response_code = UIB_UET_SES_RC_BAD_ADDR;
+			return NULL;
+		}
+	}
+	if ((mr->access & access) != access) {
+		uib_mr_put(mr);
+		*response_code = UIB_UET_SES_RC_OP_VIOLATION;
+		return NULL;
+	}
+	return mr;
+}
+
+static void uet_reset_receive(struct uib_uet_qp *uet)
+{
+	memset(&uet->recv_slot, 0, sizeof(uet->recv_slot));
+	uet->recv_active = 0;
+	uet->recv_eom = 0;
+	uet->recv_has_imm = 0;
+}
+
+static void uet_abort_receive(struct uib_qp *qp,
+			      enum uib_wc_status status)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+
+	if (!uet->recv_active)
+		return;
+	uib_qp_emit_recv_slot(qp, &uet->recv_slot, status, UIB_WC_RECV, 0,
+			      0, 0);
+	uib_qp_release_recv(&uet->recv_slot);
+	uet_reset_receive(uet);
+}
+
 static int uet_handle_send(struct uib_qp *qp,
 			   const struct uib_uet_ses_req *ses,
 			   const uint8_t *data, size_t data_len,
-			   uint32_t psn, uint32_t source_pdc)
+			   uint32_t psn, uint32_t source_pdc,
+			   uint8_t *response_code)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
 	uint8_t flags = ses->flags & UIB_UET_SES_FLAGS_MASK;
@@ -1515,8 +1892,11 @@ static int uet_handle_send(struct uib_qp *qp,
 
 	if (!uet->recv_active) {
 		rc = uib_qp_pop_recv(qp, &uet->recv_slot);
-		if (rc < 0)
+		if (rc < 0) {
+			*response_code = rc == -ENOENT ? UIB_UET_SES_RC_NO_MATCH :
+				UIB_UET_SES_RC_DROPPED;
 			return rc;
+		}
 		uet->recv_active = 1;
 		uet->recv_msg_id = ntohs(ses->msg_id);
 		uet->recv_total = ntohl(ses->request_len);
@@ -1524,15 +1904,26 @@ static int uet_handle_send(struct uib_qp *qp,
 		if (uet->recv_has_imm)
 			uet->recv_imm = (uint32_t)be64toh(ses->header_data);
 	}
-	if (!uet->recv_active || uet->recv_msg_id != ntohs(ses->msg_id))
+	if (!uet->recv_active || uet->recv_msg_id != ntohs(ses->msg_id)) {
+		*response_code = UIB_UET_SES_RC_INITIATOR_ERROR;
+		uet_abort_receive(qp, UIB_WC_GENERAL_ERR);
 		return -EBADMSG;
+	}
 
 	rc = uib_qp_scatter_recv(qp, &uet->recv_slot, offset, data, data_len,
 				 &consumed);
-	if (rc < 0)
+	if (rc < 0) {
+		*response_code = rc == -EMSGSIZE ? UIB_UET_SES_RC_TOO_LONG :
+			UIB_UET_SES_RC_PERM_VIOLATION;
+		uet_abort_receive(qp, rc == -EMSGSIZE ? UIB_WC_LOC_LEN_ERR :
+				  UIB_WC_LOC_PROT_ERR);
 		return rc;
-	if (consumed != data_len)
+	}
+	if (consumed != data_len) {
+		*response_code = UIB_UET_SES_RC_TOO_LONG;
+		uet_abort_receive(qp, UIB_WC_LOC_LEN_ERR);
 		return -EMSGSIZE;
+	}
 	if (flags & UIB_UET_SES_FLAG_EOM) {
 		uet->recv_last_psn = psn;
 		uet->recv_eom = 1;
@@ -1543,10 +1934,7 @@ static int uet_handle_send(struct uib_qp *qp,
 				      UIB_WC_RECV, uet->recv_total,
 				      source_pdc, uet->recv_imm);
 		uib_qp_release_recv(&uet->recv_slot);
-		memset(&uet->recv_slot, 0, sizeof(uet->recv_slot));
-		uet->recv_active = 0;
-		uet->recv_eom = 0;
-		uet->recv_has_imm = 0;
+		uet_reset_receive(uet);
 	}
 	return 0;
 }
@@ -1554,7 +1942,7 @@ static int uet_handle_send(struct uib_qp *qp,
 static int uet_handle_write(struct uib_qp *qp,
 			    const struct uib_uet_ses_req *ses,
 			    const uint8_t *data, size_t data_len,
-			    int address_only)
+			    int address_only, uint8_t *response_code)
 {
 	uint32_t offset = uib_uet_ses_message_offset(ses);
 	uint64_t address = be64toh(ses->buffer_offset) + offset;
@@ -1564,17 +1952,21 @@ static int uet_handle_write(struct uib_qp *qp,
 
 	if (uib_uet_ses_payload_len(ses, data_len) != data_len ||
 	    offset > ntohl(ses->request_len) ||
-	    data_len > ntohl(ses->request_len) - offset)
+	    data_len > ntohl(ses->request_len) - offset) {
+		*response_code = UIB_UET_SES_RC_UNSUPP_SIZE;
 		return -EMSGSIZE;
-	mr = address_only ?
-		uib_mr_check_remote_address(qp->pd, address, data_len,
-					    UIB_ACCESS_REMOTE_WRITE) :
-		uib_mr_check_remote(qp->pd, rkey, address, data_len,
-				    UIB_ACCESS_REMOTE_WRITE);
+	}
+	mr = uet_lookup_remote_mr(qp, rkey, address, data_len,
+				  UIB_ACCESS_REMOTE_WRITE, address_only,
+				  response_code);
 	if (!mr)
 		return -EACCES;
 	rc = uib_mr_place(mr, address, data, data_len);
 	uib_mr_put(mr);
+	if (rc == -ERANGE)
+		*response_code = UIB_UET_SES_RC_BAD_ADDR;
+	else if (rc < 0)
+		*response_code = UIB_UET_SES_RC_HOST_UNSUCCESS_CMPL;
 	return rc;
 }
 
@@ -1608,7 +2000,7 @@ static int uet_handle_read(struct uib_qp *qp,
 			   const struct uib_uet_ses_req *ses,
 			   const void **data, void **owned_data,
 			   size_t *data_len,
-			   int address_only)
+			   int address_only, uint8_t *response_code)
 {
 	uint64_t address = be64toh(ses->buffer_offset);
 	uint32_t rkey = (uint32_t)be64toh(ses->match_bits);
@@ -1616,16 +2008,15 @@ static int uet_handle_read(struct uib_qp *qp,
 	struct uib_mr *mr;
 	int rc;
 
-	mr = address_only ?
-		uib_mr_check_remote_address(qp->pd, address, length,
-					    UIB_ACCESS_REMOTE_READ) :
-		uib_mr_check_remote(qp->pd, rkey, address, length,
-				    UIB_ACCESS_REMOTE_READ);
+	mr = uet_lookup_remote_mr(qp, rkey, address, length,
+				  UIB_ACCESS_REMOTE_READ, address_only,
+				  response_code);
 	if (!mr)
 		return -EACCES;
 	*owned_data = malloc(length ? length : 1);
 	if (!*owned_data) {
 		uib_mr_put(mr);
+		*response_code = UIB_UET_SES_RC_UNCOR_TRANSIENT;
 		return -ENOMEM;
 	}
 	rc = uib_mr_read(mr, address, *owned_data, length);
@@ -1633,7 +2024,9 @@ static int uet_handle_read(struct uib_qp *qp,
 	if (rc < 0) {
 		free(*owned_data);
 		*owned_data = NULL;
-		return -EOPNOTSUPP;
+		*response_code = rc == -ERANGE ? UIB_UET_SES_RC_BAD_ADDR :
+			UIB_UET_SES_RC_HOST_UNSUCCESS_CMPL;
+		return rc;
 	}
 	*data = *owned_data;
 	*data_len = length;
@@ -1764,7 +2157,8 @@ static int uet_handle_atomic(struct uib_qp *qp,
 			     const struct uib_uet_ses_req *ses,
 			     const uint8_t *data, size_t data_len,
 			     const void **response, size_t *response_len,
-			     uint8_t *result, int address_only)
+			     uint8_t *result, int address_only,
+			     uint8_t *response_code)
 {
 	const struct uib_uet_ses_atomic *atomic;
 	uint64_t address = be64toh(ses->buffer_offset);
@@ -1776,16 +2170,22 @@ static int uet_handle_atomic(struct uib_qp *qp,
 	int fetching;
 	int rc;
 
-	if (data_len < sizeof(*atomic))
+	if (data_len < sizeof(*atomic)) {
+		*response_code = UIB_UET_SES_RC_AMO_UNSUPP_SIZE;
 		return -EMSGSIZE;
+	}
 	atomic = (const struct uib_uet_ses_atomic *)data;
 	data += sizeof(*atomic);
 	data_len -= sizeof(*atomic);
 	width = uib_uet_atomic_datatype_size(atomic->datatype);
-	if (!width)
+	if (!width) {
+		*response_code = UIB_UET_SES_RC_AMO_UNSUPP_DT;
 		return -EAFNOSUPPORT;
-	if (address & (width - 1))
+	}
+	if (address & (width - 1)) {
+		*response_code = UIB_UET_SES_RC_AMO_UNALIGNED;
 		return -EINVAL;
+	}
 	if (uet_atomic_has_two_operands(atomic->opcode)) {
 		if (data_len == 32 && width == sizeof(uint64_t)) {
 			operand = uet_atomic_decode(data + 8, width);
@@ -1794,30 +2194,31 @@ static int uet_handle_atomic(struct uib_qp *qp,
 			operand = uet_atomic_decode(data, width);
 			swap = uet_atomic_decode(data + width, width);
 		} else {
+			*response_code = UIB_UET_SES_RC_AMO_UNSUPP_SIZE;
 			return -EMSGSIZE;
 		}
 	} else if (atomic->opcode != UIB_UET_AMO_READ) {
-		if (data_len != width)
+		if (data_len != width) {
+			*response_code = UIB_UET_SES_RC_AMO_UNSUPP_SIZE;
 			return -EMSGSIZE;
+		}
 		operand = uet_atomic_decode(data, width);
 	} else if (data_len) {
+		*response_code = UIB_UET_SES_RC_AMO_UNSUPP_SIZE;
 		return -EMSGSIZE;
 	}
-	mr = address_only ?
-		uib_mr_check_remote_address(qp->pd, address, width,
-					    UIB_ACCESS_REMOTE_ATOMIC |
-					    UIB_ACCESS_REMOTE_READ |
-					    UIB_ACCESS_REMOTE_WRITE) :
-		uib_mr_check_remote(qp->pd, rkey, address, width,
-				    UIB_ACCESS_REMOTE_ATOMIC |
-				    UIB_ACCESS_REMOTE_READ |
-				    UIB_ACCESS_REMOTE_WRITE);
+	mr = uet_lookup_remote_mr(qp, rkey, address, width,
+				  UIB_ACCESS_REMOTE_ATOMIC |
+				  UIB_ACCESS_REMOTE_READ |
+				  UIB_ACCESS_REMOTE_WRITE,
+				  address_only, response_code);
 	if (!mr)
 		return -EACCES;
 	is_signed = !(atomic->datatype & 1);
 	rc = uet_atomic_apply(atomic->opcode, is_signed, width, 0,
 			      operand, swap, &updated);
 	if (rc < 0) {
+		*response_code = UIB_UET_SES_RC_AMO_UNSUPP_OP;
 		uib_mr_put(mr);
 		return rc;
 	}
@@ -1834,8 +2235,11 @@ static int uet_handle_atomic(struct uib_qp *qp,
 		rc = uib_mr_place(mr, address, &updated, width);
 	pthread_mutex_unlock(&qp->lock);
 	uib_mr_put(mr);
-	if (rc < 0)
+	if (rc < 0) {
+		*response_code = rc == -ERANGE ? UIB_UET_SES_RC_BAD_ADDR :
+			UIB_UET_SES_RC_HOST_UNSUCCESS_CMPL;
 		return rc;
+	}
 	fetching = (ses->opcode & UIB_UET_SES_OPCODE_MASK) ==
 		UIB_UET_SES_FETCHING_ATOMIC;
 	if (fetching) {
@@ -1885,19 +2289,71 @@ static void uet_response_cache_store(struct uib_uet_qp *uet, uint32_t psn,
 	uet->response_cache[slot].valid = 1;
 }
 
+static void uet_mark_guaranteed(struct uib_uet_qp *uet, uint32_t psn)
+{
+	uint32_t slot;
+
+	slot = psn % UIB_UET_PDC_MPR;
+	uet->guaranteed[slot].psn = psn;
+	uet->guaranteed[slot].valid = 1;
+}
+
+static void uet_clear_guaranteed(struct uib_uet_qp *uet, uint32_t clear_psn)
+{
+	uint32_t i;
+
+	if (uet_psn_before(clear_psn, uet->rx_clear_psn))
+		return;
+	uet->rx_clear_psn = clear_psn;
+	for (i = 0; i < UIB_UET_PDC_MPR; i++) {
+		if (uet->guaranteed[i].valid &&
+		    !uet_psn_before(clear_psn, uet->guaranteed[i].psn))
+			uet->guaranteed[i].valid = 0;
+		if (uet->response_cache[i].valid &&
+		    !uet_psn_before(clear_psn, uet->response_cache[i].psn))
+			uet->response_cache[i].valid = 0;
+	}
+}
+
+static uint32_t uet_cack_psn(const struct uib_uet_qp *uet)
+{
+	uint32_t cack = uet->rx_base_psn - 1;
+	uint32_t i;
+
+	for (i = 0; i < UIB_UET_PDC_MPR; i++) {
+		if (!uet->guaranteed[i].valid)
+			continue;
+		if (!uet_psn_before(cack, uet->guaranteed[i].psn))
+			cack = uet->guaranteed[i].psn - 1;
+	}
+	return cack;
+}
+
+static void uet_apply_request_clear(struct uib_uet_qp *uet,
+				    const struct uib_uet_pds_req *request)
+{
+	int32_t offset;
+	uint32_t clear_psn;
+
+	offset = (int16_t)ntohs(request->clear_psn_offset);
+	clear_psn = ntohl(request->psn) + offset;
+	uet_clear_guaranteed(uet, clear_psn);
+}
+
 static int uet_parse_request(const struct uib_uet_pds_req *request, size_t len,
+			     size_t pds_len,
 			     struct uib_uet_ses_req *canonical,
 			     const uint8_t **data, size_t *data_len,
 			     uint8_t *request_header)
 {
-	const uint8_t *ses = (const uint8_t *)(request + 1);
+	const uint8_t *ses = (const uint8_t *)request + pds_len;
 	size_t header_len;
 
 	*request_header = uib_uet_prologue_next(&request->prologue);
 	switch (*request_header) {
 	case UIB_UET_NEXT_REQ_STD:
 		header_len = sizeof(*canonical);
-		if (len < sizeof(*request) + header_len)
+		if (len < pds_len + header_len)
 			return -EBADMSG;
 		memcpy(canonical, ses, header_len);
 		break;
@@ -1905,7 +2361,7 @@ static int uet_parse_request(const struct uib_uet_pds_req *request, size_t len,
 		const struct uib_uet_ses_req_medium *medium;
 
 		header_len = sizeof(*medium);
-		if (len < sizeof(*request) + header_len)
+		if (len < pds_len + header_len)
 			return -EBADMSG;
 		medium = (const struct uib_uet_ses_req_medium *)ses;
 		memset(canonical, 0, sizeof(*canonical));
@@ -1928,7 +2384,7 @@ static int uet_parse_request(const struct uib_uet_pds_req *request, size_t len,
 		const struct uib_uet_ses_req_small *small;
 
 		header_len = sizeof(*small);
-		if (len < sizeof(*request) + header_len)
+		if (len < pds_len + header_len)
 			return -EBADMSG;
 		small = (const struct uib_uet_ses_req_small *)ses;
 		memset(canonical, 0, sizeof(*canonical));
@@ -1948,142 +2404,259 @@ static int uet_parse_request(const struct uib_uet_pds_req *request, size_t len,
 		return -EBADMSG;
 	}
 	*data = ses + header_len;
-	*data_len = len - sizeof(*request) - header_len;
+	*data_len = len - pds_len - header_len;
 	return 0;
+}
+
+struct uet_request_result {
+	const void *data;
+	void *owned_data;
+	size_t data_len;
+	uint32_t modified_len;
+	uint32_t response_identity;
+	uint8_t response_code;
+	uint8_t guarantee_error;
+	uint8_t storage[16];
+};
+
+static int uet_accept_request(struct uib_qp *qp,
+			      const struct uib_uet_pds_req *request,
+			      size_t packet_len, uint8_t packet_type,
+			      uint8_t opcode, uint16_t msg_id, uint32_t psn,
+			      uint64_t receive_time_ns, int *duplicate,
+			      uint32_t *cack)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	const struct uib_uet_pds_cc_req *cc_request;
+	uint32_t credit_target;
+	int rc;
+
+	pthread_mutex_lock(&qp->lock);
+	if (packet_type == UIB_UET_PDS_TYPE_RUD_CC_REQ && uet->rccc_enabled) {
+		cc_request = (const struct uib_uet_pds_cc_req *)request;
+		uib_uet_rccc_request_unpack(cc_request->req_cc_state, NULL,
+					    &credit_target);
+		uib_uet_rccc_destination_update(&uet->rccc_destination,
+						credit_target,
+						receive_time_ns);
+	}
+	uet->dpdcid = ntohs(request->spdcid);
+	if (uib_uet_prologue_flags(&request->prologue) & UIB_UET_REQ_FLAG_SYN)
+		uet->state = UIB_UET_PDC_ESTABLISHED;
+	if (!uet->rx_initialized) {
+		uet->rx_base_psn = qp->rq_psn;
+		uet->rx_clear_psn = qp->rq_psn - 1;
+		uet->rx_initialized = 1;
+	}
+	uet_apply_request_clear(uet, request);
+	if (opcode == UIB_UET_SES_SEND && uet->recv_active &&
+	    uet->recv_msg_id != msg_id) {
+		uet_debug(qp, "defer request psn=%u msg=%u active_msg=%u",
+			  psn, msg_id, uet->recv_msg_id);
+		pthread_mutex_unlock(&qp->lock);
+		return 1;
+	}
+	rc = uet_rx_mark(uet, psn, duplicate);
+	if (!rc && !*duplicate &&
+	    uib_congestion_enabled(&uet->congestion))
+		uet->receiver_bytes += (uint32_t)packet_len + 40;
+	*cack = uet_cack_psn(uet);
+	pthread_mutex_unlock(&qp->lock);
+	uet_debug(qp, "rx request psn=%u cack=%u msg=%u duplicate=%d rc=%d",
+		  psn, *cack, msg_id, *duplicate, rc);
+	return rc;
+}
+
+static int uet_execute_request(struct uib_qp *qp,
+			       const struct uib_uet_pds_req *request,
+			       const struct uib_uet_ses_req *ses,
+			       const uint8_t *data, size_t data_len,
+			       uint8_t request_header, uint32_t psn,
+			       struct uet_request_result *result)
+{
+	uint8_t opcode;
+	int rc;
+
+	opcode = ses->opcode & UIB_UET_SES_OPCODE_MASK;
+	result->response_code = UIB_UET_SES_RC_OK;
+	if ((ses->flags & UIB_UET_SES_FLAG_IE) ||
+	    opcode == UIB_UET_SES_MSG_ERROR) {
+		result->response_code = UIB_UET_SES_RC_INITIATOR_ERROR;
+		uet_abort_receive(qp, UIB_WC_GENERAL_ERR);
+		return -ECANCELED;
+	}
+	switch (opcode) {
+	case UIB_UET_SES_NOOP:
+		if (data_len || ntohl(ses->request_len) ||
+		    (ses->flags & (UIB_UET_SES_FLAG_SOM |
+				   UIB_UET_SES_FLAG_EOM)) !=
+		    (UIB_UET_SES_FLAG_SOM | UIB_UET_SES_FLAG_EOM)) {
+			result->response_code = UIB_UET_SES_RC_UNSUPP_SIZE;
+			rc = -EMSGSIZE;
+		} else {
+			result->modified_len = 0;
+			rc = 0;
+		}
+		break;
+	case UIB_UET_SES_SEND:
+		rc = uet_handle_send(qp, ses, data, data_len, psn,
+				     ntohs(request->spdcid),
+				     &result->response_code);
+		result->modified_len = ntohl(ses->request_len);
+		break;
+	case UIB_UET_SES_WRITE:
+		rc = uet_handle_write(qp, ses, data, data_len,
+				      request_header == UIB_UET_NEXT_REQ_SMALL,
+				      &result->response_code);
+		result->modified_len = ntohl(ses->request_len);
+		break;
+	case UIB_UET_SES_READ:
+		rc = uet_handle_read(qp, ses, &result->data, &result->owned_data,
+				     &result->data_len,
+				     request_header == UIB_UET_NEXT_REQ_SMALL,
+				     &result->response_code);
+		result->modified_len = result->data_len;
+		break;
+	case UIB_UET_SES_FETCHING_ATOMIC:
+	case UIB_UET_SES_ATOMIC:
+		rc = uet_handle_atomic(qp, ses, data, data_len, &result->data,
+				       &result->data_len, result->storage,
+				       request_header == UIB_UET_NEXT_REQ_SMALL,
+				       &result->response_code);
+		result->modified_len = result->data_len;
+		break;
+	default:
+		result->response_code = UIB_UET_SES_RC_UNSUPP_OP;
+		rc = -EOPNOTSUPP;
+		break;
+	}
+	if (rc < 0)
+		result->modified_len = 0;
+	return rc;
+}
+
+static void uet_duplicate_response(struct uib_qp *qp, uint32_t psn,
+				   uint16_t msg_id,
+				   struct uet_request_result *result)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	int rc;
+
+	pthread_mutex_lock(&qp->lock);
+	rc = uet_response_cache_lookup(uet, psn, msg_id,
+				       &result->response_code,
+				       &result->modified_len, result->storage,
+				       &result->data_len);
+	pthread_mutex_unlock(&qp->lock);
+	if (!rc && result->data_len) {
+		result->data = result->storage;
+	} else if (rc < 0) {
+		result->response_code = UIB_UET_SES_RC_INITIATOR_ERROR;
+		result->modified_len = 0;
+		result->data_len = 0;
+	}
+}
+
+static int uet_record_message_error(struct uib_uet_qp *uet, uint16_t msg_id,
+				    uint32_t psn, uint8_t *response_code)
+{
+	uint32_t slot;
+
+	slot = msg_id % UIB_UET_PDC_MPR;
+	if (uet->message_error[slot].valid &&
+	    uet->message_error[slot].msg_id == msg_id) {
+		*response_code = uet->message_error[slot].response_code;
+		return uet->message_error[slot].first_psn == psn;
+	}
+	uet->message_error[slot].first_psn = psn;
+	uet->message_error[slot].msg_id = msg_id;
+	uet->message_error[slot].response_code = *response_code;
+	uet->message_error[slot].valid = 1;
+	return 1;
 }
 
 static int uet_handle_request(struct uib_qp *qp,
 			      const struct sockaddr_in *src,
 			      const void *packet, size_t len, int ecn_marked)
 {
-	const struct uib_uet_pds_req *req = packet;
-	struct uib_uet_ses_req canonical;
-	const struct uib_uet_ses_req *ses = &canonical;
+	const struct uib_uet_pds_req *request = packet;
+	struct uib_uet_ses_req ses;
+	struct uet_request_result result = {
+		.response_code = UIB_UET_SES_RC_OK,
+	};
+	struct uet_response_encoding encoding;
 	const uint8_t *data;
-	const void *response_data = NULL;
-	void *owned_response = NULL;
-	size_t data_len, response_len = 0;
 	struct uib_uet_qp *uet = qp->protocol_private;
-	uint32_t psn, cack;
-	uint8_t response_code = UIB_UET_SES_RC_OK;
-	uint8_t opcode;
-	uint8_t atomic_result[16];
-	uint32_t modified_len = 0;
-	uint8_t cached_data[16];
+	uint64_t receive_time_ns = uib_now_ns();
+	size_t data_len;
+	size_t pds_len;
+	uint32_t psn;
+	uint32_t cack;
 	uint16_t msg_id;
 	uint8_t request_header;
+	uint8_t packet_type;
+	uint8_t opcode;
 	int duplicate;
 	int rc;
-	uint64_t receive_time_ns = uib_now_ns();
 
-	if (len < sizeof(*req))
+	if (len < sizeof(*request))
 		return -EBADMSG;
-	rc = uet_parse_request(req, len, &canonical, &data, &data_len,
+	packet_type = uib_uet_prologue_type(&request->prologue);
+	pds_len = packet_type == UIB_UET_PDS_TYPE_RUD_CC_REQ ?
+		sizeof(struct uib_uet_pds_cc_req) : sizeof(*request);
+	if (len < pds_len)
+		return -EBADMSG;
+	rc = uet_parse_request(request, len, pds_len, &ses, &data, &data_len,
 			       &request_header);
 	if (rc < 0)
 		return rc;
-	psn = ntohl(req->psn);
-	msg_id = ntohs(ses->msg_id);
-	opcode = ses->opcode & UIB_UET_SES_OPCODE_MASK;
+	psn = ntohl(request->psn);
+	msg_id = ntohs(ses.msg_id);
+	opcode = ses.opcode & UIB_UET_SES_OPCODE_MASK;
+	rc = uet_accept_request(qp, request, len, packet_type, opcode, msg_id,
+				psn, receive_time_ns, &duplicate, &cack);
+	if (rc)
+		return rc < 0 ? rc : 0;
 
-	pthread_mutex_lock(&qp->lock);
-	uet->dpdcid = ntohs(req->spdcid);
-	if (uib_uet_prologue_flags(&req->prologue) & UIB_UET_REQ_FLAG_SYN)
-		uet->state = UIB_UET_PDC_ESTABLISHED;
-	if (!uet->rx_initialized) {
-		uet->rx_base_psn = qp->rq_psn;
-		uet->rx_initialized = 1;
-	}
-	if (opcode == UIB_UET_SES_SEND && uet->recv_active &&
-	    uet->recv_msg_id != msg_id) {
-		uet_debug(qp, "defer request psn=%u msg=%u active_msg=%u",
-			  psn, msg_id, uet->recv_msg_id);
-		pthread_mutex_unlock(&qp->lock);
-		return 0;
-	}
-	rc = uet_rx_mark(uet, psn, &duplicate);
-	if (!rc && !duplicate &&
-	    uib_congestion_enabled(&uet->congestion))
-		uet->receiver_bytes += (uint32_t)len + 40;
-	cack = uet->rx_base_psn - 1;
-	pthread_mutex_unlock(&qp->lock);
-	uet_debug(qp, "rx request psn=%u cack=%u msg=%u duplicate=%d rc=%d",
-		  psn, cack, ntohs(ses->msg_id), duplicate, rc);
-	if (rc < 0)
-		return rc;
-
-	response_code = uet_validate_session(qp, ses);
+	result.response_code = uet_validate_session(qp, &ses);
 	if (duplicate && opcode != UIB_UET_SES_READ) {
-		pthread_mutex_lock(&qp->lock);
-		rc = uet_response_cache_lookup(uet, psn, msg_id,
-					       &response_code, &modified_len,
-					       cached_data, &response_len);
-		pthread_mutex_unlock(&qp->lock);
-		if (!rc && response_len) {
-			response_data = cached_data;
-		} else if (rc < 0) {
-			response_code = UIB_UET_SES_RC_INITIATOR_ERROR;
-			modified_len = 0;
-			response_len = 0;
-		}
-	} else if (response_code == UIB_UET_SES_RC_OK) {
-		switch (opcode) {
-		case UIB_UET_SES_SEND:
-			rc = uet_handle_send(qp, ses, data, data_len, psn,
-					     ntohs(req->spdcid));
-			modified_len = ntohl(ses->request_len);
-			break;
-		case UIB_UET_SES_WRITE:
-			rc = uet_handle_write(qp, ses, data, data_len,
-					      request_header ==
-					      UIB_UET_NEXT_REQ_SMALL);
-			modified_len = ntohl(ses->request_len);
-			break;
-		case UIB_UET_SES_READ:
-			rc = uet_handle_read(qp, ses, &response_data,
-					     &owned_response,
-					     &response_len, request_header ==
-					     UIB_UET_NEXT_REQ_SMALL);
-			modified_len = response_len;
-			break;
-		case UIB_UET_SES_FETCHING_ATOMIC:
-		case UIB_UET_SES_ATOMIC:
-			rc = uet_handle_atomic(qp, ses, data, data_len,
-					       &response_data, &response_len,
-					       atomic_result, request_header ==
-					       UIB_UET_NEXT_REQ_SMALL);
-			modified_len = response_len;
-			break;
-		default:
-			rc = -EOPNOTSUPP;
-			break;
-		}
-		if (rc < 0)
-			modified_len = 0;
-		if (rc == -EACCES)
-			response_code = UIB_UET_SES_RC_BAD_MKEY;
-		else if (rc == -EAFNOSUPPORT)
-			response_code = UIB_UET_SES_RC_AMO_UNSUPP_DT;
-		else if (rc == -EMSGSIZE)
-			response_code = UIB_UET_SES_RC_AMO_UNSUPP_SIZE;
-		else if (rc == -EINVAL)
-			response_code = UIB_UET_SES_RC_AMO_UNALIGNED;
-		else if (rc == -EOPNOTSUPP)
-			response_code = UIB_UET_SES_RC_AMO_UNSUPP_OP;
-		else if (rc < 0)
-			response_code = UIB_UET_SES_RC_UNSUPP_OP;
+		uet_duplicate_response(qp, psn, msg_id, &result);
+	} else if (result.response_code == UIB_UET_SES_RC_OK) {
+		uet_execute_request(qp, request, &ses, data, data_len,
+				    request_header, psn, &result);
 	}
-	if (!duplicate && opcode != UIB_UET_SES_READ) {
-		pthread_mutex_lock(&qp->lock);
-		uet_response_cache_store(uet, psn, msg_id, response_code,
-					 modified_len, response_data, response_len);
-		pthread_mutex_unlock(&qp->lock);
+	pthread_mutex_lock(&qp->lock);
+	if (result.response_code != UIB_UET_SES_RC_OK)
+		result.guarantee_error = uet_record_message_error(
+			uet, msg_id, psn, &result.response_code);
+	if (!duplicate && opcode != UIB_UET_SES_READ)
+		uet_response_cache_store(uet, psn, msg_id, result.response_code,
+					 result.modified_len, result.data,
+					 result.data_len);
+	pthread_mutex_unlock(&qp->lock);
+	if (result.response_code != UIB_UET_SES_RC_OK) {
+		free(result.owned_data);
+		result.owned_data = NULL;
+		result.data = NULL;
+		result.data_len = 0;
+		result.modified_len = 0;
 	}
+	encoding = uet_response_construct(result.response_code,
+					  (uint32_t)result.data_len,
+					  result.modified_len,
+					  ntohl(ses.request_len),
+					  result.guarantee_error);
+	pthread_mutex_lock(&qp->lock);
+	if (encoding.guaranteed_delivery)
+		uet_mark_guaranteed(uet, psn);
+	cack = uet_cack_psn(uet);
+	pthread_mutex_unlock(&qp->lock);
 
-	rc = uet_send_response(qp, src, req, ses, cack, response_code,
-			       response_data, response_len, modified_len,
+	rc = uet_send_response(qp, src, request, &ses, cack, &encoding,
+			       result.data, result.data_len,
+			       result.modified_len,
 			       receive_time_ns, ecn_marked, request_header);
-	free(owned_response);
+	free(result.owned_data);
 	return rc;
 }
 
@@ -2134,247 +2707,363 @@ static int uet_track_read_fragment(struct uib_uet_wr_track *track,
 	return 0;
 }
 
-static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
-{
-	const struct uib_uet_pds_ack *ack = packet;
-	const struct uib_uet_pds_ack_ext *extension = NULL;
-	const struct uib_uet_ses_rsp *response = NULL;
-	const struct uib_uet_ses_rsp_data *response_data = NULL;
-	const struct uib_uet_ses_rsp_data_small *small_response = NULL;
+struct uet_ack_view {
+	const struct uib_uet_pds_ack *ack;
+	const struct uib_uet_pds_ack_ext *extension;
 	const uint8_t *data;
-	struct uib_uet_qp *uet = qp->protocol_private;
-	struct uib_uet_outstanding *next_out;
-	struct uib_uet_outstanding *out;
-	struct uib_uet_outstanding *exact;
-	uint32_t cack, ack_psn;
-	uint16_t msg_id, packed;
-	size_t header_len = sizeof(*ack);
 	size_t data_len;
-	uint32_t message_offset = 0;
+	uint32_t cack;
+	uint32_t ack_psn;
+	uint32_t message_offset;
 	uint32_t modified_len;
+	uint32_t response_identity;
+	uint16_t msg_id;
 	uint8_t response_code;
+	uint8_t has_data_response;
+};
+
+static int uet_parse_ack(const void *packet, size_t len,
+			 struct uet_ack_view *view)
+{
+	const struct uib_uet_ses_rsp_data_small *small;
+	const struct uib_uet_ses_rsp_data *response_data;
+	const struct uib_uet_ses_rsp *response;
+	size_t header_len;
+	uint32_t small_request_psn;
+	uint16_t packed;
 	uint8_t next;
 	int32_t offset;
-	uint32_t received_units = 0;
-	uint32_t service_time_ns = 0;
-	uint8_t restore = 0, penalty = 0;
 
-	if (uib_uet_prologue_type(&ack->prologue) == UIB_UET_PDS_TYPE_ACK_CC) {
-		extension = (const struct uib_uet_pds_ack_ext *)(ack + 1);
-		header_len += sizeof(struct uib_uet_pds_ack_ext);
+	memset(view, 0, sizeof(*view));
+	small_request_psn = 0;
+	view->ack = packet;
+	header_len = sizeof(*view->ack);
+	if (uib_uet_prologue_type(&view->ack->prologue) ==
+	    UIB_UET_PDS_TYPE_ACK_CC) {
+		if (len < header_len + sizeof(*view->extension))
+			return -EBADMSG;
+		view->extension = (const struct uib_uet_pds_ack_ext *)
+			((const uint8_t *)packet + header_len);
+		header_len += sizeof(*view->extension);
 	}
-	next = uib_uet_prologue_next(&ack->prologue);
+	next = uib_uet_prologue_next(&view->ack->prologue);
 	if (next == UIB_UET_NEXT_RSP_DATA) {
 		if (len < header_len + sizeof(*response_data))
 			return -EBADMSG;
 		response_data = (const struct uib_uet_ses_rsp_data *)
 			((const uint8_t *)packet + header_len);
-		data = (const uint8_t *)(response_data + 1);
-		data_len = len - header_len - sizeof(*response_data);
+		view->data = (const uint8_t *)(response_data + 1);
+		view->data_len = len - header_len - sizeof(*response_data);
 		if ((ntohs(response_data->payload_len) &
-		     UIB_UET_SES_LENGTH_MASK) != data_len)
+		     UIB_UET_SES_LENGTH_MASK) != view->data_len)
 			return -EBADMSG;
-		msg_id = ntohs(response_data->request_msg_id);
+		view->msg_id = ntohs(response_data->request_msg_id);
+		view->response_identity = ntohl(response_data->index_gen_job_id);
 		packed = ntohs(response_data->list_opcode_version_rc);
-		modified_len = ntohl(response_data->modified_len);
-		message_offset = ntohl(response_data->message_offset);
+		view->modified_len = ntohl(response_data->modified_len);
+		view->message_offset = ntohl(response_data->message_offset);
+		view->has_data_response = 1;
 	} else if (next == UIB_UET_NEXT_RSP_DATA_SMALL) {
-		if (len < header_len + sizeof(*small_response))
+		if (len < header_len + sizeof(*small))
 			return -EBADMSG;
-		small_response = (const struct uib_uet_ses_rsp_data_small *)
+		small = (const struct uib_uet_ses_rsp_data_small *)
 			((const uint8_t *)packet + header_len);
-		data = (const uint8_t *)(small_response + 1);
-		data_len = len - header_len - sizeof(*small_response);
-		if ((ntohs(small_response->payload_len) &
-		     UIB_UET_SES_LENGTH_MASK) != data_len)
+		view->data = (const uint8_t *)(small + 1);
+		view->data_len = len - header_len - sizeof(*small);
+		if ((ntohs(small->payload_len) & UIB_UET_SES_LENGTH_MASK) !=
+		    view->data_len)
 			return -EBADMSG;
-		msg_id = (uint16_t)ntohl(small_response->request_psn);
-		packed = ntohs(small_response->list_opcode_version_rc);
-		modified_len = (uint32_t)data_len;
+		small_request_psn = ntohl(small->request_psn);
+		view->msg_id = (uint16_t)small_request_psn;
+		view->response_identity = ntohl(small->index_gen_job_id);
+		packed = ntohs(small->list_opcode_version_rc);
+		view->modified_len = (uint32_t)view->data_len;
+		view->has_data_response = 1;
 	} else if (next == UIB_UET_NEXT_RSP) {
 		if (len < header_len + sizeof(*response))
 			return -EBADMSG;
 		response = (const struct uib_uet_ses_rsp *)
 			((const uint8_t *)packet + header_len);
-		data = (const uint8_t *)(response + 1);
-		data_len = len - header_len - sizeof(*response);
-		if (data_len)
+		view->data = (const uint8_t *)(response + 1);
+		view->data_len = len - header_len - sizeof(*response);
+		if (view->data_len)
 			return -EBADMSG;
-		msg_id = ntohs(response->msg_id);
+		view->msg_id = ntohs(response->msg_id);
+		view->response_identity = ntohl(response->index_gen_job_id);
 		packed = ntohs(response->list_opcode_version_rc);
-		modified_len = ntohl(response->modified_len);
+		view->modified_len = ntohl(response->modified_len);
 	} else {
 		return -EBADMSG;
 	}
-	cack = ntohl(ack->cack_psn);
-	offset = (int16_t)ntohs(ack->ack_psn_offset);
-	ack_psn = cack + offset;
-	if (small_response && ntohl(small_response->request_psn) != ack_psn)
+	view->cack = ntohl(view->ack->cack_psn);
+	offset = (int16_t)ntohs(view->ack->ack_psn_offset);
+	view->ack_psn = view->cack + offset;
+	if (next == UIB_UET_NEXT_RSP_DATA_SMALL &&
+	    small_request_psn != view->ack_psn)
 		return -EBADMSG;
-	response_code = packed & UIB_UET_SES_RSP_RC_MASK;
-	uet_debug(qp, "rx ack psn=%u cack=%u msg=%u rc=%u", ack_psn, cack,
-		  msg_id, response_code);
+	view->response_code = packed & UIB_UET_SES_RSP_RC_MASK;
+	return 0;
+}
 
-	pthread_mutex_lock(&qp->lock);
-	uet->dpdcid = ntohs(ack->spdcid);
-	uet->state = UIB_UET_PDC_ESTABLISHED;
-	exact = uet_find_outstanding(uet, ack_psn, msg_id);
-	if (exact && exact->entropy) {
-		uet->paths[exact->path_index].acknowledged++;
-		if (uet->multipath.mode == UIB_UET_MULTIPATH_PATH_AWARE &&
-		    (uib_uet_prologue_flags(&ack->prologue) &
-		     UIB_UET_ACK_FLAG_M)) {
-			uet->paths[exact->path_index].ecn_marks++;
-			uet->paths[exact->path_index].blocked_until_ns =
-				uib_now_ns() + uet->multipath.ecn_hold_ns;
+static void uet_ack_path_feedback(struct uib_uet_qp *uet,
+				  const struct uet_ack_view *view,
+				  struct uib_uet_outstanding *out)
+{
+	if (!out || !out->entropy)
+		return;
+	uet->paths[out->path_index].acknowledged++;
+	if (uet->multipath.mode != UIB_UET_MULTIPATH_PATH_AWARE ||
+	    !(uib_uet_prologue_flags(&view->ack->prologue) &
+	      UIB_UET_ACK_FLAG_M))
+		return;
+	uet->paths[out->path_index].ecn_marks++;
+	uet->paths[out->path_index].blocked_until_ns =
+		uib_now_ns() + uet->multipath.ecn_hold_ns;
+}
+
+static void uet_ack_congestion_feedback(struct uib_uet_qp *uet,
+					 const struct uet_ack_view *view,
+					 struct uib_uet_outstanding *out)
+{
+	const struct uib_uet_nscc_wire_state *cc_state;
+	const struct uib_uet_rccc_wire_state *credit_state;
+	struct uib_uet_outstanding *pending;
+	struct uib_congestion_ack event = {0};
+	uint32_t cumulative_credit;
+	uint32_t received_units = 0;
+	uint32_t service_time_ns = 0;
+	uint32_t delta;
+	uint16_t cc_fields;
+	uint8_t cc_type;
+	uint8_t restore = 0;
+	uint8_t penalty = 0;
+
+	if (!uib_congestion_enabled(&uet->congestion) || !view->extension)
+		return;
+	cc_fields = ntohs(view->extension->cc_type_flags_mpr);
+	cc_type = (cc_fields >> UIB_UET_CC_TYPE_SHIFT) &
+		UIB_UET_CC_TYPE_MASK;
+	if (cc_type == UIB_UET_CC_TYPE_CREDIT) {
+		credit_state = (const struct uib_uet_rccc_wire_state *)
+			&view->extension->ack_cc_state;
+		uib_uet_rccc_wire_unpack(credit_state, &cumulative_credit, NULL);
+		for (pending = uet->ack_head; pending;
+		     pending = pending->ack_next) {
+			if (uet_psn_before(view->cack, pending->psn))
+				break;
+			if (UINT32_MAX - event.newly_received <
+			    pending->nominal_len) {
+				event.newly_received = UINT32_MAX;
+				break;
+			}
+			event.newly_received += pending->nominal_len;
 		}
+		if (out && uet_out_requires_response(out))
+			event.newly_received =
+				UINT32_MAX - event.newly_received < out->nominal_len ?
+				UINT32_MAX : event.newly_received + out->nominal_len;
+		event.credit_valid = 1;
+		event.cumulative_credit = cumulative_credit;
+		goto common;
 	}
-	if (uib_congestion_enabled(&uet->congestion) && extension) {
-		const struct uib_uet_nscc_wire_state *cc_state =
-			(const struct uib_uet_nscc_wire_state *)
-			&extension->ack_cc_state;
-		struct uib_congestion_ack congestion_ack = {0};
-		uint32_t delta;
+	if (cc_type != UIB_UET_CC_TYPE_NSCC)
+		return;
+	cc_state = (const struct uib_uet_nscc_wire_state *)
+		&view->extension->ack_cc_state;
+	uib_uet_nscc_wire_unpack(cc_state, &service_time_ns, &restore,
+				 &penalty, &received_units, NULL);
+	delta = (received_units - uet->previous_received_units) &
+		UIB_UET_NSCC_RCVD_MASK;
+	if (delta < 0x00800000U) {
+		event.newly_received = delta << 8;
+		uet->previous_received_units = received_units;
+	}
+	event.service_time_ns = service_time_ns;
+	event.receiver_cwnd_penalty = penalty;
+	event.restore_cwnd = restore;
+common:
+	event.ack_time_ns = uib_now_ns();
+	event.ecn_marked = !!(uib_uet_prologue_flags(&view->ack->prologue) &
+			       UIB_UET_ACK_FLAG_M);
+	event.retransmit = !!(uib_uet_prologue_flags(&view->ack->prologue) &
+			       UIB_UET_ACK_FLAG_RETX);
+	if (out) {
+		event.tx_time_ns = out->tx_time_ns;
+		event.tx_retries = out->retries;
+	} else {
+		event.tx_retries = 2;
+	}
+	uib_congestion_on_ack(&uet->congestion, &event);
+}
 
-		uib_uet_nscc_wire_unpack(cc_state, &service_time_ns, &restore,
-					 &penalty, &received_units, NULL);
-		delta = (received_units - uet->previous_received_units) &
-			UIB_UET_NSCC_RCVD_MASK;
-		if (delta < 0x00800000U) {
-			congestion_ack.newly_received = delta << 8;
-			uet->previous_received_units = received_units;
-		}
-		congestion_ack.ack_time_ns = uib_now_ns();
-		congestion_ack.receiver_cwnd_penalty = penalty;
-		congestion_ack.restore_cwnd = restore;
-		congestion_ack.ecn_marked =
-			!!(uib_uet_prologue_flags(&ack->prologue) &
-			   UIB_UET_ACK_FLAG_M);
-		congestion_ack.retransmit =
-			!!(uib_uet_prologue_flags(&ack->prologue) &
-			   UIB_UET_ACK_FLAG_RETX);
-		if (exact) {
-			congestion_ack.tx_time_ns = exact->tx_time_ns;
-			congestion_ack.tx_retries = exact->retries;
-		} else {
-			congestion_ack.tx_retries = 2;
-		}
-		uib_congestion_on_ack(&uet->congestion, &congestion_ack);
-	}
-	if (response_code != UIB_UET_SES_RC_OK && exact) {
-		struct uib_uet_wr_track *track = exact->track;
-		enum uib_wc_status status = response_code == UIB_UET_SES_RC_BAD_MKEY ?
-			UIB_WC_REM_ACCESS_ERR : UIB_WC_REM_OP_ERR;
+static void uet_complete_cumulative_locked(struct uib_qp *qp, uint32_t cack)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_outstanding *next;
+	struct uib_uet_outstanding *out;
 
-		uet_remove_track_locked(qp, track, status);
-		pthread_mutex_unlock(&qp->lock);
-		return -EREMOTEIO;
-	}
-	if (response_code != UIB_UET_SES_RC_OK) {
-		pthread_mutex_unlock(&qp->lock);
-		return 0;
-	}
-
-	for (out = uet->ack_head; out; out = next_out) {
-		next_out = out->ack_next;
+	for (out = uet->ack_head; out; out = next) {
+		next = out->ack_next;
 		if (uet_psn_before(cack, out->psn))
 			break;
 		uet_complete_out_locked(qp, out, UIB_WC_SUCCESS);
 	}
-	exact = uet_find_outstanding(uet, ack_psn, msg_id);
-	if (!exact) {
-		uet_drain_locked(qp);
-		pthread_mutex_unlock(&qp->lock);
+}
+
+static int uet_atomic_response_data(const struct uib_uet_wr_track *track,
+				    const struct uet_ack_view *view,
+				    uint8_t *storage,
+				    const uint8_t **result)
+{
+	uint64_t value;
+	size_t width;
+	size_t i;
+
+	*result = view->data;
+	if (track->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
+	    track->opcode == UIB_WR_ATOMIC_CMP_SWAP) {
+		if (view->data_len != sizeof(value))
+			return -EBADMSG;
+		memcpy(&value, view->data, sizeof(value));
+		value = be64toh(value);
+		memcpy(storage, &value, sizeof(value));
+		*result = storage;
 		return 0;
 	}
+	if (track->opcode != UIB_WR_UET_ATOMIC)
+		return 0;
+	width = uib_uet_atomic_datatype_size(track->atomic_datatype);
+	if (view->data_len != width)
+		return -EBADMSG;
+	for (i = 0; i < width; i++)
+		storage[i] = view->data[width - i - 1];
+	*result = storage;
+	return 0;
+}
 
-	if (uet_out_requires_response(exact)) {
-		size_t consumed = 0;
-		uint64_t atomic_value;
-		uint8_t atomic_bytes[16];
-		const uint8_t *result_data = data;
-		int rc;
+static int uet_apply_read_response_locked(struct uib_qp *qp,
+					  struct uib_uet_outstanding *out,
+					  const struct uet_ack_view *view)
+{
+	uint8_t atomic_storage[16];
+	const uint8_t *result;
+	size_t consumed = 0;
+	int rc;
 
-		if (!exact->track->total_len && !response_data &&
-		    !small_response && !modified_len) {
-			uet_complete_out_locked(qp, exact, UIB_WC_SUCCESS);
-			uet_drain_locked(qp);
-			pthread_mutex_unlock(&qp->lock);
-			return 0;
+	if (!out->track->total_len && !view->has_data_response &&
+	    !view->modified_len) {
+		uet_complete_out_locked(qp, out, UIB_WC_SUCCESS);
+		return 0;
+	}
+	if (!view->has_data_response ||
+	    view->modified_len != out->track->total_len ||
+	    view->message_offset > view->modified_len ||
+	    view->data_len > view->modified_len - view->message_offset) {
+		uet_remove_track_locked(qp, out->track, UIB_WC_REM_OP_ERR);
+		return -EBADMSG;
+	}
+	rc = uet_track_read_fragment(out->track, view->message_offset,
+				     (uint32_t)view->data_len);
+	if (rc == 1)
+		return 0;
+	if (rc < 0) {
+		uet_remove_track_locked(qp, out->track, UIB_WC_REM_OP_ERR);
+		return rc;
+	}
+	rc = uet_atomic_response_data(out->track, view, atomic_storage,
+				      &result);
+	if (rc < 0) {
+		uet_remove_track_locked(qp, out->track, UIB_WC_REM_OP_ERR);
+		return rc;
+	}
+	rc = uib_qp_scatter(qp->pd, out->track->read_sgl,
+			    out->track->read_num_sge, view->message_offset,
+			    result, view->data_len, &consumed);
+	if (rc < 0 || consumed != view->data_len) {
+		uet_remove_track_locked(qp, out->track, UIB_WC_LOC_PROT_ERR);
+		return rc < 0 ? rc : -EMSGSIZE;
+	}
+	if (out->track->read_received == out->track->total_len)
+		uet_complete_out_locked(qp, out, UIB_WC_SUCCESS);
+	return 0;
+}
+
+static enum uib_wc_status uet_response_wc_status(uint8_t response_code)
+{
+	switch (response_code) {
+	case UIB_UET_SES_RC_AT_INVALID:
+	case UIB_UET_SES_RC_AT_PERM:
+	case UIB_UET_SES_RC_AT_ATS_ERROR:
+	case UIB_UET_SES_RC_AT_NO_TRANS:
+	case UIB_UET_SES_RC_AT_OUT_OF_RANGE:
+	case UIB_UET_SES_RC_PERM_VIOLATION:
+	case UIB_UET_SES_RC_OP_VIOLATION:
+	case UIB_UET_SES_RC_BAD_INDEX:
+	case UIB_UET_SES_RC_BAD_PID:
+	case UIB_UET_SES_RC_BAD_JOB_ID:
+	case UIB_UET_SES_RC_BAD_MKEY:
+	case UIB_UET_SES_RC_BAD_ADDR:
+		return UIB_WC_REM_ACCESS_ERR;
+	default:
+		return UIB_WC_REM_OP_ERR;
+	}
+}
+
+static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_outstanding *out;
+	struct uet_ack_view view;
+	enum uib_wc_status status;
+	int clear_required;
+	int rc;
+
+	rc = uet_parse_ack(packet, len, &view);
+	if (rc < 0)
+		return rc;
+	uet_debug(qp, "rx ack psn=%u cack=%u msg=%u rc=%u", view.ack_psn,
+		  view.cack, view.msg_id, view.response_code);
+	pthread_mutex_lock(&qp->lock);
+	uet->dpdcid = ntohs(view.ack->spdcid);
+	uet->state = UIB_UET_PDC_ESTABLISHED;
+	out = uet_find_outstanding(uet, view.ack_psn, view.msg_id);
+	uet_ack_path_feedback(uet, &view, out);
+	uet_ack_congestion_feedback(uet, &view, out);
+	clear_required = !!(uib_uet_prologue_flags(&view.ack->prologue) &
+			    UIB_UET_ACK_FLAG_REQ_CLEAR);
+	if (clear_required &&
+	    uet_psn_before(uet->tx_clear_psn, view.ack_psn))
+		uet->tx_clear_psn = view.ack_psn;
+	if (view.response_code != UIB_UET_SES_RC_OK) {
+		if (out) {
+			out->track->response_code = view.response_code;
+			status = uet_response_wc_status(view.response_code);
+			uet_remove_track_locked(qp, out->track, status);
 		}
-		if ((!response_data && !small_response) ||
-		    modified_len != exact->track->total_len ||
-		    message_offset > modified_len ||
-		    data_len > modified_len - message_offset) {
-			struct uib_uet_wr_track *track = exact->track;
-
-			uet_remove_track_locked(qp, track, UIB_WC_REM_OP_ERR);
-			pthread_mutex_unlock(&qp->lock);
-			return -EBADMSG;
-		}
-		rc = uet_track_read_fragment(exact->track, message_offset,
-					     (uint32_t)data_len);
-		if (rc == 1) {
-			uet_drain_locked(qp);
-			pthread_mutex_unlock(&qp->lock);
-			return 0;
-		}
-		if (rc < 0) {
-			struct uib_uet_wr_track *track = exact->track;
-
-			uet_remove_track_locked(qp, track, UIB_WC_REM_OP_ERR);
-			pthread_mutex_unlock(&qp->lock);
-			return rc;
-		}
-		if (exact->track->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
-		    exact->track->opcode == UIB_WR_ATOMIC_CMP_SWAP) {
-			if (data_len != sizeof(atomic_value)) {
-				struct uib_uet_wr_track *track = exact->track;
-
-				uet_remove_track_locked(qp, track,
-							UIB_WC_REM_OP_ERR);
-				pthread_mutex_unlock(&qp->lock);
-				return -EBADMSG;
-			}
-			memcpy(&atomic_value, data, sizeof(atomic_value));
-			atomic_value = be64toh(atomic_value);
-			result_data = (const uint8_t *)&atomic_value;
-		} else if (exact->track->opcode == UIB_WR_UET_ATOMIC) {
-			size_t width = uib_uet_atomic_datatype_size(
-				exact->track->atomic_datatype);
-			size_t i;
-
-			if (data_len != width) {
-				struct uib_uet_wr_track *track = exact->track;
-
-				uet_remove_track_locked(qp, track,
-							UIB_WC_REM_OP_ERR);
-				pthread_mutex_unlock(&qp->lock);
-				return -EBADMSG;
-			}
-			for (i = 0; i < width; i++)
-				atomic_bytes[i] = data[width - i - 1];
-			result_data = atomic_bytes;
-		}
-		rc = uib_qp_scatter(qp->pd, exact->track->read_sgl,
-				    exact->track->read_num_sge,
-				    message_offset, result_data, data_len,
-				    &consumed);
-		if (rc < 0 || consumed != data_len) {
-			struct uib_uet_wr_track *track = exact->track;
-
-			uet_remove_track_locked(qp, track, UIB_WC_LOC_PROT_ERR);
-			pthread_mutex_unlock(&qp->lock);
-			return rc < 0 ? rc : -EMSGSIZE;
-		}
-		if (exact->track->read_received == exact->track->total_len)
-			uet_complete_out_locked(qp, exact, UIB_WC_SUCCESS);
+		pthread_mutex_unlock(&qp->lock);
+		if (clear_required)
+			uet_send_control(qp, &qp->remote_addr,
+					 UIB_UET_CONTROL_CLEAR_COMMAND,
+					 htonl(view.ack_psn));
+		return out ? -EREMOTEIO : 0;
+	}
+	uet_complete_cumulative_locked(qp, view.cack);
+	out = uet_find_outstanding(uet, view.ack_psn, view.msg_id);
+	if (!out) {
+		rc = 0;
+	} else if (uet_out_requires_response(out)) {
+		rc = uet_apply_read_response_locked(qp, out, &view);
 	} else {
-		uet_complete_out_locked(qp, exact, UIB_WC_SUCCESS);
+		uet_complete_out_locked(qp, out, UIB_WC_SUCCESS);
+		rc = 0;
 	}
 	uet_drain_locked(qp);
 	pthread_mutex_unlock(&qp->lock);
-	return 0;
+	if (clear_required)
+		uet_send_control(qp, &qp->remote_addr,
+				 UIB_UET_CONTROL_CLEAR_COMMAND,
+				 htonl(view.ack_psn));
+	return rc;
 }
 
 static int uet_handle_nack(struct uib_qp *qp, const void *packet, size_t len)
@@ -2406,6 +3095,76 @@ static int uet_handle_nack(struct uib_qp *qp, const void *packet, size_t len)
 	return found ? -EREMOTEIO : 0;
 }
 
+static int uet_handle_credit_request(struct uib_qp *qp,
+				     const struct sockaddr_in *source,
+				     const struct uib_uet_pds_control *control)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	uint32_t cumulative_credit;
+	uint32_t credit_target;
+	uint32_t payload;
+
+	if (!uet->rccc_enabled)
+		return -EOPNOTSUPP;
+	uib_uet_rccc_request_unpack(control->payload, NULL, &credit_target);
+	pthread_mutex_lock(&qp->lock);
+	uet->dpdcid = ntohs(control->spdcid);
+	uet->state = UIB_UET_PDC_ESTABLISHED;
+	cumulative_credit = uib_uet_rccc_destination_update(
+		&uet->rccc_destination, credit_target, uib_now_ns());
+	pthread_mutex_unlock(&qp->lock);
+	payload = uet_rccc_credit_pack(cumulative_credit);
+	return uet_send_control(qp, source, UIB_UET_CONTROL_CREDIT, payload);
+}
+
+static int uet_handle_credit(struct uib_qp *qp,
+			     const struct uib_uet_pds_control *control)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_rccc *rccc;
+	uint32_t cumulative_credit;
+	int rc;
+
+	if (!uet->rccc_enabled)
+		return -EOPNOTSUPP;
+	cumulative_credit = uet_rccc_credit_unpack(control->payload);
+	pthread_mutex_lock(&qp->lock);
+	rccc = (struct uib_uet_rccc *)uet->congestion.state.bytes;
+	uib_uet_rccc_on_credit(rccc, cumulative_credit);
+	uet->credit_request_deadline_ns = 0;
+	rc = uet_drain_locked(qp);
+	pthread_mutex_unlock(&qp->lock);
+	return rc;
+}
+
+static int uet_handle_control(struct uib_qp *qp,
+			      const struct sockaddr_in *source,
+			      const void *packet, size_t len)
+{
+	const struct uib_uet_pds_control *control = packet;
+	uint8_t control_type;
+
+	if (len < sizeof(*control))
+		return -EBADMSG;
+	if (control->psn)
+		return -EBADMSG;
+	control_type = uib_uet_prologue_next(&control->prologue);
+	switch (control_type) {
+	case UIB_UET_CONTROL_CREDIT_REQUEST:
+		return uet_handle_credit_request(qp, source, control);
+	case UIB_UET_CONTROL_CREDIT:
+		return uet_handle_credit(qp, control);
+	case UIB_UET_CONTROL_CLEAR_COMMAND:
+		pthread_mutex_lock(&qp->lock);
+		uet_clear_guaranteed(qp->protocol_private,
+				     ntohl(control->payload));
+		pthread_mutex_unlock(&qp->lock);
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
 static int uet_handle_packet(struct uib_qp *qp,
 			     const struct sockaddr_in *src,
 			     const void *packet, size_t len,
@@ -2417,6 +3176,7 @@ static int uet_handle_packet(struct uib_qp *qp,
 		return -EBADMSG;
 	switch (uib_uet_prologue_type(prologue)) {
 	case UIB_UET_PDS_TYPE_RUD_REQ:
+	case UIB_UET_PDS_TYPE_RUD_CC_REQ:
 		return uet_handle_request(qp, src, packet, len,
 					  meta && meta->ecn == IPTOS_ECN_CE);
 	case UIB_UET_PDS_TYPE_ACK:
@@ -2424,6 +3184,8 @@ static int uet_handle_packet(struct uib_qp *qp,
 		return uet_handle_ack(qp, packet, len);
 	case UIB_UET_PDS_TYPE_NACK:
 		return uet_handle_nack(qp, packet, len);
+	case UIB_UET_PDS_TYPE_CTRL_MSG:
+		return uet_handle_control(qp, src, packet, len);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -2466,351 +3228,494 @@ static struct uib_uet_wr_track *uet_alloc_track(struct uib_qp *qp,
 	return track;
 }
 
-static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
-{
-	struct uib_uet_qp *uet = qp->protocol_private;
+struct uet_post_context {
+	struct uib_uet_qp *uet;
 	struct uib_uet_wr_track *track;
-	const uint8_t *message = NULL;
-	uint8_t *owned_message = NULL;
-	struct sockaddr_in dst = qp->remote_addr;
+	struct sockaddr_in destination;
+	const uint8_t *message;
+	uint8_t *owned_message;
 	struct uib_mr *mr;
-	uint32_t total_len = 0;
-	uint32_t chunk_max, packets;
-	uint16_t wr_msg_id;
+	uint32_t total_len;
+	uint32_t chunk_max;
+	uint32_t packets;
+	uint16_t msg_id;
 	uint8_t ses_opcode;
-	uint8_t request_header = UIB_UET_NEXT_REQ_STD;
-	int fetching_atomic;
-	int rc = 0;
+	uint8_t request_header;
+	uint8_t fetching_atomic;
+	size_t pds_len;
+};
+
+static void uet_post_context_release(struct uet_post_context *context)
+{
+	uib_mr_put(context->mr);
+	free(context->owned_message);
+}
+
+static int uet_ses_opcode(const struct uib_send_wr *wr, uint8_t *opcode)
+{
+	switch (wr->opcode) {
+	case UIB_WR_SEND:
+	case UIB_WR_SEND_WITH_IMM:
+		*opcode = UIB_UET_SES_SEND;
+		return 0;
+	case UIB_WR_RDMA_WRITE:
+		*opcode = UIB_UET_SES_WRITE;
+		return 0;
+	case UIB_WR_RDMA_READ:
+		*opcode = UIB_UET_SES_READ;
+		return 0;
+	case UIB_WR_ATOMIC_FETCH_ADD:
+	case UIB_WR_ATOMIC_CMP_SWAP:
+		*opcode = UIB_UET_SES_FETCHING_ATOMIC;
+		return 0;
+	case UIB_WR_UET_ATOMIC:
+		*opcode = wr->atomic.uet_fetching ?
+			UIB_UET_SES_FETCHING_ATOMIC : UIB_UET_SES_ATOMIC;
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static int uet_post_total(const struct uib_send_wr *wr, uint32_t *total)
+{
 	int i;
-	uint32_t packet_index;
 
-	fetching_atomic = wr->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
-		wr->opcode == UIB_WR_ATOMIC_CMP_SWAP ||
-		(wr->opcode == UIB_WR_UET_ATOMIC &&
-		 wr->atomic.uet_fetching);
-
+	*total = 0;
 	for (i = 0; i < wr->num_sge; i++) {
-		if (UINT32_MAX - total_len < wr->sg_list[i].length)
+		if (UINT32_MAX - *total < wr->sg_list[i].length)
 			return -EMSGSIZE;
-		total_len += wr->sg_list[i].length;
+		*total += wr->sg_list[i].length;
 	}
-	mr = NULL;
-	if (wr->opcode != UIB_WR_RDMA_READ && !fetching_atomic) {
-		if (wr->num_sge == 1) {
-			mr = uib_mr_lookup_local(qp->pd, wr->sg_list[0].lkey,
-				(const void *)(uintptr_t)wr->sg_list[0].addr,
-				wr->sg_list[0].length, 0);
-			if (!mr)
-				return -EACCES;
-			if (mr->kind == UIB_MR_HOST)
-				message = (const uint8_t *)(uintptr_t)
-					wr->sg_list[0].addr;
-			else {
-				uib_mr_put(mr);
-				mr = NULL;
-			}
-		}
-		if (!message) {
-			owned_message = malloc(total_len ? total_len : 1);
-			if (!owned_message)
-				return -ENOMEM;
-			rc = uib_qp_gather(qp->pd, wr->sg_list, wr->num_sge,
-					   owned_message, total_len);
-			if (rc < 0) {
-				free(owned_message);
-				return rc;
-			}
-			message = owned_message;
-		}
-	}
+	return 0;
+}
 
-	chunk_max = qp->path_mtu > sizeof(struct uib_uet_pds_req) +
-			 sizeof(struct uib_uet_ses_req) ?
-		qp->path_mtu - sizeof(struct uib_uet_pds_req) -
-			sizeof(struct uib_uet_ses_req) : 0;
+static int uet_prepare_message(struct uib_qp *qp, struct uib_send_wr *wr,
+			       struct uet_post_context *context)
+{
+	int rc;
+
+	if (wr->opcode == UIB_WR_RDMA_READ || context->fetching_atomic)
+		return 0;
+	if (wr->num_sge == 1) {
+		context->mr = uib_mr_lookup_local(
+			qp->pd, wr->sg_list[0].lkey,
+			(const void *)(uintptr_t)wr->sg_list[0].addr,
+			wr->sg_list[0].length, 0);
+		if (!context->mr)
+			return -EACCES;
+		if (context->mr->kind == UIB_MR_HOST) {
+			context->message = (const uint8_t *)(uintptr_t)
+				wr->sg_list[0].addr;
+			return 0;
+		}
+		uib_mr_put(context->mr);
+		context->mr = NULL;
+	}
+	context->owned_message = malloc(context->total_len ?
+						context->total_len : 1);
+	if (!context->owned_message)
+		return -ENOMEM;
+	rc = uib_qp_gather(qp->pd, wr->sg_list, wr->num_sge,
+			   context->owned_message, context->total_len);
+	if (rc < 0)
+		return rc;
+	context->message = context->owned_message;
+	return 0;
+}
+
+static size_t uet_request_header_len(uint8_t request_header)
+{
+	if (request_header == UIB_UET_NEXT_REQ_SMALL)
+		return sizeof(struct uib_uet_ses_req_small);
+	if (request_header == UIB_UET_NEXT_REQ_MEDIUM)
+		return sizeof(struct uib_uet_ses_req_medium);
+	return sizeof(struct uib_uet_ses_req);
+}
+
+static size_t uet_request_data_len(const struct uib_send_wr *wr,
+				   uint32_t chunk)
+{
+	size_t width;
+
+	if (wr->opcode == UIB_WR_RDMA_READ)
+		return 0;
+	if (wr->opcode == UIB_WR_ATOMIC_FETCH_ADD)
+		return sizeof(struct uib_uet_ses_atomic) + 8;
+	if (wr->opcode == UIB_WR_ATOMIC_CMP_SWAP)
+		return sizeof(struct uib_uet_ses_atomic) + 32;
+	if (wr->opcode != UIB_WR_UET_ATOMIC)
+		return chunk;
+	width = uib_uet_atomic_datatype_size(wr->atomic.uet_datatype);
+	if (uet_atomic_has_two_operands(wr->atomic.uet_opcode))
+		width *= 2;
+	else if (wr->atomic.uet_opcode == UIB_UET_AMO_READ)
+		width = 0;
+	return sizeof(struct uib_uet_ses_atomic) + width;
+}
+
+static int uet_prepare_post(struct uib_qp *qp, struct uib_send_wr *wr,
+			    struct uet_post_context *context)
+{
+	uint32_t response_limit;
+	int rc;
+
+	memset(context, 0, sizeof(*context));
+	context->uet = qp->protocol_private;
+	context->destination = qp->remote_addr;
+	context->request_header = UIB_UET_NEXT_REQ_STD;
+	context->fetching_atomic = wr->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
+		wr->opcode == UIB_WR_ATOMIC_CMP_SWAP ||
+		(wr->opcode == UIB_WR_UET_ATOMIC && wr->atomic.uet_fetching);
+	context->pds_len = context->uet->rccc_enabled ?
+		sizeof(struct uib_uet_pds_cc_req) :
+		sizeof(struct uib_uet_pds_req);
+	rc = uet_post_total(wr, &context->total_len);
+	if (rc < 0)
+		return rc;
+	rc = uet_ses_opcode(wr, &context->ses_opcode);
+	if (rc < 0)
+		return rc;
+	rc = uet_prepare_message(qp, wr, context);
+	if (rc < 0)
+		return rc;
+	if (qp->path_mtu <= context->pds_len +
+	    sizeof(struct uib_uet_ses_req))
+		return -EMSGSIZE;
+	context->chunk_max = qp->path_mtu - context->pds_len -
+		sizeof(struct uib_uet_ses_req);
+	response_limit = qp->path_mtu - sizeof(struct uib_uet_pds_ack) -
+		sizeof(struct uib_uet_ses_rsp);
 	if (wr->opcode == UIB_WR_RDMA_READ &&
-	    chunk_max > qp->path_mtu - sizeof(struct uib_uet_pds_ack) -
-			 sizeof(struct uib_uet_ses_rsp))
-		chunk_max = qp->path_mtu - sizeof(struct uib_uet_pds_ack) -
-			sizeof(struct uib_uet_ses_rsp);
-	if (!chunk_max) {
-		uib_mr_put(mr);
-		free(owned_message);
+	    context->chunk_max > response_limit)
+		context->chunk_max = response_limit;
+	context->packets = wr->opcode == UIB_WR_RDMA_READ ||
+		context->fetching_atomic ? 1 :
+		(context->total_len ?
+		 (context->total_len + context->chunk_max - 1) /
+		 context->chunk_max : 1);
+	if (context->packets > UIB_UET_PDC_MPR)
 		return -EMSGSIZE;
-	}
-	packets = wr->opcode == UIB_WR_RDMA_READ || fetching_atomic ? 1 :
-		(total_len ? (total_len + chunk_max - 1) / chunk_max : 1);
-	if (packets > UIB_UET_PDC_MPR) {
-		uib_mr_put(mr);
-		free(owned_message);
-		return -EMSGSIZE;
-	}
-	if (packets == 1 && total_len <= UIB_UET_SES_LENGTH_MASK &&
-	    uet->optimized_mode != UIB_UET_OPTIMIZED_OFF) {
-		request_header = uet->optimized_mode == UIB_UET_OPTIMIZED_SMALL &&
+	if (context->packets == 1 &&
+	    context->total_len <= UIB_UET_SES_LENGTH_MASK &&
+	    context->uet->optimized_mode != UIB_UET_OPTIMIZED_OFF) {
+		context->request_header =
+			context->uet->optimized_mode == UIB_UET_OPTIMIZED_SMALL &&
 			wr->opcode != UIB_WR_SEND &&
 			wr->opcode != UIB_WR_SEND_WITH_IMM ?
 			UIB_UET_NEXT_REQ_SMALL : UIB_UET_NEXT_REQ_MEDIUM;
 		if (wr->opcode == UIB_WR_RDMA_READ &&
-		    total_len + sizeof(struct uib_uet_pds_ack) +
+		    context->total_len + sizeof(struct uib_uet_pds_ack) +
 		    sizeof(struct uib_uet_pds_ack_ext) +
 		    sizeof(struct uib_uet_ses_rsp_data_small) > qp->path_mtu)
-			request_header = UIB_UET_NEXT_REQ_STD;
+			context->request_header = UIB_UET_NEXT_REQ_STD;
 	}
-	track = uet_alloc_track(qp, wr, total_len, packets);
-	if (!track) {
-		uib_mr_put(mr);
-		free(owned_message);
+	context->track = uet_alloc_track(qp, wr, context->total_len,
+					 context->packets);
+	if (!context->track)
 		return -ENOMEM;
-	}
-
-	switch (wr->opcode) {
-	case UIB_WR_SEND:
-	case UIB_WR_SEND_WITH_IMM:
-		ses_opcode = UIB_UET_SES_SEND;
-		break;
-	case UIB_WR_RDMA_WRITE:
-		ses_opcode = UIB_UET_SES_WRITE;
-		break;
-	case UIB_WR_RDMA_READ:
-		ses_opcode = UIB_UET_SES_READ;
-		break;
-	case UIB_WR_ATOMIC_FETCH_ADD:
-	case UIB_WR_ATOMIC_CMP_SWAP:
-		ses_opcode = UIB_UET_SES_FETCHING_ATOMIC;
-		break;
-	case UIB_WR_UET_ATOMIC:
-		ses_opcode = wr->atomic.uet_fetching ?
-			UIB_UET_SES_FETCHING_ATOMIC : UIB_UET_SES_ATOMIC;
-		break;
-	default:
-		uet_free_track(track);
-		uib_mr_put(mr);
-		free(owned_message);
-		return -EOPNOTSUPP;
-	}
-	if (!dst.sin_port)
-		dst.sin_port = htons(UIB_UET_DEFAULT_PORT);
+	if (!context->destination.sin_port)
+		context->destination.sin_port = htons(UIB_UET_DEFAULT_PORT);
 	pthread_mutex_lock(&qp->lock);
-	wr_msg_id = uet->next_msg_id++;
+	context->msg_id = context->uet->next_msg_id++;
 	pthread_mutex_unlock(&qp->lock);
+	return 0;
+}
 
-	for (packet_index = 0; packet_index < packets; packet_index++) {
-		uint32_t offset = packet_index * chunk_max;
-		uint32_t chunk = wr->opcode == UIB_WR_RDMA_READ || fetching_atomic ?
-			total_len :
-			total_len - offset;
-		struct uib_uet_outstanding *out;
-		struct uib_uet_pds_req *req;
-		struct uib_uet_ses_req canonical = {0};
-		struct uib_uet_ses_req *ses = &canonical;
-		uint8_t *wire_data;
-		size_t request_header_len;
-		size_t data_len, packet_len;
-		uint8_t flags = UIB_UET_REQ_FLAG_AR;
+static void uet_encode_atomic(struct uib_send_wr *wr,
+			      struct uib_uet_ses_req *ses,
+			      uint8_t *wire_data, size_t data_len)
+{
+	struct uib_uet_ses_atomic *atomic;
+	uint8_t *operands;
+	uint64_t value;
+	size_t width;
+	size_t i;
 
-		if (wr->opcode != UIB_WR_RDMA_READ && !fetching_atomic &&
-		    chunk > chunk_max)
-			chunk = chunk_max;
-		if (wr->opcode == UIB_WR_RDMA_READ)
-			data_len = 0;
-		else if (wr->opcode == UIB_WR_ATOMIC_FETCH_ADD)
-			data_len = sizeof(struct uib_uet_ses_atomic) + 8;
-		else if (wr->opcode == UIB_WR_ATOMIC_CMP_SWAP)
-			data_len = sizeof(struct uib_uet_ses_atomic) + 32;
-		else if (wr->opcode == UIB_WR_UET_ATOMIC) {
-			size_t width = uib_uet_atomic_datatype_size(
-				wr->atomic.uet_datatype);
-
-			data_len = sizeof(struct uib_uet_ses_atomic) +
-				(uet_atomic_has_two_operands(
-				 wr->atomic.uet_opcode) ? 2 * width :
-				 wr->atomic.uet_opcode == UIB_UET_AMO_READ ? 0 :
-				 width);
-		} else {
-			data_len = chunk;
+	atomic = (struct uib_uet_ses_atomic *)wire_data;
+	operands = (uint8_t *)(atomic + 1);
+	ses->buffer_offset = htobe64(wr->atomic.remote_addr);
+	ses->match_bits = htobe64(wr->atomic.rkey);
+	ses->request_len = htonl(wr->opcode == UIB_WR_ATOMIC_CMP_SWAP ? 32 : 8);
+	atomic->datatype = UIB_UET_AMO_UINT64;
+	if (wr->opcode == UIB_WR_UET_ATOMIC) {
+		width = uib_uet_atomic_datatype_size(wr->atomic.uet_datatype);
+		atomic->opcode = wr->atomic.uet_opcode;
+		atomic->datatype = wr->atomic.uet_datatype;
+		atomic->semantic_control = wr->atomic.uet_semantic_control;
+		if (atomic->opcode != UIB_UET_AMO_READ) {
+			for (i = 0; i < width; i++)
+				operands[i] = wr->atomic.uet_operand[width - i - 1];
 		}
-		request_header_len = request_header == UIB_UET_NEXT_REQ_SMALL ?
-			sizeof(struct uib_uet_ses_req_small) :
-			request_header == UIB_UET_NEXT_REQ_MEDIUM ?
-			sizeof(struct uib_uet_ses_req_medium) : sizeof(*ses);
-		packet_len = sizeof(*req) + request_header_len + data_len;
-		if (packet_len > qp->path_mtu) {
-			rc = -EMSGSIZE;
-			goto fail_track;
-		}
-		out = uet_alloc_outstanding(uet, packet_len);
-		if (!out) {
-			rc = -ENOMEM;
-			goto fail_track;
-		}
-		req = (struct uib_uet_pds_req *)out->packet;
-		wire_data = (uint8_t *)(req + 1) + request_header_len;
-
-		pthread_mutex_lock(&qp->lock);
-		if (!uet->tx_initialized) {
-			uet->next_psn = qp->sq_psn;
-			uet->tx_initialized = 1;
-		}
-		if (uet->state == UIB_UET_PDC_CLOSED) {
-			flags |= UIB_UET_REQ_FLAG_SYN;
-			uet->state = UIB_UET_PDC_SYN_SENT;
-		}
-		out->psn = uet->next_psn++;
-		out->msg_id = request_header == UIB_UET_NEXT_REQ_STD ?
-			wr_msg_id : (uint16_t)out->psn;
-		out->request_header = request_header;
-		pthread_mutex_unlock(&qp->lock);
-
-		req->prologue.type_next_flags =
-			uib_uet_prologue_pack(UIB_UET_PDS_TYPE_RUD_REQ,
-					       request_header, flags);
-		req->psn = htonl(out->psn);
-		req->spdcid = htons(uet->spdcid);
-		req->dpdcid = htons((uint16_t)qp->dest_qp_num);
-		ses->opcode = ses_opcode;
-		if (uet->session.relative_addressing)
-			ses->flags |= UIB_UET_SES_FLAG_REL;
-		if (packet_index == 0)
-			ses->flags |= UIB_UET_SES_FLAG_SOM;
-		if (packet_index == packets - 1)
-			ses->flags |= UIB_UET_SES_FLAG_EOM;
-		ses->msg_id = htons(out->msg_id);
-		ses->index_gen_job_id = htonl(
-			((uint32_t)uet->session.resource_generation << 24) |
-			uet->session.job_id);
-		ses->pid_on_fep = htons((uint16_t)qp->dest_qp_num &
-					 UIB_UET_SES_PID_MASK);
-		ses->index = htons(uet->session.resource_index);
-		ses->initiator = htonl(uet->session.initiator_id);
-		ses->request_len = htonl(total_len);
-		if (wr->opcode == UIB_WR_SEND ||
-		    wr->opcode == UIB_WR_SEND_WITH_IMM) {
-			ses->buffer_offset = 0;
-			if (packet_index == 0 &&
-			    wr->opcode == UIB_WR_SEND_WITH_IMM) {
-				ses->flags |= UIB_UET_SES_FLAG_HD;
-				ses->header_data = htobe64(wr->imm_data);
-			}
-		} else if (!fetching_atomic) {
-			ses->buffer_offset = htobe64(wr->rdma.remote_addr);
-			ses->match_bits = htobe64(wr->rdma.rkey);
-		} else {
-			struct uib_uet_ses_atomic *atomic =
-				(struct uib_uet_ses_atomic *)wire_data;
-			uint8_t *operands = (uint8_t *)(atomic + 1);
-			uint64_t value;
-			size_t j;
-
-			ses->buffer_offset = htobe64(wr->atomic.remote_addr);
-			ses->match_bits = htobe64(wr->atomic.rkey);
-			ses->request_len = htonl(wr->opcode ==
-				UIB_WR_ATOMIC_CMP_SWAP ? 32 : 8);
-			atomic->datatype = UIB_UET_AMO_UINT64;
-			if (wr->opcode == UIB_WR_UET_ATOMIC) {
-				size_t width = uib_uet_atomic_datatype_size(
-					wr->atomic.uet_datatype);
-
-				atomic->opcode = wr->atomic.uet_opcode;
-				atomic->datatype = wr->atomic.uet_datatype;
-				atomic->semantic_control =
-					wr->atomic.uet_semantic_control;
-				if (atomic->opcode != UIB_UET_AMO_READ) {
-					for (j = 0; j < width; j++)
-						operands[j] =
-							wr->atomic.uet_operand[width - j - 1];
-				}
-				if (uet_atomic_has_two_operands(atomic->opcode)) {
-					for (j = 0; j < width; j++) {
-						operands[j] =
-							wr->atomic.uet_compare[width - j - 1];
-						operands[width + j] =
-							wr->atomic.uet_swap[width - j - 1];
-					}
-				}
-				ses->request_len = htonl((uint32_t)(data_len -
-					sizeof(*atomic)));
-			} else if (wr->opcode == UIB_WR_ATOMIC_FETCH_ADD) {
-				atomic->opcode = UIB_UET_AMO_SUM;
-				value = htobe64(wr->atomic.compare_add);
-				memcpy(operands, &value, sizeof(value));
-			} else {
-				atomic->opcode = UIB_UET_AMO_CSWAP;
-				value = htobe64(wr->atomic.compare_add);
-				memcpy(operands + 8, &value, sizeof(value));
-				value = htobe64(wr->atomic.swap);
-				memcpy(operands + 24, &value, sizeof(value));
+		if (uet_atomic_has_two_operands(atomic->opcode)) {
+			for (i = 0; i < width; i++) {
+				operands[i] = wr->atomic.uet_compare[width - i - 1];
+				operands[width + i] =
+					wr->atomic.uet_swap[width - i - 1];
 			}
 		}
-		if (packet_index)
-			ses->header_data = uib_uet_ses_fragment_info(chunk, offset);
-		if (data_len && !fetching_atomic)
-			memcpy(wire_data, message + offset, data_len);
-		if (request_header == UIB_UET_NEXT_REQ_STD) {
-			memcpy(req + 1, ses, sizeof(*ses));
-		} else if (request_header == UIB_UET_NEXT_REQ_MEDIUM) {
-			struct uib_uet_ses_req_medium *medium =
-				(struct uib_uet_ses_req_medium *)(req + 1);
+		ses->request_len = htonl((uint32_t)(data_len - sizeof(*atomic)));
+	} else if (wr->opcode == UIB_WR_ATOMIC_FETCH_ADD) {
+		atomic->opcode = UIB_UET_AMO_SUM;
+		value = htobe64(wr->atomic.compare_add);
+		memcpy(operands, &value, sizeof(value));
+	} else {
+		atomic->opcode = UIB_UET_AMO_CSWAP;
+		value = htobe64(wr->atomic.compare_add);
+		memcpy(operands + 8, &value, sizeof(value));
+		value = htobe64(wr->atomic.swap);
+		memcpy(operands + 24, &value, sizeof(value));
+	}
+}
 
-			medium->opcode = ses->opcode;
-			medium->flags = ses->flags;
-			medium->request_len = htons((uint16_t)
-				(ntohl(ses->request_len) & UIB_UET_SES_LENGTH_MASK));
-			medium->index_gen_job_id = ses->index_gen_job_id;
-			medium->pid_on_fep = ses->pid_on_fep;
-			medium->index = ses->index;
-			medium->buffer_offset = ses->opcode == UIB_UET_SES_SEND ?
-				ses->header_data : ses->buffer_offset;
-			medium->initiator = ses->initiator;
-			medium->match_bits = ses->match_bits;
-		} else {
-			struct uib_uet_ses_req_small *small =
-				(struct uib_uet_ses_req_small *)(req + 1);
+static void uet_encode_ses_header(uint8_t request_header, void *wire,
+				  const struct uib_uet_ses_req *ses)
+{
+	struct uib_uet_ses_req_medium *medium;
+	struct uib_uet_ses_req_small *small;
 
-			small->opcode = ses->opcode;
-			small->flags = ses->flags;
-			small->request_len = htons((uint16_t)
-				(ntohl(ses->request_len) & UIB_UET_SES_LENGTH_MASK));
-			small->index_gen_job_id = ses->index_gen_job_id;
-			small->pid_on_fep = ses->pid_on_fep;
-			small->index = ses->index;
-			small->buffer_offset = ses->buffer_offset;
+	if (request_header == UIB_UET_NEXT_REQ_STD) {
+		memcpy(wire, ses, sizeof(*ses));
+		return;
+	}
+	if (request_header == UIB_UET_NEXT_REQ_MEDIUM) {
+		medium = wire;
+		medium->opcode = ses->opcode;
+		medium->flags = ses->flags;
+		medium->request_len = htons((uint16_t)
+			(ntohl(ses->request_len) & UIB_UET_SES_LENGTH_MASK));
+		medium->index_gen_job_id = ses->index_gen_job_id;
+		medium->pid_on_fep = ses->pid_on_fep;
+		medium->index = ses->index;
+		medium->buffer_offset = ses->opcode == UIB_UET_SES_SEND ?
+			ses->header_data : ses->buffer_offset;
+		medium->initiator = ses->initiator;
+		medium->match_bits = ses->match_bits;
+		return;
+	}
+	small = wire;
+	small->opcode = ses->opcode;
+	small->flags = ses->flags;
+	small->request_len = htons((uint16_t)
+		(ntohl(ses->request_len) & UIB_UET_SES_LENGTH_MASK));
+	small->index_gen_job_id = ses->index_gen_job_id;
+	small->pid_on_fep = ses->pid_on_fep;
+	small->index = ses->index;
+	small->buffer_offset = ses->buffer_offset;
+}
+
+static void uet_init_ses(struct uib_qp *qp, struct uib_send_wr *wr,
+			 const struct uet_post_context *context,
+			 struct uib_uet_outstanding *out,
+			 struct uib_uet_ses_req *ses, uint32_t packet_index,
+			 uint32_t chunk, uint32_t offset, uint8_t *wire_data,
+			 size_t data_len)
+{
+	ses->opcode = context->ses_opcode;
+	if (context->uet->session.relative_addressing)
+		ses->flags |= UIB_UET_SES_FLAG_REL;
+	if (!packet_index)
+		ses->flags |= UIB_UET_SES_FLAG_SOM;
+	if (packet_index == context->packets - 1)
+		ses->flags |= UIB_UET_SES_FLAG_EOM;
+	ses->msg_id = htons(out->msg_id);
+	ses->index_gen_job_id = htonl(
+		((uint32_t)context->uet->session.resource_generation << 24) |
+		context->uet->session.job_id);
+	ses->pid_on_fep = htons((uint16_t)qp->dest_qp_num &
+				 UIB_UET_SES_PID_MASK);
+	ses->index = htons(context->uet->session.resource_index);
+	ses->initiator = htonl(context->uet->session.initiator_id);
+	ses->request_len = htonl(context->total_len);
+	if (wr->opcode == UIB_WR_SEND || wr->opcode == UIB_WR_SEND_WITH_IMM) {
+		if (!packet_index && wr->opcode == UIB_WR_SEND_WITH_IMM) {
+			ses->flags |= UIB_UET_SES_FLAG_HD;
+			ses->header_data = htobe64(wr->imm_data);
 		}
+	} else if (wr->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
+		   wr->opcode == UIB_WR_ATOMIC_CMP_SWAP ||
+		   wr->opcode == UIB_WR_UET_ATOMIC) {
+		uet_encode_atomic(wr, ses, wire_data, data_len);
+	} else {
+		ses->buffer_offset = htobe64(wr->rdma.remote_addr);
+		ses->match_bits = htobe64(wr->rdma.rkey);
+	}
+	if (packet_index)
+		ses->header_data = uib_uet_ses_fragment_info(chunk, offset);
+}
 
-		out->track = track;
-		out->dst = dst;
-		out->packet_len = packet_len;
-		out->read_offset = offset;
-		out->read_len = chunk;
-		out->deadline_ns = uib_now_ns() + UIB_UET_RTX_NS;
-		out->nominal_len = (uint32_t)packet_len + 40;
+static void uet_assign_request_identity(struct uib_qp *qp,
+					struct uet_post_context *context,
+					struct uib_uet_outstanding *out,
+					uint8_t *flags,
+					uint16_t *clear_psn_offset)
+{
+	int32_t offset;
+
+	pthread_mutex_lock(&qp->lock);
+	if (!context->uet->tx_initialized) {
+		context->uet->next_psn = qp->sq_psn;
+		context->uet->tx_clear_psn = qp->sq_psn - 1;
+		context->uet->tx_initialized = 1;
+	}
+	if (context->uet->state == UIB_UET_PDC_CLOSED) {
+		*flags |= UIB_UET_REQ_FLAG_SYN;
+		context->uet->state = UIB_UET_PDC_SYN_SENT;
+	}
+	out->psn = context->uet->next_psn++;
+	out->msg_id = context->request_header == UIB_UET_NEXT_REQ_STD ?
+		context->msg_id : (uint16_t)out->psn;
+	out->request_header = context->request_header;
+	offset = (int32_t)(context->uet->tx_clear_psn - out->psn);
+	if (offset < INT16_MIN)
+		offset = INT16_MIN;
+	if (offset > 0)
+		offset = 0;
+	*clear_psn_offset = htons((uint16_t)(int16_t)offset);
+	pthread_mutex_unlock(&qp->lock);
+}
+
+static int uet_build_request(struct uib_qp *qp, struct uib_send_wr *wr,
+			     struct uet_post_context *context,
+			     uint32_t packet_index)
+{
+	struct uib_uet_ses_req ses = {0};
+	struct uib_uet_outstanding *out;
+	struct uib_uet_pds_cc_req *cc_request;
+	struct uib_uet_pds_req *request;
+	void *wire_header;
+	uint8_t *wire_data;
+	size_t header_len;
+	size_t packet_len;
+	size_t data_len;
+	uint32_t offset;
+	uint32_t chunk;
+	uint32_t target;
+	uint8_t flags = UIB_UET_REQ_FLAG_AR;
+	uint16_t clear_psn_offset;
+
+	offset = packet_index * context->chunk_max;
+	chunk = wr->opcode == UIB_WR_RDMA_READ || context->fetching_atomic ?
+		context->total_len : context->total_len - offset;
+	if (wr->opcode != UIB_WR_RDMA_READ && !context->fetching_atomic &&
+	    chunk > context->chunk_max)
+		chunk = context->chunk_max;
+	header_len = uet_request_header_len(context->request_header);
+	data_len = uet_request_data_len(wr, chunk);
+	packet_len = context->pds_len + header_len + data_len;
+	if (packet_len > qp->path_mtu)
+		return -EMSGSIZE;
+	out = uet_alloc_outstanding(context->uet, packet_len);
+	if (!out)
+		return -ENOMEM;
+	request = (struct uib_uet_pds_req *)out->packet;
+	wire_header = out->packet + context->pds_len;
+	wire_data = (uint8_t *)wire_header + header_len;
+	uet_assign_request_identity(qp, context, out, &flags,
+				    &clear_psn_offset);
+	request->prologue.type_next_flags = uib_uet_prologue_pack(
+		context->uet->rccc_enabled ? UIB_UET_PDS_TYPE_RUD_CC_REQ :
+		UIB_UET_PDS_TYPE_RUD_REQ, context->request_header, flags);
+	request->psn = htonl(out->psn);
+	request->clear_psn_offset = clear_psn_offset;
+	request->spdcid = htons(context->uet->spdcid);
+	request->dpdcid = htons((uint16_t)qp->dest_qp_num);
+	if (context->uet->rccc_enabled) {
+		cc_request = (struct uib_uet_pds_cc_req *)request;
+		target = uib_uet_rccc_credit_target(
+			(struct uib_uet_rccc *)context->uet->congestion.state.bytes);
+		cc_request->req_cc_state = uib_uet_rccc_request_pack(
+			(uint8_t)context->uet->spdcid, target);
+	}
+	uet_init_ses(qp, wr, context, out, &ses, packet_index, chunk, offset,
+		     wire_data, data_len);
+	if (data_len && wr->opcode != UIB_WR_ATOMIC_FETCH_ADD &&
+	    wr->opcode != UIB_WR_ATOMIC_CMP_SWAP &&
+	    wr->opcode != UIB_WR_UET_ATOMIC)
+		memcpy(wire_data, context->message + offset, data_len);
+	uet_encode_ses_header(context->request_header, wire_header, &ses);
+	out->track = context->track;
+	out->dst = context->destination;
+	out->packet_len = packet_len;
+	out->read_offset = offset;
+	out->read_len = chunk;
+	out->nominal_len = (uint32_t)packet_len + 40;
+	pthread_mutex_lock(&qp->lock);
+	if (context->request_header == UIB_UET_NEXT_REQ_SMALL)
+		context->uet->optimized_stats.small_requests++;
+	else if (context->request_header == UIB_UET_NEXT_REQ_MEDIUM)
+		context->uet->optimized_stats.medium_requests++;
+	else
+		context->uet->optimized_stats.standard_requests++;
+	uet_link_outstanding(context->uet, out);
+	uet_debug(qp, "tx request psn=%u msg=%u opcode=%u len=%zu",
+		  out->psn, out->msg_id, context->ses_opcode, data_len);
+	pthread_mutex_unlock(&qp->lock);
+	return 0;
+}
+
+static uint64_t uet_post_nominal_bytes(const struct uib_send_wr *wr,
+				       const struct uet_post_context *context)
+{
+	uint64_t total = 0;
+	uint32_t packet_index;
+	uint32_t offset;
+	uint32_t chunk;
+
+	for (packet_index = 0; packet_index < context->packets; packet_index++) {
+		offset = packet_index * context->chunk_max;
+		chunk = wr->opcode == UIB_WR_RDMA_READ ||
+			context->fetching_atomic ? context->total_len :
+			context->total_len - offset;
+		if (wr->opcode != UIB_WR_RDMA_READ &&
+		    !context->fetching_atomic && chunk > context->chunk_max)
+			chunk = context->chunk_max;
+		total += context->pds_len +
+			uet_request_header_len(context->request_header) +
+			uet_request_data_len(wr, chunk) + 40;
+	}
+	return total;
+}
+
+static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
+{
+	struct uet_post_context context;
+	struct uib_uet_rccc *rccc = NULL;
+	uint64_t nominal_bytes = 0;
+	uint32_t packet_index;
+	int rc;
+
+	rc = uet_prepare_post(qp, wr, &context);
+	if (rc < 0)
+		goto out;
+	if (context.uet->rccc_enabled) {
+		rccc = (struct uib_uet_rccc *)context.uet->congestion.state.bytes;
+		nominal_bytes = uet_post_nominal_bytes(wr, &context);
 		pthread_mutex_lock(&qp->lock);
-		if (request_header == UIB_UET_NEXT_REQ_SMALL)
-			uet->optimized_stats.small_requests++;
-		else if (request_header == UIB_UET_NEXT_REQ_MEDIUM)
-			uet->optimized_stats.medium_requests++;
-		else
-			uet->optimized_stats.standard_requests++;
-		uet_link_outstanding(uet, out);
-		uet_debug(qp, "tx request psn=%u msg=%u opcode=%u len=%zu",
-			  out->psn, out->msg_id, ses_opcode, data_len);
+		uib_uet_rccc_on_new_data(rccc, nominal_bytes);
 		pthread_mutex_unlock(&qp->lock);
+	}
+	for (packet_index = 0; packet_index < context.packets;
+	     packet_index++) {
+		rc = uet_build_request(qp, wr, &context, packet_index);
+		if (rc < 0)
+			goto fail_track;
 	}
 	pthread_mutex_lock(&qp->lock);
 	rc = uet_drain_locked(qp);
 	pthread_mutex_unlock(&qp->lock);
 	if (rc < 0)
 		goto fail_track;
-	uib_mr_put(mr);
-	free(owned_message);
-	return 0;
+	goto out;
 
 fail_track:
 	pthread_mutex_lock(&qp->lock);
-	uet_remove_track_locked(qp, track, UIB_WC_LOC_PROT_ERR);
+	if (rccc)
+		uib_uet_rccc_on_cancel_data(rccc, nominal_bytes);
+	uet_remove_track_locked(qp, context.track, UIB_WC_LOC_PROT_ERR);
 	pthread_mutex_unlock(&qp->lock);
-	uib_mr_put(mr);
-	free(owned_message);
+out:
+	uet_post_context_release(&context);
 	return rc;
 }
 
@@ -2884,6 +3789,10 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 	}
 	uet->tx_cursor = uet_first_unsent(uet);
 	uet_drain_locked(qp);
+	if (uet->rccc_enabled && uet->tx_cursor &&
+	    uet->credit_request_deadline_ns &&
+	    uet->credit_request_deadline_ns < next_deadline)
+		next_deadline = uet->credit_request_deadline_ns;
 	for (out = uet->out_head; out; out = out->next) {
 		if (out->sent && out->deadline_ns < next_deadline)
 			next_deadline = out->deadline_ns;

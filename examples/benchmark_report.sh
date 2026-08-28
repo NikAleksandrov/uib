@@ -8,6 +8,7 @@ results=$output/results.csv
 zerocopy=$output/zerocopy-comparison.csv
 dmabuf=$output/dmabuf-comparison.csv
 sync_async=$output/sync-async-comparison.csv
+congestion=$output/congestion-comparison.csv
 skips=$output/skips.txt
 failures=$output/failures.txt
 text_report=$output/benchmark.txt
@@ -29,7 +30,8 @@ protocol_label()
 }
 
 if [ ! -r "$ib_write_bw" ] || [ ! -r "$results" ] || [ ! -r "$zerocopy" ] ||
-   [ ! -r "$dmabuf" ] || [ ! -r "$sync_async" ]; then
+   [ ! -r "$dmabuf" ] || [ ! -r "$sync_async" ] ||
+   [ ! -r "$congestion" ]; then
 	printf 'benchmark_report: incomplete CSV input in %s\n' "$output" >&2
 	exit 1
 fi
@@ -74,6 +76,20 @@ fi
 			$18 / 1000, $19 / 1000, $20 / 1000, $21 / 1000,
 			$25, $23;
 	}' "$results"
+
+	printf '\nProtocol and congestion-control resilience\n'
+	printf '%-7s %-20s %-17s %-6s %8s %9s %9s %7s %s\n' \
+		'Proto' 'Algorithm' 'Condition' 'Status' 'Gbit/s' 'Avg(us)' \
+		'p99(us)' 'CPU%' 'Notes'
+	printf '%-7s %-20s %-17s %-6s %8s %9s %9s %7s %s\n' \
+		'-------' '--------------------' '-----------------' '------' \
+		'--------' '---------' '---------' '-------' '-----'
+	awk -F, 'NR > 1 {
+		note = $5 == 1 ? "experimental" : $23;
+		printf "%-7s %-20s %-17s %-6s %8s %9s %9s %7s %s\n",
+			$2, $3, $4, $1, $13, $17 / 1000, $20 / 1000, $15,
+			note;
+	}' "$congestion"
 
 	printf '\nZero-copy compared with copy (positive means improvement)\n'
 	printf '%-7s %-7s %-5s %5s %-8s %21s %24s %22s %10s\n' \
@@ -138,6 +154,13 @@ fi
 
 {
 	printf '# UIB benchmark matrix\n\n'
+	printf '## Contents\n\n'
+	printf '%s\n' '- [`ib_write_bw` through the transparent provider](#ib_write_bw-through-the-transparent-provider)'
+	printf '%s\n' '- [Native UIB stress benchmark](#native-uib-stress-benchmark)'
+	printf '%s\n' '- [Protocol and congestion-control resilience](#protocol-and-congestion-control-resilience)'
+	printf '%s\n' '- [Zero-copy compared with copy](#zero-copy-compared-with-copy)'
+	printf '%s\n' '- [DMA-BUF compared with host memory](#dma-buf-compared-with-host-memory)'
+	printf '%s\n\n' '- [Asynchronous UDP compared with synchronous UDP](#asynchronous-udp-compared-with-synchronous-udp)'
 	printf '## `ib_write_bw` through the transparent provider\n\n'
 	for report_protocol in rocev2 uet dummy; do
 		report_label=$(protocol_label "$report_protocol")
@@ -197,6 +220,40 @@ fi
 		}' "$results"
 		printf '\n'
 	done
+
+	printf '\n## Protocol and congestion-control resilience\n\n'
+	printf 'Each row uses the same native UIB workload, host memory, synchronous '
+	printf 'UDP transport, MTU, message size, window, and iteration count. Only '
+	printf 'the protocol, congestion-control algorithm, and named `tc netem` '
+	printf 'condition change. UET with DCQCN is cross-protocol experimental '
+	printf 'coverage; it is never selected by default.\n\n'
+	printf '%s\n' '| Protocol | Algorithm | Condition | Status | Experimental | Gbit/s | CPU % | Average us | p50 us | p95 us | p99 us | Reason |'
+	printf '%s\n' '|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|'
+	awk -F, 'NR > 1 {
+		average = $17 == "" ? "" : sprintf("%.1f", $17 / 1000);
+		cpu = $15 == "" ? "" : $15;
+		p50 = $18 == "" ? "" : sprintf("%.1f", $18 / 1000);
+		p95 = $19 == "" ? "" : sprintf("%.1f", $19 / 1000);
+		p99 = $20 == "" ? "" : sprintf("%.1f", $20 / 1000);
+		format = "| %s | %s | %s | %s | %s | %s | %s | %s | " \
+			"%s | %s | %s | %s |\n";
+		printf format, $2, $3, $4, $1, $5 ? "yes" : "no", $13,
+			cpu, average, p50, p95, p99, $23;
+	}' "$congestion"
+	printf '\nThe built-in conditions are reproducible named profiles:\n\n'
+	printf '%s\n' '| Condition | Netem impairment |'
+	printf '%s\n' '|---|---|'
+	printf '%s\n' '| `clean` | No impairment |'
+	printf '%s\n' '| `latency` | 2 ms delay |'
+	printf '%s\n' '| `drops` | 1% random packet loss |'
+	printf '%s\n' '| `reordered` | 2 ms delay, 500 us normal jitter, and 10% reordering |'
+	printf '%s\n\n' '| `drops-reordered` | 2 ms delay, 500 us normal jitter, 1% loss, and 10% reordering |'
+	printf 'Run only selected comparisons, for example:\n\n'
+	printf '%s\n' '```sh'
+	printf '%s %s\n' \
+		"UIB_CC_BENCH_VARIANTS='rocev2:dcqcn uet:rccc uet:nscc'" '\'
+	printf '%s\n' "UIB_CC_BENCH_CONDITIONS='clean drops reordered' make benchmark-all"
+	printf '%s\n\n' '```'
 
 	printf '\n## Zero-copy compared with copy\n\n'
 	printf 'Positive values mean zero-copy improved. Each row compares the '
@@ -295,5 +352,6 @@ printf 'ib_write_bw CSV: %s\n' "$ib_write_bw"
 printf 'Zero-copy comparison CSV: %s\n' "$zerocopy"
 printf 'DMA-BUF comparison CSV: %s\n' "$dmabuf"
 printf 'Sync/async comparison CSV: %s\n' "$sync_async"
+printf 'Congestion comparison CSV: %s\n' "$congestion"
 printf 'Skipped combinations: %s\n' "$skips"
 printf 'Failed combinations: %s\n' "$failures"

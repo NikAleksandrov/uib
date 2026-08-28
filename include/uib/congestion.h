@@ -8,6 +8,20 @@
 #define UIB_CONGESTION_ABI_VERSION 1
 #define UIB_CONGESTION_STATE_SIZE 512
 
+/**
+ * struct uib_congestion_ack - Protocol-neutral acknowledgement feedback.
+ * @ack_time_ns: Sender monotonic time when the ACK was handled
+ * @tx_time_ns: Sender monotonic time when the acknowledged packet was sent
+ * @newly_received: Newly acknowledged receiver byte count
+ * @service_time_ns: Receiver service or queue-delay sample
+ * @tx_retries: Number of sender retransmissions for the acknowledged packet
+ * @retransmit: Nonzero when the received packet was marked as retransmitted
+ * @ecn_marked: Nonzero when the protocol reported congestion marking
+ * @receiver_cwnd_penalty: Receiver-requested window reduction
+ * @restore_cwnd: Nonzero when the receiver releases a previous penalty
+ * @credit_valid: Nonzero when @cumulative_credit contains receiver credit
+ * @cumulative_credit: Wrapping cumulative credit in 256-byte units
+ */
 struct uib_congestion_ack {
 	uint64_t ack_time_ns;
 	uint64_t tx_time_ns;
@@ -18,6 +32,8 @@ struct uib_congestion_ack {
 	uint8_t ecn_marked;
 	uint8_t receiver_cwnd_penalty;
 	uint8_t restore_cwnd;
+	uint8_t credit_valid;
+	uint32_t cumulative_credit;
 };
 
 /**
@@ -83,6 +99,8 @@ const char *uib_congestion_name(const struct uib_congestion *congestion);
 int uib_congestion_enabled(const struct uib_congestion *congestion);
 int uib_congestion_can_send(const struct uib_congestion *congestion,
 			    size_t bytes);
+uint64_t uib_congestion_next_send_ns(
+	const struct uib_congestion *congestion);
 int uib_congestion_ack_request(const struct uib_congestion *congestion,
 			       uint32_t trigger);
 void uib_congestion_on_send(struct uib_congestion *congestion, size_t bytes);

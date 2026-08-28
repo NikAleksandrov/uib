@@ -379,92 +379,119 @@ static int gid_to_sockaddr(const union ibv_gid *gid, struct sockaddr_in *out,
 	return 0;
 }
 
+static int provider_grow_send_array(struct uib_send_wr **items,
+				    size_t *capacity, size_t count)
+{
+	struct uib_send_wr *new_items;
+	size_t new_capacity;
+	size_t i;
+
+	new_capacity = *capacity * 2U;
+	if (new_capacity < *capacity ||
+	    new_capacity > SIZE_MAX / sizeof(**items))
+		return -ENOMEM;
+	new_items = calloc(new_capacity, sizeof(*new_items));
+	if (!new_items)
+		return -ENOMEM;
+	memcpy(new_items, *items, count * sizeof(*new_items));
+	for (i = 0; i + 1U < count; i++)
+		new_items[i].next = &new_items[i + 1U];
+	if (count)
+		new_items[count - 1U].next = NULL;
+	*items = new_items;
+	*capacity = new_capacity;
+	return 0;
+}
+
+static int provider_convert_send_wr(struct uibv_qp_wrap *qp,
+				    const struct ibv_send_wr *source,
+				    struct uib_send_wr *destination)
+{
+	struct uibv_ah_wrap *ah;
+
+	memset(destination, 0, sizeof(*destination));
+	destination->wr_id = source->wr_id;
+	destination->opcode = map_wr_op_in(source->opcode);
+	destination->send_flags = map_send_flags_in(source->send_flags);
+	if (qp->sq_sig_all)
+		destination->send_flags |= UIB_SEND_SIGNALED;
+	destination->imm_data = source->imm_data;
+	destination->sg_list = (struct uib_sge *)source->sg_list;
+	destination->num_sge = source->num_sge;
+	destination->rdma.remote_addr = source->wr.rdma.remote_addr;
+	destination->rdma.rkey = source->wr.rdma.rkey;
+	if (qp->ibv.qp_type == IBV_QPT_UD) {
+		if (!source->wr.ud.ah ||
+		    !ctx_is_ours(source->wr.ud.ah->context) ||
+		    source->wr.ud.ah->pd != qp->ibv.pd)
+			return -EINVAL;
+		ah = WRAP_OF(source->wr.ud.ah, struct uibv_ah_wrap, ibv);
+		destination->ud.remote_addr = ah->remote_addr;
+		destination->ud.remote_qpn = source->wr.ud.remote_qpn;
+		destination->ud.qkey = source->wr.ud.remote_qkey;
+	}
+	if (source->opcode == IBV_WR_ATOMIC_FETCH_AND_ADD ||
+	    source->opcode == IBV_WR_ATOMIC_CMP_AND_SWP) {
+		destination->atomic.remote_addr = source->wr.atomic.remote_addr;
+		destination->atomic.rkey = source->wr.atomic.rkey;
+		destination->atomic.compare_add = source->wr.atomic.compare_add;
+		destination->atomic.swap = source->wr.atomic.swap;
+	}
+	return 0;
+}
+
+static void provider_map_bad_send(struct ibv_send_wr *source,
+				  struct uib_send_wr *items,
+				  struct uib_send_wr *bad,
+				  struct ibv_send_wr **bad_ibv, size_t count)
+{
+	size_t index;
+
+	if (!bad || !bad_ibv || bad < items || bad >= items + count)
+		return;
+	index = (size_t)(bad - items);
+	while (index-- && source)
+		source = source->next;
+	if (source)
+		*bad_ibv = source;
+}
+
 static int provider_post_send(struct ibv_qp *qp_ibv, struct ibv_send_wr *wr_ibv,
 			      struct ibv_send_wr **bad_ibv)
 {
 	struct uib_send_wr inline_items[UIBV_WR_INLINE_COUNT];
 	struct uibv_qp_wrap *qp = WRAP_OF(qp_ibv, struct uibv_qp_wrap, ibv);
-	struct uib_send_wr *new_items;
 	struct uib_send_wr *bad_u = NULL;
 	struct ibv_send_wr *p;
 	struct uib_send_wr *items;
-	struct uib_send_wr *item;
 	size_t capacity = UIBV_WR_INLINE_COUNT;
 	size_t count = 0;
-	size_t i;
 	int rc;
 
 	items = inline_items;
 	for (p = wr_ibv; p; p = p->next) {
 		if (count == capacity) {
-			size_t new_capacity = qp->cap.max_send_wr;
+			struct uib_send_wr *old_items = items;
 
-			if (new_capacity <= capacity)
-				new_capacity = capacity * 2U;
-			if (new_capacity < capacity ||
-			    new_capacity > SIZE_MAX / sizeof(*items)) {
+			rc = provider_grow_send_array(&items, &capacity, count);
+			if (rc < 0) {
 				if (bad_ibv)
 					*bad_ibv = p;
 				rc = ENOMEM;
 				goto out;
 			}
-			new_items = calloc(new_capacity, sizeof(*new_items));
-			if (new_items) {
-				memcpy(new_items, items, count * sizeof(*items));
-				for (i = 0; i + 1U < count; i++)
-					new_items[i].next = &new_items[i + 1U];
-				if (count)
-					new_items[count - 1U].next = NULL;
-			}
-			if (!new_items) {
-				if (bad_ibv)
-					*bad_ibv = p;
-				rc = ENOMEM;
-				goto out;
-			}
-			if (items != inline_items)
-				free(items);
-			items = new_items;
-			capacity = new_capacity;
+			if (old_items != inline_items)
+				free(old_items);
 		}
-		item = &items[count];
-		if (items == inline_items)
-			memset(item, 0, sizeof(*item));
-		item->wr_id = p->wr_id;
-		item->opcode = map_wr_op_in(p->opcode);
-		item->send_flags = map_send_flags_in(p->send_flags);
-		if (qp->sq_sig_all)
-			item->send_flags |= UIB_SEND_SIGNALED;
-		item->imm_data = p->imm_data;
-		item->sg_list = (struct uib_sge *)p->sg_list;
-		item->num_sge = p->num_sge;
-		item->rdma.remote_addr = p->wr.rdma.remote_addr;
-		item->rdma.rkey = p->wr.rdma.rkey;
-		if (qp_ibv->qp_type == IBV_QPT_UD) {
-			struct uibv_ah_wrap *ah;
-
-			if (!p->wr.ud.ah ||
-			    !ctx_is_ours(p->wr.ud.ah->context) ||
-			    p->wr.ud.ah->pd != qp_ibv->pd) {
-				if (bad_ibv)
-					*bad_ibv = p;
-				rc = EINVAL;
-				goto out;
-			}
-			ah = WRAP_OF(p->wr.ud.ah, struct uibv_ah_wrap, ibv);
-			item->ud.remote_addr = ah->remote_addr;
-			item->ud.remote_qpn = p->wr.ud.remote_qpn;
-			item->ud.qkey = p->wr.ud.remote_qkey;
-		}
-		if (p->opcode == IBV_WR_ATOMIC_FETCH_AND_ADD ||
-		    p->opcode == IBV_WR_ATOMIC_CMP_AND_SWP) {
-			item->atomic.remote_addr = p->wr.atomic.remote_addr;
-			item->atomic.rkey = p->wr.atomic.rkey;
-			item->atomic.compare_add = p->wr.atomic.compare_add;
-			item->atomic.swap = p->wr.atomic.swap;
+		rc = provider_convert_send_wr(qp, p, &items[count]);
+		if (rc < 0) {
+			if (bad_ibv)
+				*bad_ibv = p;
+			rc = -rc;
+			goto out;
 		}
 		if (count)
-			items[count - 1U].next = item;
+			items[count - 1U].next = &items[count];
 		count++;
 	}
 	if (!count)
@@ -472,14 +499,8 @@ static int provider_post_send(struct ibv_qp *qp_ibv, struct ibv_send_wr *wr_ibv,
 
 	rc = uib_post_send(qp->core, items, &bad_u);
 
-	if (rc < 0 && bad_u && bad_ibv &&
-	    bad_u >= items && bad_u < items + count) {
-		i = (size_t)(bad_u - items);
-		for (p = wr_ibv; i && p; i--)
-			p = p->next;
-		if (p)
-			*bad_ibv = p;
-	}
+	if (rc < 0)
+		provider_map_bad_send(wr_ibv, items, bad_u, bad_ibv, count);
 out:
 	if (items != inline_items)
 		free(items);
@@ -681,6 +702,7 @@ static int provider_poll_cq(struct ibv_cq *cq_ibv, int n, struct ibv_wc *wc)
 		wc[i].qp_num   = tmp[i].qp_num;
 		wc[i].src_qp   = tmp[i].src_qp;
 		wc[i].imm_data = tmp[i].imm_data;
+		wc[i].vendor_err = tmp[i].vendor_err;
 		if (tmp[i].opcode == UIB_WC_RECV) {
 			struct uibv_qp_wrap *qp;
 
@@ -766,61 +788,66 @@ static uint16_t bind_port_from_env(void)
 	const char *p = getenv(UIB_ENV_BIND_PORT);
 	uint16_t default_port =
 		uib_protocol_default_port(getenv(UIB_ENV_PROTOCOL));
+	int value;
 
 	if (!p || !*p)
 		return default_port;
-	int v = atoi(p);
+	value = atoi(p);
 
-	return v > 0 ? (uint16_t)v : default_port;
+	return value > 0 ? (uint16_t)value : default_port;
 }
 
 struct ibv_context *ibv_open_device(struct ibv_device *dev)
 {
+	struct uib_context *core;
+	struct uibv_ctx_wrap *wrapper;
+
 	if (dev != &g_uibv_dev.ibv)
 		return real_open_device ? real_open_device(dev) : NULL;
 
-	struct uib_context *core = uib_open_device(bind_ip_from_env(),
-						   bind_port_from_env());
+	core = uib_open_device(bind_ip_from_env(), bind_port_from_env());
 	if (!core)
 		return NULL;
 
-	struct uibv_ctx_wrap *w = calloc(1, sizeof(*w));
+	wrapper = calloc(1, sizeof(*wrapper));
 
-	if (!w) {
+	if (!wrapper) {
 		uib_close_device(core);
 		return NULL;
 	}
-	w->core              = core;
-	w->ibv.device        = dev;
-	w->ibv.cmd_fd        = -1;
-	w->ibv.async_fd      = eventfd(0, EFD_CLOEXEC);
-	if (w->ibv.async_fd < 0) {
-		free(w);
+	wrapper->core = core;
+	wrapper->ibv.device = dev;
+	wrapper->ibv.cmd_fd = -1;
+	wrapper->ibv.async_fd = eventfd(0, EFD_CLOEXEC);
+	if (wrapper->ibv.async_fd < 0) {
+		free(wrapper);
 		uib_close_device(core);
 		return NULL;
 	}
-	w->ibv.num_comp_vectors = 1;
-	pthread_mutex_init(&w->ibv.mutex, NULL);
-	w->ibv.ops.post_send       = provider_post_send;
-	w->ibv.ops.post_recv       = provider_post_recv;
-	w->ibv.ops.post_srq_recv   = provider_post_srq_recv;
-	w->ibv.ops.poll_cq         = provider_poll_cq;
-	w->ibv.ops.req_notify_cq   = provider_req_notify_cq;
+	wrapper->ibv.num_comp_vectors = 1;
+	pthread_mutex_init(&wrapper->ibv.mutex, NULL);
+	wrapper->ibv.ops.post_send = provider_post_send;
+	wrapper->ibv.ops.post_recv = provider_post_recv;
+	wrapper->ibv.ops.post_srq_recv = provider_post_srq_recv;
+	wrapper->ibv.ops.poll_cq = provider_poll_cq;
+	wrapper->ibv.ops.req_notify_cq = provider_req_notify_cq;
 
-	return &w->ibv;
+	return &wrapper->ibv;
 }
 
 int ibv_close_device(struct ibv_context *ctx)
 {
+	struct uibv_ctx_wrap *wrapper;
+
 	if (!ctx_is_ours(ctx))
 		return real_close_device ? real_close_device(ctx) : -1;
 
-	struct uibv_ctx_wrap *w = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
+	wrapper = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
 
-	close(w->ibv.async_fd);
-	uib_close_device(w->core);
-	pthread_mutex_destroy(&w->ibv.mutex);
-	free(w);
+	close(wrapper->ibv.async_fd);
+	uib_close_device(wrapper->core);
+	pthread_mutex_destroy(&wrapper->ibv.mutex);
+	free(wrapper);
 	return 0;
 }
 
@@ -1004,35 +1031,42 @@ void ibv_ack_cq_events(struct ibv_cq *cq, unsigned int events)
 
 struct ibv_pd *ibv_alloc_pd(struct ibv_context *ctx)
 {
+	struct uibv_ctx_wrap *context;
+	struct uibv_pd_wrap *wrapper;
+	struct uib_pd *core;
+
 	if (!ctx_is_ours(ctx))
 		return real_alloc_pd ? real_alloc_pd(ctx) : NULL;
-	struct uibv_ctx_wrap *cw = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
-	struct uib_pd *core = uib_alloc_pd(cw->core);
+	context = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
+	core = uib_alloc_pd(context->core);
 
 	if (!core)
 		return NULL;
-	struct uibv_pd_wrap *w = calloc(1, sizeof(*w));
+	wrapper = calloc(1, sizeof(*wrapper));
 
-	if (!w) {
+	if (!wrapper) {
 		uib_dealloc_pd(core);
 		return NULL;
 	}
-	w->core = core;
-	w->ibv.context = ctx;
-	w->ibv.handle  = core->handle;
-	return &w->ibv;
+	wrapper->core = core;
+	wrapper->ibv.context = ctx;
+	wrapper->ibv.handle = core->handle;
+	return &wrapper->ibv;
 }
 
 int ibv_dealloc_pd(struct ibv_pd *pd)
 {
+	struct uibv_pd_wrap *wrapper;
+	int rc;
+
 	if (!ctx_is_ours(pd->context))
 		return real_dealloc_pd ? real_dealloc_pd(pd) : -1;
-	struct uibv_pd_wrap *w = WRAP_OF(pd, struct uibv_pd_wrap, ibv);
-	int rc = uib_dealloc_pd(w->core);
+	wrapper = WRAP_OF(pd, struct uibv_pd_wrap, ibv);
+	rc = uib_dealloc_pd(wrapper->core);
 
 	if (rc < 0)
 		return -rc;
-	free(w);
+	free(wrapper);
 	return 0;
 }
 
@@ -1233,12 +1267,15 @@ struct ibv_mr *ibv_reg_dmabuf_mr(struct ibv_pd *pd, uint64_t offset,
 
 int ibv_dereg_mr(struct ibv_mr *mr)
 {
+	struct uibv_mr_wrap *wrapper;
+	int rc;
+
 	if (!ctx_is_ours(mr->context))
 		return real_dereg_mr ? real_dereg_mr(mr) : -1;
-	struct uibv_mr_wrap *w = WRAP_OF(mr, struct uibv_mr_wrap, ibv);
-	int rc = uib_dereg_mr(w->core);
+	wrapper = WRAP_OF(mr, struct uibv_mr_wrap, ibv);
+	rc = uib_dereg_mr(wrapper->core);
 
-	free(w);
+	free(wrapper);
 	return rc < 0 ? -rc : 0;
 }
 
@@ -1286,22 +1323,31 @@ struct ibv_cq *ibv_create_cq(struct ibv_context *ctx, int cqe, void *cq_context,
 
 int ibv_destroy_cq(struct ibv_cq *cq)
 {
+	struct uibv_cq_wrap *wrapper;
+	int rc;
+
 	if (!ctx_is_ours(cq->context))
 		return real_destroy_cq ? real_destroy_cq(cq) : -1;
-	struct uibv_cq_wrap *w = WRAP_OF(cq, struct uibv_cq_wrap, ibv);
-	int rc = uib_destroy_cq(w->core);
+	wrapper = WRAP_OF(cq, struct uibv_cq_wrap, ibv);
+	rc = uib_destroy_cq(wrapper->core);
 
 	if (cq->channel)
 		cq->channel->refcnt--;
-	pthread_cond_destroy(&w->ibv.cond);
-	pthread_mutex_destroy(&w->ibv.mutex);
-	free(w);
+	pthread_cond_destroy(&wrapper->ibv.cond);
+	pthread_mutex_destroy(&wrapper->ibv.mutex);
+	free(wrapper);
 	return rc < 0 ? -rc : 0;
 }
 
 struct ibv_qp *ibv_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
 {
 	struct uibv_srq_wrap *srq = NULL;
+	struct uibv_pd_wrap *pd_wrapper;
+	struct uibv_cq_wrap *send_cq;
+	struct uibv_cq_wrap *recv_cq;
+	struct uibv_qp_wrap *wrapper;
+	struct uib_qp_init_attr core_attr = {0};
+	struct uib_qp *core;
 
 	if (!ctx_is_ours(pd->context))
 		return real_create_qp ? real_create_qp(pd, attr) : NULL;
@@ -1309,13 +1355,11 @@ struct ibv_qp *ibv_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
 		errno = EINVAL;
 		return NULL;
 	}
-	struct uibv_pd_wrap *pdw = WRAP_OF(pd, struct uibv_pd_wrap, ibv);
-	struct uibv_cq_wrap *scw = attr->send_cq ?
+	pd_wrapper = WRAP_OF(pd, struct uibv_pd_wrap, ibv);
+	send_cq = attr->send_cq ?
 		WRAP_OF(attr->send_cq, struct uibv_cq_wrap, ibv) : NULL;
-	struct uibv_cq_wrap *rcw = attr->recv_cq ?
+	recv_cq = attr->recv_cq ?
 		WRAP_OF(attr->recv_cq, struct uibv_cq_wrap, ibv) : NULL;
-
-	struct uib_qp_init_attr ia = {0};
 	if (attr->srq) {
 		if (!ctx_is_ours(attr->srq->context) || attr->srq->pd != pd) {
 			errno = EINVAL;
@@ -1324,47 +1368,47 @@ struct ibv_qp *ibv_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
 		srq = WRAP_OF(attr->srq, struct uibv_srq_wrap, ibv);
 	}
 
-	ia.qp_type      = map_qpt_in(attr->qp_type);
-	ia.send_cq      = scw ? scw->core : NULL;
-	ia.recv_cq      = rcw ? rcw->core : NULL;
-	ia.srq          = srq ? srq->core : NULL;
-	ia.max_send_wr  = attr->cap.max_send_wr;
-	ia.max_recv_wr  = attr->cap.max_recv_wr;
-	ia.max_send_sge = attr->cap.max_send_sge;
-	ia.max_recv_sge = attr->cap.max_recv_sge;
+	core_attr.qp_type = map_qpt_in(attr->qp_type);
+	core_attr.send_cq = send_cq ? send_cq->core : NULL;
+	core_attr.recv_cq = recv_cq ? recv_cq->core : NULL;
+	core_attr.srq = srq ? srq->core : NULL;
+	core_attr.max_send_wr = attr->cap.max_send_wr;
+	core_attr.max_recv_wr = attr->cap.max_recv_wr;
+	core_attr.max_send_sge = attr->cap.max_send_sge;
+	core_attr.max_recv_sge = attr->cap.max_recv_sge;
 
-	struct uib_qp *core = uib_create_qp(pdw->core, &ia);
+	core = uib_create_qp(pd_wrapper->core, &core_attr);
 
 	if (!core)
 		return NULL;
-	struct uibv_qp_wrap *w = calloc(1, sizeof(*w));
+	wrapper = calloc(1, sizeof(*wrapper));
 
-	if (!w) {
+	if (!wrapper) {
 		uib_destroy_qp(core);
 		return NULL;
 	}
-	w->core = core;
-	w->ibv.context = pd->context;
-	w->ibv.pd      = pd;
-	w->ibv.send_cq = attr->send_cq;
-	w->ibv.recv_cq = attr->recv_cq;
-	w->ibv.srq     = attr->srq;
-	w->ibv.qp_num  = core->qp_num;
-	w->ibv.qp_type = attr->qp_type;
-	w->ibv.state   = IBV_QPS_RESET;
-	w->cap         = attr->cap;
-	w->sq_sig_all  = !!attr->sq_sig_all;
-	attr->cap      = w->cap;
-	w->recv_cq = rcw;
-	if (rcw) {
-		pthread_mutex_lock(&rcw->ibv.mutex);
-		w->recv_next = rcw->recv_qps;
-		rcw->recv_qps = w;
-		pthread_mutex_unlock(&rcw->ibv.mutex);
+	wrapper->core = core;
+	wrapper->ibv.context = pd->context;
+	wrapper->ibv.pd = pd;
+	wrapper->ibv.send_cq = attr->send_cq;
+	wrapper->ibv.recv_cq = attr->recv_cq;
+	wrapper->ibv.srq = attr->srq;
+	wrapper->ibv.qp_num = core->qp_num;
+	wrapper->ibv.qp_type = attr->qp_type;
+	wrapper->ibv.state = IBV_QPS_RESET;
+	wrapper->cap = attr->cap;
+	wrapper->sq_sig_all = !!attr->sq_sig_all;
+	attr->cap = wrapper->cap;
+	wrapper->recv_cq = recv_cq;
+	if (recv_cq) {
+		pthread_mutex_lock(&recv_cq->ibv.mutex);
+		wrapper->recv_next = recv_cq->recv_qps;
+		recv_cq->recv_qps = wrapper;
+		pthread_mutex_unlock(&recv_cq->ibv.mutex);
 	}
-	pthread_mutex_init(&w->ibv.mutex, NULL);
-	pthread_cond_init(&w->ibv.cond, NULL);
-	return &w->ibv;
+	pthread_mutex_init(&wrapper->ibv.mutex, NULL);
+	pthread_cond_init(&wrapper->ibv.cond, NULL);
+	return &wrapper->ibv;
 }
 
 struct ibv_ah *ibv_create_ah(struct ibv_pd *pd, struct ibv_ah_attr *attr)
@@ -1403,79 +1447,83 @@ int ibv_destroy_ah(struct ibv_ah *ah)
 
 int ibv_modify_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr, int mask)
 {
+	struct uibv_qp_wrap *wrapper;
+	struct uib_qp_attr core_attr = {0};
+	int core_mask = 0;
+	int rc;
+
 	if (!ctx_is_ours(qp->context))
 		return real_modify_qp ? real_modify_qp(qp, attr, mask) : -1;
-	struct uibv_qp_wrap *qw = WRAP_OF(qp, struct uibv_qp_wrap, ibv);
-
-	struct uib_qp_attr ua = {0};
-	int umask = 0;
+	wrapper = WRAP_OF(qp, struct uibv_qp_wrap, ibv);
 
 	if (mask & IBV_QP_STATE) {
-		ua.qp_state = map_qps_in(attr->qp_state);
-		umask |= UIB_QP_STATE;
+		core_attr.qp_state = map_qps_in(attr->qp_state);
+		core_mask |= UIB_QP_STATE;
 		qp->state = attr->qp_state;
 	}
 	if (mask & IBV_QP_DEST_QPN) {
-		ua.dest_qp_num = attr->dest_qp_num;
-		umask |= UIB_QP_DEST_QPN;
+		core_attr.dest_qp_num = attr->dest_qp_num;
+		core_mask |= UIB_QP_DEST_QPN;
 	}
 	if (mask & IBV_QP_RQ_PSN) {
-		ua.rq_psn = attr->rq_psn;
-		umask |= UIB_QP_RQ_PSN;
+		core_attr.rq_psn = attr->rq_psn;
+		core_mask |= UIB_QP_RQ_PSN;
 	}
 	if (mask & IBV_QP_SQ_PSN) {
-		ua.sq_psn = attr->sq_psn;
-		umask |= UIB_QP_SQ_PSN;
+		core_attr.sq_psn = attr->sq_psn;
+		core_mask |= UIB_QP_SQ_PSN;
 	}
 	if (mask & IBV_QP_PATH_MTU) {
-		ua.path_mtu = mtu_to_bytes(attr->path_mtu);
-		umask |= UIB_QP_PATH_MTU;
+		core_attr.path_mtu = mtu_to_bytes(attr->path_mtu);
+		core_mask |= UIB_QP_PATH_MTU;
 	}
 	if (mask & IBV_QP_QKEY) {
-		ua.qkey = attr->qkey;
-		umask |= UIB_QP_QKEY;
+		core_attr.qkey = attr->qkey;
+		core_mask |= UIB_QP_QKEY;
 	}
 	if (mask & IBV_QP_AV) {
-		struct sockaddr_in sa = {0};
+		struct sockaddr_in address = {0};
 
-		if (gid_to_sockaddr(&attr->ah_attr.grh.dgid, &sa,
-				    qw->core->ctx->bind_port) == 0) {
-			ua.remote_addr = sa;
-			umask |= UIB_QP_AV;
+		if (gid_to_sockaddr(&attr->ah_attr.grh.dgid, &address,
+				    wrapper->core->ctx->bind_port) == 0) {
+			core_attr.remote_addr = address;
+			core_mask |= UIB_QP_AV;
 		}
 	}
 	if (mask & IBV_QP_ACCESS_FLAGS) {
-		ua.qp_access_flags = attr->qp_access_flags;
-		umask |= UIB_QP_ACCESS_FLAGS;
+		core_attr.qp_access_flags = attr->qp_access_flags;
+		core_mask |= UIB_QP_ACCESS_FLAGS;
 	}
-	int rc = uib_modify_qp(qw->core, &ua, umask);
-
+	rc = uib_modify_qp(wrapper->core, &core_attr, core_mask);
 	return rc < 0 ? -rc : 0;
 }
 
 int ibv_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr, int mask,
 		 struct ibv_qp_init_attr *init_attr)
 {
+	struct uibv_qp_wrap *wrapper;
+	struct uib_qp *core;
+
 	if (!ctx_is_ours(qp->context))
 		return real_query_qp ? real_query_qp(qp, attr, mask, init_attr) : ENOSYS;
-	struct uibv_qp_wrap *w = WRAP_OF(qp, struct uibv_qp_wrap, ibv);
-	struct uib_qp *q = w->core;
+	wrapper = WRAP_OF(qp, struct uibv_qp_wrap, ibv);
+	core = wrapper->core;
 
 	memset(attr, 0, sizeof(*attr));
 	memset(init_attr, 0, sizeof(*init_attr));
 	attr->qp_state = qp->state;
 	attr->cur_qp_state = qp->state;
-	attr->path_mtu = bytes_to_mtu(q->path_mtu);
+	attr->path_mtu = bytes_to_mtu(core->path_mtu);
 	attr->path_mig_state = IBV_MIG_MIGRATED;
-	attr->qkey = q->qkey;
-	attr->rq_psn = q->rq_psn;
-	attr->sq_psn = q->sq_psn;
-	attr->dest_qp_num = q->dest_qp_num;
-	attr->qp_access_flags = q->access_flags;
-	attr->cap = w->cap;
+	attr->qkey = core->qkey;
+	attr->rq_psn = core->rq_psn;
+	attr->sq_psn = core->sq_psn;
+	attr->dest_qp_num = core->dest_qp_num;
+	attr->qp_access_flags = core->access_flags;
+	attr->cap = wrapper->cap;
 	attr->port_num = 1;
 	attr->pkey_index = 0;
-	if (q->remote_addr.sin_family == AF_INET) {
+	if (core->remote_addr.sin_family == AF_INET) {
 		attr->ah_attr.is_global = 1;
 		attr->ah_attr.port_num = 1;
 		attr->ah_attr.grh.sgid_index = 0;
@@ -1484,14 +1532,14 @@ int ibv_query_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr, int mask,
 		attr->ah_attr.grh.dgid.raw[10] = 0xff;
 		attr->ah_attr.grh.dgid.raw[11] = 0xff;
 		memcpy(attr->ah_attr.grh.dgid.raw + 12,
-		       &q->remote_addr.sin_addr.s_addr, 4);
+		       &core->remote_addr.sin_addr.s_addr, 4);
 	}
 	init_attr->send_cq = qp->send_cq;
 	init_attr->recv_cq = qp->recv_cq;
 	init_attr->srq = qp->srq;
 	init_attr->qp_type = qp->qp_type;
-	init_attr->cap = w->cap;
-	init_attr->sq_sig_all = w->sq_sig_all;
+	init_attr->cap = wrapper->cap;
+	init_attr->sq_sig_all = wrapper->sq_sig_all;
 	(void)mask;
 	return 0;
 }
@@ -1525,27 +1573,30 @@ int efadv_query_device(struct ibv_context *ctx,
 
 int ibv_destroy_qp(struct ibv_qp *qp)
 {
+	struct uibv_qp_wrap *wrapper;
+	struct uibv_qp_wrap **link;
+	int rc;
+
 	if (!ctx_is_ours(qp->context))
 		return real_destroy_qp ? real_destroy_qp(qp) : -1;
-	struct uibv_qp_wrap *w = WRAP_OF(qp, struct uibv_qp_wrap, ibv);
-	struct uibv_qp_wrap **link;
-	int rc = uib_destroy_qp(w->core);
+	wrapper = WRAP_OF(qp, struct uibv_qp_wrap, ibv);
+	rc = uib_destroy_qp(wrapper->core);
 
-	if (w->recv_cq) {
-		pthread_mutex_lock(&w->recv_cq->ibv.mutex);
-		for (link = &w->recv_cq->recv_qps; *link;
+	if (wrapper->recv_cq) {
+		pthread_mutex_lock(&wrapper->recv_cq->ibv.mutex);
+		for (link = &wrapper->recv_cq->recv_qps; *link;
 		     link = &(*link)->recv_next) {
-			if (*link == w) {
-				*link = w->recv_next;
+			if (*link == wrapper) {
+				*link = wrapper->recv_next;
 				break;
 			}
 		}
-		pthread_mutex_unlock(&w->recv_cq->ibv.mutex);
+		pthread_mutex_unlock(&wrapper->recv_cq->ibv.mutex);
 	}
 
-	pthread_cond_destroy(&w->ibv.cond);
-	pthread_mutex_destroy(&w->ibv.mutex);
-	free(w);
+	pthread_cond_destroy(&wrapper->ibv.cond);
+	pthread_mutex_destroy(&wrapper->ibv.mutex);
+	free(wrapper);
 	return rc < 0 ? -rc : 0;
 }
 
@@ -1579,33 +1630,38 @@ int ibv_query_device(struct ibv_context *ctx, struct ibv_device_attr *attr)
 int ibv_query_port(struct ibv_context *ctx, uint8_t port,
 		   struct _compat_ibv_port_attr *attr)
 {
+	struct ibv_port_attr *port_attr;
+
 	if (!ctx_is_ours(ctx))
 		return real_query_port ? real_query_port(ctx, port, attr) : -1;
-	struct ibv_port_attr *p = (struct ibv_port_attr *)attr;
+	port_attr = (struct ibv_port_attr *)attr;
 
-	memset(p, 0, sizeof(*p));
-	p->state          = IBV_PORT_ACTIVE;
-	p->max_mtu        = IBV_MTU_4096;
-	p->active_mtu     = active_mtu_from_env();
-	p->max_msg_sz     = 4096;
-	p->gid_tbl_len    = 1;
-	p->pkey_tbl_len   = 1;
-	p->lid            = 1;
-	p->link_layer     = IBV_LINK_LAYER_ETHERNET;
-	p->active_speed   = 16;
-	p->active_width   = 1;
+	memset(port_attr, 0, sizeof(*port_attr));
+	port_attr->state = IBV_PORT_ACTIVE;
+	port_attr->max_mtu = IBV_MTU_4096;
+	port_attr->active_mtu = active_mtu_from_env();
+	port_attr->max_msg_sz = 4096;
+	port_attr->gid_tbl_len = 1;
+	port_attr->pkey_tbl_len = 1;
+	port_attr->lid = 1;
+	port_attr->link_layer = IBV_LINK_LAYER_ETHERNET;
+	port_attr->active_speed = 16;
+	port_attr->active_width = 1;
 	return 0;
 }
 
 int ibv_query_gid(struct ibv_context *ctx, uint8_t port, int index,
 		  union ibv_gid *gid)
 {
+	struct uibv_ctx_wrap *wrapper;
+	uint32_t ip;
+
 	if (!ctx_is_ours(ctx))
 		return real_query_gid ? real_query_gid(ctx, port, index, gid) : ENOSYS;
 	if (!gid || port != 1 || index != 0)
 		return EINVAL;
-	struct uibv_ctx_wrap *w = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
-	uint32_t ip = w->core->local_addr.sin_addr.s_addr;
+	wrapper = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
+	ip = wrapper->core->local_addr.sin_addr.s_addr;
 
 	if (ip == htonl(INADDR_ANY))
 		return EADDRNOTAVAIL;

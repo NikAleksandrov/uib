@@ -17,9 +17,12 @@
 #include "uib/transport.h"
 #include "transport_internal.h"
 #include "uib/bth.h"
+#include "uib/dcqcn.h"
 #include "uib/uet_nscc.h"
+#include "congestion_internal.h"
 #include "host_zc_internal.h"
 #include "ptr_ring.h"
+#include "qp_internal.h"
 #include "utils.h"
 
 #define UIB_PKT_MAX (UIB_PMTU + 64)
@@ -331,7 +334,8 @@ static uint32_t rocev2_nominal_len(const struct uib_qp *qp,
 
 static int rocev2_congestion_init(struct uib_qp *qp)
 {
-	struct uib_uet_nscc_config config;
+	struct uib_uet_nscc_config nscc_config;
+	struct uib_dcqcn_config dcqcn_config;
 	const void *configuration = NULL;
 	const char *cc;
 	uint32_t mtu;
@@ -345,7 +349,7 @@ static int rocev2_congestion_init(struct uib_qp *qp)
 		char *end;
 		unsigned long long value;
 
-		uib_uet_nscc_config_default(&config, mtu);
+		uib_uet_nscc_config_default(&nscc_config, mtu);
 		max_wnd = getenv(UIB_ENV_ROCEV2_NSCC_MAX_WND);
 		if (max_wnd) {
 			errno = 0;
@@ -353,10 +357,14 @@ static int rocev2_congestion_init(struct uib_qp *qp)
 			if (errno || end == max_wnd || *end || value < mtu ||
 			    value > UINT32_MAX)
 				return -EINVAL;
-			config.max_wnd = (uint32_t)value;
-			config.bdp = config.max_wnd;
+			nscc_config.max_wnd = (uint32_t)value;
+			nscc_config.bdp = nscc_config.max_wnd;
 		}
-		configuration = &config;
+		configuration = &nscc_config;
+	} else if (!strcmp(cc, "dcqcn")) {
+		if (uib_dcqcn_config_from_env(&dcqcn_config, mtu))
+			return -EINVAL;
+		configuration = &dcqcn_config;
 	}
 	return uib_congestion_init(&qp->congestion, cc, configuration, mtu,
 				   uib_now_ns());
@@ -659,6 +667,8 @@ static int scatter_at(struct uib_pd *pd, struct uib_sge *sgl, int n,
 		      const uint8_t *in, size_t in_len, size_t *consumed_out)
 {
 	size_t skip = msg_offset;
+	size_t off_in_sge;
+	size_t consumed = 0;
 	int i;
 
 	for (i = 0; i < n && skip > 0; i++) {
@@ -670,8 +680,7 @@ static int scatter_at(struct uib_pd *pd, struct uib_sge *sgl, int n,
 		*consumed_out = 0;
 		return 0;
 	}
-	size_t off_in_sge = skip;
-	size_t consumed = 0;
+	off_in_sge = skip;
 
 	for (; i < n && consumed < in_len; i++) {
 		struct uib_mr *mr;
@@ -763,20 +772,22 @@ int uib_qp_scatter_recv(struct uib_qp *qp, struct uib_rq_slot *slot,
 			  in, in_len, consumed_out);
 }
 
-static void emit_send_wc(struct uib_qp *qp, uint64_t wr_id,
+void qp_emit_send_vendor(struct uib_qp *qp, uint64_t wr_id,
 			 enum uib_wr_opcode wr_op, int signaled,
-			 enum uib_wc_status st, uint32_t byte_len)
+			 enum uib_wc_status st, uint32_t byte_len,
+			 uint32_t vendor_err)
 {
+	struct uib_wc wc = {0};
+
 	if (!qp->send_cq)
 		return;
 	if (st == UIB_WC_SUCCESS && !signaled)
 		return;
-	struct uib_wc wc = {0};
-
 	wc.wr_id    = wr_id;
 	wc.status   = st;
 	wc.qp_num   = qp->qp_num;
 	wc.byte_len = byte_len;
+	wc.vendor_err = vendor_err;
 	switch (wr_op) {
 	case UIB_WR_SEND:
 	case UIB_WR_SEND_WITH_IMM:
@@ -802,6 +813,13 @@ static void emit_send_wc(struct uib_qp *qp, uint64_t wr_id,
 	uib_cq_push(qp->send_cq, &wc);
 }
 
+static void emit_send_wc(struct uib_qp *qp, uint64_t wr_id,
+			 enum uib_wr_opcode wr_op, int signaled,
+			 enum uib_wc_status status, uint32_t byte_len)
+{
+	qp_emit_send_vendor(qp, wr_id, wr_op, signaled, status, byte_len, 0);
+}
+
 /**
  * uib_qp_emit_send - Publish a send work completion.
  * @qp: Queue pair
@@ -824,9 +842,10 @@ static int emit_recv_wc(struct uib_qp *qp, uint64_t wr_id,
 			 uint32_t byte_len, uint32_t src_qp,
 			 uint32_t imm_data, void *private_data)
 {
+	struct uib_wc wc = {0};
+
 	if (!qp->recv_cq)
 		return -EINVAL;
-	struct uib_wc wc = {0};
 
 	wc.wr_id    = wr_id;
 	wc.status   = st;
@@ -1038,8 +1057,16 @@ static int rocev2_drain_locked(struct uib_qp *qp)
 		count++;
 	}
 	if (!count) {
-		if (rocev2_next_unsent(qp))
-			uib_qp_retry_schedule(qp, transmit_time + UIB_RTO_NS);
+		if (rocev2_next_unsent(qp)) {
+			uint64_t next = uib_congestion_next_send_ns(
+				&qp->congestion);
+
+			if (!next)
+				next = transmit_time + UIB_RTO_NS;
+			else if (next <= transmit_time)
+				next = transmit_time + 1;
+			uib_qp_retry_schedule(qp, next);
+		}
 		return 0;
 	}
 	rc = uib_transport_send_ref_batch(qp->ctx, refs, count);
@@ -1058,6 +1085,12 @@ static int rocev2_drain_locked(struct uib_qp *qp)
 		    outstanding[i]->deadline_ns < qp->retry_deadline_ns)
 			uib_qp_retry_schedule(qp,
 					      outstanding[i]->deadline_ns);
+	}
+	if (rocev2_next_unsent(qp)) {
+		uint64_t next = uib_congestion_next_send_ns(&qp->congestion);
+
+		if (next && next < qp->retry_deadline_ns)
+			uib_qp_retry_schedule(qp, next);
 	}
 	return 0;
 }
@@ -1079,16 +1112,17 @@ static void send_ack(struct uib_qp *qp, const struct sockaddr_in *dst,
 	struct sockaddr_in target;
 	uint8_t pkt[UIB_BTH_BYTES + UIB_AETH_BYTES + UIB_ICRC_BYTES];
 	struct uib_bth *bth = (struct uib_bth *)pkt;
+	struct uib_aeth *aeth = (struct uib_aeth *)(pkt + UIB_BTH_BYTES);
+	uint32_t crc;
+	uint32_t bcrc;
 
 	response_target(qp, dst, &target);
 
 	uib_bth_pack(bth, UIB_OP_ACKNOWLEDGE, UIB_DEFAULT_PKEY,
 		     qp->dest_qp_num, ack_psn, 0);
-	struct uib_aeth *aeth = (struct uib_aeth *)(pkt + UIB_BTH_BYTES);
-
 	uib_aeth_pack(aeth, syndrome, ack_psn);
-	uint32_t crc = uib_icrc(pkt, UIB_BTH_BYTES + UIB_AETH_BYTES);
-	uint32_t bcrc = htonl(crc);
+	crc = uib_icrc(pkt, UIB_BTH_BYTES + UIB_AETH_BYTES);
+	bcrc = htonl(crc);
 
 	memcpy(pkt + UIB_BTH_BYTES + UIB_AETH_BYTES, &bcrc, UIB_ICRC_BYTES);
 	uib_transport_send(qp->ctx, &target, pkt, sizeof(pkt));
@@ -1363,13 +1397,13 @@ static uint8_t pick_opcode(enum uib_qp_type qpt, enum uib_wr_opcode op,
 			   int with_imm, uint32_t n, uint32_t i)
 {
 	int is_ud = (qpt == UIB_QPT_UD);
+	int is_only = n == 1;
+	int is_first = i == 0;
+	int is_last = i == n - 1;
 
 	if (is_ud)
 		return with_imm ? UIB_OP_UD_SEND_ONLY_WITH_IMM :
 			UIB_OP_UD_SEND_ONLY;
-	int is_only  = (n == 1);
-	int is_first = (i == 0);
-	int is_last  = (i == n - 1);
 
 	switch (op) {
 	case UIB_WR_SEND:
@@ -1404,196 +1438,260 @@ static uint8_t pick_opcode(enum uib_qp_type qpt, enum uib_wr_opcode op,
 	return UIB_BTH_INVALID_OPCODE;
 }
 
-static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
+struct rocev2_send_data {
+	const uint8_t *message;
+	uint8_t *owned_message;
+	struct uib_mr *mr;
+	size_t total;
+};
+
+static int rocev2_send_total(const struct uib_send_wr *wr, size_t *total)
 {
-	struct uib_transport_ref stack_refs[UIB_TX_BATCH_STACK];
-	struct uib_transport_ref *refs;
+	uint32_t i;
+
+	*total = 0;
+	for (i = 0; i < (uint32_t)wr->num_sge; i++) {
+		if (SIZE_MAX - *total < wr->sg_list[i].length)
+			return -EMSGSIZE;
+		*total += wr->sg_list[i].length;
+	}
+	return 0;
+}
+
+static void rocev2_send_data_release(struct rocev2_send_data *data)
+{
+	uib_mr_put(data->mr);
+	free(data->owned_message);
+}
+
+static int rocev2_prepare_send_data(struct uib_qp *qp,
+				    struct uib_send_wr *wr,
+				    struct rocev2_send_data *data)
+{
+	size_t copied;
+	uint32_t i;
+	int rc;
+
+	if (!data->total)
+		return 0;
+	if (wr->send_flags & UIB_SEND_INLINE) {
+		if (wr->num_sge == 1) {
+			data->message = (const uint8_t *)(uintptr_t)
+				wr->sg_list[0].addr;
+			return 0;
+		}
+		data->owned_message = malloc(data->total);
+		if (!data->owned_message)
+			return -ENOMEM;
+		copied = 0;
+		for (i = 0; i < (uint32_t)wr->num_sge; i++) {
+			memcpy(data->owned_message + copied,
+			       (const void *)(uintptr_t)wr->sg_list[i].addr,
+			       wr->sg_list[i].length);
+			copied += wr->sg_list[i].length;
+		}
+		data->message = data->owned_message;
+		return 0;
+	}
+	if (wr->num_sge == 1) {
+		data->mr = uib_mr_lookup_local(
+			qp->pd, wr->sg_list[0].lkey,
+			(const void *)(uintptr_t)wr->sg_list[0].addr,
+			wr->sg_list[0].length, 0);
+		if (!data->mr)
+			return -EACCES;
+		if (data->mr->kind == UIB_MR_HOST) {
+			data->message = (const uint8_t *)(uintptr_t)
+				wr->sg_list[0].addr;
+			return 0;
+		}
+		uib_mr_put(data->mr);
+		data->mr = NULL;
+	}
+	data->owned_message = malloc(data->total);
+	if (!data->owned_message)
+		return -ENOMEM;
+	rc = gather_total(qp->pd, wr->sg_list, wr->num_sge,
+			  data->owned_message, data->total);
+	if (rc < 0)
+		return rc;
+	data->message = data->owned_message;
+	return 0;
+}
+
+static void rocev2_init_outstanding(struct uib_qp *qp,
+				    struct uib_send_wr *wr,
+				    struct uib_outstanding *out,
+				    const struct sockaddr_in *dst,
+				    size_t packet_len, uint32_t psn,
+				    uint8_t opcode, int is_last)
+{
+	out->nominal_len = rocev2_nominal_len(qp, packet_len);
+	out->psn = psn;
+	out->wire_opcode = opcode;
+	out->signaled = !!(wr->send_flags & UIB_SEND_SIGNALED);
+	out->is_final = is_last;
+	out->wr_id = wr->wr_id;
+	out->wr_opcode = wr->opcode;
+	out->dst = *dst;
+	out->pkt_len = packet_len;
+}
+
+static int rocev2_build_send_batch(struct uib_qp *qp,
+				    struct uib_send_wr *wr,
+				    const struct rocev2_send_data *data,
+				    struct uib_transport_ref *refs,
+				    uint32_t packets, uint32_t mtu,
+				    uint32_t *built)
+{
+	uint8_t stack_packet[UIB_PKT_MAX];
 	struct uib_outstanding *out;
 	struct sockaddr_in dst;
-	const uint8_t *message;
-	struct uib_mr *mr;
-	uint8_t stack_packet[UIB_PKT_MAX];
-	uint8_t *owned_message;
 	uint8_t *packet;
 	size_t packet_len;
 	size_t chunk;
-	size_t total;
-	size_t off;
-	uint32_t mtu;
+	size_t offset;
 	uint32_t psn;
-	uint32_t n;
 	uint32_t i;
-	uint32_t built;
-	uint32_t start_psn;
-	uint8_t op;
+	uint8_t opcode;
 	int is_first;
-	int with_imm;
 	int is_last;
 	int is_rc;
-	int is_ud;
-	int err;
+	int with_imm;
 	int rc;
 
+	is_rc = qp->qp_type == UIB_QPT_RC;
 	with_imm = wr->opcode == UIB_WR_SEND_WITH_IMM ||
 		wr->opcode == UIB_WR_RDMA_WRITE_WITH_IMM;
-	is_ud = qp->qp_type == UIB_QPT_UD;
-	is_rc = qp->qp_type == UIB_QPT_RC;
-	total = 0;
-	for (i = 0; i < (uint32_t)wr->num_sge; i++)
-		total += wr->sg_list[i].length;
-	if (wr->opcode == UIB_WR_RDMA_READ)
-		return post_rdma_read(qp, wr, total);
-	if (wr->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
-	    wr->opcode == UIB_WR_ATOMIC_CMP_SWAP)
-		return post_atomic(qp, wr);
-	mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
-	if (is_ud && total > mtu)
-		return -EMSGSIZE;
-	message = NULL;
-	owned_message = NULL;
-	mr = NULL;
-	if (total > 0) {
-		if (wr->send_flags & UIB_SEND_INLINE) {
-			if (wr->num_sge == 1) {
-				message = (const uint8_t *)(uintptr_t)
-					wr->sg_list[0].addr;
-			} else {
-				size_t copied = 0;
-
-				owned_message = malloc(total);
-				if (!owned_message)
-					return -ENOMEM;
-				for (i = 0; i < (uint32_t)wr->num_sge; i++) {
-					memcpy(owned_message + copied,
-					       (const void *)(uintptr_t)
-					       wr->sg_list[i].addr,
-					       wr->sg_list[i].length);
-					copied += wr->sg_list[i].length;
-				}
-				message = owned_message;
-			}
-		} else if (wr->num_sge == 1) {
-			mr = uib_mr_lookup_local(
-				qp->pd, wr->sg_list[0].lkey,
-				(const void *)(uintptr_t)wr->sg_list[0].addr,
-				wr->sg_list[0].length, 0);
-			if (!mr)
-				return -EACCES;
-			if (mr->kind == UIB_MR_HOST)
-				message = (const uint8_t *)(uintptr_t)
-					wr->sg_list[0].addr;
-			else {
-				uib_mr_put(mr);
-				mr = NULL;
-			}
-		}
-		if (!message) {
-			owned_message = malloc(total);
-			if (!owned_message)
-				return -ENOMEM;
-			rc = gather_total(qp->pd, wr->sg_list, wr->num_sge,
-					  owned_message, total);
-			if (rc < 0) {
-				free(owned_message);
-				return rc;
-			}
-			message = owned_message;
-		}
-	}
-	n = total <= mtu ? 1 : (uint32_t)((total + mtu - 1) / mtu);
-	if (n == 0)
-		n = 1;
-	refs = stack_refs;
-	if (is_rc && n > UIB_TX_BATCH_STACK) {
-		refs = malloc((size_t)n * sizeof(*refs));
-		if (!refs) {
-			uib_mr_put(mr);
-			free(owned_message);
-			return -ENOMEM;
-		}
-	}
-	err = 0;
-	built = 0;
-	if (is_rc)
-		pthread_mutex_lock(&qp->lock);
-	start_psn = qp->sq_psn;
-	for (i = 0; i < n; i++) {
-		off = (size_t)i * mtu;
-		chunk = off + mtu > total ? total - off : mtu;
+	*built = 0;
+	for (i = 0; i < packets; i++) {
+		offset = (size_t)i * mtu;
+		chunk = offset + mtu > data->total ? data->total - offset : mtu;
 		is_first = i == 0;
-		is_last = i == n - 1;
-		op = pick_opcode(qp->qp_type, wr->opcode, with_imm, n, i);
-		if (op == UIB_BTH_INVALID_OPCODE) {
-			err = -EINVAL;
-			break;
-		}
-		packet_len = packet_length(qp, op, is_first, chunk);
+		is_last = i == packets - 1;
+		opcode = pick_opcode(qp->qp_type, wr->opcode, with_imm,
+				     packets, i);
+		if (opcode == UIB_BTH_INVALID_OPCODE)
+			return -EINVAL;
+		packet_len = packet_length(qp, opcode, is_first, chunk);
 		out = NULL;
 		packet = stack_packet;
 		if (is_rc) {
 			out = alloc_outstanding(qp, packet_len);
-			if (!out) {
-				err = -ENOMEM;
-				break;
-			}
+			if (!out)
+				return -ENOMEM;
 			packet = out->pkt;
 		}
-		rc = send_one_packet(qp, wr, op, is_first, is_last,
-				     message ? message + off : NULL, chunk,
-				     wr->rdma.remote_addr, wr->rdma.rkey,
-				     (uint32_t)total, out, packet, packet_len,
-				     &psn, &packet_len, &dst, is_rc);
+		rc = send_one_packet(qp, wr, opcode, is_first, is_last,
+				     data->message ? data->message + offset : NULL,
+				     chunk, wr->rdma.remote_addr,
+				     wr->rdma.rkey, (uint32_t)data->total, out,
+				     packet, packet_len, &psn, &packet_len, &dst,
+				     is_rc);
 		if (rc < 0) {
 			free_outstanding(out);
-			err = rc;
-			break;
+			return rc;
 		}
-		if (is_rc) {
-			out->nominal_len = rocev2_nominal_len(qp, packet_len);
-			out->psn = psn;
-			out->wire_opcode = op;
-			out->signaled =
-				(wr->send_flags & UIB_SEND_SIGNALED) ? 1 : 0;
-			out->is_final = is_last;
-			out->wr_id = wr->wr_id;
-			out->wr_opcode = wr->opcode;
-			out->dst = dst;
-			out->pkt_len = packet_len;
-			refs[built].dst = &out->dst;
-			refs[built].buf = out->pkt;
-			refs[built].release = free_outstanding;
-			refs[built].opaque = out;
-			refs[built].len = out->pkt_len;
-			refs[built].entropy = 0;
-			built++;
-		}
+		if (!is_rc)
+			continue;
+		rocev2_init_outstanding(qp, wr, out, &dst, packet_len, psn,
+					   opcode, is_last);
+		refs[*built].dst = &out->dst;
+		refs[*built].buf = out->pkt;
+		refs[*built].release = free_outstanding;
+		refs[*built].opaque = out;
+		refs[*built].len = out->pkt_len;
+		refs[*built].entropy = 0;
+		(*built)++;
 	}
-	if (is_rc && !err) {
-		for (i = 0; i < built; i++) {
-			out = refs[i].opaque;
-			enqueue_outstanding(qp, out);
-		}
-		built = 0;
-		rocev2_drain_locked(qp);
-	}
-	if (is_rc && err) {
-		qp->sq_psn = start_psn;
-	}
+	return 0;
+}
+
+static void rocev2_free_send_batch(struct uib_transport_ref *refs,
+				    uint32_t built)
+{
+	struct uib_outstanding *out;
+	uint32_t i;
+
 	for (i = 0; i < built; i++) {
 		out = refs[i].opaque;
 		free_outstanding(out);
 	}
+}
+
+static void rocev2_commit_send_batch(struct uib_qp *qp,
+				      struct uib_transport_ref *refs,
+				      uint32_t built)
+{
+	struct uib_outstanding *out;
+	uint32_t i;
+
+	for (i = 0; i < built; i++) {
+		out = refs[i].opaque;
+		enqueue_outstanding(qp, out);
+	}
+	rocev2_drain_locked(qp);
+}
+
+static int post_one_send(struct uib_qp *qp, struct uib_send_wr *wr)
+{
+	struct uib_transport_ref stack_refs[UIB_TX_BATCH_STACK];
+	struct rocev2_send_data data = {0};
+	struct uib_transport_ref *refs = stack_refs;
+	uint32_t start_psn;
+	uint32_t packets;
+	uint32_t built;
+	uint32_t mtu;
+	int is_rc;
+	int rc;
+
+	rc = rocev2_send_total(wr, &data.total);
+	if (rc < 0)
+		return rc;
+	if (wr->opcode == UIB_WR_RDMA_READ)
+		return post_rdma_read(qp, wr, data.total);
+	if (wr->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
+	    wr->opcode == UIB_WR_ATOMIC_CMP_SWAP)
+		return post_atomic(qp, wr);
+	mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
+	if (qp->qp_type == UIB_QPT_UD && data.total > mtu)
+		return -EMSGSIZE;
+	rc = rocev2_prepare_send_data(qp, wr, &data);
+	if (rc < 0)
+		goto out_data;
+	packets = data.total <= mtu ? 1 :
+		(uint32_t)((data.total + mtu - 1) / mtu);
+	is_rc = qp->qp_type == UIB_QPT_RC;
+	if (is_rc && packets > UIB_TX_BATCH_STACK) {
+		refs = malloc((size_t)packets * sizeof(*refs));
+		if (!refs) {
+			rc = -ENOMEM;
+			goto out_data;
+		}
+	}
+	if (is_rc)
+		pthread_mutex_lock(&qp->lock);
+	start_psn = qp->sq_psn;
+	rc = rocev2_build_send_batch(qp, wr, &data, refs, packets, mtu,
+				     &built);
+	if (is_rc && rc < 0)
+		qp->sq_psn = start_psn;
+	if (is_rc && !rc) {
+		rocev2_commit_send_batch(qp, refs, built);
+		built = 0;
+	}
+	rocev2_free_send_batch(refs, built);
 	if (is_rc)
 		pthread_mutex_unlock(&qp->lock);
-	if (refs != stack_refs)
-		free(refs);
-	uib_mr_put(mr);
-	free(owned_message);
-	if (!is_rc && !err)
+	if (!is_rc && !rc)
 		emit_send_wc(qp, wr->wr_id, wr->opcode,
 			     wr->send_flags & UIB_SEND_SIGNALED,
-			     UIB_WC_SUCCESS, (uint32_t)total);
-	return err;
+			     UIB_WC_SUCCESS, (uint32_t)data.total);
+	if (refs != stack_refs)
+		free(refs);
+out_data:
+	rocev2_send_data_release(&data);
+	return rc;
 }
 
 int uib_rocev2_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
@@ -1839,13 +1937,15 @@ void uib_qp_release_recv(struct uib_rq_slot *slot)
 
 static int verify_icrc(const uint8_t *pkt, size_t len)
 {
+	uint32_t want;
+	uint32_t got;
+
 	if (len < UIB_ICRC_BYTES)
 		return -1;
-	uint32_t want;
 
 	memcpy(&want, pkt + len - UIB_ICRC_BYTES, UIB_ICRC_BYTES);
 	want = ntohl(want);
-	uint32_t got = uib_icrc(pkt, len - UIB_ICRC_BYTES);
+	got = uib_icrc(pkt, len - UIB_ICRC_BYTES);
 	return got == want ? 0 : -1;
 }
 
@@ -2100,589 +2200,680 @@ int uib_rocev2_handle_packet(struct uib_qp *qp,
 	return uib_rocev2_handle_packet_meta(qp, src, packet, len, NULL);
 }
 
+struct rocev2_rx_packet {
+	struct uib_qp *qp;
+	const struct sockaddr_in *src;
+	const uint8_t *body;
+	size_t body_len;
+	uint32_t psn;
+	uint8_t opcode;
+	int ack_request;
+	int is_rc;
+};
+
+static void rocev2_rx_advance(struct rocev2_rx_packet *rx)
+{
+	rx->qp->last_rx_psn = rx->psn;
+	rx->qp->last_rx_valid = 1;
+	rx->qp->rq_psn = rx->psn + 1;
+}
+
+static int rocev2_response_opcode(uint8_t opcode)
+{
+	return opcode == UIB_OP_ACKNOWLEDGE || opcode == UIB_OP_CNP ||
+		opcode == UIB_OP_ATOMIC_ACKNOWLEDGE ||
+		opcode == UIB_OP_RDMA_READ_RESP_FIRST ||
+		opcode == UIB_OP_RDMA_READ_RESP_MIDDLE ||
+		opcode == UIB_OP_RDMA_READ_RESP_LAST ||
+		opcode == UIB_OP_RDMA_READ_RESP_ONLY;
+}
+
+static int rocev2_check_request_psn(const struct rocev2_rx_packet *rx)
+{
+	uint32_t expected;
+	int order;
+
+	if (!rx->is_rc || rocev2_response_opcode(rx->opcode))
+		return 0;
+	expected = rx->qp->rq_psn & UIB_BTH_PSN_MASK;
+	order = psn_cmp(rx->psn, expected);
+	if (order < 0) {
+		if ((rx->opcode == UIB_OP_FETCH_ADD ||
+		     rx->opcode == UIB_OP_COMPARE_SWAP) &&
+		    rx->qp->atomic_ack_valid &&
+		    !psn_cmp(rx->psn, rx->qp->atomic_ack_psn))
+			send_atomic_ack(rx->qp, rx->psn,
+					rx->qp->atomic_ack_value);
+		else
+			send_ack(rx->qp, rx->src, rx->qp->last_rx_psn,
+				 UIB_AETH_ACK);
+		return 1;
+	}
+	if (order > 0) {
+		send_ack(rx->qp, rx->src, expected, UIB_AETH_NAK_PSN_SEQ);
+		return 1;
+	}
+	return 0;
+}
+
+static int rocev2_handle_send_only(struct rocev2_rx_packet *rx)
+{
+	struct uib_rq_slot slot;
+	const uint8_t *body = rx->body;
+	size_t body_len = rx->body_len;
+	size_t consumed = 0;
+	uint32_t imm_data = 0;
+	int rc;
+
+	if (rx->opcode == UIB_OP_SEND_ONLY_WITH_IMM) {
+		if (body_len < sizeof(imm_data))
+			return -EBADMSG;
+		memcpy(&imm_data, body, sizeof(imm_data));
+		body += sizeof(imm_data);
+		body_len -= sizeof(imm_data);
+	}
+	if (pop_recv_slot(rx->qp, &slot) < 0) {
+		if (rx->is_rc)
+			send_ack(rx->qp, rx->src, rx->psn, UIB_AETH_RNR);
+		return -ENOENT;
+	}
+	rc = uib_qp_scatter_recv(rx->qp, &slot, 0, body, body_len,
+				 &consumed);
+	uib_qp_emit_recv_slot(rx->qp, &slot,
+			      rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
+			      UIB_WC_RECV, (uint32_t)consumed,
+			      rx->qp->dest_qp_num, imm_data);
+	uib_qp_release_recv(&slot);
+	rocev2_rx_advance(rx);
+	if (rx->is_rc)
+		send_ack(rx->qp, rx->src, rx->psn,
+			 rc < 0 ? UIB_AETH_NAK_INV_REQ : UIB_AETH_ACK);
+	return rc;
+}
+
+static int rocev2_handle_send_first(struct rocev2_rx_packet *rx)
+{
+	struct uib_rq_slot slot;
+	size_t consumed = 0;
+	int rc;
+
+	if (pop_recv_slot(rx->qp, &slot) < 0) {
+		if (rx->is_rc)
+			send_ack(rx->qp, rx->src, rx->psn, UIB_AETH_RNR);
+		return -ENOENT;
+	}
+	uib_mr_put(rx->qp->frag_recv_mr);
+	rx->qp->frag_recv_mr = NULL;
+	if (slot.num_sge == 1)
+		rx->qp->frag_recv_mr = uib_mr_lookup_local(
+			rx->qp->pd, slot.sg_list[0].lkey,
+			(const void *)(uintptr_t)slot.sg_list[0].addr,
+			slot.sg_list[0].length, 0);
+	rc = scatter_recv_fragment(rx->qp, &slot, 0, rx->body,
+				   rx->body_len, &consumed);
+	rx->qp->frag_recv = slot;
+	if (!rx->qp->frag_recv.heap_sge)
+		rx->qp->frag_recv.sg_list = rx->qp->frag_recv.inline_sge;
+	rx->qp->frag_recv_active = 1;
+	rx->qp->frag_recv_offset = (uint32_t)consumed;
+	rocev2_rx_advance(rx);
+	if (rx->is_rc && (rc < 0 || rx->ack_request))
+		send_ack(rx->qp, rx->src, rx->psn,
+			 rc < 0 ? UIB_AETH_NAK_INV_REQ : UIB_AETH_ACK);
+	return rc;
+}
+
+static int rocev2_handle_send_middle(struct rocev2_rx_packet *rx)
+{
+	size_t consumed = 0;
+	int rc;
+
+	if (!rx->qp->frag_recv_active) {
+		if (rx->is_rc)
+			send_ack(rx->qp, rx->src, rx->psn,
+				 UIB_AETH_NAK_INV_REQ);
+		return -EBADMSG;
+	}
+	rc = scatter_recv_fragment(rx->qp, &rx->qp->frag_recv,
+				   rx->qp->frag_recv_offset, rx->body,
+				   rx->body_len, &consumed);
+	rx->qp->frag_recv_offset += (uint32_t)consumed;
+	rocev2_rx_advance(rx);
+	if (rx->is_rc && (rc < 0 || rx->ack_request))
+		send_ack(rx->qp, rx->src, rx->psn,
+			 rc < 0 ? UIB_AETH_NAK_INV_REQ : UIB_AETH_ACK);
+	return rc;
+}
+
+static int rocev2_handle_send_last(struct rocev2_rx_packet *rx)
+{
+	const uint8_t *body = rx->body;
+	size_t body_len = rx->body_len;
+	size_t consumed = 0;
+	uint32_t imm_data = 0;
+	uint32_t total;
+	int rc;
+
+	if (!rx->qp->frag_recv_active) {
+		if (rx->is_rc)
+			send_ack(rx->qp, rx->src, rx->psn,
+				 UIB_AETH_NAK_INV_REQ);
+		return -EBADMSG;
+	}
+	if (rx->opcode == UIB_OP_SEND_LAST_WITH_IMM) {
+		if (body_len < sizeof(imm_data))
+			return -EBADMSG;
+		memcpy(&imm_data, body, sizeof(imm_data));
+		body += sizeof(imm_data);
+		body_len -= sizeof(imm_data);
+	}
+	rc = scatter_recv_fragment(rx->qp, &rx->qp->frag_recv,
+				   rx->qp->frag_recv_offset, body, body_len,
+				   &consumed);
+	total = rx->qp->frag_recv_offset + (uint32_t)consumed;
+	uib_qp_emit_recv_slot(rx->qp, &rx->qp->frag_recv,
+			      rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
+			      UIB_WC_RECV, total, rx->qp->dest_qp_num,
+			      imm_data);
+	uib_qp_release_recv(&rx->qp->frag_recv);
+	uib_mr_put(rx->qp->frag_recv_mr);
+	rx->qp->frag_recv_mr = NULL;
+	rx->qp->frag_recv_active = 0;
+	rx->qp->frag_recv_offset = 0;
+	rocev2_rx_advance(rx);
+	if (rx->is_rc)
+		send_ack(rx->qp, rx->src, rx->psn,
+			 rc < 0 ? UIB_AETH_NAK_INV_REQ : UIB_AETH_ACK);
+	return rc;
+}
+
+static int rocev2_handle_ud_send(struct rocev2_rx_packet *rx)
+{
+	const struct uib_deth *deth;
+	struct uib_rq_slot slot;
+	const uint8_t *body = rx->body;
+	size_t body_len = rx->body_len;
+	size_t consumed = 0;
+	uint32_t imm_data = 0;
+	uint32_t qkey;
+	uint32_t sqp;
+	int rc;
+
+	if (body_len < UIB_DETH_BYTES)
+		return -EBADMSG;
+	deth = (const struct uib_deth *)body;
+	uib_deth_unpack(deth, &qkey, &sqp);
+	if (qkey != rx->qp->qkey)
+		return -EACCES;
+	body += UIB_DETH_BYTES;
+	body_len -= UIB_DETH_BYTES;
+	if (rx->opcode == UIB_OP_UD_SEND_ONLY_WITH_IMM) {
+		if (body_len < sizeof(imm_data))
+			return -EBADMSG;
+		memcpy(&imm_data, body, sizeof(imm_data));
+		body += sizeof(imm_data);
+		body_len -= sizeof(imm_data);
+	}
+	if (pop_recv_slot(rx->qp, &slot) < 0)
+		return -ENOENT;
+	rc = uib_qp_scatter_recv(rx->qp, &slot, 0, body, body_len,
+				 &consumed);
+	uib_qp_emit_recv_slot(rx->qp, &slot,
+			      rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
+			      UIB_WC_RECV, (uint32_t)consumed, sqp, imm_data);
+	uib_qp_release_recv(&slot);
+	rx->qp->rq_psn++;
+	return rc;
+}
+
+static int rocev2_handle_write_only(struct rocev2_rx_packet *rx)
+{
+	const struct uib_reth *reth;
+	struct uib_rq_slot slot;
+	struct uib_mr *mr;
+	const uint8_t *body = rx->body;
+	size_t body_len = rx->body_len;
+	uint64_t va;
+	uint32_t imm_data = 0;
+	uint32_t rkey;
+	uint32_t rlen;
+	int with_imm;
+
+	if (body_len < UIB_RETH_BYTES) {
+		if (rx->is_rc)
+			send_ack(rx->qp, rx->src, rx->psn,
+				 UIB_AETH_NAK_INV_REQ);
+		return -EBADMSG;
+	}
+	reth = (const struct uib_reth *)body;
+	uib_reth_unpack(reth, &va, &rkey, &rlen);
+	body += UIB_RETH_BYTES;
+	body_len -= UIB_RETH_BYTES;
+	with_imm = rx->opcode == UIB_OP_RDMA_WRITE_ONLY_WITH_IMM;
+	if (with_imm) {
+		if (body_len < sizeof(imm_data))
+			return -EBADMSG;
+		memcpy(&imm_data, body, sizeof(imm_data));
+		body += sizeof(imm_data);
+		body_len -= sizeof(imm_data);
+		if (pop_recv_slot(rx->qp, &slot) < 0) {
+			if (rx->is_rc)
+				send_ack(rx->qp, rx->src, rx->psn, UIB_AETH_RNR);
+			return -ENOENT;
+		}
+	}
+	if (rlen > body_len)
+		rlen = body_len;
+	mr = uib_mr_check_remote(rx->qp->pd, rkey, va, rlen,
+				 UIB_ACCESS_REMOTE_WRITE);
+	if (!mr) {
+		if (with_imm)
+			uib_qp_release_recv(&slot);
+		if (rx->is_rc)
+			send_ack(rx->qp, rx->src, rx->psn,
+				 UIB_AETH_NAK_REM_ACC);
+		return -EACCES;
+	}
+	if (uib_mr_place(mr, va, body, rlen) < 0) {
+		uib_mr_put(mr);
+		if (with_imm)
+			uib_qp_release_recv(&slot);
+		if (rx->is_rc)
+			send_ack(rx->qp, rx->src, rx->psn,
+				 UIB_AETH_NAK_REM_ACC);
+		return -EIO;
+	}
+	rocev2_rx_advance(rx);
+	if (rx->is_rc)
+		send_ack(rx->qp, rx->src, rx->psn, UIB_AETH_ACK);
+	if (with_imm) {
+		uib_qp_emit_recv_slot(rx->qp, &slot, UIB_WC_SUCCESS,
+				      UIB_WC_RECV_RDMA_WITH_IMM, rlen,
+				      rx->qp->dest_qp_num, imm_data);
+		uib_qp_release_recv(&slot);
+	}
+	uib_mr_put(mr);
+	return 0;
+}
+
+static int rocev2_handle_write_first(struct rocev2_rx_packet *rx)
+{
+	const struct uib_reth *reth;
+	struct uib_mr *mr;
+	uint64_t va;
+	size_t take;
+	uint32_t rkey;
+	uint32_t rlen;
+
+	if (rx->body_len < UIB_RETH_BYTES) {
+		if (rx->is_rc)
+			send_ack(rx->qp, rx->src, rx->psn,
+				 UIB_AETH_NAK_INV_REQ);
+		return -EBADMSG;
+	}
+	reth = (const struct uib_reth *)rx->body;
+	uib_reth_unpack(reth, &va, &rkey, &rlen);
+	mr = uib_mr_check_remote(rx->qp->pd, rkey, va, rlen,
+				 UIB_ACCESS_REMOTE_WRITE);
+	if (!mr) {
+		if (rx->is_rc)
+			send_ack(rx->qp, rx->src, rx->psn,
+				 UIB_AETH_NAK_REM_ACC);
+		return -EACCES;
+	}
+	take = rx->body_len - UIB_RETH_BYTES;
+	if (take > rlen)
+		take = rlen;
+	if (uib_mr_place(mr, va, rx->body + UIB_RETH_BYTES, take) < 0) {
+		uib_mr_put(mr);
+		if (rx->is_rc)
+			send_ack(rx->qp, rx->src, rx->psn,
+				 UIB_AETH_NAK_REM_ACC);
+		return -EIO;
+	}
+	uib_mr_put(rx->qp->frag_write_mr);
+	rx->qp->frag_write_va = va;
+	rx->qp->frag_write_total = rlen;
+	rx->qp->frag_write_offset = (uint32_t)take;
+	rx->qp->frag_write_active = 1;
+	rx->qp->frag_write_mr = mr;
+	rocev2_rx_advance(rx);
+	if (rx->is_rc && rx->ack_request)
+		send_ack(rx->qp, rx->src, rx->psn, UIB_AETH_ACK);
+	return 0;
+}
+
+static int rocev2_handle_write_middle(struct rocev2_rx_packet *rx)
+{
+	size_t take;
+	uint32_t remain;
+
+	if (!rx->qp->frag_write_active) {
+		if (rx->is_rc)
+			send_ack(rx->qp, rx->src, rx->psn,
+				 UIB_AETH_NAK_INV_REQ);
+		return -EBADMSG;
+	}
+	remain = rx->qp->frag_write_total - rx->qp->frag_write_offset;
+	take = rx->body_len > remain ? remain : rx->body_len;
+	if (uib_mr_place(rx->qp->frag_write_mr,
+			 rx->qp->frag_write_va + rx->qp->frag_write_offset,
+			 rx->body, take) < 0) {
+		if (rx->is_rc)
+			send_ack(rx->qp, rx->src, rx->psn,
+				 UIB_AETH_NAK_REM_ACC);
+		return -EIO;
+	}
+	rx->qp->frag_write_offset += (uint32_t)take;
+	rocev2_rx_advance(rx);
+	if (rx->is_rc && rx->ack_request)
+		send_ack(rx->qp, rx->src, rx->psn, UIB_AETH_ACK);
+	return 0;
+}
+
+static int rocev2_handle_write_last(struct rocev2_rx_packet *rx)
+{
+	struct uib_rq_slot slot;
+	const uint8_t *body = rx->body;
+	size_t body_len = rx->body_len;
+	size_t take;
+	uint32_t imm_data = 0;
+	uint32_t remain;
+	int with_imm;
+
+	if (!rx->qp->frag_write_active) {
+		if (rx->is_rc)
+			send_ack(rx->qp, rx->src, rx->psn,
+				 UIB_AETH_NAK_INV_REQ);
+		return -EBADMSG;
+	}
+	with_imm = rx->opcode == UIB_OP_RDMA_WRITE_LAST_WITH_IMM;
+	if (with_imm) {
+		if (body_len < sizeof(imm_data))
+			return -EBADMSG;
+		memcpy(&imm_data, body, sizeof(imm_data));
+		body += sizeof(imm_data);
+		body_len -= sizeof(imm_data);
+		if (pop_recv_slot(rx->qp, &slot) < 0) {
+			if (rx->is_rc)
+				send_ack(rx->qp, rx->src, rx->psn, UIB_AETH_RNR);
+			return -ENOENT;
+		}
+	}
+	remain = rx->qp->frag_write_total - rx->qp->frag_write_offset;
+	take = body_len > remain ? remain : body_len;
+	if (uib_mr_place(rx->qp->frag_write_mr,
+			 rx->qp->frag_write_va + rx->qp->frag_write_offset,
+			 body, take) < 0) {
+		if (with_imm)
+			uib_qp_release_recv(&slot);
+		return -EIO;
+	}
+	rx->qp->frag_write_offset += (uint32_t)take;
+	rx->qp->frag_write_active = 0;
+	uib_mr_put(rx->qp->frag_write_mr);
+	rx->qp->frag_write_mr = NULL;
+	rocev2_rx_advance(rx);
+	if (rx->is_rc)
+		send_ack(rx->qp, rx->src, rx->psn, UIB_AETH_ACK);
+	if (with_imm) {
+		uib_qp_emit_recv_slot(rx->qp, &slot, UIB_WC_SUCCESS,
+				      UIB_WC_RECV_RDMA_WITH_IMM,
+				      rx->qp->frag_write_total,
+				      rx->qp->dest_qp_num, imm_data);
+		uib_qp_release_recv(&slot);
+	}
+	return 0;
+}
+
+static int rocev2_handle_read_request(struct rocev2_rx_packet *rx)
+{
+	const struct uib_reth *reth;
+	uint64_t va;
+	uint32_t rkey;
+	uint32_t rlen;
+	uint32_t mtu;
+	uint32_t span;
+
+	if (rx->body_len < UIB_RETH_BYTES)
+		return -EBADMSG;
+	reth = (const struct uib_reth *)rx->body;
+	uib_reth_unpack(reth, &va, &rkey, &rlen);
+	send_read_response(rx->qp, &rx->qp->remote_addr, rx->psn, va, rkey,
+			   rlen);
+	mtu = rx->qp->path_mtu ? rx->qp->path_mtu : UIB_PMTU;
+	span = (rlen + mtu - 1) / mtu;
+	if (!span)
+		span = 1;
+	rx->qp->last_rx_psn = rx->psn + span - 1;
+	rx->qp->last_rx_valid = 1;
+	rx->qp->rq_psn = rx->psn + span;
+	return 0;
+}
+
+static int rocev2_handle_atomic_request(struct rocev2_rx_packet *rx)
+{
+	const struct uib_atomic_eth *atomic;
+	struct uib_mr *mr;
+	uint64_t compare;
+	uint64_t operand;
+	uint64_t expected;
+	uint64_t old;
+	uint64_t va;
+	uint32_t rkey;
+
+	if (rx->body_len < sizeof(*atomic))
+		return -EBADMSG;
+	atomic = (const struct uib_atomic_eth *)rx->body;
+	va = be64toh(atomic->va);
+	rkey = ntohl(atomic->rkey);
+	operand = be64toh(atomic->swap_data);
+	compare = be64toh(atomic->compare_data);
+	if ((va & (UIB_ATOMIC_ACK_BYTES - 1)) ||
+	    !(rx->qp->access_flags & UIB_ACCESS_REMOTE_ATOMIC)) {
+		send_ack(rx->qp, rx->src, rx->psn, UIB_AETH_NAK_REM_ACC);
+		return -EACCES;
+	}
+	mr = uib_mr_check_remote(rx->qp->pd, rkey, va, UIB_ATOMIC_ACK_BYTES,
+				 UIB_ACCESS_REMOTE_ATOMIC);
+	if (!mr) {
+		send_ack(rx->qp, rx->src, rx->psn, UIB_AETH_NAK_REM_ACC);
+		return -EACCES;
+	}
+	if (mr->kind != UIB_MR_HOST) {
+		uib_mr_put(mr);
+		send_ack(rx->qp, rx->src, rx->psn, UIB_AETH_NAK_REM_OP);
+		return -EOPNOTSUPP;
+	}
+	if (rx->opcode == UIB_OP_FETCH_ADD) {
+		old = __atomic_fetch_add((uint64_t *)(uintptr_t)va, operand,
+					 __ATOMIC_SEQ_CST);
+	} else {
+		expected = compare;
+		__atomic_compare_exchange_n((uint64_t *)(uintptr_t)va,
+					    &expected, operand, 0,
+					    __ATOMIC_SEQ_CST,
+					    __ATOMIC_SEQ_CST);
+		old = expected;
+	}
+	uib_mr_put(mr);
+	rx->qp->atomic_ack_psn = rx->psn;
+	rx->qp->atomic_ack_value = old;
+	rx->qp->atomic_ack_valid = 1;
+	rocev2_rx_advance(rx);
+	send_atomic_ack(rx->qp, rx->psn, old);
+	return 0;
+}
+
+static int rocev2_handle_atomic_response(struct rocev2_rx_packet *rx)
+{
+	struct uib_outstanding *out;
+	uint64_t wire_value;
+	uint64_t value;
+	size_t consumed = 0;
+	int rc;
+
+	if (rx->body_len < UIB_AETH_BYTES + UIB_ATOMIC_ACK_BYTES)
+		return -EBADMSG;
+	memcpy(&wire_value, rx->body + UIB_AETH_BYTES, sizeof(wire_value));
+	value = be64toh(wire_value);
+	out = find_read_by_psn(rx->qp, rx->psn);
+	if (!out)
+		return 0;
+	rc = scatter_at(rx->qp->pd, out->read_sgl, out->read_num_sge, 0,
+			(const uint8_t *)&value, sizeof(value), &consumed);
+	detach_outstanding(rx->qp, out);
+	emit_send_wc(rx->qp, out->wr_id, out->wr_opcode, out->signaled,
+		     rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
+		     (uint32_t)consumed);
+	free_outstanding(out);
+	return rc;
+}
+
+static int rocev2_handle_read_response(struct rocev2_rx_packet *rx)
+{
+	struct uib_outstanding *out;
+	const uint8_t *body = rx->body;
+	size_t body_len = rx->body_len;
+	size_t consumed = 0;
+	uint32_t total;
+	int rc;
+
+	if (rx->opcode != UIB_OP_RDMA_READ_RESP_MIDDLE) {
+		if (body_len < UIB_AETH_BYTES)
+			return -EBADMSG;
+		body += UIB_AETH_BYTES;
+		body_len -= UIB_AETH_BYTES;
+	}
+	out = rx->opcode == UIB_OP_RDMA_READ_RESP_ONLY ||
+		rx->opcode == UIB_OP_RDMA_READ_RESP_FIRST ?
+		find_read_by_psn(rx->qp, rx->psn) : rx->qp->frag_read_out;
+	if (!out)
+		return 0;
+	if (rx->opcode == UIB_OP_RDMA_READ_RESP_FIRST)
+		rx->qp->frag_read_out = out;
+	rc = scatter_at(rx->qp->pd, out->read_sgl, out->read_num_sge,
+			rx->opcode == UIB_OP_RDMA_READ_RESP_ONLY ||
+			rx->opcode == UIB_OP_RDMA_READ_RESP_FIRST ? 0 :
+			rx->qp->frag_read_offset,
+			body, body_len, &consumed);
+	if (rx->opcode == UIB_OP_RDMA_READ_RESP_FIRST) {
+		rx->qp->frag_read_offset = (uint32_t)consumed;
+		return rc;
+	}
+	if (rx->opcode == UIB_OP_RDMA_READ_RESP_MIDDLE) {
+		rx->qp->frag_read_offset += (uint32_t)consumed;
+		return rc;
+	}
+	total = rx->opcode == UIB_OP_RDMA_READ_RESP_ONLY ?
+		(uint32_t)consumed :
+		rx->qp->frag_read_offset + (uint32_t)consumed;
+	detach_outstanding(rx->qp, out);
+	emit_send_wc(rx->qp, out->wr_id, out->wr_opcode, out->signaled,
+		     rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS, total);
+	free_outstanding(out);
+	if (rx->opcode == UIB_OP_RDMA_READ_RESP_LAST) {
+		rx->qp->frag_read_out = NULL;
+		rx->qp->frag_read_offset = 0;
+	}
+	return rc;
+}
+
+static int rocev2_handle_acknowledgement(struct rocev2_rx_packet *rx)
+{
+	const struct uib_aeth *aeth;
+	uint32_t msn;
+	uint8_t syndrome;
+
+	if (rx->body_len < UIB_AETH_BYTES)
+		return -EBADMSG;
+	aeth = (const struct uib_aeth *)rx->body;
+	uib_aeth_unpack(aeth, &syndrome, &msn);
+	if ((syndrome & UIB_AETH_CODE_MASK) == UIB_AETH_ACK_CODE) {
+		ack_outstanding(rx->qp, rx->psn);
+	} else if ((syndrome & UIB_AETH_CODE_MASK) == UIB_AETH_RNR_CODE) {
+		return 0;
+	} else if (syndrome != UIB_AETH_NAK_PSN_SEQ) {
+		pthread_mutex_lock(&rx->qp->lock);
+		rx->qp->state = UIB_QPS_ERR;
+		pthread_mutex_unlock(&rx->qp->lock);
+		fail_outstanding(rx->qp,
+				 syndrome == UIB_AETH_NAK_REM_ACC ?
+				 UIB_WC_REM_ACCESS_ERR : UIB_WC_REM_OP_ERR);
+	}
+	return 0;
+}
+
 int uib_rocev2_handle_packet_meta(struct uib_qp *qp,
 				  const struct sockaddr_in *src,
 				  const void *packet, size_t len,
 				  const struct uib_rx_meta *meta)
 {
-	const uint8_t *p = packet;
+	const struct uib_bth *bth;
+	struct rocev2_rx_packet rx;
+	uint32_t dqpn;
+	uint8_t pad;
 
-	if (verify_icrc(p, len) < 0)
+	if (verify_icrc(packet, len) < 0)
 		return -EBADMSG;
-
-	const struct uib_bth *bth = (const struct uib_bth *)p;
-	uint8_t op;
-	int ack_request;
-	uint32_t dqpn, psn;
-
-	uib_bth_unpack(bth, &op, &dqpn, &psn, &ack_request);
-	(void)dqpn;
-
-	const uint8_t *body = p + UIB_BTH_BYTES;
-	size_t body_len = len - UIB_BTH_BYTES - UIB_ICRC_BYTES;
-	uint8_t pad = uib_bth_pad(bth);
-
-	if (pad > body_len)
+	bth = packet;
+	memset(&rx, 0, sizeof(rx));
+	rx.qp = qp;
+	rx.src = src;
+	uib_bth_unpack(bth, &rx.opcode, &dqpn, &rx.psn, &rx.ack_request);
+	rx.body = (const uint8_t *)packet + UIB_BTH_BYTES;
+	rx.body_len = len - UIB_BTH_BYTES - UIB_ICRC_BYTES;
+	rx.is_rc = qp->qp_type == UIB_QPT_RC;
+	pad = uib_bth_pad(bth);
+	if (pad > rx.body_len)
 		return -EBADMSG;
-	body_len -= pad;
-
-	int is_rc = (qp->qp_type == UIB_QPT_RC);
-
-	int is_resp = (op == UIB_OP_ACKNOWLEDGE || op == UIB_OP_CNP
-		       || op == UIB_OP_ATOMIC_ACKNOWLEDGE
-		       || op == UIB_OP_RDMA_READ_RESP_FIRST
-		       || op == UIB_OP_RDMA_READ_RESP_MIDDLE
-		       || op == UIB_OP_RDMA_READ_RESP_LAST
-		       || op == UIB_OP_RDMA_READ_RESP_ONLY);
-	if (meta && meta->ecn == IPTOS_ECN_CE && op != UIB_OP_CNP)
+	rx.body_len -= pad;
+	if (meta && meta->ecn == IPTOS_ECN_CE && rx.opcode != UIB_OP_CNP)
 		send_cnp(qp, src);
+	if (rocev2_check_request_psn(&rx))
+		return 0;
 
-	if (is_rc && !is_resp) {
-		uint32_t expected = qp->rq_psn & UIB_BTH_PSN_MASK;
-		int order = psn_cmp(psn, expected);
-
-		if (order < 0) {
-			if ((op == UIB_OP_FETCH_ADD ||
-			     op == UIB_OP_COMPARE_SWAP) &&
-			    qp->atomic_ack_valid &&
-			    !psn_cmp(psn, qp->atomic_ack_psn))
-				send_atomic_ack(qp, psn,
-						qp->atomic_ack_value);
-			else
-				send_ack(qp, src, qp->last_rx_psn,
-					 UIB_AETH_ACK);
-			return 0;
-		}
-		if (order > 0) {
-			send_ack(qp, src, expected, UIB_AETH_NAK_PSN_SEQ);
-			return 0;
-		}
-	}
-
-	switch (op) {
+	switch (rx.opcode) {
 	case UIB_OP_CNP:
 		rocev2_congestion_cnp(qp);
 		return 0;
 	case UIB_OP_SEND_ONLY:
-	case UIB_OP_SEND_ONLY_WITH_IMM: {
-		struct uib_rq_slot slot;
-		size_t consumed = 0;
-		uint32_t imm_data = 0;
-		int rc;
-
-		if (op == UIB_OP_SEND_ONLY_WITH_IMM) {
-			if (body_len < sizeof(imm_data))
-				return -EBADMSG;
-			memcpy(&imm_data, body, sizeof(imm_data));
-			body += sizeof(imm_data);
-			body_len -= sizeof(imm_data);
-		}
-
-		if (pop_recv_slot(qp, &slot) < 0) {
-			if (is_rc)
-				send_ack(qp, src, psn, UIB_AETH_RNR);
-			return -ENOENT;
-		}
-		rc = uib_qp_scatter_recv(qp, &slot, 0, body, body_len,
-					 &consumed);
-		uib_qp_emit_recv_slot(qp, &slot,
-				      rc < 0 ? UIB_WC_LOC_PROT_ERR :
-				      UIB_WC_SUCCESS, UIB_WC_RECV,
-				      (uint32_t)consumed, qp->dest_qp_num,
-				      imm_data);
-		uib_qp_release_recv(&slot);
-		qp->last_rx_psn = psn;
-		qp->last_rx_valid = 1;
-		qp->rq_psn = psn + 1;
-		if (is_rc)
-			send_ack(qp, src, psn,
-				 rc < 0 ? UIB_AETH_NAK_INV_REQ : UIB_AETH_ACK);
-		return rc;
-	}
-	case UIB_OP_SEND_FIRST: {
-		struct uib_rq_slot slot;
-		size_t consumed = 0;
-		int rc;
-
-		if (pop_recv_slot(qp, &slot) < 0) {
-			if (is_rc)
-				send_ack(qp, src, psn, UIB_AETH_RNR);
-			return -ENOENT;
-		}
-		uib_mr_put(qp->frag_recv_mr);
-		qp->frag_recv_mr = NULL;
-		if (slot.num_sge == 1)
-			qp->frag_recv_mr = uib_mr_lookup_local(
-				qp->pd, slot.sg_list[0].lkey,
-				(const void *)(uintptr_t)slot.sg_list[0].addr,
-				slot.sg_list[0].length, 0);
-		rc = scatter_recv_fragment(qp, &slot, 0, body, body_len,
-					   &consumed);
-		qp->frag_recv = slot;
-		if (!qp->frag_recv.heap_sge)
-			qp->frag_recv.sg_list = qp->frag_recv.inline_sge;
-		qp->frag_recv_active = 1;
-		qp->frag_recv_offset = (uint32_t)consumed;
-		qp->last_rx_psn = psn;
-		qp->last_rx_valid = 1;
-		qp->rq_psn = psn + 1;
-		if (is_rc && (rc < 0 || ack_request))
-			send_ack(qp, src, psn, rc < 0 ? UIB_AETH_NAK_INV_REQ :
-				 UIB_AETH_ACK);
-		return rc;
-	}
-	case UIB_OP_SEND_MIDDLE: {
-		if (!qp->frag_recv_active) {
-			if (is_rc)
-				send_ack(qp, src, psn, UIB_AETH_NAK_INV_REQ);
-			return -EBADMSG;
-		}
-		size_t consumed = 0;
-		int rc = scatter_recv_fragment(qp, &qp->frag_recv,
-					       qp->frag_recv_offset, body,
-					       body_len, &consumed);
-		qp->frag_recv_offset += (uint32_t)consumed;
-		qp->last_rx_psn = psn;
-		qp->rq_psn = psn + 1;
-		if (is_rc && (rc < 0 || ack_request))
-			send_ack(qp, src, psn, rc < 0 ? UIB_AETH_NAK_INV_REQ :
-				 UIB_AETH_ACK);
-		return rc;
-	}
+	case UIB_OP_SEND_ONLY_WITH_IMM:
+		return rocev2_handle_send_only(&rx);
+	case UIB_OP_SEND_FIRST:
+		return rocev2_handle_send_first(&rx);
+	case UIB_OP_SEND_MIDDLE:
+		return rocev2_handle_send_middle(&rx);
 	case UIB_OP_SEND_LAST:
-	case UIB_OP_SEND_LAST_WITH_IMM: {
-		uint32_t imm_data = 0;
-
-		if (!qp->frag_recv_active) {
-			if (is_rc)
-				send_ack(qp, src, psn, UIB_AETH_NAK_INV_REQ);
-			return -EBADMSG;
-		}
-		if (op == UIB_OP_SEND_LAST_WITH_IMM) {
-			if (body_len < sizeof(imm_data))
-				return -EBADMSG;
-			memcpy(&imm_data, body, sizeof(imm_data));
-			body += sizeof(imm_data);
-			body_len -= sizeof(imm_data);
-		}
-		size_t consumed = 0;
-		int rc = scatter_recv_fragment(qp, &qp->frag_recv,
-					       qp->frag_recv_offset, body,
-					       body_len, &consumed);
-		uint32_t total = qp->frag_recv_offset + (uint32_t)consumed;
-
-		uib_qp_emit_recv_slot(qp, &qp->frag_recv,
-				      rc < 0 ? UIB_WC_LOC_PROT_ERR :
-				      UIB_WC_SUCCESS, UIB_WC_RECV, total,
-				      qp->dest_qp_num, imm_data);
-		uib_qp_release_recv(&qp->frag_recv);
-		uib_mr_put(qp->frag_recv_mr);
-		qp->frag_recv_mr = NULL;
-		qp->frag_recv_active = 0;
-		qp->frag_recv_offset = 0;
-		qp->last_rx_psn = psn;
-		qp->rq_psn = psn + 1;
-		if (is_rc)
-			send_ack(qp, src, psn,
-				 rc < 0 ? UIB_AETH_NAK_INV_REQ : UIB_AETH_ACK);
-		return rc;
-	}
+	case UIB_OP_SEND_LAST_WITH_IMM:
+		return rocev2_handle_send_last(&rx);
 	case UIB_OP_UD_SEND_ONLY:
-	case UIB_OP_UD_SEND_ONLY_WITH_IMM: {
-		if (body_len < UIB_DETH_BYTES)
-			return -EBADMSG;
-		const struct uib_deth *deth = (const struct uib_deth *)body;
-		uint32_t qkey, sqp, imm_data = 0;
-
-		uib_deth_unpack(deth, &qkey, &sqp);
-		if (qkey != qp->qkey)
-			return -EACCES;
-		body     += UIB_DETH_BYTES;
-		body_len -= UIB_DETH_BYTES;
-		if (op == UIB_OP_UD_SEND_ONLY_WITH_IMM) {
-			if (body_len < sizeof(imm_data))
-				return -EBADMSG;
-			memcpy(&imm_data, body, sizeof(imm_data));
-			body += sizeof(imm_data);
-			body_len -= sizeof(imm_data);
-		}
-		struct uib_rq_slot slot;
-
-		if (pop_recv_slot(qp, &slot) < 0)
-			return -ENOENT;
-		size_t consumed = 0;
-		int rc = uib_qp_scatter_recv(qp, &slot, 0, body, body_len,
-					     &consumed);
-		uib_qp_emit_recv_slot(qp, &slot,
-				      rc < 0 ? UIB_WC_LOC_PROT_ERR :
-				      UIB_WC_SUCCESS, UIB_WC_RECV,
-				      (uint32_t)consumed, sqp, imm_data);
-		uib_qp_release_recv(&slot);
-		qp->rq_psn++;
-		return rc;
-	}
+	case UIB_OP_UD_SEND_ONLY_WITH_IMM:
+		return rocev2_handle_ud_send(&rx);
 	case UIB_OP_RDMA_WRITE_ONLY:
-	case UIB_OP_RDMA_WRITE_ONLY_WITH_IMM: {
-		struct uib_rq_slot slot;
-		uint32_t imm_data = 0;
-		int with_imm_op = op == UIB_OP_RDMA_WRITE_ONLY_WITH_IMM;
-
-		if (body_len < UIB_RETH_BYTES) {
-			if (is_rc)
-				send_ack(qp, src, psn, UIB_AETH_NAK_INV_REQ);
-			return -EBADMSG;
-		}
-		const struct uib_reth *reth = (const struct uib_reth *)body;
-		uint64_t va; uint32_t rkey, rlen;
-
-		uib_reth_unpack(reth, &va, &rkey, &rlen);
-		body     += UIB_RETH_BYTES;
-		body_len -= UIB_RETH_BYTES;
-		if (with_imm_op) {
-			if (body_len < sizeof(imm_data))
-				return -EBADMSG;
-			memcpy(&imm_data, body, sizeof(imm_data));
-			body += sizeof(imm_data);
-			body_len -= sizeof(imm_data);
-			if (pop_recv_slot(qp, &slot) < 0) {
-				if (is_rc)
-					send_ack(qp, src, psn, UIB_AETH_RNR);
-				return -ENOENT;
-			}
-		}
-		if (rlen > body_len)
-			rlen = body_len;
-		struct uib_mr *mr = uib_mr_check_remote(qp->pd, rkey, va, rlen,
-							UIB_ACCESS_REMOTE_WRITE);
-		if (!mr) {
-			if (with_imm_op)
-				uib_qp_release_recv(&slot);
-			if (is_rc)
-				send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
-			return -EACCES;
-		}
-		if (uib_mr_place(mr, va, body, rlen) < 0) {
-			uib_mr_put(mr);
-			if (with_imm_op)
-				uib_qp_release_recv(&slot);
-			if (is_rc)
-				send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
-			return -EIO;
-		}
-		qp->last_rx_psn = psn;
-		qp->last_rx_valid = 1;
-		qp->rq_psn = psn + 1;
-		if (is_rc)
-			send_ack(qp, src, psn, UIB_AETH_ACK);
-		if (with_imm_op) {
-			uib_qp_emit_recv_slot(qp, &slot, UIB_WC_SUCCESS,
-					      UIB_WC_RECV_RDMA_WITH_IMM,
-					      rlen, qp->dest_qp_num, imm_data);
-			uib_qp_release_recv(&slot);
-		}
-		uib_mr_put(mr);
-		return 0;
-	}
-	case UIB_OP_RDMA_WRITE_FIRST: {
-		if (body_len < UIB_RETH_BYTES) {
-			if (is_rc)
-				send_ack(qp, src, psn, UIB_AETH_NAK_INV_REQ);
-			return -EBADMSG;
-		}
-		const struct uib_reth *reth = (const struct uib_reth *)body;
-		uint64_t va; uint32_t rkey, rlen;
-
-		uib_reth_unpack(reth, &va, &rkey, &rlen);
-		body     += UIB_RETH_BYTES;
-		body_len -= UIB_RETH_BYTES;
-		struct uib_mr *mr = uib_mr_check_remote(qp->pd, rkey, va, rlen,
-							UIB_ACCESS_REMOTE_WRITE);
-		if (!mr) {
-			if (is_rc)
-				send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
-			return -EACCES;
-		}
-		size_t take = body_len > rlen ? rlen : body_len;
-
-		if (uib_mr_place(mr, va, body, take) < 0) {
-			uib_mr_put(mr);
-			if (is_rc)
-				send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
-			return -EIO;
-		}
-		uib_mr_put(qp->frag_write_mr);
-		qp->frag_write_va     = va;
-		qp->frag_write_total  = rlen;
-		qp->frag_write_offset = (uint32_t)take;
-		qp->frag_write_active = 1;
-		qp->frag_write_mr     = mr;
-		qp->last_rx_psn = psn;
-		qp->last_rx_valid = 1;
-		qp->rq_psn = psn + 1;
-		if (is_rc && ack_request)
-			send_ack(qp, src, psn, UIB_AETH_ACK);
-		return 0;
-	}
-	case UIB_OP_RDMA_WRITE_MIDDLE: {
-		if (!qp->frag_write_active) {
-			if (is_rc)
-				send_ack(qp, src, psn, UIB_AETH_NAK_INV_REQ);
-			return -EBADMSG;
-		}
-		uint32_t remain = qp->frag_write_total - qp->frag_write_offset;
-		size_t take = body_len > remain ? remain : body_len;
-
-		if (uib_mr_place(qp->frag_write_mr,
-				 qp->frag_write_va + qp->frag_write_offset,
-				 body, take) < 0) {
-			if (is_rc)
-				send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
-			return -EIO;
-		}
-		qp->frag_write_offset += (uint32_t)take;
-		qp->last_rx_psn = psn;
-		qp->rq_psn = psn + 1;
-		if (is_rc && ack_request)
-			send_ack(qp, src, psn, UIB_AETH_ACK);
-		return 0;
-	}
+	case UIB_OP_RDMA_WRITE_ONLY_WITH_IMM:
+		return rocev2_handle_write_only(&rx);
+	case UIB_OP_RDMA_WRITE_FIRST:
+		return rocev2_handle_write_first(&rx);
+	case UIB_OP_RDMA_WRITE_MIDDLE:
+		return rocev2_handle_write_middle(&rx);
 	case UIB_OP_RDMA_WRITE_LAST:
-	case UIB_OP_RDMA_WRITE_LAST_WITH_IMM: {
-		struct uib_rq_slot slot;
-		uint32_t imm_data = 0;
-		int with_imm_op = op == UIB_OP_RDMA_WRITE_LAST_WITH_IMM;
-
-		if (!qp->frag_write_active) {
-			if (is_rc)
-				send_ack(qp, src, psn, UIB_AETH_NAK_INV_REQ);
-			return -EBADMSG;
-		}
-		if (with_imm_op) {
-			if (body_len < sizeof(imm_data))
-				return -EBADMSG;
-			memcpy(&imm_data, body, sizeof(imm_data));
-			body += sizeof(imm_data);
-			body_len -= sizeof(imm_data);
-			if (pop_recv_slot(qp, &slot) < 0) {
-				if (is_rc)
-					send_ack(qp, src, psn, UIB_AETH_RNR);
-				return -ENOENT;
-			}
-		}
-		uint32_t remain = qp->frag_write_total - qp->frag_write_offset;
-		size_t take = body_len > remain ? remain : body_len;
-
-		if (uib_mr_place(qp->frag_write_mr,
-				 qp->frag_write_va + qp->frag_write_offset,
-				 body, take) < 0) {
-			if (with_imm_op)
-				uib_qp_release_recv(&slot);
-			return -EIO;
-		}
-		qp->frag_write_offset += (uint32_t)take;
-		qp->frag_write_active = 0;
-		uib_mr_put(qp->frag_write_mr);
-		qp->frag_write_mr = NULL;
-		qp->last_rx_psn = psn;
-		qp->rq_psn = psn + 1;
-		if (is_rc)
-			send_ack(qp, src, psn, UIB_AETH_ACK);
-		if (with_imm_op) {
-			uib_qp_emit_recv_slot(qp, &slot, UIB_WC_SUCCESS,
-					      UIB_WC_RECV_RDMA_WITH_IMM,
-					      qp->frag_write_total,
-					      qp->dest_qp_num, imm_data);
-			uib_qp_release_recv(&slot);
-		}
-		return 0;
-	}
-	case UIB_OP_RDMA_READ_REQ: {
-		if (body_len < UIB_RETH_BYTES)
-			return -EBADMSG;
-		const struct uib_reth *reth = (const struct uib_reth *)body;
-		uint64_t va; uint32_t rkey, rlen;
-
-		uib_reth_unpack(reth, &va, &rkey, &rlen);
-		send_read_response(qp, &qp->remote_addr, psn, va, rkey, rlen);
-		uint32_t mtu = qp->path_mtu ? qp->path_mtu : UIB_PMTU;
-		uint32_t span = (rlen + mtu - 1) / mtu;
-
-		if (span == 0)
-			span = 1;
-		qp->last_rx_psn = psn + span - 1;
-		qp->last_rx_valid = 1;
-		qp->rq_psn = psn + span;
-		return 0;
-	}
+	case UIB_OP_RDMA_WRITE_LAST_WITH_IMM:
+		return rocev2_handle_write_last(&rx);
+	case UIB_OP_RDMA_READ_REQ:
+		return rocev2_handle_read_request(&rx);
 	case UIB_OP_FETCH_ADD:
-	case UIB_OP_COMPARE_SWAP: {
-		const struct uib_atomic_eth *atomic;
-		struct uib_mr *mr;
-		uint64_t compare;
-		uint64_t operand;
-		uint64_t expected;
-		uint64_t old;
-		uint64_t va;
-		uint32_t rkey;
-
-		if (body_len < sizeof(*atomic))
-			return -EBADMSG;
-		atomic = (const struct uib_atomic_eth *)body;
-		va = be64toh(atomic->va);
-		rkey = ntohl(atomic->rkey);
-		operand = be64toh(atomic->swap_data);
-		compare = be64toh(atomic->compare_data);
-		if ((va & (UIB_ATOMIC_ACK_BYTES - 1)) ||
-		    !(qp->access_flags & UIB_ACCESS_REMOTE_ATOMIC)) {
-			send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
-			return -EACCES;
-		}
-		mr = uib_mr_check_remote(qp->pd, rkey, va,
-					 UIB_ATOMIC_ACK_BYTES,
-					 UIB_ACCESS_REMOTE_ATOMIC);
-		if (!mr) {
-			send_ack(qp, src, psn, UIB_AETH_NAK_REM_ACC);
-			return -EACCES;
-		}
-		if (mr->kind != UIB_MR_HOST) {
-			uib_mr_put(mr);
-			send_ack(qp, src, psn, UIB_AETH_NAK_REM_OP);
-			return -EOPNOTSUPP;
-		}
-		if (op == UIB_OP_FETCH_ADD) {
-			old = __atomic_fetch_add((uint64_t *)(uintptr_t)va,
-						 operand, __ATOMIC_SEQ_CST);
-		} else {
-			expected = compare;
-			__atomic_compare_exchange_n((uint64_t *)(uintptr_t)va,
-						    &expected, operand, 0,
-						    __ATOMIC_SEQ_CST,
-						    __ATOMIC_SEQ_CST);
-			old = expected;
-		}
-		uib_mr_put(mr);
-		qp->atomic_ack_psn = psn;
-		qp->atomic_ack_value = old;
-		qp->atomic_ack_valid = 1;
-		qp->last_rx_psn = psn;
-		qp->last_rx_valid = 1;
-		qp->rq_psn = psn + 1;
-		send_atomic_ack(qp, psn, old);
-		return 0;
-	}
-	case UIB_OP_ATOMIC_ACKNOWLEDGE: {
-		struct uib_outstanding *out;
-		uint64_t wire_value;
-		uint64_t value;
-		size_t consumed = 0;
-		int rc;
-
-		if (body_len < UIB_AETH_BYTES + UIB_ATOMIC_ACK_BYTES)
-			return -EBADMSG;
-		memcpy(&wire_value, body + UIB_AETH_BYTES,
-		       sizeof(wire_value));
-		value = be64toh(wire_value);
-		out = find_read_by_psn(qp, psn);
-		if (!out)
-			return 0;
-		rc = scatter_at(qp->pd, out->read_sgl, out->read_num_sge,
-				0, (const uint8_t *)&value, sizeof(value),
-				&consumed);
-		detach_outstanding(qp, out);
-		emit_send_wc(qp, out->wr_id, out->wr_opcode, out->signaled,
-			     rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
-			     (uint32_t)consumed);
-		free_outstanding(out);
-		return rc;
-	}
-	case UIB_OP_RDMA_READ_RESP_ONLY: {
-		if (body_len < UIB_AETH_BYTES)
-			return -EBADMSG;
-		body += UIB_AETH_BYTES; body_len -= UIB_AETH_BYTES;
-		struct uib_outstanding *o = find_read_by_psn(qp, psn);
-
-		if (!o)
-			return 0;
-		size_t consumed = 0;
-		int rc = scatter_at(qp->pd, o->read_sgl, o->read_num_sge,
-				    0, body, body_len, &consumed);
-		detach_outstanding(qp, o);
-		emit_send_wc(qp, o->wr_id, o->wr_opcode, o->signaled,
-			     rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
-			     (uint32_t)consumed);
-		free_outstanding(o);
-		return rc;
-	}
-	case UIB_OP_RDMA_READ_RESP_FIRST: {
-		if (body_len < UIB_AETH_BYTES)
-			return -EBADMSG;
-		body += UIB_AETH_BYTES; body_len -= UIB_AETH_BYTES;
-		struct uib_outstanding *o = find_read_by_psn(qp, psn);
-
-		if (!o)
-			return 0;
-		qp->frag_read_out = o;
-		size_t consumed = 0;
-		int rc = scatter_at(qp->pd, o->read_sgl, o->read_num_sge,
-				    0, body, body_len, &consumed);
-		qp->frag_read_offset = (uint32_t)consumed;
-		return rc;
-	}
-	case UIB_OP_RDMA_READ_RESP_MIDDLE: {
-		struct uib_outstanding *o = qp->frag_read_out;
-
-		if (!o)
-			return 0;
-		size_t consumed = 0;
-		int rc = scatter_at(qp->pd, o->read_sgl, o->read_num_sge,
-				    qp->frag_read_offset, body, body_len, &consumed);
-		qp->frag_read_offset += (uint32_t)consumed;
-		return rc;
-	}
-	case UIB_OP_RDMA_READ_RESP_LAST: {
-		if (body_len < UIB_AETH_BYTES)
-			return -EBADMSG;
-		body += UIB_AETH_BYTES; body_len -= UIB_AETH_BYTES;
-		struct uib_outstanding *o = qp->frag_read_out;
-
-		if (!o)
-			return 0;
-		size_t consumed = 0;
-		int rc = scatter_at(qp->pd, o->read_sgl, o->read_num_sge,
-				    qp->frag_read_offset, body, body_len, &consumed);
-		uint32_t total = qp->frag_read_offset + (uint32_t)consumed;
-
-		detach_outstanding(qp, o);
-		emit_send_wc(qp, o->wr_id, o->wr_opcode, o->signaled,
-			     rc < 0 ? UIB_WC_LOC_PROT_ERR : UIB_WC_SUCCESS,
-			     total);
-		free_outstanding(o);
-		qp->frag_read_out = NULL;
-		qp->frag_read_offset = 0;
-		return rc;
-	}
-	case UIB_OP_ACKNOWLEDGE: {
-		if (body_len < UIB_AETH_BYTES)
-			return -EBADMSG;
-		const struct uib_aeth *aeth = (const struct uib_aeth *)body;
-		uint8_t syndrome; uint32_t msn;
-
-		uib_aeth_unpack(aeth, &syndrome, &msn);
-		(void)msn;
-		if ((syndrome & UIB_AETH_CODE_MASK) == UIB_AETH_ACK_CODE) {
-			ack_outstanding(qp, psn);
-		} else if ((syndrome & UIB_AETH_CODE_MASK) == UIB_AETH_RNR_CODE) {
-		} else if (syndrome != UIB_AETH_NAK_PSN_SEQ) {
-			pthread_mutex_lock(&qp->lock);
-			qp->state = UIB_QPS_ERR;
-			pthread_mutex_unlock(&qp->lock);
-			fail_outstanding(qp,
-					 syndrome == UIB_AETH_NAK_REM_ACC
-					     ? UIB_WC_REM_ACCESS_ERR
-					     : UIB_WC_REM_OP_ERR);
-		}
-		return 0;
-	}
+	case UIB_OP_COMPARE_SWAP:
+		return rocev2_handle_atomic_request(&rx);
+	case UIB_OP_ATOMIC_ACKNOWLEDGE:
+		return rocev2_handle_atomic_response(&rx);
+	case UIB_OP_RDMA_READ_RESP_ONLY:
+	case UIB_OP_RDMA_READ_RESP_FIRST:
+	case UIB_OP_RDMA_READ_RESP_MIDDLE:
+	case UIB_OP_RDMA_READ_RESP_LAST:
+		return rocev2_handle_read_response(&rx);
+	case UIB_OP_ACKNOWLEDGE:
+		return rocev2_handle_acknowledgement(&rx);
 	default:
 		return -ENOTSUP;
 	}

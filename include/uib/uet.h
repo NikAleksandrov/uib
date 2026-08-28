@@ -30,6 +30,9 @@ enum uib_uet_pds_type {
 	UIB_UET_PDS_TYPE_ACK_CCX,
 	UIB_UET_PDS_TYPE_NACK,
 	UIB_UET_PDS_TYPE_CTRL_MSG,
+	UIB_UET_PDS_TYPE_NACK_CCX,
+	UIB_UET_PDS_TYPE_RUD_CC_REQ,
+	UIB_UET_PDS_TYPE_ROD_CC_REQ,
 };
 
 enum uib_uet_next_header {
@@ -54,9 +57,29 @@ enum uib_uet_next_header {
 #define UIB_UET_REQ_FLAG_RETX (1U << 4)
 #define UIB_UET_ACK_FLAG_RETX (1U << 4)
 #define UIB_UET_ACK_FLAG_M    (1U << 5)
+#define UIB_UET_ACK_FLAG_REQ_CLEAR (1U << 1)
 
 #define UIB_UET_NACK_TRIMMED          0x01
 #define UIB_UET_NACK_TRIMMED_LASTHOP  0x02
+
+#define UIB_UET_CC_TYPE_SHIFT 12
+#define UIB_UET_CC_TYPE_MASK  0x0f
+#define UIB_UET_CC_TYPE_NSCC  0x00
+#define UIB_UET_CC_TYPE_CREDIT 0x01
+#define UIB_UET_RCCC_COUNTER_MASK 0x00ffffffU
+
+enum uib_uet_control_type {
+	UIB_UET_CONTROL_NOOP,
+	UIB_UET_CONTROL_ACK_REQUEST,
+	UIB_UET_CONTROL_CLEAR_COMMAND,
+	UIB_UET_CONTROL_CLEAR_REQUEST,
+	UIB_UET_CONTROL_CLOSE_COMMAND,
+	UIB_UET_CONTROL_CLOSE_REQUEST,
+	UIB_UET_CONTROL_PROBE,
+	UIB_UET_CONTROL_CREDIT,
+	UIB_UET_CONTROL_CREDIT_REQUEST,
+	UIB_UET_CONTROL_NEGOTIATION,
+};
 
 enum uib_uet_ses_opcode {
 	UIB_UET_SES_NOOP = 0x00,
@@ -159,6 +182,11 @@ struct uib_uet_pds_req {
 	uint16_t dpdcid;
 } __packed;
 
+struct uib_uet_pds_cc_req {
+	struct uib_uet_pds_req request;
+	uint32_t req_cc_state;
+} __packed;
+
 struct uib_uet_pds_ack {
 	struct uib_uet_prologue prologue;
 	uint16_t ack_psn_offset;
@@ -180,6 +208,12 @@ struct uib_uet_nscc_wire_state {
 	uint16_t out_of_order_count;
 } __packed;
 
+struct uib_uet_rccc_wire_state {
+	uint8_t credit[3];
+	uint8_t reserved[3];
+	uint16_t out_of_order_count;
+} __packed;
+
 #define UIB_UET_NSCC_RESTORE_MASK 0x80000000U
 #define UIB_UET_NSCC_PENALTY_SHIFT 24
 #define UIB_UET_NSCC_PENALTY_MASK 0x7fU
@@ -190,6 +224,15 @@ struct uib_uet_pds_nack {
 	uint8_t nack_code;
 	uint8_t vendor_code;
 	uint32_t nack_psn;
+	uint16_t spdcid;
+	uint16_t dpdcid;
+	uint32_t payload;
+} __packed;
+
+struct uib_uet_pds_control {
+	struct uib_uet_prologue prologue;
+	uint16_t probe_opaque;
+	uint32_t psn;
 	uint16_t spdcid;
 	uint16_t dpdcid;
 	uint32_t payload;
@@ -420,6 +463,15 @@ void uib_uet_nscc_wire_pack(struct uib_uet_nscc_wire_state *state,
 void uib_uet_nscc_wire_unpack(const struct uib_uet_nscc_wire_state *state,
 			      uint32_t *service_time_ns, uint8_t *restore,
 			      uint8_t *penalty, uint32_t *received_units,
+			      uint16_t *out_of_order);
+uint32_t uib_uet_rccc_request_pack(uint8_t ccc_id, uint32_t credit_target);
+void uib_uet_rccc_request_unpack(uint32_t state, uint8_t *ccc_id,
+				 uint32_t *credit_target);
+void uib_uet_rccc_wire_pack(struct uib_uet_rccc_wire_state *state,
+			    uint32_t cumulative_credit,
+			    uint16_t out_of_order);
+void uib_uet_rccc_wire_unpack(const struct uib_uet_rccc_wire_state *state,
+			      uint32_t *cumulative_credit,
 			      uint16_t *out_of_order);
 
 #endif

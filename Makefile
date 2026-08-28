@@ -11,6 +11,7 @@ DOCDIR  ?= $(PREFIX)/share/doc/uib
 -include config.mk
 
 CFLAGS  ?= -O2 -g -Wall -Wextra -Wno-unused-parameter
+CFLAGS  += -Werror=declaration-after-statement
 CFLAGS  += -Iinclude -fPIC -pthread -D_GNU_SOURCE -MMD -MP
 
 URING_CFLAGS ?= $(if $(wildcard ../liburing/src/include/liburing.h),-I../liburing/src/include)
@@ -95,6 +96,8 @@ SRCS := \
 	src/protocol_dummy.c \
 	src/protocol_uet.c \
 	src/congestion.c \
+	src/dcqcn.c \
+	src/uet_rccc.c \
 	src/uet_nscc.c \
 	src/context.c \
 	src/observability.c \
@@ -819,6 +822,10 @@ benchmark-all: examples
 
 benchmark-local: benchmark-all
 
+benchmark-congestion: examples
+	@output=$${UIB_BENCH_OUTPUT:-/tmp/uib-congestion-benchmark-$$(date +%Y%m%d-%H%M%S)}; \
+		./examples/congestion_benchmark_matrix.sh "$$output"
+
 benchmark-report: examples
 	@output=$${UIB_BENCH_OUTPUT:-/tmp/uib-benchmark-report-$$(date +%Y%m%d-%H%M%S)}; \
 		status=0; \
@@ -831,6 +838,8 @@ benchmark-doc: examples
 
 benchmark-smoke: examples
 	UIB_BENCH_ITERATIONS=64 UIB_BENCH_SIZE=16384 UIB_BENCH_WINDOW=16 \
+		UIB_CC_BENCH_MATRIX='rocev2:dcqcn:clean uet:rccc:drops' \
+		UIB_CC_BENCH_ITERATIONS=16 \
 		./examples/benchmark_matrix.sh /tmp/uib-benchmark-smoke
 
 dummy-reorder-test: examples
@@ -920,6 +929,12 @@ uet-test: all $(TEST_BIN) $(UET_TEST)
 	UIB_PROTOCOL=uet UIB_UET_OPTIMIZED=small ./$(TEST_BIN)
 	UIB_PROTOCOL=uet UIB_UET_OPTIMIZED=medium ./$(TEST_BIN)
 	UIB_PROTOCOL=uet UIB_TRANSPORT_MODE=tcp-devmem ./$(TEST_BIN)
+
+uet-error-test: all $(TEST_BIN)
+	UIB_PROTOCOL=uet UIB_TRANSPORT_MODE=udp-sync UIB_UET_CC=rccc \
+		UIB_UET_ERROR_TEST=1 ./$(TEST_BIN)
+	UIB_PROTOCOL=uet UIB_TRANSPORT_MODE=udp-sync UIB_UET_CC=rccc \
+		UIB_UET_ERROR_ONLY=1 UIB_TEST_DROP_TX=1 ./$(TEST_BIN)
 
 test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) $(BTH_TEST) \
 	$(PROTOCOL_TEST) $(UET_TEST) $(NSCC_TEST) $(CONGESTION_TEST) \
@@ -1085,13 +1100,13 @@ clean:
 	simulation-kuberay-e2e-test \
 	docs-check examples clean install install-static test rxe-test-build \
 	rxe-test rxe-tools-test \
-	uib-tools-test uet-test uet-tools-test simulation-mtu-test \
+	uib-tools-test uet-test uet-error-test uet-tools-test simulation-mtu-test \
 	uet-loss-test rocev2-loss-test \
 	rocev2-ecn-test \
 	uet-congestion-test uet-multipath-test examples-test \
 	examples-stress-test sync-transport-test dmabuf-e2e-test \
 	zerocopy-e2e-test \
-	benchmark-all benchmark-local benchmark-report benchmark-doc \
+	benchmark-all benchmark-local benchmark-congestion benchmark-report benchmark-doc \
 	benchmark-smoke ib-write-bw-test dummy-reorder-test \
 	scaling-benchmark scaling-test \
 	provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test \

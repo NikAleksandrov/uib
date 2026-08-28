@@ -23,13 +23,15 @@
 struct uibv_device **uibv_get_device_list(int *num)
 {
 	struct ifaddrs *ifa, *cur;
+	struct uibv_device **list;
+	struct uibv_device *device;
 	uint16_t protocol_port =
 		uib_protocol_default_port(getenv(UIB_ENV_PROTOCOL));
+	int count = 0;
+	int i = 0;
 
 	if (getifaddrs(&ifa) != 0)
 		return NULL;
-
-	int count = 0;
 
 	for (cur = ifa; cur; cur = cur->ifa_next) {
 		if (cur->ifa_addr && cur->ifa_addr->sa_family == AF_INET &&
@@ -39,38 +41,37 @@ struct uibv_device **uibv_get_device_list(int *num)
 	if (count == 0)
 		count = 1;
 
-	struct uibv_device **list = calloc((size_t)count + 1, sizeof(*list));
+	list = calloc((size_t)count + 1, sizeof(*list));
 
 	if (!list) {
 		freeifaddrs(ifa);
 		return NULL;
 	}
 
-	int i = 0;
-
 	for (cur = ifa; cur; cur = cur->ifa_next) {
 		if (!cur->ifa_addr || cur->ifa_addr->sa_family != AF_INET)
 			continue;
 		if (cur->ifa_flags & IFF_LOOPBACK)
 			continue;
-		struct uibv_device *d = calloc(1, sizeof(*d));
+		device = calloc(1, sizeof(*device));
 
-		if (!d)
+		if (!device)
 			break;
-		snprintf(d->name, sizeof(d->name), "uib_%s", cur->ifa_name);
-		d->bind_addr = *(struct sockaddr_in *)cur->ifa_addr;
-		d->bind_addr.sin_port = htons(protocol_port);
-		list[i++] = d;
+		snprintf(device->name, sizeof(device->name), "uib_%s",
+			 cur->ifa_name);
+		device->bind_addr = *(struct sockaddr_in *)cur->ifa_addr;
+		device->bind_addr.sin_port = htons(protocol_port);
+		list[i++] = device;
 	}
 	if (i == 0) {
-		struct uibv_device *d = calloc(1, sizeof(*d));
+		device = calloc(1, sizeof(*device));
 
-		if (d) {
-			snprintf(d->name, sizeof(d->name), "uib_lo");
-			d->bind_addr.sin_family = AF_INET;
-			d->bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-			d->bind_addr.sin_port = htons(protocol_port);
-			list[i++] = d;
+		if (device) {
+			snprintf(device->name, sizeof(device->name), "uib_lo");
+			device->bind_addr.sin_family = AF_INET;
+			device->bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+			device->bind_addr.sin_port = htons(protocol_port);
+			list[i++] = device;
 		}
 	}
 	list[i] = NULL;
@@ -117,14 +118,15 @@ const char *uibv_get_device_name(struct uibv_device *dev)
  */
 struct uib_context *uibv_open_device(struct uibv_device *dev)
 {
+	char ip[INET_ADDRSTRLEN];
+	uint16_t port;
+
 	if (!dev) {
 		errno = EINVAL;
 		return NULL;
 	}
-	char ip[INET_ADDRSTRLEN];
-
 	inet_ntop(AF_INET, &dev->bind_addr.sin_addr, ip, sizeof(ip));
-	uint16_t port = ntohs(dev->bind_addr.sin_port);
+	port = ntohs(dev->bind_addr.sin_port);
 
 	return uib_open_device(ip, port);
 }

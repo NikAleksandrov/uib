@@ -55,6 +55,10 @@ fi
 	printf -- '- Iterations: `%s`\n' "${UIB_BENCH_ITERATIONS:-10000}"
 	printf -- '- Message size: `%s` bytes\n' "${UIB_BENCH_SIZE:-32768}"
 	printf -- '- Window: `%s` operations\n\n' "${UIB_BENCH_WINDOW:-64}"
+	printf '## Contents\n\n'
+	printf '%s\n' '- [Compared with previous reference](#compared-with-previous-reference)'
+	printf '%s\n' '- [UIB benchmark matrix](#uib-benchmark-matrix)'
+	printf '%s\n\n' '  - [Protocol and congestion-control resilience](#protocol-and-congestion-control-resilience)'
 	cat "$output/baseline-comparison.md"
 	printf '\n\n'
 	cat "$output/benchmark.md"

@@ -125,11 +125,10 @@ static void peer_reset(struct tcp_peer *p)
 static int addr_cmp(const struct sockaddr_in *a, const struct sockaddr_in *b)
 {
 	uint32_t ia = ntohl(a->sin_addr.s_addr), ib = ntohl(b->sin_addr.s_addr);
+	uint16_t pa = ntohs(a->sin_port), pb = ntohs(b->sin_port);
 
 	if (ia != ib)
 		return ia < ib ? -1 : 1;
-	uint16_t pa = ntohs(a->sin_port), pb = ntohs(b->sin_port);
-
 	if (pa != pb)
 		return pa < pb ? -1 : 1;
 	return 0;
@@ -597,79 +596,66 @@ static int tcp_probe(void)
 	return 1;
 }
 
-static int tcp_init(struct uib_context *ctx)
+static int tcp_listener_init(struct uib_context *ctx,
+			     struct uib_tcp_backend *be)
 {
-	struct uib_tcp_backend *be;
-	struct epoll_event ev;
-	const char *zcrx_mode;
-	const char *zcrx_iface;
-	const char *zcrx_queue;
+	struct epoll_event event;
 	socklen_t local_length;
-	int zcrx_required;
 	int one;
-	int rc;
-
-	be = calloc(1, sizeof(*be));
-	if (!be)
-		return -ENOMEM;
-	be->listen_fd = be->epfd = be->timer_fd = be->wake_fd = -1;
-	one = 1;
-	pthread_mutex_init(&be->lock, NULL);
-	ctx->backend = be;
 
 	be->local.sin_family = AF_INET;
 	be->local.sin_port =
 		htons(ctx->bind_port ? ctx->bind_port : ctx->pops->default_port);
 	if (ctx->bind_ip[0]) {
-		if (inet_pton(AF_INET, ctx->bind_ip, &be->local.sin_addr) != 1) {
-			rc = -EINVAL;
-			goto err;
-		}
+		if (inet_pton(AF_INET, ctx->bind_ip, &be->local.sin_addr) != 1)
+			return -EINVAL;
 	} else {
 		be->local.sin_addr.s_addr = htonl(INADDR_ANY);
 	}
 
 	be->listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (be->listen_fd < 0) {
-		rc = -errno;
-		goto err;
-	}
+	if (be->listen_fd < 0)
+		return -errno;
+	one = 1;
 	setsockopt(be->listen_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 	if (bind(be->listen_fd, (struct sockaddr *)&be->local,
-		 sizeof(be->local)) < 0) {
-		rc = -errno;
-		goto err;
-	}
+		 sizeof(be->local)) < 0)
+		return -errno;
 
 	local_length = sizeof(be->local);
 	getsockname(be->listen_fd, (struct sockaddr *)&be->local,
 		    &local_length);
 	ctx->local_addr = be->local;
 
-	if (listen(be->listen_fd, UIB_TCP_BACKLOG) < 0) {
-		rc = -errno;
-		goto err;
-	}
+	if (listen(be->listen_fd, UIB_TCP_BACKLOG) < 0)
+		return -errno;
 
 	be->epfd = epoll_create1(0);
-	if (be->epfd < 0) {
-		rc = -errno;
-		goto err;
-	}
+	if (be->epfd < 0)
+		return -errno;
+	memset(&event, 0, sizeof(event));
+	event.events = EPOLLIN;
+	event.data.ptr = EP_TAG_LISTEN;
+	epoll_ctl(be->epfd, EPOLL_CTL_ADD, be->listen_fd, &event);
+	return 0;
+}
 
-	ev.events = EPOLLIN;
-	ev.data.ptr = EP_TAG_LISTEN;
-	epoll_ctl(be->epfd, EPOLL_CTL_ADD, be->listen_fd, &ev);
+static int tcp_zcrx_init(struct uib_tcp_backend *be)
+{
+	struct epoll_event event;
+	const char *zcrx_mode;
+	const char *zcrx_iface;
+	const char *zcrx_queue;
+	int zcrx_required;
+	int rc;
 
 	zcrx_mode = getenv(UIB_ENV_HOST_ZC);
 	zcrx_iface = getenv(UIB_ENV_HOST_ZC_IFACE);
 	zcrx_queue = getenv(UIB_ENV_HOST_ZC_QUEUE);
 	zcrx_required = zcrx_mode && !strcmp(zcrx_mode, "required");
 	if (zcrx_mode && strcmp(zcrx_mode, "auto") &&
-	    strcmp(zcrx_mode, "off") && strcmp(zcrx_mode, "required")) {
-		rc = -EINVAL;
-		goto err;
-	}
+	    strcmp(zcrx_mode, "off") && strcmp(zcrx_mode, "required"))
+		return -EINVAL;
 	if ((!zcrx_mode || strcmp(zcrx_mode, "off")) && zcrx_iface &&
 	    *zcrx_iface) {
 		rc = uib_zcrx_create(&be->zcrx, zcrx_iface,
@@ -677,50 +663,49 @@ static int tcp_init(struct uib_context *ctx)
 				      UIB_TCP_ZCRX_ENTRIES,
 				      UIB_TCP_ZCRX_AREA_SIZE);
 		if (rc < 0 && zcrx_required)
-			goto err;
+			return rc;
 		if (rc < 0)
 			be->zcrx = NULL;
 	} else if (zcrx_required) {
-		rc = -EINVAL;
-		goto err;
+		return -EINVAL;
 	}
-	if (be->zcrx) {
-		be->wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-		if (be->wake_fd < 0) {
-			rc = -errno;
-			goto err;
-		}
-		ev.events = EPOLLIN;
-		ev.data.ptr = EP_TAG_ZCRX;
-		epoll_ctl(be->epfd, EPOLL_CTL_ADD,
-			  uib_zcrx_event_fd(be->zcrx), &ev);
-		ev.data.ptr = EP_TAG_WAKE;
-		epoll_ctl(be->epfd, EPOLL_CTL_ADD, be->wake_fd, &ev);
-	}
+	if (!be->zcrx)
+		return 0;
+	be->wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	if (be->wake_fd < 0)
+		return -errno;
+	memset(&event, 0, sizeof(event));
+	event.events = EPOLLIN;
+	event.data.ptr = EP_TAG_ZCRX;
+	epoll_ctl(be->epfd, EPOLL_CTL_ADD, uib_zcrx_event_fd(be->zcrx),
+		  &event);
+	event.data.ptr = EP_TAG_WAKE;
+	epoll_ctl(be->epfd, EPOLL_CTL_ADD, be->wake_fd, &event);
+	return 0;
+}
+
+static void tcp_timer_init(struct uib_tcp_backend *be)
+{
+	struct epoll_event event;
+	struct itimerspec interval;
 
 	be->timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
-	if (be->timer_fd >= 0) {
-		struct itimerspec its;
+	if (be->timer_fd < 0)
+		return;
+	memset(&interval, 0, sizeof(interval));
+	interval.it_interval.tv_nsec = UIB_TIMER_TICK_MS * 1000000L;
+	interval.it_value = interval.it_interval;
+	timerfd_settime(be->timer_fd, 0, &interval, NULL);
+	memset(&event, 0, sizeof(event));
+	event.events = EPOLLIN;
+	event.data.ptr = EP_TAG_TIMER;
+	epoll_ctl(be->epfd, EPOLL_CTL_ADD, be->timer_fd, &event);
+}
 
-		memset(&its, 0, sizeof(its));
-		its.it_interval.tv_nsec = UIB_TIMER_TICK_MS * 1000000L;
-		its.it_value = its.it_interval;
-		timerfd_settime(be->timer_fd, 0, &its, NULL);
-		ev.events = EPOLLIN;
-		ev.data.ptr = EP_TAG_TIMER;
-		epoll_ctl(be->epfd, EPOLL_CTL_ADD, be->timer_fd, &ev);
-	}
+static void tcp_init_cleanup(struct uib_context *ctx)
+{
+	struct uib_tcp_backend *be = ctx->backend;
 
-	__atomic_store_n(&be->worker_run, 1, __ATOMIC_RELEASE);
-	rc = pthread_create(&be->worker, NULL, worker_loop, ctx);
-	if (rc) {
-		__atomic_store_n(&be->worker_run, 0, __ATOMIC_RELEASE);
-		rc = -rc;
-		goto err;
-	}
-	return 0;
-
-err:
 	if (be->epfd >= 0)
 		close(be->epfd);
 	if (be->listen_fd >= 0)
@@ -733,6 +718,38 @@ err:
 	pthread_mutex_destroy(&be->lock);
 	free(be);
 	ctx->backend = NULL;
+}
+
+static int tcp_init(struct uib_context *ctx)
+{
+	struct uib_tcp_backend *be;
+	int rc;
+
+	be = calloc(1, sizeof(*be));
+	if (!be)
+		return -ENOMEM;
+	be->listen_fd = be->epfd = be->timer_fd = be->wake_fd = -1;
+	pthread_mutex_init(&be->lock, NULL);
+	ctx->backend = be;
+	rc = tcp_listener_init(ctx, be);
+	if (rc < 0)
+		goto err;
+	rc = tcp_zcrx_init(be);
+	if (rc < 0)
+		goto err;
+	tcp_timer_init(be);
+
+	__atomic_store_n(&be->worker_run, 1, __ATOMIC_RELEASE);
+	rc = pthread_create(&be->worker, NULL, worker_loop, ctx);
+	if (rc) {
+		__atomic_store_n(&be->worker_run, 0, __ATOMIC_RELEASE);
+		rc = -rc;
+		goto err;
+	}
+	return 0;
+
+err:
+	tcp_init_cleanup(ctx);
 	return rc;
 }
 

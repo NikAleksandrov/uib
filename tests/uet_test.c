@@ -25,14 +25,20 @@ int main(void)
 	};
 	struct uib_uet_pds_ack ack;
 	struct uib_uet_nscc_wire_state cc_state;
+	struct uib_uet_rccc_wire_state credit_state;
+	uint32_t credit_target;
+	uint32_t credit;
+	uint32_t request_state;
 	uint32_t service, received;
 	uint16_t out_of_order;
+	uint8_t ccc_id;
 	uint8_t restore, penalty;
 	struct uib_uet_ses_req request;
 	int len;
 
 	check("layout.prologue", sizeof(struct uib_uet_prologue) == 2);
 	check("layout.pds_req", sizeof(struct uib_uet_pds_req) == 12);
+	check("layout.pds_cc_req", sizeof(struct uib_uet_pds_cc_req) == 16);
 	check("layout.pds_ack", sizeof(struct uib_uet_pds_ack) == 12);
 	check("layout.ses_req", sizeof(struct uib_uet_ses_req) == 44);
 	check("layout.ses_req_small",
@@ -48,6 +54,7 @@ int main(void)
 	      sizeof(struct uib_uet_ses_rendezvous) == 24);
 	check("layout.ses_atomic", sizeof(struct uib_uet_ses_atomic) == 4);
 	check("layout.nscc", sizeof(cc_state) == 8);
+	check("layout.rccc", sizeof(credit_state) == 8);
 	check("select.uet", uib_protocol_find("uet") == &uib_uet_protocol_ops);
 	check("port.uet", uib_protocol_default_port("uet") == 5432);
 
@@ -74,6 +81,15 @@ int main(void)
 	check("nscc.penalty", penalty == 64);
 	check("nscc.received", received == 257);
 	check("nscc.out-of-order", out_of_order == 17);
+
+	request_state = uib_uet_rccc_request_pack(0xa5, 0x123456);
+	uib_uet_rccc_request_unpack(request_state, &ccc_id, &credit_target);
+	check("rccc.request-ccc", ccc_id == 0xa5);
+	check("rccc.request-target", credit_target == 0x123456);
+	uib_uet_rccc_wire_pack(&credit_state, 0xabcdef, 23);
+	uib_uet_rccc_wire_unpack(&credit_state, &credit, &out_of_order);
+	check("rccc.credit", credit == 0xabcdef);
+	check("rccc.out-of-order", out_of_order == 23);
 
 	memset(&request, 0, sizeof(request));
 	request.flags = UIB_UET_SES_FLAG_SOM;

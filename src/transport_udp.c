@@ -1850,137 +1850,128 @@ static int udp_send_ref(struct uib_context *ctx,
 	return rc;
 }
 
-static int udp_send_ref_batch(struct uib_context *ctx,
-			      const struct uib_transport_ref *refs,
-			      size_t count)
+static int udp_send_ref_fallback(struct uib_context *ctx,
+				 const struct uib_transport_ref *refs,
+				 size_t count)
 {
-	struct uib_udp_backend *be = ctx->backend;
-	struct uib_udp_tx *head;
-	struct uib_udp_tx *tail;
+	size_t i;
+	int rc;
+
+	for (i = 0; i < count; i++) {
+		rc = udp_send_entropy(ctx, refs[i].dst, refs[i].buf,
+				      refs[i].len, refs[i].entropy);
+		refs[i].release(refs[i].opaque);
+		if (rc < 0) {
+			for (i++; i < count; i++)
+				refs[i].release(refs[i].opaque);
+			return rc;
+		}
+	}
+	return 0;
+}
+
+static size_t udp_ref_run(struct uib_context *ctx,
+			  struct uib_udp_backend *be,
+			  const struct uib_transport_ref *refs,
+			  size_t start, size_t count)
+{
+	size_t run;
+
+	run = 1;
+	if (__atomic_load_n(&be->gso_enabled, __ATOMIC_ACQUIRE) &&
+	    refs[start].len && refs[start].len <= UINT16_MAX) {
+		while (start + run < count && run < UIB_UDP_GSO_MAX_SEGMENTS &&
+		       (run + 1) * refs[start].len <= UIB_UDP_GSO_CAPACITY &&
+		       refs[start + run].len == refs[start].len &&
+		       refs[start + run].entropy == refs[start].entropy &&
+		       !memcmp(refs[start + run].dst, refs[start].dst,
+			       sizeof(*refs[start].dst)))
+			run++;
+	}
+	return limit_zerocopy_run(ctx, refs, start, run);
+}
+
+static struct uib_udp_tx *udp_ref_gso_tx(
+	struct uib_context *ctx, struct uib_udp_backend *be,
+	const struct uib_transport_ref *refs, size_t start, size_t run)
+{
 	struct uib_udp_tx *tx;
 	struct cmsghdr *control;
+	size_t i;
+
+	tx = alloc_gso_tx(be);
+	if (!tx)
+		return NULL;
+	tx->destination = *refs[start].dst;
+	tx->length = run * refs[start].len;
+	tx->packets = (unsigned int)run;
+	tx->gso_size = (uint16_t)refs[start].len;
+	for (i = 0; i < run; i++) {
+		tx->iov_list[i].iov_base = (void *)refs[start + i].buf;
+		tx->iov_list[i].iov_len = refs[start + i].len;
+		tx->release_list[i].release = refs[start + i].release;
+		tx->release_list[i].opaque = refs[start + i].opaque;
+		tx->release_count++;
+	}
+	tx->message.msg_name = &tx->destination;
+	tx->message.msg_namelen = sizeof(tx->destination);
+	tx->message.msg_iov = tx->iov_list;
+	tx->message.msg_iovlen = run;
+	tx->zerocopy = gso_zerocopy_eligible(ctx, tx);
+	control = (struct cmsghdr *)tx->control.bytes;
+	tx->message.msg_control = control;
+	tx->message.msg_controllen = CMSG_SPACE(sizeof(tx->gso_size));
+	control->cmsg_level = IPPROTO_UDP;
+	control->cmsg_type = UDP_SEGMENT;
+	control->cmsg_len = CMSG_LEN(sizeof(tx->gso_size));
+	memcpy(CMSG_DATA(control), &tx->gso_size, sizeof(tx->gso_size));
+	return tx;
+}
+
+static struct uib_udp_tx *udp_ref_one_tx(
+	struct uib_context *ctx, struct uib_udp_backend *be,
+	const struct uib_transport_ref *ref)
+{
+	struct uib_udp_tx *tx;
+
+	tx = alloc_ref_tx(be);
+	if (!tx)
+		return NULL;
+	tx->destination = *ref->dst;
+	tx->data = (void *)ref->buf;
+	tx->release = ref->release;
+	tx->release_opaque = ref->opaque;
+	tx->length = ref->len;
+	if (be->zerocopy_enabled && ctx->zerocopy.mode != UIB_ZEROCOPY_OFF &&
+	    ref->len >= ctx->zerocopy.threshold)
+		tx->zerocopy = 1;
+	tx->iov.iov_base = tx->data;
+	tx->iov.iov_len = tx->length;
+	tx->message.msg_name = &tx->destination;
+	tx->message.msg_namelen = sizeof(tx->destination);
+	tx->message.msg_iov = &tx->iov;
+	return tx;
+}
+
+static int udp_publish_ref_batch(struct uib_udp_backend *be,
+				 struct uib_udp_tx *head, size_t queued,
+				 size_t packet_count)
+{
+	struct uib_udp_tx *tx;
 	uint64_t position;
 	uint64_t wake;
-	size_t run;
-	size_t queued;
-	size_t i;
-	size_t j;
 	int wake_worker;
 	int rc;
 
-	if (!count)
-		return 0;
-	if (be->raw_mode || be->test_drop_tx) {
-		for (i = 0; i < count; i++) {
-			rc = udp_send_entropy(ctx, refs[i].dst, refs[i].buf,
-					      refs[i].len, refs[i].entropy);
-			refs[i].release(refs[i].opaque);
-			if (rc < 0) {
-				for (i++; i < count; i++)
-					refs[i].release(refs[i].opaque);
-				return rc;
-			}
-		}
-		return 0;
-	}
-	head = NULL;
-	tail = NULL;
-	queued = 0;
-	i = 0;
-	rc = 0;
-	if (!__atomic_load_n(&be->worker_run, __ATOMIC_ACQUIRE) ||
-	    !__atomic_load_n(&be->accepting, __ATOMIC_ACQUIRE)) {
-		rc = -ESHUTDOWN;
-		goto release;
-	}
-	for (i = 0; i < count; i += run) {
-		run = 1;
-		if (__atomic_load_n(&be->gso_enabled, __ATOMIC_ACQUIRE) &&
-		    refs[i].len &&
-		    refs[i].len <= UINT16_MAX) {
-			while (i + run < count &&
-			       run < UIB_UDP_GSO_MAX_SEGMENTS &&
-			       (run + 1) * refs[i].len <=
-				UIB_UDP_GSO_CAPACITY &&
-			       refs[i + run].len == refs[i].len &&
-			       refs[i + run].entropy == refs[i].entropy &&
-			       !memcmp(refs[i + run].dst, refs[i].dst,
-				       sizeof(*refs[i].dst)))
-				run++;
-		}
-		run = limit_zerocopy_run(ctx, refs, i, run);
-		if (run > 1) {
-			tx = alloc_gso_tx(be);
-			if (!tx) {
-				rc = -ENOMEM;
-				goto release;
-			}
-			tx->destination = *refs[i].dst;
-			tx->length = run * refs[i].len;
-			tx->packets = (unsigned int)run;
-			tx->gso_size = (uint16_t)refs[i].len;
-			for (j = 0; j < run; j++) {
-				tx->iov_list[j].iov_base =
-					(void *)refs[i + j].buf;
-				tx->iov_list[j].iov_len = refs[i + j].len;
-				tx->release_list[j].release =
-					refs[i + j].release;
-				tx->release_list[j].opaque = refs[i + j].opaque;
-				tx->release_count++;
-			}
-			tx->message.msg_name = &tx->destination;
-			tx->message.msg_namelen = sizeof(tx->destination);
-			tx->message.msg_iov = tx->iov_list;
-			tx->message.msg_iovlen = run;
-			tx->zerocopy = gso_zerocopy_eligible(ctx, tx);
-			control = (struct cmsghdr *)tx->control.bytes;
-			tx->message.msg_control = control;
-			tx->message.msg_controllen =
-				CMSG_SPACE(sizeof(tx->gso_size));
-			control->cmsg_level = IPPROTO_UDP;
-			control->cmsg_type = UDP_SEGMENT;
-			control->cmsg_len = CMSG_LEN(sizeof(tx->gso_size));
-			memcpy(CMSG_DATA(control), &tx->gso_size,
-			       sizeof(tx->gso_size));
-		} else {
-			tx = alloc_ref_tx(be);
-			if (!tx) {
-				rc = -ENOMEM;
-				goto release;
-			}
-			tx->destination = *refs[i].dst;
-			tx->data = (void *)refs[i].buf;
-			tx->release = refs[i].release;
-			tx->release_opaque = refs[i].opaque;
-			tx->length = refs[i].len;
-			if (be->zerocopy_enabled &&
-			    ctx->zerocopy.mode != UIB_ZEROCOPY_OFF &&
-			    refs[i].len >= ctx->zerocopy.threshold)
-				tx->zerocopy = 1;
-			tx->iov.iov_base = tx->data;
-			tx->iov.iov_len = tx->length;
-			tx->message.msg_name = &tx->destination;
-			tx->message.msg_namelen = sizeof(tx->destination);
-			tx->message.msg_iov = &tx->iov;
-		}
-		tx->queue_next = NULL;
-		if (tail)
-			tail->queue_next = tx;
-		else
-			head = tx;
-		tail = tx;
-		queued++;
-	}
 	if (queued > UINT32_MAX) {
-		rc = -EAGAIN;
-		goto release;
+		return -EAGAIN;
 	}
 	rc = uib_ptr_ring_reserve(&be->tx_queue, (uint32_t)queued,
 				  &position, NULL);
 	if (rc < 0) {
 		if (rc == -ENOSPC || rc == -EINVAL)
 			rc = -EAGAIN;
-		goto release;
+		return rc;
 	}
 	while (head) {
 		tx = head;
@@ -1990,7 +1981,7 @@ static int udp_send_ref_batch(struct uib_context *ctx,
 		position++;
 	}
 	wake_worker = __atomic_load_n(&be->worker_waiting, __ATOMIC_SEQ_CST);
-	__atomic_fetch_add(&be->stats.tx_queued, count, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&be->stats.tx_queued, packet_count, __ATOMIC_RELAXED);
 	if (wake_worker && !pthread_equal(pthread_self(), be->worker)) {
 		wake = 1;
 		if (write(be->wake_fd, &wake, sizeof(wake)) < 0 &&
@@ -1998,6 +1989,50 @@ static int udp_send_ref_batch(struct uib_context *ctx,
 			shutdown(be->fd, SHUT_RDWR);
 	}
 	return 0;
+}
+
+static int udp_send_ref_batch(struct uib_context *ctx,
+			      const struct uib_transport_ref *refs,
+			      size_t count)
+{
+	struct uib_udp_backend *be = ctx->backend;
+	struct uib_udp_tx *head = NULL;
+	struct uib_udp_tx *tail = NULL;
+	struct uib_udp_tx *tx;
+	size_t queued = 0;
+	size_t run;
+	size_t i = 0;
+	int rc;
+
+	if (!count)
+		return 0;
+	if (be->raw_mode || be->test_drop_tx)
+		return udp_send_ref_fallback(ctx, refs, count);
+	if (!__atomic_load_n(&be->worker_run, __ATOMIC_ACQUIRE) ||
+	    !__atomic_load_n(&be->accepting, __ATOMIC_ACQUIRE)) {
+		rc = -ESHUTDOWN;
+		goto release;
+	}
+	while (i < count) {
+		run = udp_ref_run(ctx, be, refs, i, count);
+		tx = run > 1 ? udp_ref_gso_tx(ctx, be, refs, i, run) :
+			udp_ref_one_tx(ctx, be, &refs[i]);
+		if (!tx) {
+			rc = -ENOMEM;
+			goto release;
+		}
+		tx->queue_next = NULL;
+		if (tail)
+			tail->queue_next = tx;
+		else
+			head = tx;
+		tail = tx;
+		queued++;
+		i += run;
+	}
+	rc = udp_publish_ref_batch(be, head, queued, count);
+	if (!rc)
+		return 0;
 
 release:
 	while (head) {

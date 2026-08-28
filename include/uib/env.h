@@ -320,7 +320,36 @@
  */
 #define UIB_ENV_VIRTME_KERNEL "UIB_VIRTME_KERNEL"
 
+/**
+ * DOC: UIB_UET_CC
+ * @uib-env: Ultra Ethernet
+ * @default: `nscc`
+ * @values: `nscc`, `rccc`, `none`, experimental `dcqcn`, or a registered name
+ *
+ * Select the congestion-control algorithm for UET queue pairs. Use `none`
+ * only as an experimental baseline because it removes congestion-window
+ * admission control. DCQCN is native to RoCEv2 and requires
+ * `UIB_UET_CC_EXPERIMENTAL=on` when selected for UET.
+ *
+ * Example:
+ * UIB_PROTOCOL=uet UIB_UET_CC=none ./examples/stress_bench
+ */
 #define UIB_ENV_UET_CC "UIB_UET_CC"
+
+/**
+ * DOC: UIB_UET_CC_EXPERIMENTAL
+ * @uib-env: Ultra Ethernet
+ * @default: `off`
+ * @values: `off` or `on`
+ *
+ * Permit a congestion algorithm that is native to another protocol. This
+ * gate is required for DCQCN-on-UET research and does not affect UET-native
+ * NSCC or RCCC.
+ *
+ * Example:
+ * UIB_PROTOCOL=uet UIB_UET_CC=dcqcn UIB_UET_CC_EXPERIMENTAL=on app
+ */
+#define UIB_ENV_UET_CC_EXPERIMENTAL "UIB_UET_CC_EXPERIMENTAL"
 
 /**
  * DOC: UIB_UET_NSCC_MAX_WND
@@ -335,6 +364,73 @@
  */
 #define UIB_ENV_UET_NSCC_MAX_WND "UIB_UET_NSCC_MAX_WND"
 
+/**
+ * DOC: UIB_UET_RCCC_MAX_WND
+ * @uib-env: Ultra Ethernet RCCC
+ * @default: One and a half times the configured bandwidth-delay product.
+ * @values: A byte count no smaller than the active MTU.
+ *
+ * Set the RCCC speculative and outstanding byte window.
+ *
+ * Example:
+ * UIB_UET_CC=rccc UIB_UET_RCCC_MAX_WND=262144 app
+ */
+#define UIB_ENV_UET_RCCC_MAX_WND "UIB_UET_RCCC_MAX_WND"
+
+/**
+ * DOC: UIB_UET_RCCC_CREDIT_QUANTUM
+ * @uib-env: Ultra Ethernet RCCC
+ * @default: Four active-MTU packets.
+ * @values: A byte count no smaller than the active MTU.
+ *
+ * Set the amount of source credit issued by one destination scheduling turn.
+ *
+ * Example:
+ * UIB_UET_CC=rccc UIB_UET_RCCC_CREDIT_QUANTUM=16384 app
+ */
+#define UIB_ENV_UET_RCCC_CREDIT_QUANTUM "UIB_UET_RCCC_CREDIT_QUANTUM"
+
+/**
+ * DOC: UIB_UET_RCCC_LINK_RATE
+ * @uib-env: Ultra Ethernet RCCC
+ * @default: `12500000000` bytes per second.
+ * @values: A positive byte-per-second rate.
+ *
+ * Set the source and destination link rate used for RCCC credit pacing.
+ *
+ * Example:
+ * UIB_UET_CC=rccc UIB_UET_RCCC_LINK_RATE=50000000000 app
+ */
+#define UIB_ENV_UET_RCCC_LINK_RATE "UIB_UET_RCCC_LINK_RATE"
+
+/**
+ * DOC: UIB_UET_RCCC_BASE_RTT
+ * @uib-env: Ultra Ethernet RCCC
+ * @default: `12000` nanoseconds.
+ * @values: A positive nanosecond duration.
+ *
+ * Set the base RTT used to derive the RCCC bandwidth-delay product.
+ *
+ * Example:
+ * UIB_UET_CC=rccc UIB_UET_RCCC_BASE_RTT=20000 app
+ */
+#define UIB_ENV_UET_RCCC_BASE_RTT "UIB_UET_RCCC_BASE_RTT"
+
+/**
+ * DOC: UIB_ROCEV2_CC
+ * @uib-env: RoCEv2
+ * @default: `none`
+ * @values: `none`, `dcqcn`, a registered name, or experimental `nscc`
+ *
+ * Select the congestion-control algorithm for RoCEv2 RC queue pairs. DCQCN
+ * is the protocol-native implementation. NSCC was designed for Ultra
+ * Ethernet, not RoCEv2; selecting it here is an
+ * experimental-only cross-protocol research mode, not a deployment default or
+ * recommendation. RoCEv2 defaults to `none`.
+ *
+ * Example:
+ * UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc app
+ */
 #define UIB_ENV_ROCEV2_CC "UIB_ROCEV2_CC"
 
 /**
@@ -351,6 +447,84 @@
  * UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc UIB_ROCEV2_NSCC_MAX_WND=65536 app
  */
 #define UIB_ENV_ROCEV2_NSCC_MAX_WND "UIB_ROCEV2_NSCC_MAX_WND"
+
+/**
+ * DOC: UIB_DCQCN_INITIAL_RATE
+ * @uib-env: DCQCN
+ * @default: `12500000000` bytes per second.
+ * @values: A positive rate between the configured minimum and maximum.
+ *
+ * Set the DCQCN source rate before congestion feedback arrives.
+ *
+ * Example:
+ * UIB_ROCEV2_CC=dcqcn UIB_DCQCN_INITIAL_RATE=50000000000 app
+ */
+#define UIB_ENV_DCQCN_INITIAL_RATE "UIB_DCQCN_INITIAL_RATE"
+
+/**
+ * DOC: UIB_DCQCN_MINIMUM_RATE
+ * @uib-env: DCQCN
+ * @default: `12500000` bytes per second.
+ * @values: A positive rate no greater than the initial rate.
+ *
+ * Set the minimum rate retained after congestion feedback.
+ *
+ * Example:
+ * UIB_ROCEV2_CC=dcqcn UIB_DCQCN_MINIMUM_RATE=125000000 app
+ */
+#define UIB_ENV_DCQCN_MINIMUM_RATE "UIB_DCQCN_MINIMUM_RATE"
+
+/**
+ * DOC: UIB_DCQCN_MAXIMUM_RATE
+ * @uib-env: DCQCN
+ * @default: `12500000000` bytes per second.
+ * @values: A positive rate no smaller than the initial rate.
+ *
+ * Cap DCQCN rate recovery at the configured link rate.
+ *
+ * Example:
+ * UIB_ROCEV2_CC=dcqcn UIB_DCQCN_MAXIMUM_RATE=50000000000 app
+ */
+#define UIB_ENV_DCQCN_MAXIMUM_RATE "UIB_DCQCN_MAXIMUM_RATE"
+
+/**
+ * DOC: UIB_DCQCN_ADDITIVE_INCREASE
+ * @uib-env: DCQCN
+ * @default: `625000` bytes per second per recovery interval.
+ * @values: A positive byte-per-second rate increment.
+ *
+ * Set the target-rate increase after DCQCN fast recovery.
+ *
+ * Example:
+ * UIB_ROCEV2_CC=dcqcn UIB_DCQCN_ADDITIVE_INCREASE=1250000 app
+ */
+#define UIB_ENV_DCQCN_ADDITIVE_INCREASE "UIB_DCQCN_ADDITIVE_INCREASE"
+
+/**
+ * DOC: UIB_DCQCN_RECOVERY_INTERVAL
+ * @uib-env: DCQCN
+ * @default: `55000` nanoseconds.
+ * @values: A positive nanosecond duration.
+ *
+ * Set the DCQCN alpha update and rate-recovery interval.
+ *
+ * Example:
+ * UIB_ROCEV2_CC=dcqcn UIB_DCQCN_RECOVERY_INTERVAL=100000 app
+ */
+#define UIB_ENV_DCQCN_RECOVERY_INTERVAL "UIB_DCQCN_RECOVERY_INTERVAL"
+
+/**
+ * DOC: UIB_DCQCN_ALPHA_GAIN
+ * @uib-env: DCQCN
+ * @default: `256`, or 1/256 in Q16 fixed-point units.
+ * @values: An integer from `1` through `65536`.
+ *
+ * Set the EWMA gain used for the DCQCN congestion estimate.
+ *
+ * Example:
+ * UIB_ROCEV2_CC=dcqcn UIB_DCQCN_ALPHA_GAIN=512 app
+ */
+#define UIB_ENV_DCQCN_ALPHA_GAIN "UIB_DCQCN_ALPHA_GAIN"
 
 /**
  * DOC: UIB_UET_OPTIMIZED
@@ -691,6 +865,90 @@
 #define UIB_ENV_BENCH_MAX_REGRESSION_PERCENT "UIB_BENCH_MAX_REGRESSION_PERCENT"
 
 /**
+ * DOC: UIB_CC_BENCH_VARIANTS
+ * @uib-env: Complete benchmark matrix
+ * @default: `rocev2:dcqcn rocev2:none uet:rccc uet:nscc uet:none`
+ * @values: Space-separated `protocol:algorithm` pairs supported by the runner.
+ *
+ * Select protocol and congestion-control pairs for the resilience matrix.
+ * UET with DCQCN must use the explicit `dcqcn-experimental` name.
+ *
+ * Example:
+ * UIB_CC_BENCH_VARIANTS='rocev2:dcqcn uet:rccc' make benchmark-all
+ */
+#define UIB_ENV_CC_BENCH_VARIANTS "UIB_CC_BENCH_VARIANTS"
+
+#define UIB_ENV_CC_BENCH_CONDITIONS "UIB_CC_BENCH_CONDITIONS"
+
+/**
+ * DOC: UIB_CC_BENCH_MATRIX
+ * @uib-env: Complete benchmark matrix
+ * @default: Unset; the variants and conditions form a Cartesian product.
+ * @values: Space-separated `protocol:algorithm:condition` entries.
+ *
+ * Replace the Cartesian product with an exact resilience benchmark matrix.
+ * Do not set this together with variant or condition selectors.
+ *
+ * Example:
+ * UIB_CC_BENCH_MATRIX='rocev2:dcqcn:drops uet:rccc:reordered' make benchmark-all
+ */
+#define UIB_ENV_CC_BENCH_MATRIX "UIB_CC_BENCH_MATRIX"
+
+/**
+ * DOC: UIB_CC_BENCH_ITERATIONS
+ * @uib-env: Complete benchmark matrix
+ * @default: `1000`
+ * @values: A positive 32-bit integer.
+ *
+ * Set measured operations per resilience matrix entry.
+ *
+ * Example:
+ * UIB_CC_BENCH_ITERATIONS=10000 make benchmark-all
+ */
+#define UIB_ENV_CC_BENCH_ITERATIONS "UIB_CC_BENCH_ITERATIONS"
+
+/**
+ * DOC: UIB_CC_BENCH_SIZE
+ * @uib-env: Complete benchmark matrix
+ * @default: `16384` bytes
+ * @values: A positive 32-bit byte count.
+ *
+ * Set the payload size for resilience matrix operations.
+ *
+ * Example:
+ * UIB_CC_BENCH_SIZE=65536 make benchmark-all
+ */
+#define UIB_ENV_CC_BENCH_SIZE "UIB_CC_BENCH_SIZE"
+
+/**
+ * DOC: UIB_CC_BENCH_WINDOW
+ * @uib-env: Complete benchmark matrix
+ * @default: `16`
+ * @values: A positive operation count.
+ *
+ * Set the maximum in-flight operation count for each resilience entry.
+ *
+ * Example:
+ * UIB_CC_BENCH_WINDOW=64 make benchmark-all
+ */
+#define UIB_ENV_CC_BENCH_WINDOW "UIB_CC_BENCH_WINDOW"
+
+#define UIB_ENV_CC_BENCH_MTU "UIB_CC_BENCH_MTU"
+
+/**
+ * DOC: UIB_CC_BENCH_TIMEOUT
+ * @uib-env: Complete benchmark matrix
+ * @default: `120` seconds
+ * @values: A positive integer number of seconds.
+ *
+ * Set the per-entry timeout, including retry delays caused by impairments.
+ *
+ * Example:
+ * UIB_CC_BENCH_TIMEOUT=300 make benchmark-all
+ */
+#define UIB_ENV_CC_BENCH_TIMEOUT "UIB_CC_BENCH_TIMEOUT"
+
+/**
  * DOC: UIB_NAMESPACE_KEEP_ON_FAILURE
  * @uib-env: Namespace benchmark harness
  * @default: `0`
@@ -833,6 +1091,33 @@
  * UIB_TEST_DROP_TX=1 ./tests/loopback
  */
 #define UIB_ENV_TEST_DROP_TX "UIB_TEST_DROP_TX"
+
+/**
+ * DOC: UIB_UET_ERROR_TEST
+ * @uib-env: Test and scaling harnesses
+ * @default: Unset and disabled.
+ * @values: Any non-empty value.
+ *
+ * Run UET semantic error checks after the normal loopback operation matrix.
+ *
+ * Example:
+ * UIB_PROTOCOL=uet UIB_UET_ERROR_TEST=1 ./tests/loopback
+ */
+#define UIB_ENV_UET_ERROR_TEST "UIB_UET_ERROR_TEST"
+
+/**
+ * DOC: UIB_UET_ERROR_ONLY
+ * @uib-env: Test and scaling harnesses
+ * @default: Unset and disabled.
+ * @values: Any non-empty value.
+ *
+ * Run only UET semantic error checks. This keeps deterministic loss injection
+ * available for the first request and its guaranteed response.
+ *
+ * Example:
+ * UIB_PROTOCOL=uet UIB_UET_ERROR_ONLY=1 UIB_TEST_DROP_TX=1 ./tests/loopback
+ */
+#define UIB_ENV_UET_ERROR_ONLY "UIB_UET_ERROR_ONLY"
 
 /**
  * DOC: UIB_TEST_GPU_DMABUF_FD

@@ -17,7 +17,9 @@ when the relevant context, transport, benchmark, or test is created.
 - [TCP devmem transport](#tcp-devmem-transport)
 - [Provider-owned host-memory receive](#provider-owned-host-memory-receive)
 - [Ultra Ethernet](#ultra-ethernet)
+- [Ultra Ethernet RCCC](#ultra-ethernet-rccc)
 - [RoCEv2](#rocev2)
+- [DCQCN](#dcqcn)
 - [Stress benchmark executable](#stress-benchmark-executable)
 - [Complete benchmark matrix](#complete-benchmark-matrix)
 - [Namespace benchmark harness](#namespace-benchmark-harness)
@@ -82,18 +84,39 @@ when the relevant context, transport, benchmark, or test is created.
 
 | Variable | Default | Accepted values | Description | Example |
 |---|---|---|---|---|
-| <code>UIB_UET_CC</code> | `nscc` | `nscc`, `none`, or a name registered with `uib_congestion_register()` | Select the congestion-control algorithm for UET queue pairs. Use `none` only as an experimental baseline because it removes congestion-window admission control. | <code>UIB_PROTOCOL=uet UIB_UET_CC=none ./examples/stress_bench</code> |
+| <code>UIB_UET_CC</code> | `nscc` | `nscc`, `rccc`, `none`, experimental `dcqcn`, or a registered name | Select the congestion-control algorithm for UET queue pairs. Use `none` only as an experimental baseline because it removes congestion-window admission control. DCQCN is native to RoCEv2 and requires `UIB_UET_CC_EXPERIMENTAL=on` when selected for UET. | <code>UIB_PROTOCOL=uet UIB_UET_CC=none ./examples/stress_bench</code> |
+| <code>UIB_UET_CC_EXPERIMENTAL</code> | `off` | `off` or `on` | Permit a congestion algorithm that is native to another protocol. This gate is required for DCQCN-on-UET research and does not affect UET-native NSCC or RCCC. | <code>UIB_PROTOCOL=uet UIB_UET_CC=dcqcn UIB_UET_CC_EXPERIMENTAL=on app</code> |
 | <code>UIB_UET_NSCC_MAX_WND</code> | The maximum window calculated by NSCC configuration. | A byte count no smaller than the active MTU. | Cap the initial NSCC congestion window for experiments. | <code>UIB_PROTOCOL=uet UIB_UET_NSCC_MAX_WND=65536 app</code> |
 | <code>UIB_UET_OPTIMIZED</code> | `auto` | `off`, `auto`, `small`, or `medium` | Select the SES request-header optimization policy. | <code>UIB_PROTOCOL=uet UIB_UET_OPTIMIZED=medium app</code> |
 | <code>UIB_UET_MULTIPATH</code> | `off` | `off`, `oblivious`, or `path-aware` | Select entropy multipathing and path-failure tracking mode. | <code>UIB_PROTOCOL=uet UIB_UET_MULTIPATH=path-aware app</code> |
 | <code>UIB_UET_DEBUG</code> | Unset and disabled. | Any non-empty value enables logging. | Enable diagnostic UET packet and completion logging. | <code>UIB_PROTOCOL=uet UIB_UET_DEBUG=1 ./tests/loopback</code> |
 
+## Ultra Ethernet RCCC
+
+| Variable | Default | Accepted values | Description | Example |
+|---|---|---|---|---|
+| <code>UIB_UET_RCCC_MAX_WND</code> | One and a half times the configured bandwidth-delay product. | A byte count no smaller than the active MTU. | Set the RCCC speculative and outstanding byte window. | <code>UIB_UET_CC=rccc UIB_UET_RCCC_MAX_WND=262144 app</code> |
+| <code>UIB_UET_RCCC_CREDIT_QUANTUM</code> | Four active-MTU packets. | A byte count no smaller than the active MTU. | Set the amount of source credit issued by one destination scheduling turn. | <code>UIB_UET_CC=rccc UIB_UET_RCCC_CREDIT_QUANTUM=16384 app</code> |
+| <code>UIB_UET_RCCC_LINK_RATE</code> | `12500000000` bytes per second. | A positive byte-per-second rate. | Set the source and destination link rate used for RCCC credit pacing. | <code>UIB_UET_CC=rccc UIB_UET_RCCC_LINK_RATE=50000000000 app</code> |
+| <code>UIB_UET_RCCC_BASE_RTT</code> | `12000` nanoseconds. | A positive nanosecond duration. | Set the base RTT used to derive the RCCC bandwidth-delay product. | <code>UIB_UET_CC=rccc UIB_UET_RCCC_BASE_RTT=20000 app</code> |
+
 ## RoCEv2
 
 | Variable | Default | Accepted values | Description | Example |
 |---|---|---|---|---|
-| <code>UIB_ROCEV2_CC</code> | `none` | `none`, a registered name, or experimental `nscc` | Select the congestion-control algorithm for RoCEv2 RC queue pairs. NSCC was designed for Ultra Ethernet, not RoCEv2; selecting it here is an experimental-only cross-protocol research mode, not a deployment default or recommendation. RoCEv2 defaults to `none`. | <code>UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc app</code> |
+| <code>UIB_ROCEV2_CC</code> | `none` | `none`, `dcqcn`, a registered name, or experimental `nscc` | Select the congestion-control algorithm for RoCEv2 RC queue pairs. DCQCN is the protocol-native implementation. NSCC was designed for Ultra Ethernet, not RoCEv2; selecting it here is an experimental-only cross-protocol research mode, not a deployment default or recommendation. RoCEv2 defaults to `none`. | <code>UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc app</code> |
 | <code>UIB_ROCEV2_NSCC_MAX_WND</code> | The maximum window calculated by NSCC configuration. | A byte count no smaller than the active MTU plus wire overhead. | Cap the initial NSCC congestion window for experimental RoCEv2 comparison runs. NSCC was designed for Ultra Ethernet; its use with RoCEv2 is experimental only and is not a production congestion-control recommendation. | <code>UIB_PROTOCOL=rocev2 UIB_ROCEV2_CC=nscc UIB_ROCEV2_NSCC_MAX_WND=65536 app</code> |
+
+## DCQCN
+
+| Variable | Default | Accepted values | Description | Example |
+|---|---|---|---|---|
+| <code>UIB_DCQCN_INITIAL_RATE</code> | `12500000000` bytes per second. | A positive rate between the configured minimum and maximum. | Set the DCQCN source rate before congestion feedback arrives. | <code>UIB_ROCEV2_CC=dcqcn UIB_DCQCN_INITIAL_RATE=50000000000 app</code> |
+| <code>UIB_DCQCN_MINIMUM_RATE</code> | `12500000` bytes per second. | A positive rate no greater than the initial rate. | Set the minimum rate retained after congestion feedback. | <code>UIB_ROCEV2_CC=dcqcn UIB_DCQCN_MINIMUM_RATE=125000000 app</code> |
+| <code>UIB_DCQCN_MAXIMUM_RATE</code> | `12500000000` bytes per second. | A positive rate no smaller than the initial rate. | Cap DCQCN rate recovery at the configured link rate. | <code>UIB_ROCEV2_CC=dcqcn UIB_DCQCN_MAXIMUM_RATE=50000000000 app</code> |
+| <code>UIB_DCQCN_ADDITIVE_INCREASE</code> | `625000` bytes per second per recovery interval. | A positive byte-per-second rate increment. | Set the target-rate increase after DCQCN fast recovery. | <code>UIB_ROCEV2_CC=dcqcn UIB_DCQCN_ADDITIVE_INCREASE=1250000 app</code> |
+| <code>UIB_DCQCN_RECOVERY_INTERVAL</code> | `55000` nanoseconds. | A positive nanosecond duration. | Set the DCQCN alpha update and rate-recovery interval. | <code>UIB_ROCEV2_CC=dcqcn UIB_DCQCN_RECOVERY_INTERVAL=100000 app</code> |
+| <code>UIB_DCQCN_ALPHA_GAIN</code> | `256`, or 1/256 in Q16 fixed-point units. | An integer from `1` through `65536`. | Set the EWMA gain used for the DCQCN congestion estimate. | <code>UIB_ROCEV2_CC=dcqcn UIB_DCQCN_ALPHA_GAIN=512 app</code> |
 
 ## Stress benchmark executable
 
@@ -127,6 +150,14 @@ when the relevant context, transport, benchmark, or test is created.
 | <code>UIB_BENCH_SYNC_DOCUMENT</code> | `docs/sync-async-benchmark.md` | A writable Markdown file path. | Select the sync/async comparison document to update. | <code>UIB_BENCH_SYNC_DOCUMENT=/tmp/sync.md make benchmark-doc</code> |
 | <code>UIB_BENCH_REUSE</code> | `0` | `0` or `1` | Reuse CSV files in the output directory instead of rerunning. | <code>UIB_BENCH_REUSE=1 UIB_BENCH_OUTPUT=/tmp/run make benchmark-doc</code> |
 | <code>UIB_BENCH_MAX_REGRESSION_PERCENT</code> | `5` percent | A non-negative percentage. | Set the maximum aggregate UDP regression accepted by docs. | <code>UIB_BENCH_MAX_REGRESSION_PERCENT=3 make benchmark-doc</code> |
+| <code>UIB_CC_BENCH_VARIANTS</code> | `rocev2:dcqcn rocev2:none uet:rccc uet:nscc uet:none` | Space-separated `protocol:algorithm` pairs supported by the runner. | Select protocol and congestion-control pairs for the resilience matrix. UET with DCQCN must use the explicit `dcqcn-experimental` name. | <code>UIB_CC_BENCH_VARIANTS='rocev2:dcqcn uet:rccc' make benchmark-all</code> |
+| <code>UIB_CC_BENCH_CONDITIONS</code> | `clean latency drops reordered drops-reordered` | Space-separated checked-in network profile names. | Select the netem conditions applied to every selected congestion variant. | <code>UIB_CC_BENCH_CONDITIONS='clean drops reordered' make benchmark-all</code> |
+| <code>UIB_CC_BENCH_MATRIX</code> | Unset; the variants and conditions form a Cartesian product. | Space-separated `protocol:algorithm:condition` entries. | Replace the Cartesian product with an exact resilience benchmark matrix. Do not set this together with variant or condition selectors. | <code>UIB_CC_BENCH_MATRIX='rocev2:dcqcn:drops uet:rccc:reordered' make benchmark-all</code> |
+| <code>UIB_CC_BENCH_ITERATIONS</code> | `1000` | A positive 32-bit integer. | Set measured operations per resilience matrix entry. | <code>UIB_CC_BENCH_ITERATIONS=10000 make benchmark-all</code> |
+| <code>UIB_CC_BENCH_SIZE</code> | `16384` bytes | A positive 32-bit byte count. | Set the payload size for resilience matrix operations. | <code>UIB_CC_BENCH_SIZE=65536 make benchmark-all</code> |
+| <code>UIB_CC_BENCH_WINDOW</code> | `16` | A positive operation count. | Set the maximum in-flight operation count for each resilience entry. | <code>UIB_CC_BENCH_WINDOW=64 make benchmark-all</code> |
+| <code>UIB_CC_BENCH_MTU</code> | `1500` bytes | A positive path MTU no larger than `4096` for RoCEv2 comparisons. | Set one common path MTU for all resilience matrix entries. | <code>UIB_CC_BENCH_MTU=4096 make benchmark-all</code> |
+| <code>UIB_CC_BENCH_TIMEOUT</code> | `120` seconds | A positive integer number of seconds. | Set the per-entry timeout, including retry delays caused by impairments. | <code>UIB_CC_BENCH_TIMEOUT=300 make benchmark-all</code> |
 
 ## Namespace benchmark harness
 
@@ -148,6 +179,8 @@ when the relevant context, transport, benchmark, or test is created.
 | <code>UIB_TEST_ITERS</code> | `64` | A positive integer. | Set the operation count used by standard tool tests. | <code>UIB_TEST_ITERS=256 make uib-tools-test</code> |
 | <code>UIB_TEST_LINK_MTU</code> | `1500` | An integer from `576` through `65535`. | Set both veth link MTUs used by standard ibverbs tool tests. The harness derives and advertises the largest UIB active MTU that fits the link. | <code>UIB_TEST_LINK_MTU=576 make uib-tools-test</code> |
 | <code>UIB_TEST_DROP_TX</code> | Unset and disabled. | Any non-empty value drops one eligible packet. | Inject one transmit loss to exercise protocol recovery. | <code>UIB_TEST_DROP_TX=1 ./tests/loopback</code> |
+| <code>UIB_UET_ERROR_TEST</code> | Unset and disabled. | Any non-empty value. | Run UET semantic error checks after the normal loopback operation matrix. | <code>UIB_PROTOCOL=uet UIB_UET_ERROR_TEST=1 ./tests/loopback</code> |
+| <code>UIB_UET_ERROR_ONLY</code> | Unset and disabled. | Any non-empty value. | Run only UET semantic error checks. This keeps deterministic loss injection available for the first request and its guaranteed response. | <code>UIB_PROTOCOL=uet UIB_UET_ERROR_ONLY=1 UIB_TEST_DROP_TX=1 ./tests/loopback</code> |
 | <code>UIB_TEST_GPU_DMABUF_FD</code> | Unset; the external GPU DMA-BUF test skips. | A valid inherited file-descriptor number. | Supply an external GPU DMA-BUF descriptor to the import test. | <code>UIB_TEST_GPU_DMABUF_FD=9 ./tests/external_dmabuf_test</code> |
 | <code>UIB_TEST_GPU_DMABUF_OFFSET</code> | `0` | A non-negative byte offset. | Set the starting offset in an external GPU DMA-BUF. | <code>UIB_TEST_GPU_DMABUF_OFFSET=4096 ./tests/external_dmabuf_test</code> |
 | <code>UIB_TEST_JOBS</code> | `4` | A positive make job count. | Set parallel jobs for optional-feature rebuild tests. | <code>UIB_TEST_JOBS=16 make optional-features-test</code> |

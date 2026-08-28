@@ -49,9 +49,9 @@ uint32_t uib_crc32(uint32_t crc, const void *buf, size_t len)
 #ifdef UIB_HAVE_ZLIB
 	return (uint32_t)crc32_z(crc, buf, len);
 #else
-	pthread_once(&crc_once, crc_table_init);
 	const uint8_t *p = buf;
 
+	pthread_once(&crc_once, crc_table_init);
 	crc = ~crc;
 	while (len--)
 		crc = crc_table[(crc ^ *p++) & 0xff] ^ (crc >> 8);
@@ -239,10 +239,11 @@ void uib_reth_unpack(const struct uib_reth *r, uint64_t *va,
 		     uint32_t *rkey, uint32_t *len)
 {
 	uint32_t bhi, blo;
+	uint64_t v;
 
 	memcpy(&bhi, &r->va, 4);
 	memcpy(&blo, ((const uint8_t *)&r->va) + 4, 4);
-	uint64_t v = ((uint64_t)ntohl(bhi) << 32) | ntohl(blo);
+	v = ((uint64_t)ntohl(bhi) << 32) | ntohl(blo);
 
 	if (va)
 		*va = v;

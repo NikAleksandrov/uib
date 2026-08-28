@@ -88,6 +88,44 @@ static void report_wc(const char *tag, struct uib_cq *cq)
 		g_fail = 1;
 }
 
+static void report_error_wc(const char *tag, struct uib_cq *cq,
+			    enum uib_wc_status status, uint32_t response_code)
+{
+	struct uib_wc wc;
+	int ok;
+
+	memset(&wc, 0, sizeof(wc));
+	if (!wait_wc(cq, &wc)) {
+		printf("%-18s TIMEOUT\n", tag);
+		g_fail = 1;
+		return;
+	}
+	ok = wc.status == status && wc.vendor_err == response_code;
+	printf("%-18s %s (status=%d response=0x%02x)\n", tag,
+	       ok ? "PASS" : "FAIL", wc.status, wc.vendor_err);
+	if (!ok)
+		g_fail = 1;
+}
+
+static void report_target_error_wc(const char *tag, struct uib_cq *cq,
+				   enum uib_wc_status status)
+{
+	struct uib_wc wc;
+	int ok;
+
+	memset(&wc, 0, sizeof(wc));
+	if (!wait_wc(cq, &wc)) {
+		printf("%-18s TIMEOUT\n", tag);
+		g_fail = 1;
+		return;
+	}
+	ok = wc.status == status && wc.opcode == UIB_WC_RECV;
+	printf("%-18s %s (status=%d opcode=%s)\n", tag,
+	       ok ? "PASS" : "FAIL", wc.status, op_name(wc.opcode));
+	if (!ok)
+		g_fail = 1;
+}
+
 static void check_bytes(const char *tag, const void *a, const void *b, size_t n)
 {
 	int ok = memcmp(a, b, n) == 0;
@@ -316,6 +354,118 @@ static void test_uet_atomic_matrix(struct uib_qp *qp, struct uib_cq *cq,
 			       1, 0, UINT64_MAX - 1);
 }
 
+static void test_uet_session_error(struct uib_qp *qpA, struct uib_qp *qpB,
+				   struct uib_cq *cqA, struct uib_mr *mrA,
+				   struct uib_mr *mrB, void *source,
+				   void *target, const char *tag,
+				   uint8_t response_code,
+				   unsigned int field)
+{
+	struct uib_uet_session_config initiator;
+	struct uib_uet_session_config target_config;
+	struct uib_uet_session_config changed;
+
+	uib_uet_session_query(qpA, &initiator);
+	uib_uet_session_query(qpB, &target_config);
+	if (field == 0) {
+		changed = initiator;
+		changed.job_id++;
+		uib_uet_session_configure(qpA, &changed);
+	} else if (field == 1) {
+		changed = target_config;
+		changed.pid_on_fep = (changed.pid_on_fep + 1) &
+			UIB_UET_SES_PID_MASK;
+		uib_uet_session_configure(qpB, &changed);
+	} else if (field == 2) {
+		changed = initiator;
+		changed.resource_index++;
+		uib_uet_session_configure(qpA, &changed);
+	} else if (field == 3) {
+		changed = initiator;
+		changed.resource_generation++;
+		uib_uet_session_configure(qpA, &changed);
+	} else {
+		changed = initiator;
+		changed.relative_addressing = !target_config.relative_addressing;
+		uib_uet_session_configure(qpA, &changed);
+	}
+	post_send_buf(qpA, 0xE100 + field, UIB_WR_RDMA_WRITE, source, 8,
+		      mrA->lkey, (uintptr_t)target, mrB->rkey);
+	report_error_wc(tag, cqA,
+			response_code == UIB_UET_SES_RC_BAD_GENERATION ?
+			UIB_WC_REM_OP_ERR : UIB_WC_REM_ACCESS_ERR,
+			response_code);
+	uib_uet_session_configure(qpA, &initiator);
+	uib_uet_session_configure(qpB, &target_config);
+}
+
+static void test_uet_errors(struct uib_qp *qpA, struct uib_qp *qpB,
+			    struct uib_cq *cqA, struct uib_cq *cqB,
+			    struct uib_pd *pdB, struct uib_mr *mrA,
+			    struct uib_mr *mrB, void *source, void *target,
+			    uint64_t *atomic_result, uint64_t *atomic_target)
+{
+	static uint8_t restricted[64] __attribute__((aligned(8)));
+	struct uib_mr *restricted_mr;
+
+	restricted_mr = uib_reg_mr(pdB, restricted, sizeof(restricted),
+				   UIB_ACCESS_LOCAL_WRITE);
+	if (!restricted_mr) {
+		printf("uet.errors         MR REGISTRATION FAIL\n");
+		g_fail = 1;
+		return;
+	}
+
+	post_send_buf(qpA, 0xE001, UIB_WR_RDMA_WRITE, source, 8, mrA->lkey,
+		      (uintptr_t)target, 0xdeadbeefU);
+	report_error_wc("uet.err.bad_mkey", cqA, UIB_WC_REM_ACCESS_ERR,
+			UIB_UET_SES_RC_BAD_MKEY);
+	post_send_buf(qpA, 0xE0011, UIB_WR_RDMA_WRITE, source, BIG_LEN,
+		      mrA->lkey, (uintptr_t)target, 0xdeadbeefU);
+	report_error_wc("uet.err.first_multi", cqA, UIB_WC_REM_ACCESS_ERR,
+			UIB_UET_SES_RC_BAD_MKEY);
+
+	post_send_buf(qpA, 0xE002, UIB_WR_RDMA_WRITE, source, 8, mrA->lkey,
+		      (uintptr_t)mrB->addr + mrB->length - 4, mrB->rkey);
+	report_error_wc("uet.err.bad_addr", cqA, UIB_WC_REM_ACCESS_ERR,
+			UIB_UET_SES_RC_BAD_ADDR);
+
+	post_send_buf(qpA, 0xE003, UIB_WR_RDMA_WRITE, source, 8, mrA->lkey,
+		      (uintptr_t)restricted, restricted_mr->rkey);
+	report_error_wc("uet.err.op", cqA, UIB_WC_REM_ACCESS_ERR,
+			UIB_UET_SES_RC_OP_VIOLATION);
+
+	post_atomic(qpA, 0xE004, UIB_WR_ATOMIC_FETCH_ADD, atomic_result,
+		    mrA->lkey, (uintptr_t)atomic_target + 1, mrB->rkey, 1, 0);
+	report_error_wc("uet.err.unaligned", cqA, UIB_WC_REM_OP_ERR,
+			UIB_UET_SES_RC_AMO_UNALIGNED);
+
+	test_uet_session_error(qpA, qpB, cqA, mrA, mrB, source, target,
+			       "uet.err.job", UIB_UET_SES_RC_BAD_JOB_ID, 0);
+	test_uet_session_error(qpA, qpB, cqA, mrA, mrB, source, target,
+			       "uet.err.pid", UIB_UET_SES_RC_BAD_PID, 1);
+	test_uet_session_error(qpA, qpB, cqA, mrA, mrB, source, target,
+			       "uet.err.index", UIB_UET_SES_RC_BAD_INDEX, 2);
+	test_uet_session_error(qpA, qpB, cqA, mrA, mrB, source, target,
+			       "uet.err.generation",
+			       UIB_UET_SES_RC_BAD_GENERATION, 3);
+	test_uet_session_error(qpA, qpB, cqA, mrA, mrB, source, target,
+			       "uet.err.permission",
+			       UIB_UET_SES_RC_PERM_VIOLATION, 4);
+
+	post_send_buf(qpA, 0xE010, UIB_WR_SEND, source, 8, mrA->lkey, 0, 0);
+	report_error_wc("uet.err.no_match", cqA, UIB_WC_REM_OP_ERR,
+			UIB_UET_SES_RC_NO_MATCH);
+
+	post_recv_buf(qpB, 0xE011, target, 4, mrB->lkey);
+	post_send_buf(qpA, 0xE012, UIB_WR_SEND, source, 8, mrA->lkey, 0, 0);
+	report_target_error_wc("uet.err.target_len", cqB,
+			       UIB_WC_LOC_LEN_ERR);
+	report_error_wc("uet.err.too_long", cqA, UIB_WC_REM_OP_ERR,
+			UIB_UET_SES_RC_TOO_LONG);
+	uib_dereg_mr(restricted_mr);
+}
+
 int main(void)
 {
 	struct uib_context *ctxA, *ctxB;
@@ -330,6 +480,7 @@ int main(void)
 	uint64_t *atomicA, *atomicB;
 	int is_uet = getenv("UIB_PROTOCOL") &&
 		!strcmp(getenv("UIB_PROTOCOL"), "uet");
+	int error_only = is_uet && getenv(UIB_ENV_UET_ERROR_ONLY);
 	unsigned int i;
 
 	ctxA = uib_open_device("127.0.0.1", PORT_A);
@@ -388,6 +539,12 @@ int main(void)
 		printf("connect failed\n");
 		return 2;
 	}
+	if (error_only) {
+		test_uet_errors(qpA, qpB, cqA, cqB, pdB, mrA, mrB, bufA,
+				bufB + 16384, (uint64_t *)(bufA + 49152),
+				(uint64_t *)(bufB + 49152));
+		goto out;
+	}
 
 	for (i = 0; i < 64; i++)
 		sendA[i] = (uint8_t)(i + 1);
@@ -441,6 +598,9 @@ int main(void)
 
 	if (is_uet) {
 		test_uet_atomic_matrix(qpA, cqA, mrA, mrB, atomicA, atomicB);
+		if (getenv(UIB_ENV_UET_ERROR_TEST))
+			test_uet_errors(qpA, qpB, cqA, cqB, pdB, mrA, mrB,
+					sendA, targetB, atomicA, atomicB);
 		if (getenv("UIB_UET_MULTIPATH")) {
 			struct uib_uet_multipath_stats stats;
 			struct uib_uet_multipath_config config;
@@ -465,6 +625,7 @@ int main(void)
 	}
 	check_congestion_plugin();
 
+out:
 	uib_destroy_qp(qpA);
 	uib_destroy_qp(qpB);
 	uib_destroy_cq(cqA);

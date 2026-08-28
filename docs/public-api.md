@@ -2250,6 +2250,25 @@ Return value:
 
 Nonzero when the algorithm admits the transmission, otherwise 0.
 
+### [`uib_congestion_next_send_ns`](../include/uib/congestion.h)
+
+```c
+uint64_t uib_congestion_next_send_ns(
+	const struct uib_congestion *congestion);
+```
+
+Description:
+
+Read a time-based admission deadline.
+
+Parameters:
+
+- `congestion` — Initialized congestion-control object
+
+Return value:
+
+The next monotonic send time, or 0 when the algorithm is not paced.
+
 ### [`uib_congestion_ack_request`](../include/uib/congestion.h)
 
 ```c
@@ -2331,6 +2350,351 @@ Parameters:
 
 - `congestion` — Initialized congestion-control object
 - `nack` — Protocol-neutral NACK event
+
+### [`uib_dcqcn_config_default`](../include/uib/dcqcn.h)
+
+```c
+void uib_dcqcn_config_default(struct uib_dcqcn_config *config, uint32_t mtu);
+```
+
+Description:
+
+Fill default DCQCN settings.
+
+Parameters:
+
+- `config` — Configuration to fill
+- `mtu` — Nominal packet size in bytes
+
+### [`uib_dcqcn_init`](../include/uib/dcqcn.h)
+
+```c
+int uib_dcqcn_init(struct uib_dcqcn *dcqcn,
+		   const struct uib_dcqcn_config *config, uint64_t now_ns);
+```
+
+Description:
+
+Initialize a DCQCN source.
+
+Parameters:
+
+- `dcqcn` — State to initialize
+- `config` — Configuration to apply
+- `now_ns` — Current monotonic time in nanoseconds
+
+Return value:
+
+0 on success or `-EINVAL` for invalid configuration.
+
+### [`uib_dcqcn_can_send`](../include/uib/dcqcn.h)
+
+```c
+int uib_dcqcn_can_send(const struct uib_dcqcn *dcqcn, size_t bytes,
+		       uint64_t now_ns);
+```
+
+Description:
+
+Test whether DCQCN pacing admits a packet.
+
+Parameters:
+
+- `dcqcn` — Initialized source state
+- `bytes` — Prospective nominal packet size
+- `now_ns` — Current monotonic time in nanoseconds
+
+Return value:
+
+Nonzero when the packet may be sent, otherwise 0.
+
+### [`uib_dcqcn_on_send`](../include/uib/dcqcn.h)
+
+```c
+void uib_dcqcn_on_send(struct uib_dcqcn *dcqcn, size_t bytes,
+		       uint64_t now_ns);
+```
+
+Description:
+
+Account one paced transmission.
+
+Parameters:
+
+- `dcqcn` — Initialized source state
+- `bytes` — Nominal transmitted bytes
+- `now_ns` — Current monotonic time in nanoseconds
+
+### [`uib_dcqcn_on_ack`](../include/uib/dcqcn.h)
+
+```c
+void uib_dcqcn_on_ack(struct uib_dcqcn *dcqcn, size_t bytes,
+		      uint64_t now_ns);
+```
+
+Description:
+
+Apply non-congested acknowledgement feedback.
+
+Parameters:
+
+- `dcqcn` — Initialized source state
+- `bytes` — Newly acknowledged bytes
+- `now_ns` — Current monotonic time in nanoseconds
+
+### [`uib_dcqcn_on_cnp`](../include/uib/dcqcn.h)
+
+```c
+void uib_dcqcn_on_cnp(struct uib_dcqcn *dcqcn, uint64_t now_ns);
+```
+
+Description:
+
+Apply one congestion notification packet.
+
+Parameters:
+
+- `dcqcn` — Initialized source state
+- `now_ns` — Current monotonic time in nanoseconds
+
+### [`uib_dcqcn_on_loss`](../include/uib/dcqcn.h)
+
+```c
+void uib_dcqcn_on_loss(struct uib_dcqcn *dcqcn, size_t bytes,
+		       uint64_t now_ns);
+```
+
+Description:
+
+Apply loss and remove bytes from flight.
+
+Parameters:
+
+- `dcqcn` — Initialized source state
+- `bytes` — Lost nominal bytes
+- `now_ns` — Current monotonic time in nanoseconds
+
+### [`uib_uet_rccc_config_default`](../include/uib/uet_rccc.h)
+
+```c
+void uib_uet_rccc_config_default(struct uib_uet_rccc_config *config,
+				 uint32_t mtu);
+```
+
+Description:
+
+Fill default RCCC settings.
+
+Parameters:
+
+- `config` — Configuration to fill
+- `mtu` — Nominal packet size in bytes
+
+### [`uib_uet_rccc_init`](../include/uib/uet_rccc.h)
+
+```c
+int uib_uet_rccc_init(struct uib_uet_rccc *rccc,
+		      const struct uib_uet_rccc_config *config);
+```
+
+Description:
+
+Initialize RCCC source state.
+
+Parameters:
+
+- `rccc` — Source state to initialize
+- `config` — Configuration to apply
+
+Return value:
+
+0 on success or `-EINVAL` for invalid configuration.
+
+### [`uib_uet_rccc_on_new_data`](../include/uib/uet_rccc.h)
+
+```c
+void uib_uet_rccc_on_new_data(struct uib_uet_rccc *rccc, size_t bytes);
+```
+
+Description:
+
+Add newly posted source demand.
+
+Parameters:
+
+- `rccc` — Initialized source state
+- `bytes` — Newly posted bytes
+
+### [`uib_uet_rccc_on_cancel_data`](../include/uib/uet_rccc.h)
+
+```c
+void uib_uet_rccc_on_cancel_data(struct uib_uet_rccc *rccc, size_t bytes);
+```
+
+Description:
+
+Remove source demand that was not queued.
+
+Parameters:
+
+- `rccc` — Initialized source state
+- `bytes` — Cancelled nominal bytes
+
+### [`uib_uet_rccc_credit_target`](../include/uib/uet_rccc.h)
+
+```c
+uint32_t uib_uet_rccc_credit_target(struct uib_uet_rccc *rccc);
+```
+
+Description:
+
+Calculate cumulative requested credit.
+
+Parameters:
+
+- `rccc` — Initialized source state
+
+Return value:
+
+Cumulative credit target in wrapping 256-byte units.
+
+### [`uib_uet_rccc_can_send`](../include/uib/uet_rccc.h)
+
+```c
+int uib_uet_rccc_can_send(struct uib_uet_rccc *rccc, size_t bytes);
+```
+
+Description:
+
+Test whether source credit admits a packet.
+
+Parameters:
+
+- `rccc` — Initialized source state
+- `bytes` — Prospective nominal packet size
+
+Return value:
+
+Nonzero when sufficient credit is available, otherwise 0.
+
+### [`uib_uet_rccc_mark_target_sent`](../include/uib/uet_rccc.h)
+
+```c
+void uib_uet_rccc_mark_target_sent(struct uib_uet_rccc *rccc);
+```
+
+Description:
+
+Record target delivery to the peer.
+
+Parameters:
+
+- `rccc` — Initialized source state
+
+### [`uib_uet_rccc_on_send`](../include/uib/uet_rccc.h)
+
+```c
+void uib_uet_rccc_on_send(struct uib_uet_rccc *rccc, size_t bytes);
+```
+
+Description:
+
+Consume source credit.
+
+Parameters:
+
+- `rccc` — Initialized source state
+- `bytes` — Nominal transmitted bytes
+
+### [`uib_uet_rccc_on_ack`](../include/uib/uet_rccc.h)
+
+```c
+void uib_uet_rccc_on_ack(struct uib_uet_rccc *rccc, size_t bytes);
+```
+
+Description:
+
+Apply acknowledgement feedback.
+
+Parameters:
+
+- `rccc` — Initialized source state
+- `bytes` — Newly acknowledged bytes
+
+### [`uib_uet_rccc_on_loss`](../include/uib/uet_rccc.h)
+
+```c
+void uib_uet_rccc_on_loss(struct uib_uet_rccc *rccc, size_t bytes);
+```
+
+Description:
+
+Return lost data to the retransmit backlog.
+
+Parameters:
+
+- `rccc` — Initialized source state
+- `bytes` — Nominal lost bytes
+
+### [`uib_uet_rccc_on_credit`](../include/uib/uet_rccc.h)
+
+```c
+void uib_uet_rccc_on_credit(struct uib_uet_rccc *rccc,
+			    uint32_t cumulative_credit);
+```
+
+Description:
+
+Apply a cumulative destination grant.
+
+Parameters:
+
+- `rccc` — Initialized source state
+- `cumulative_credit` — Wrapping cumulative credit in 256-byte units
+
+### [`uib_uet_rccc_destination_init`](../include/uib/uet_rccc.h)
+
+```c
+int uib_uet_rccc_destination_init(
+	struct uib_uet_rccc_destination *destination,
+	const struct uib_uet_rccc_config *config, uint64_t now_ns);
+```
+
+Description:
+
+Initialize a destination scheduler.
+
+Parameters:
+
+- `destination` — Destination state to initialize
+- `config` — Configuration to apply
+- `now_ns` — Current monotonic time in nanoseconds
+
+Return value:
+
+0 on success or `-EINVAL` for invalid configuration.
+
+### [`uib_uet_rccc_destination_update`](../include/uib/uet_rccc.h)
+
+```c
+uint32_t uib_uet_rccc_destination_update(
+	struct uib_uet_rccc_destination *destination, uint32_t credit_target,
+	uint64_t now_ns);
+```
+
+Description:
+
+Pace credit for observed demand.
+
+Parameters:
+
+- `destination` — Initialized destination state
+- `credit_target` — Source cumulative target in 256-byte units
+- `now_ns` — Current monotonic time in nanoseconds
+
+Return value:
+
+Cumulative destination credit in 256-byte units.
 
 ## Zero-copy helpers
 
@@ -3049,6 +3413,78 @@ Parameters:
 - `restore` — Output for the restore-window flag
 - `penalty` — Output for the congestion-window penalty
 - `received_units` — Output for the decoded receive counter units
+- `out_of_order` — Output for the out-of-order packet count
+
+### [`uib_uet_rccc_request_pack`](../include/uib/uet.h)
+
+```c
+uint32_t uib_uet_rccc_request_pack(uint8_t ccc_id, uint32_t credit_target);
+```
+
+Description:
+
+Encode RCCC request state.
+
+Parameters:
+
+- `ccc_id` — Source congestion-control context identifier
+- `credit_target` — Cumulative credit target in 256-byte units
+
+Return value:
+
+The packed request state in network byte order.
+
+### [`uib_uet_rccc_request_unpack`](../include/uib/uet.h)
+
+```c
+void uib_uet_rccc_request_unpack(uint32_t state, uint8_t *ccc_id,
+				 uint32_t *credit_target);
+```
+
+Description:
+
+Decode RCCC request state.
+
+Parameters:
+
+- `state` — Packed request state in network byte order
+- `ccc_id` — Output for the source congestion-control context identifier
+- `credit_target` — Output for the cumulative 256-byte credit target
+
+### [`uib_uet_rccc_wire_pack`](../include/uib/uet.h)
+
+```c
+void uib_uet_rccc_wire_pack(struct uib_uet_rccc_wire_state *state,
+			    uint32_t cumulative_credit,
+			    uint16_t out_of_order);
+```
+
+Description:
+
+Encode an RCCC cumulative credit grant.
+
+Parameters:
+
+- `state` — Credit acknowledgement state to fill
+- `cumulative_credit` — Cumulative credit in 256-byte units
+- `out_of_order` — Out-of-order packet count
+
+### [`uib_uet_rccc_wire_unpack`](../include/uib/uet.h)
+
+```c
+void uib_uet_rccc_wire_unpack(const struct uib_uet_rccc_wire_state *state,
+			      uint32_t *cumulative_credit,
+			      uint16_t *out_of_order);
+```
+
+Description:
+
+Decode an RCCC cumulative credit grant.
+
+Parameters:
+
+- `state` — Credit acknowledgement state to decode
+- `cumulative_credit` — Output for cumulative credit in 256-byte units
 - `out_of_order` — Output for the out-of-order packet count
 
 ### [`uib_uet_ses_fragment_info`](../include/uib/uet.h)

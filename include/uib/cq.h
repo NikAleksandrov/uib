@@ -31,6 +31,7 @@ struct uib_wc {
 	uint32_t         qp_num;
 	uint32_t         src_qp;
 	uint32_t         imm_data;
+	uint32_t         vendor_err;
 	void            *private_data;
 };
 

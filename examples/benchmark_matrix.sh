@@ -28,6 +28,8 @@ mkdir -p "$output"
 
 ib_status=0
 "$project_dir/examples/ib_write_bw_matrix.sh" "$output" || ib_status=$?
+cc_status=0
+"$project_dir/examples/congestion_benchmark_matrix.sh" "$output" || cc_status=$?
 
 run_one()
 {
@@ -265,5 +267,10 @@ if [ -s "$failures" ]; then
 fi
 if [ "$ib_status" -ne 0 ]; then
 	printf 'Failed ib_write_bw combinations: %s\n' "$ib_failures" >&2
+	exit 1
+fi
+if [ "$cc_status" -ne 0 ]; then
+	printf 'Failed congestion benchmark combinations: %s\n' \
+		"$output/congestion-comparison.csv" >&2
 	exit 1
 fi
