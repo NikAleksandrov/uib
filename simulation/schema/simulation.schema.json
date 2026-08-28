@@ -64,6 +64,8 @@
           "minimum": 1024,
           "maximum": 65534
         },
+        "controllerMemory": { "$ref": "#/$defs/quantity" },
+        "workerMemory": { "$ref": "#/$defs/quantity" },
         "extraKernelArguments": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }

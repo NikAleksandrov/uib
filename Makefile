@@ -463,10 +463,23 @@ simulation-kuberay-e2e-test: simulation-kubernetes-uib-test \
 	SIMULATION_KUBERAY_MODEL_CACHE_IMAGE=$(MODEL_CACHE_IMAGE) \
 		./tests/run_kuberay_e2e_test.sh
 
-simulation-virtme-kuberay-e2e-test: runtime-image inference-image \
-	model-cache-image
-	SIMULATION_KUBERNETES_PROFILE=virtme-kubernetes \
-	SIMULATION_KUBERNETES_MEMORY=4Gi \
+VIRTME_KUBERAY_ENV = SIMULATION_KUBERNETES_PROFILE=virtme-kubernetes \
+	SIMULATION_KUBERNETES_CPU=2 \
+	SIMULATION_KUBERNETES_MEMORY=3Gi \
+	SIMULATION_KUBERNETES_WORKLOAD_MEMORY=2Gi \
+	SIMULATION_VIRTME_CONTROLLER_MEMORY=2Gi \
+	SIMULATION_VIRTME_WORKER_MEMORY=3Gi \
+	VIRTME_SSH_WAIT=180
+
+simulation-virtme-kuberay-e2e-test:
+	@set +e; \
+	$(VIRTME_KUBERAY_ENV) ./tests/run_kuberay_e2e_test.sh \
+		--preflight-only; status=$$?; \
+	set -e; \
+	if test "$$status" = 77; then exit 0; fi; \
+	if test "$$status" -ne 0; then exit "$$status"; fi; \
+	$(MAKE) runtime-image inference-image model-cache-image; \
+	$(VIRTME_KUBERAY_ENV) \
 	SIMULATION_KUBERAY_RUNTIME_IMAGE=$(RUNTIME_IMAGE) \
 	SIMULATION_KUBERAY_INFERENCE_IMAGE=$(INFERENCE_IMAGE) \
 	SIMULATION_KUBERAY_MODEL_CACHE_IMAGE=$(MODEL_CACHE_IMAGE) \

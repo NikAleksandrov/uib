@@ -10,6 +10,8 @@ trap 'rm -rf -- "$test_dir"' EXIT INT TERM
 
 "$cli" render --profile virtme-kubernetes --format json \
 	--set nodes.cpu=2 --set nodes.memory=4Gi \
+	--set virtme.controllerMemory=1Gi \
+	--set virtme.workerMemory=5Gi \
 	> "$test_dir/config.json"
 "$backend" render "$test_dir/config.json" --name uib-virtme-test \
 	> "$test_dir/topology.json"

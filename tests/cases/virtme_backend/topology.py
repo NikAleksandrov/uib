@@ -24,11 +24,12 @@ assert guests["worker-02"]["dataAddress"] == "198.51.100.22"
 assert [guests[name]["sshPort"] for name in sorted(guests)] == [
     23000, 23001, 23002]
 assert len({guest["dataMac"] for guest in guests.values()}) == 3
-for guest in guests.values():
+for name, guest in guests.items():
     command = guest["command"]
     assert command[:2] == ["vng", "--run"]
     assert command[command.index("--cpus") + 1] == "2"
-    assert command[command.index("--memory") + 1] == "4096M"
+    expected_memory = "1024M" if name == "controller" else "5120M"
+    assert command[command.index("--memory") + 1] == expected_memory
     assert command[command.index("--ssh") + 1] == str(guest["sshPort"])
     assert "--ssh-tcp" in command
     qemu = next(item for item in command if item.startswith("--qemu-opts="))

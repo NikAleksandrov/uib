@@ -2,6 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 set -eu
 
+preflight_only=0
+if test "${1:-}" = --preflight-only; then
+	preflight_only=1
+	shift
+fi
+if test "$#" -ne 0; then
+	echo "usage: $0 [--preflight-only]" >&2
+	exit 2
+fi
+
 project_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cli=$project_dir/simulation/bin/uib-sim
 request=$project_dir/simulation/requests/inference-smoke.yaml
@@ -28,6 +38,19 @@ SIMULATION_KUBERNETES_WORKERS=${SIMULATION_KUBERNETES_WORKERS:-1}
 SIMULATION_KUBERNETES_WORKLOAD_CPU=${SIMULATION_KUBERNETES_WORKLOAD_CPU:-1}
 SIMULATION_KUBERNETES_WORKLOAD_MEMORY=${SIMULATION_KUBERNETES_WORKLOAD_MEMORY:-3Gi}
 . "$project_dir/tests/kubernetes_e2e_cluster.sh"
+
+memory_status=0
+kubernetes_host_memory_preflight || memory_status=$?
+if test "$preflight_only" = 1; then
+	rm -rf -- "$test_dir"
+	exit "$memory_status"
+fi
+if test "$memory_status" = 77; then
+	exit 0
+fi
+if test "$memory_status" -ne 0; then
+	exit "$memory_status"
+fi
 
 collect_diagnostics()
 {

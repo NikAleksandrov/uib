@@ -302,6 +302,16 @@ def validate_infrastructure(config):
                 raise ConfigurationError(
                     f"virtme {config['virtme']['networkMode']} networking "
                     f"requires network.dataInterface={expected_interface}")
+        controller_memory = config["virtme"].get("controllerMemory")
+        worker_memory = config["virtme"].get("workerMemory")
+        if (controller_memory and
+                quantity_mib(controller_memory) < 512):
+            raise ConfigurationError(
+                "virtme.controllerMemory must be at least 512Mi")
+        if (worker_memory and quantity_mib(worker_memory) <
+                quantity_mib(config["nodes"]["memory"])):
+            raise ConfigurationError(
+                "virtme.workerMemory cannot be smaller than nodes.memory")
     if provider == "libvirt" and config["nodes"]["controlPlane"] != 1:
         raise ConfigurationError("libvirt currently requires one control plane")
     if manager == "kubernetes":

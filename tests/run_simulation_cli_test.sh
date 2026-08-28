@@ -233,6 +233,12 @@ if "$cli" render --profile libvirt-kubernetes \
 	echo "libvirt Kubernetes accepted isolated rootless management networks" >&2
 	exit 1
 fi
+if "$cli" render --profile virtme-kubernetes \
+	--set nodes.memory=3Gi \
+	--set virtme.workerMemory=2Gi > /dev/null 2>&1; then
+	echo "virtme accepted worker memory below advertised node memory" >&2
+	exit 1
+fi
 
 printf '%s\n' \
 	'faults:' \

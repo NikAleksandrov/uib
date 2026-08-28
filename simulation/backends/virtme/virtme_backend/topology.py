@@ -92,12 +92,15 @@ def vng_command(config, network, node):
 
     command = ["vng", "--run"]
     kernel = config["infrastructure"]["kernel"]
+    memory_name = ("controllerMemory" if node["role"] == "controller"
+                   else "workerMemory")
+    memory = config["virtme"].get(memory_name, config["nodes"]["memory"])
     if kernel != "running":
         command.append(kernel)
     command.extend([
         "--name", node["hostname"],
         "--cpus", str(config["nodes"]["cpu"]),
-        "--memory", f"{quantity_mib(config['nodes']['memory'])}M",
+        "--memory", f"{quantity_mib(memory)}M",
     ])
     if network["type"] == "qemu-socket":
         command.append(
