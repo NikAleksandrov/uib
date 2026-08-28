@@ -29,3 +29,9 @@ The bounded MPMC completion and pointer rings are adapted from Dmitry Vyukov's
 bounded MPMC queue. Copyright 2010-2011 Dmitry Vyukov. See
 LICENSES/BSD-2-Clause-Views-Dmitry-Vyukov.txt and
 https://www.1024cores.net/home/lock-free-algorithms/queues/bounded-mpmc-queue.
+
+The DCQCN implementation is based on the algorithm described by Yibo Zhu,
+Haggai Eran, Daniel Firestone, Chuanxiong Guo, Marina Lipshteyn, Yehonatan
+Liron, Jitendra Padhye, Shachar Raindel, Mohamad Haj Yahia, and Ming Zhang in
+"Congestion Control for Large-Scale RDMA Deployments," ACM SIGCOMM 2015,
+doi:10.1145/2785956.2787484.

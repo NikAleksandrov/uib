@@ -36,6 +36,13 @@ UIB_0.1 {
 		uib_create_cq_channel;
 		uib_create_qp;
 		uib_create_srq;
+		uib_dcqcn_can_send;
+		uib_dcqcn_config_default;
+		uib_dcqcn_init;
+		uib_dcqcn_on_ack;
+		uib_dcqcn_on_cnp;
+		uib_dcqcn_on_loss;
+		uib_dcqcn_on_send;
 		uib_dealloc_pd;
 		uib_dereg_mr;
 		uib_destroy_comp_channel;
