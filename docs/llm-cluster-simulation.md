@@ -892,8 +892,8 @@ Current NCCL can open a verbs library explicitly and resolve versioned symbols
 with `dlvsym()`. UIB therefore needs more than an ordinary unversioned
 `LD_PRELOAD` library. UIB now provides the versioned loader ABI and its
 automated `provider-nccl-abi-test`. The opt-in `nccl-test` additionally runs
-an unchanged, two-rank `nccl-tests` all-reduce through UIB and rejects Socket
-fallback.
+an unchanged, two-rank `nccl-tests` collective matrix through UIB and rejects
+Socket fallback.
 
 The compatibility sequence is:
 
@@ -4166,7 +4166,7 @@ not the UIB data plane.
 | Target | Requirements | What it validates |
 |---|---|---|
 | `make provider-nccl-abi-test` | libibverbs development files | The provider exposes the versioned ABI and calls NCCL's required verbs entry points; no GPU is used |
-| `make nccl-test` | NVIDIA GPU and driver, CUDA MPS, MPI, `nccl-tests` `all_reduce_perf`, `setpriv`, `unshare`, and `timeout` | Two local NCCL ranks use `libuibv.so`, the NCCL IB network, and UIB traffic; Socket fallback and data errors fail the test |
+| `make nccl-test` | NVIDIA GPU and driver, CUDA MPS, MPI, the selected MPI-enabled `nccl-tests` binaries, `setpriv`, `unshare`, and `timeout` | Two local NCCL ranks run all-reduce, all-gather, broadcast, reduce, reduce-scatter, all-to-all, and send/receive from 8 bytes through 64 KiB through `libuibv.so` and NCCL's IB network; Socket fallback and data errors fail the test |
 | `make rccl-test` | At least two accessible AMD GPU ranks, ROCm/RCCL, MPI-enabled `rccl-tests`, `rocminfo`, `setpriv`, `unshare`, and `timeout` | Two or more local RCCL ranks select the IB network through UIB without Socket fallback |
 | `make ucx-libfabric-test` | UCX 1.18.1-compatible `ucx_info`/`ucx_perftest`, libfabric/fabtests 2.1.0-compatible tools, `timeout`, and permission to expose the character-device anchor | Actual two-process UCX tag, stream, UCP RMA, and UCP atomic traffic over `ud_verbs/uib0:1`; direct UCT active-message, write, read, fetch-add, and compare-swap traffic over `rc_verbs/uib0:1`; and data-checked libfabric untagged/tagged RDM, counter-completed RMA write/read, and 64-bit sum/compare-swap traffic over `verbs;ofi_rxd`. TCP, shared-memory, sockets, and native-verbs fallbacks fail the test |
 | `make mpi-compat-test` | Open MPI 5.0.7-compatible `mpicc`/`mpirun` built with `pml/ucx` and `mtl/ofi`, the UCX/libfabric requirements above, and permission to expose the character-device anchor | The same two-rank MPI binary exchanges 1, 2051, and 65536-byte verified messages and runs an all-reduce through UIB, once through `pml/ucx` and once through `mtl/ofi`; fallback fails the test |
@@ -4175,13 +4175,14 @@ NCCL options:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `NCCL_TESTS_BIN` | First `all_reduce_perf` in `PATH` | Exact MPI-enabled `nccl-tests` binary |
+| `NCCL_TESTS_BIN` | First `all_reduce_perf` in `PATH` | Exact MPI-enabled binary used to locate its sibling `nccl-tests` programs |
+| `NCCL_TEST_COLLECTIVES` | `all_reduce all_gather broadcast reduce reduce_scatter alltoall sendrecv` | Space-separated matrix; each value selects `<name>_perf` beside `NCCL_TESTS_BIN` |
 | `MPIEXEC` | `mpirun` | MPI launcher |
-| `NCCL_TEST_MAX_BYTES` | `64K` | Largest collective buffer accepted by `all_reduce_perf -e` |
+| `NCCL_TEST_MAX_BYTES` | `64K` | Largest buffer passed to each selected collective |
 | `NCCL_TEST_ITERATIONS` | `3` | Measured iterations |
 | `NCCL_TEST_WARMUPS` | `1` | Warm-up iterations |
-| `NCCL_TEST_TIMEOUT` | `90` | Whole-test timeout in seconds |
-| `NCCL_TEST_BIND_PORT` | `19700` | UIB UDP bind port |
+| `NCCL_TEST_TIMEOUT` | `90` | Per-collective timeout in seconds |
+| `NCCL_TEST_BIND_PORT` | `19700` | First UIB UDP bind port; each later collective uses the next port |
 
 RCCL options:
 
@@ -4245,7 +4246,8 @@ MPI_TEST_FRONTENDS=ucx MPI_TEST_TIMEOUT=60 make mpi-compat-test
 ```
 
 `nccl-test` intentionally uses two ranks on one GPU through MPS. That is real
-NCCL/UIB traffic, but not multi-GPU or multi-node validation. `rccl-test`
+NCCL/UIB traffic across the documented collective and size matrix, but not
+multi-GPU or multi-node validation. `rccl-test`
 requires AMD hardware and was not run on the NVIDIA-only development host.
 The UCX/libfabric and MPI gates passed locally; physical-node repetition
 remains separate promotion work.

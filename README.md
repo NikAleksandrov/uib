@@ -56,7 +56,7 @@ Optional features use:
   * virtme-ng, iproute2 and rdma-core tools for VM/RXE integration; and
   * perftest for `ib_write_bw` benchmarks; and
   * CUDA, NCCL 2.30 or newer, Open MPI, NVIDIA MPS and `nccl-tests` for the
-    opt-in actual NCCL collective test; and
+    opt-in actual NCCL collective matrix; and
   * Docker or another compatible OCI engine plus NVIDIA CDI for the opt-in
     GPU training and two-rank UIB training tests.
 
@@ -177,9 +177,10 @@ they are never committed or built into an image.
 verifies them.
 
 `make nccl-test` needs `NCCL_TESTS_BIN` to name an unmodified
-`all_reduce_perf` binary. It starts and cleans up an isolated MPS instance,
-forces NCCL's `NET/IB` path through `libuibv.so`, rejects Socket fallback, and
-checks the collective result. See the
+`all_reduce_perf` binary and locates the other selected `nccl-tests` programs
+beside it. It starts and cleans up an isolated MPS instance, forces NCCL's
+`NET/IB` path through `libuibv.so`, rejects Socket fallback, and checks every
+collective result. See the
 [transparent verbs guide](docs/transparent-verbs.md) for prerequisites,
 configurable parameters, and real-cluster use.
 

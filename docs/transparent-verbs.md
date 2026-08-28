@@ -190,11 +190,12 @@ collective correctness, GPU-memory support, or freedom from socket fallback.
 Those properties require an unchanged NCCL workload and explicit NCCL log and
 traffic validation.
 
-### Running an actual NCCL collective
+### Running actual NCCL collectives
 
-The `nccl-test` target runs NVIDIA's unmodified `all_reduce_perf` binary with
-two MPI ranks and host-staged traffic through UIB. It is a data-path test, not
-another loader test. The runner:
+The `nccl-test` target runs NVIDIA's unmodified `nccl-tests` binaries with two
+MPI ranks and host-staged traffic through UIB. It is a data-path test, not
+another loader test. The default matrix is all-reduce, all-gather, broadcast,
+reduce, reduce-scatter, all-to-all, and send/receive. The runner:
 
 1. starts an isolated NVIDIA MPS daemon and cleans it up on exit;
 2. pins two ranks to GPU 0;
@@ -202,7 +203,8 @@ another loader test. The runner:
    NCCL selects its inter-node path;
 4. disables NCCL P2P and shared-memory transports;
 5. selects `libuibv.so`, `uib0`, RoCEv2, and the synchronous UDP transport;
-6. runs an all-reduce with value checking; and
+6. runs every selected collective from 8 bytes through 64 KiB with value
+   checking; and
 7. requires `Using network IB`, `via NET/IB/0`, and zero wrong values while
    rejecting any Socket network selection.
 
@@ -236,12 +238,13 @@ The local test parameters can be adjusted without editing the scripts:
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `NCCL_TESTS_BIN` | searched in `PATH` | `all_reduce_perf` executable |
-| `NCCL_TEST_MAX_BYTES` | `64K` | largest all-reduce payload |
+| `NCCL_TESTS_BIN` | searched in `PATH` | `all_reduce_perf` executable used to locate the sibling `nccl-tests` binaries |
+| `NCCL_TEST_COLLECTIVES` | `all_reduce all_gather broadcast reduce reduce_scatter alltoall sendrecv` | Space-separated matrix; each entry names a sibling `<name>_perf` binary |
+| `NCCL_TEST_MAX_BYTES` | `64K` | largest payload passed to every selected collective |
 | `NCCL_TEST_ITERATIONS` | `3` | measured iterations per size |
 | `NCCL_TEST_WARMUPS` | `1` | warm-up iterations per size |
-| `NCCL_TEST_TIMEOUT` | `90` | whole-test timeout in seconds |
-| `NCCL_TEST_BIND_PORT` | `19700` | UIB service port |
+| `NCCL_TEST_TIMEOUT` | `90` | timeout in seconds for each collective |
+| `NCCL_TEST_BIND_PORT` | `19700` | first UIB service port; subsequent collectives use consecutive ports |
 | `MPIEXEC` | `mpirun` | MPI launcher executable |
 | `NCCL_TEST_PRIVILEGE` | `sudo` | UTS namespace privilege helper |
 
