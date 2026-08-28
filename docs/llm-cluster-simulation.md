@@ -1618,16 +1618,19 @@ summary, versions, runtime manifest, topology, preflight, and verbs logs.
 
 ### Real Kind and Kubeflow L0 gate
 
-The opt-in gate installs that exact operator and executes the generated
+The opt-in gates install that exact operator and execute the generated
 two-node request rather than only inspecting YAML:
 
 ```text
 make simulation-kubeflow-e2e-test
+make simulation-virtme-kubeflow-e2e-test
 ```
 
-It installs the pinned operator in a disposable two-worker Kind cluster and
-runs the generated TrainJob. Passing requires distinct worker placement, UIB
-preflight in both pods, CPU/Gloo world size two, four steps, and cleanup.
+The first target uses a disposable two-worker Kind cluster. The second uses
+one controller and two separate virtme k3s guests. Both load the same images,
+install the same chart, submit the same TrainJob through `uib-sim`, and require
+distinct worker placement, UIB preflight in both pods, CPU/Gloo world size
+two, four steps, evidence collection, and cleanup.
 
 The validated local tool set is Kind v0.31.0, kubectl v1.35.0, Helm v3.21.3,
 Kubernetes v1.35.0, and Kubeflow Trainer v2.2.1. Required host resources are a
@@ -1640,14 +1643,19 @@ workload downloads no model or dataset.
 
 | Variable | Default | Syntax and meaning |
 |---|---|---|
-| `SIMULATION_KUBEFLOW_E2E_NAME` | Unique `uib-kf-<pid>` | Disposable Kind cluster name |
+| `SIMULATION_KUBEFLOW_E2E_NAME` | Unique `uib-kf-<pid>` | Disposable cluster name |
 | `SIMULATION_KUBEFLOW_E2E_RUN_ID` | Unique `uib-smoke-<pid>` | Run namespace and TrainJob name |
 | `SIMULATION_KUBEFLOW_TRAINER_VERSION` | `2.2.1` | OCI chart version; another value is unvalidated and changes the compatibility claim |
 | `SIMULATION_KUBEFLOW_OPERATOR_TIMEOUT` | `10m` | Helm install/readiness timeout |
 | `SIMULATION_KUBEFLOW_WORKLOAD_TIMEOUT` | `10m` | TrainJob and namespace-deletion timeout |
-| `SIMULATION_KUBEFLOW_TRAINING_IMAGE` | `uib-training:test` | Existing host image loaded into Kind |
-| `SIMULATION_KUBEFLOW_RUNTIME_IMAGE` | `uib-runtime:test` | Existing host UIB runtime image loaded into Kind |
-| `KIND_COMMAND` | `kind` | Exact Kind executable |
+| `SIMULATION_KUBEFLOW_TRAINING_IMAGE` | `uib-training:test` | Existing host image loaded into every disposable node |
+| `SIMULATION_KUBEFLOW_RUNTIME_IMAGE` | `uib-runtime:test` | Existing host UIB runtime image loaded into every disposable node |
+| `SIMULATION_KUBERNETES_PROFILE` | `kind-kubernetes` | `kind-kubernetes`, `virtme-kubernetes`, or `libvirt-kubernetes`; existing-cluster profiles are rejected because this gate owns infrastructure and operator installation |
+| `SIMULATION_KUBERNETES_WORKERS` | `2` | Worker count; training requires at least two for distinct placement |
+| `SIMULATION_KUBERNETES_CPU` | `2` | CPUs per disposable node |
+| `SIMULATION_KUBERNETES_MEMORY` | `2Gi` | Memory per disposable node |
+| `SIMULATION_KUBERNETES_DISK` | `32Gi` | Disk per disposable VM; ignored by Kind |
+| `KIND_COMMAND` | `kind` | Exact Kind executable; used only by the Kind profile |
 | `KUBECTL_COMMAND` | `kubectl` | Exact kubectl executable |
 | `HELM_COMMAND` | `helm` | Exact Helm executable |
 
@@ -1698,6 +1706,7 @@ real local gate with:
 
 ```text
 make simulation-kuberay-e2e-test
+make simulation-virtme-kuberay-e2e-test
 ```
 
 The rendered RayJob retains its RayCluster after job completion so pod logs
@@ -1705,14 +1714,15 @@ remain available to `uib-sim collect`. The run-owned namespace is the cleanup
 boundary; `uib-sim down` or an explicit namespace deletion removes the
 RayJob, RayCluster, pods, and temporary volumes together.
 
-The target first runs the actual two-worker UIB verbs gate, builds the portable
-runtime and inference images, downloads the pinned SmolLM2 revision once into
-the ignored cache, creates a disposable one-worker Kind cluster, installs the
-operator, and submits the standard inference request. It requires a
-Docker-compatible engine, Kind, kubectl, Helm, network access for uncached
-images/charts, about 10 GB of image storage, and four CPU cores plus 8 GiB for
-the Ray head. A successful run checks Ray readiness, all UIB init preflights,
-four requests, 16 output tokens, the Transformers backend, and complete
+The Kind target first runs the actual two-worker UIB verbs gate. Both targets
+build the portable runtime and inference images, download the pinned SmolLM2
+revision once into the ignored cache, create their selected disposable
+cluster, install the operator, and submit the standard inference request. They
+require a Docker-compatible engine, kubectl, Helm, network access for uncached
+images/charts, about 10 GB of image storage, and enough memory for the Ray
+head. Kind additionally requires Kind; virtme requires virtme-ng and QEMU. A
+successful run checks Ray readiness, all UIB init preflights, four requests,
+16 output tokens, the Transformers backend, and complete
 namespace/operator/cluster cleanup.
 
 `storage.modelCacheImage` stages the ignored host cache through a disposable
@@ -1744,11 +1754,16 @@ KubeRay gate options:
 | `SIMULATION_KUBERAY_OPERATOR_TIMEOUT` | `10m` | Helm duration for operator installation |
 | `SIMULATION_KUBERAY_PROVISIONING_TIMEOUT` | `1800` | Positive seconds allowed after RayJob creation for image unpacking and RayCluster readiness |
 | `SIMULATION_KUBERAY_WORKLOAD_TIMEOUT` | `900` | Positive seconds allowed after the deployment enters `Running` |
-| `SIMULATION_KUBERAY_INFERENCE_IMAGE` | `uib-inference:test` | Existing host image loaded into Kind |
-| `SIMULATION_KUBERAY_RUNTIME_IMAGE` | `uib-runtime:test` | Portable UIB init image loaded into Kind |
+| `SIMULATION_KUBERAY_INFERENCE_IMAGE` | `uib-inference:test` | Existing host image loaded into every disposable node |
+| `SIMULATION_KUBERAY_RUNTIME_IMAGE` | `uib-runtime:test` | Portable UIB init image loaded into every disposable node |
 | `SIMULATION_KUBERAY_MODEL_CACHE_IMAGE` | `uib-model-cache:test` | Disposable image built from the ignored Hugging Face cache |
 | `SIMULATION_KUBERAY_RESULTS` | `simulation/.artifacts/results` | Ignored persistent root for success and failure evidence |
-| `KIND_COMMAND`, `KUBECTL_COMMAND`, `HELM_COMMAND` | Standard command names | Exact client executables used by the gate |
+| `SIMULATION_KUBERNETES_PROFILE` | `kind-kubernetes` | Same owned-backend selection as training; `make simulation-virtme-kuberay-e2e-test` selects virtme |
+| `SIMULATION_KUBERNETES_WORKERS` | `1` | Worker guests or Kind workers; the checked-in single-head request has no distributed worker group |
+| `SIMULATION_KUBERNETES_CPU` | `2` | CPUs per disposable node |
+| `SIMULATION_KUBERNETES_MEMORY` | `2Gi` | Memory per node; the virtme target raises this to `4Gi` |
+| `SIMULATION_KUBERNETES_DISK` | `32Gi` | Disk per disposable VM; ignored by Kind |
+| `KIND_COMMAND`, `KUBECTL_COMMAND`, `HELM_COMMAND` | Standard command names | Exact clients; Kind is required only by the Kind profile |
 
 Timeouts are separate intentionally: large local images may take minutes to
 unpack before the Ray head exists, while a running inference workload should
@@ -3794,6 +3809,8 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kubernetes-uib-test` | Kind, kubectl, a Docker-compatible engine, build dependencies, and CPU/memory for two workers; network access is needed only for uncached pinned images and diagnostic sources | Actual RoCEv2 and UET RC SEND/RECV and RDMA Write traffic from unchanged standard verbs binaries between distinct Pod IPs and Kind workers, plus runtime injection and complete cleanup; no GPU or collective claim |
 | `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, common `run/status/collect`, admission, two-node torchrun rendezvous, distinct placement, per-pod UIB preflight evidence, CPU DDP result, integrity manifest, and complete cleanup; no UIB traffic |
 | `make simulation-kuberay-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, roughly 10 GB of image storage, four CPU cores and 8 GiB for the Ray head; network access for uncached images, source archives, chart, and model revision | Required actual two-worker UIB verbs traffic, portable-runtime compatibility, KubeRay v1.6.2 admission, common `run/status/collect`, Ray 2.58.0 readiness, offline cached SmolLM2 inference, four-result correctness, retained integrity-checked evidence, and complete cleanup; the single-rank inference portion itself sends no UIB traffic |
+| `make simulation-virtme-kubeflow-e2e-test` | virtme-ng, QEMU, kubectl, Helm, a Docker-compatible engine, about 6 GiB memory for three small guests, cached training/runtime images, and first-use operator download access | The same Kubeflow chart, TrainJob, collector, placement, preflight, result, and cleanup assertions as the Kind gate across separate virtme kernels |
+| `make simulation-virtme-kuberay-e2e-test` | virtme-ng, QEMU, kubectl, Helm, a Docker-compatible engine, about 8 GiB memory for two guests, roughly 10 GB image storage, and first-use chart/model access | The same KubeRay chart, offline SmolLM2 request, collector, preflight, result, and cleanup assertions as the Kind inference gate across separate virtme kernels; the request remains single-rank |
 
 Run the hardware-neutral gates:
 

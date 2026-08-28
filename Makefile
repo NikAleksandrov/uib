@@ -425,6 +425,12 @@ simulation-libvirt-inference-e2e-test: runtime-bundle-portable-test
 simulation-kubeflow-e2e-test:
 	./tests/run_kubeflow_e2e_test.sh
 
+simulation-virtme-kubeflow-e2e-test: runtime-image training-image
+	SIMULATION_KUBERNETES_PROFILE=virtme-kubernetes \
+	KUBECTL_COMMAND='$(CURDIR)/simulation/.artifacts/tools/bin/kubectl' \
+	HELM_COMMAND='$(CURDIR)/simulation/.artifacts/tools/bin/helm' \
+		./tests/run_kubeflow_e2e_test.sh
+
 simulation-kubernetes-uib-test: runtime-image diagnostic-image
 	SIMULATION_KUBERNETES_UIB_RUNTIME_IMAGE=$(RUNTIME_IMAGE) \
 	SIMULATION_KUBERNETES_UIB_DIAGNOSTIC_IMAGE=$(DIAGNOSTIC_IMAGE) \
@@ -435,6 +441,17 @@ simulation-kuberay-e2e-test: simulation-kubernetes-uib-test \
 	SIMULATION_KUBERAY_RUNTIME_IMAGE=$(RUNTIME_IMAGE) \
 	SIMULATION_KUBERAY_INFERENCE_IMAGE=$(INFERENCE_IMAGE) \
 	SIMULATION_KUBERAY_MODEL_CACHE_IMAGE=$(MODEL_CACHE_IMAGE) \
+		./tests/run_kuberay_e2e_test.sh
+
+simulation-virtme-kuberay-e2e-test: runtime-image inference-image \
+	model-cache-image
+	SIMULATION_KUBERNETES_PROFILE=virtme-kubernetes \
+	SIMULATION_KUBERNETES_MEMORY=4Gi \
+	SIMULATION_KUBERAY_RUNTIME_IMAGE=$(RUNTIME_IMAGE) \
+	SIMULATION_KUBERAY_INFERENCE_IMAGE=$(INFERENCE_IMAGE) \
+	SIMULATION_KUBERAY_MODEL_CACHE_IMAGE=$(MODEL_CACHE_IMAGE) \
+	KUBECTL_COMMAND='$(CURDIR)/simulation/.artifacts/tools/bin/kubectl' \
+	HELM_COMMAND='$(CURDIR)/simulation/.artifacts/tools/bin/helm' \
 		./tests/run_kuberay_e2e_test.sh
 
 docs:
@@ -1027,6 +1044,8 @@ clean:
 	simulation-lifecycle-interruption-test \
 	simulation-workload-interruption-test \
 	simulation-virtme-kubernetes-e2e-test \
+	simulation-virtme-kubeflow-e2e-test \
+	simulation-virtme-kuberay-e2e-test \
 	simulation-virtme-slurm-e2e-test \
 	simulation-virtme-training-e2e-test \
 	simulation-virtme-inference-e2e-test \

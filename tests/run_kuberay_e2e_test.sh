@@ -19,12 +19,13 @@ kubectl_command=${KUBECTL_COMMAND:-kubectl}
 helm_command=${HELM_COMMAND:-helm}
 results_root=${SIMULATION_KUBERAY_RESULTS:-$project_dir/simulation/.artifacts/results}
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-kuberay-e2e.XXXXXX")
-kubeconfig=$test_dir/kubeconfig
 state_dir=$test_dir/state
 evidence=$results_root/$name
 bundle=$evidence/bundle
 logs=$evidence/inference.log
 created=0
+SIMULATION_KUBERNETES_WORKERS=${SIMULATION_KUBERNETES_WORKERS:-1}
+. "$project_dir/tests/kubernetes_e2e_cluster.sh"
 
 collect_diagnostics()
 {
@@ -80,8 +81,7 @@ finish()
 				kuberay-operator --namespace kuberay-system \
 				--wait >/dev/null 2>&1 || true
 		fi
-		"$cli" down --profile kind-kubernetes --run-id "$name" \
-			--set nodes.workers=1 >/dev/null 2>&1 || true
+		kubernetes_down >/dev/null 2>&1 || true
 	fi
 	rm -rf -- "$test_dir"
 	if [ "$status" -ne 0 ]; then
@@ -106,12 +106,17 @@ case $provisioning_timeout:$workload_timeout in
 	exit 2
 	;;
 esac
-for command_name in "$kind_command" "$kubectl_command" "$helm_command"; do
+for command_name in "$kubectl_command" "$helm_command"; do
 	if ! require_command "$command_name"; then
 		echo "required KubeRay E2E command not found: $command_name" >&2
 		exit 1
 	fi
 done
+if test "$kubernetes_profile" = kind-kubernetes && \
+	! require_command "$kind_command"; then
+	echo "required KubeRay E2E command not found: $kind_command" >&2
+	exit 1
+fi
 
 if [ -e "$evidence" ]; then
 	echo "KubeRay evidence path already exists: $evidence" >&2
@@ -120,11 +125,10 @@ fi
 mkdir -p "$evidence"
 
 created=1
-"$cli" up --profile kind-kubernetes --run-id "$name" \
-	--kubeconfig "$kubeconfig" --wait 300s --set nodes.workers=1
-"$cli" load-image --profile kind-kubernetes --run-id "$name" \
-	--image "$inference_image" --image "$runtime_image" \
-	--image "$cache_image" --allow-mutable-tags --set nodes.workers=1
+kubernetes_up
+kubernetes_load_image "$inference_image"
+kubernetes_load_image "$runtime_image"
+kubernetes_load_image "$cache_image"
 
 "$helm_command" repo add kuberay \
 	https://ray-project.github.io/kuberay-helm/ --force-update
@@ -134,13 +138,13 @@ created=1
 	--version "$operator_version" --namespace kuberay-system \
 	--create-namespace --wait --timeout "$operator_timeout"
 
-"$cli" run --profile kind-kubernetes --request "$request" \
+# shellcheck disable=SC2086
+"$cli" run --profile "$kubernetes_profile" --request "$request" \
 	--run-id "$run_id" --allow-mutable-tags \
 	--state-dir "$state_dir" --kubeconfig "$kubeconfig" \
-	--set nodes.workers=1 \
 	--set "workload.image=$inference_image" \
 	--set "uib.bundle=$runtime_image" \
-	--set "storage.modelCacheImage=$cache_image"
+	--set "storage.modelCacheImage=$cache_image" $kubernetes_profile_args
 
 phase=provisioning
 deadline=$(($(date +%s) + provisioning_timeout))
@@ -169,9 +173,10 @@ while :; do
 	sleep 2
 done
 
-"$cli" status --profile kind-kubernetes --run-id "$run_id" \
+# shellcheck disable=SC2086
+"$cli" status --profile "$kubernetes_profile" --run-id "$run_id" \
 	--state-dir "$state_dir" --kubeconfig "$kubeconfig" \
-	--set nodes.workers=1 > "$evidence/status.json"
+	$kubernetes_profile_args > "$evidence/status.json"
 "$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
 	--kubeconfig "$kubeconfig" --output-dir "$bundle"
 collect_diagnostics
@@ -222,7 +227,7 @@ PY
 	--wait --timeout "${workload_timeout}s"
 "$helm_command" --kubeconfig "$kubeconfig" uninstall kuberay-operator \
 	--namespace kuberay-system --wait
-"$cli" down --profile kind-kubernetes --run-id "$name"
+kubernetes_down
 created=0
 
 echo "real KubeRay inference lifecycle test: PASS"

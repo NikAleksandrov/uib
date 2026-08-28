@@ -16,11 +16,11 @@ kind_command=${KIND_COMMAND:-kind}
 kubectl_command=${KUBECTL_COMMAND:-kubectl}
 helm_command=${HELM_COMMAND:-helm}
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-kubeflow-e2e.XXXXXX")
-kubeconfig=$test_dir/kubeconfig
 state_dir=$test_dir/state
 bundle=$test_dir/bundle
 logs=$test_dir/training.log
 created=0
+. "$project_dir/tests/kubernetes_e2e_cluster.sh"
 
 cleanup()
 {
@@ -33,8 +33,7 @@ cleanup()
 				kubeflow-trainer --namespace kubeflow-system \
 				--wait >/dev/null 2>&1 || true
 		fi
-		"$cli" down --profile kind-kubernetes --run-id "$name" \
-			>/dev/null 2>&1 || true
+		kubernetes_down >/dev/null 2>&1 || true
 	fi
 	rm -rf -- "$test_dir"
 }
@@ -48,18 +47,22 @@ require_command()
 	esac
 }
 
-for command_name in "$kind_command" "$kubectl_command" "$helm_command"; do
+for command_name in "$kubectl_command" "$helm_command"; do
 	if ! require_command "$command_name"; then
 		echo "required Kubeflow E2E command not found: $command_name" >&2
 		exit 1
 	fi
 done
+if test "$kubernetes_profile" = kind-kubernetes && \
+	! require_command "$kind_command"; then
+	echo "required Kubeflow E2E command not found: $kind_command" >&2
+	exit 1
+fi
 
 created=1
-"$cli" up --profile kind-kubernetes --run-id "$name" \
-	--kubeconfig "$kubeconfig" --wait 300s
-"$cli" load-image --profile kind-kubernetes --run-id "$name" \
-	--image "$training_image" --image "$runtime_image" --allow-mutable-tags
+kubernetes_up
+kubernetes_load_image "$training_image"
+kubernetes_load_image "$runtime_image"
 
 "$helm_command" --kubeconfig "$kubeconfig" upgrade --install \
 	kubeflow-trainer oci://ghcr.io/kubeflow/charts/kubeflow-trainer \
@@ -67,17 +70,19 @@ created=1
 	--create-namespace --set runtimes.defaultEnabled=true \
 	--wait --timeout "$operator_timeout"
 
-"$cli" run --profile kind-kubernetes --request "$request" \
+# shellcheck disable=SC2086
+"$cli" run --profile "$kubernetes_profile" --request "$request" \
 	--run-id "$run_id" --allow-mutable-tags \
 	--state-dir "$state_dir" --kubeconfig "$kubeconfig" \
 	--set "workload.image=$training_image" \
-	--set "uib.bundle=$runtime_image"
+	--set "uib.bundle=$runtime_image" $kubernetes_profile_args
 "$kubectl_command" --kubeconfig "$kubeconfig" wait \
 	--namespace "$run_id" --for=condition=Complete \
 	"trainjob/$run_id" --timeout "$workload_timeout"
-"$cli" status --profile kind-kubernetes --run-id "$run_id" \
+# shellcheck disable=SC2086
+"$cli" status --profile "$kubernetes_profile" --run-id "$run_id" \
 	--state-dir "$state_dir" --kubeconfig "$kubeconfig" \
-	> "$test_dir/status.json"
+	$kubernetes_profile_args > "$test_dir/status.json"
 "$cli" collect --run-id "$run_id" --state-dir "$state_dir" \
 	--kubeconfig "$kubeconfig" --output-dir "$bundle"
 
@@ -164,7 +169,7 @@ fi
 
 "$helm_command" --kubeconfig "$kubeconfig" uninstall kubeflow-trainer \
 	--namespace kubeflow-system --wait
-"$cli" down --profile kind-kubernetes --run-id "$name"
+kubernetes_down
 created=0
 
 echo "real Kubeflow training lifecycle test: PASS"
