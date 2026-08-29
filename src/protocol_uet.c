@@ -151,6 +151,12 @@ struct uib_uet_qp {
 	int recv_eom;
 	uint32_t recv_imm;
 	int recv_has_imm;
+	uint32_t recv_source_pdc;
+	uint16_t write_msg_id;
+	uint32_t write_last_psn;
+	int write_active;
+	int write_eom;
+	int write_with_imm;
 	struct {
 		uint32_t psn;
 		uint16_t msg_id;
@@ -1882,6 +1888,22 @@ static void uet_abort_receive(struct uib_qp *qp,
 	uet_reset_receive(uet);
 }
 
+static void uet_reset_write(struct uib_uet_qp *uet)
+{
+	uet->write_active = 0;
+	uet->write_eom = 0;
+	uet->write_with_imm = 0;
+}
+
+static void uet_abort_write(struct uib_qp *qp, enum uib_wc_status status)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+
+	if (uet->write_with_imm)
+		uet_abort_receive(qp, status);
+	uet_reset_write(uet);
+}
+
 static int uet_handle_send(struct uib_qp *qp,
 			   const struct uib_uet_ses_req *ses,
 			   const uint8_t *data, size_t data_len,
@@ -1946,32 +1968,97 @@ static int uet_handle_send(struct uib_qp *qp,
 static int uet_handle_write(struct uib_qp *qp,
 			    const struct uib_uet_ses_req *ses,
 			    const uint8_t *data, size_t data_len,
-			    int address_only, uint8_t *response_code)
+			    int address_only, uint32_t psn,
+			    uint32_t source_pdc, uint8_t *response_code)
 {
+	struct uib_uet_qp *uet = qp->protocol_private;
+	uint8_t flags = ses->flags & UIB_UET_SES_FLAGS_MASK;
 	uint32_t offset = uib_uet_ses_message_offset(ses);
 	uint64_t address = be64toh(ses->buffer_offset) + offset;
 	uint32_t rkey = (uint32_t)be64toh(ses->match_bits);
+	uint16_t msg_id = ntohs(ses->msg_id);
 	struct uib_mr *mr;
+	int with_imm = flags & UIB_UET_SES_FLAG_HD;
 	int rc;
 
+	if (flags & UIB_UET_SES_FLAG_SOM) {
+		if (uet->write_active && uet->write_msg_id != msg_id) {
+			*response_code = UIB_UET_SES_RC_INITIATOR_ERROR;
+			return -EBADMSG;
+		}
+		if (!uet->write_active) {
+			if (with_imm) {
+				if (uet->recv_active) {
+					*response_code =
+						UIB_UET_SES_RC_INITIATOR_ERROR;
+					return -EBADMSG;
+				}
+				rc = uib_qp_pop_recv(qp, &uet->recv_slot);
+				if (rc < 0) {
+					*response_code = rc == -ENOENT ?
+						UIB_UET_SES_RC_NO_MATCH :
+						UIB_UET_SES_RC_DROPPED;
+					return rc;
+				}
+				uet->recv_active = 1;
+				uet->recv_msg_id = msg_id;
+				uet->recv_total = ntohl(ses->request_len);
+				uet->recv_imm =
+					(uint32_t)be64toh(ses->header_data);
+				uet->recv_source_pdc = source_pdc;
+			}
+			uet->write_active = 1;
+			uet->write_msg_id = msg_id;
+			uet->write_eom = 0;
+			uet->write_with_imm = with_imm;
+		}
+	}
+	if (!uet->write_active || uet->write_msg_id != msg_id) {
+		*response_code = UIB_UET_SES_RC_INITIATOR_ERROR;
+		return -EBADMSG;
+	}
 	if (uib_uet_ses_payload_len(ses, data_len) != data_len ||
 	    offset > ntohl(ses->request_len) ||
 	    data_len > ntohl(ses->request_len) - offset) {
 		*response_code = UIB_UET_SES_RC_UNSUPP_SIZE;
+		uet_abort_write(qp, UIB_WC_LOC_LEN_ERR);
 		return -EMSGSIZE;
 	}
 	mr = uet_lookup_remote_mr(qp, rkey, address, data_len,
 				  UIB_ACCESS_REMOTE_WRITE, address_only,
 				  response_code);
-	if (!mr)
+	if (!mr) {
+		uet_abort_write(qp, UIB_WC_LOC_PROT_ERR);
 		return -EACCES;
+	}
 	rc = uib_mr_place(mr, address, data, data_len);
 	uib_mr_put(mr);
 	if (rc == -ERANGE)
 		*response_code = UIB_UET_SES_RC_BAD_ADDR;
 	else if (rc < 0)
 		*response_code = UIB_UET_SES_RC_HOST_UNSUCCESS_CMPL;
-	return rc;
+	if (rc < 0) {
+		uet_abort_write(qp, rc == -ERANGE ? UIB_WC_LOC_LEN_ERR :
+				UIB_WC_LOC_PROT_ERR);
+		return rc;
+	}
+	if (flags & UIB_UET_SES_FLAG_EOM) {
+		uet->write_last_psn = psn;
+		uet->write_eom = 1;
+	}
+	if (!uet->write_eom ||
+	    !uet_psn_before(uet->write_last_psn, uet->rx_base_psn))
+		return 0;
+	if (uet->write_with_imm) {
+		uib_qp_emit_recv_slot(qp, &uet->recv_slot, UIB_WC_SUCCESS,
+				      UIB_WC_RECV_RDMA_WITH_IMM,
+				      uet->recv_total,
+				      uet->recv_source_pdc, uet->recv_imm);
+		uib_qp_release_recv(&uet->recv_slot);
+		uet_reset_receive(uet);
+	}
+	uet_reset_write(uet);
+	return 0;
 }
 
 static uint8_t uet_validate_session(struct uib_qp *qp,
@@ -2426,7 +2513,8 @@ struct uet_request_result {
 static int uet_accept_request(struct uib_qp *qp,
 			      const struct uib_uet_pds_req *request,
 			      size_t packet_len, uint8_t packet_type,
-			      uint8_t opcode, uint16_t msg_id, uint32_t psn,
+			      uint8_t opcode, uint8_t ses_flags,
+			      uint16_t msg_id, uint32_t psn,
 			      uint64_t receive_time_ns, int *duplicate,
 			      uint32_t *cack)
 {
@@ -2434,6 +2522,7 @@ static int uet_accept_request(struct uib_qp *qp,
 	const struct uib_uet_pds_cc_req *cc_request;
 	uint32_t credit_target;
 	uint32_t offset;
+	int stale;
 	int rc;
 
 	pthread_mutex_lock(&qp->lock);
@@ -2454,6 +2543,7 @@ static int uet_accept_request(struct uib_qp *qp,
 		uet->rx_initialized = 1;
 	}
 	uet_apply_request_clear(uet, request);
+	stale = uet_psn_before(psn, uet->rx_base_psn);
 	if (opcode == UIB_UET_SES_SEND && !uet->recv_active &&
 	    uet_psn_before(uet->rx_base_psn, psn)) {
 		offset = psn - uet->rx_base_psn;
@@ -2466,10 +2556,20 @@ static int uet_accept_request(struct uib_qp *qp,
 		pthread_mutex_unlock(&qp->lock);
 		return 1;
 	}
-	if (opcode == UIB_UET_SES_SEND && uet->recv_active &&
+	if (!stale && uet->recv_active &&
 	    uet->recv_msg_id != msg_id) {
 		uet_debug(qp, "defer request psn=%u msg=%u active_msg=%u",
 			  psn, msg_id, uet->recv_msg_id);
+		pthread_mutex_unlock(&qp->lock);
+		return 1;
+	}
+	if (!stale && opcode == UIB_UET_SES_WRITE &&
+	    ((!uet->write_active &&
+	      (!(ses_flags & UIB_UET_SES_FLAG_SOM) ||
+	       psn != uet->rx_base_psn)) ||
+	     (uet->write_active && uet->write_msg_id != msg_id))) {
+		uet_debug(qp, "defer write psn=%u msg=%u active_msg=%u", psn,
+			  msg_id, uet->write_msg_id);
 		pthread_mutex_unlock(&qp->lock);
 		return 1;
 	}
@@ -2524,6 +2624,7 @@ static int uet_execute_request(struct uib_qp *qp,
 	case UIB_UET_SES_WRITE:
 		rc = uet_handle_write(qp, ses, data, data_len,
 				      request_header == UIB_UET_NEXT_REQ_SMALL,
+				      psn, ntohs(request->spdcid),
 				      &result->response_code);
 		result->modified_len = ntohl(ses->request_len);
 		break;
@@ -2630,8 +2731,9 @@ static int uet_handle_request(struct uib_qp *qp,
 	psn = ntohl(request->psn);
 	msg_id = ntohs(ses.msg_id);
 	opcode = ses.opcode & UIB_UET_SES_OPCODE_MASK;
-	rc = uet_accept_request(qp, request, len, packet_type, opcode, msg_id,
-				psn, receive_time_ns, &duplicate, &cack);
+	rc = uet_accept_request(qp, request, len, packet_type, opcode,
+				ses.flags & UIB_UET_SES_FLAGS_MASK, msg_id, psn,
+				receive_time_ns, &duplicate, &cack);
 	if (rc)
 		return rc < 0 ? rc : 0;
 
@@ -3313,6 +3415,7 @@ static int uet_ses_opcode(const struct uib_send_wr *wr, uint8_t *opcode)
 		*opcode = UIB_UET_SES_SEND;
 		return 0;
 	case UIB_WR_RDMA_WRITE:
+	case UIB_WR_RDMA_WRITE_WITH_IMM:
 		*opcode = UIB_UET_SES_WRITE;
 		return 0;
 	case UIB_WR_RDMA_READ:
@@ -3450,7 +3553,8 @@ static int uet_prepare_post(struct uib_qp *qp, struct uib_send_wr *wr,
 		 context->chunk_max : 1);
 	if (context->packets > UIB_UET_PDC_MPR)
 		return -EMSGSIZE;
-	if (context->packets == 1 &&
+	if (wr->opcode != UIB_WR_RDMA_WRITE_WITH_IMM &&
+	    context->packets == 1 &&
 	    context->total_len <= UIB_UET_SES_LENGTH_MASK &&
 	    context->uet->optimized_mode != UIB_UET_OPTIMIZED_OFF) {
 		context->request_header =
@@ -3593,6 +3697,11 @@ static void uet_init_ses(struct uib_qp *qp, struct uib_send_wr *wr,
 	} else {
 		ses->buffer_offset = htobe64(wr->rdma.remote_addr);
 		ses->match_bits = htobe64(wr->rdma.rkey);
+		if (!packet_index &&
+		    wr->opcode == UIB_WR_RDMA_WRITE_WITH_IMM) {
+			ses->flags |= UIB_UET_SES_FLAG_HD;
+			ses->header_data = htobe64(wr->imm_data);
+		}
 	}
 	if (packet_index)
 		ses->header_data = uib_uet_ses_fragment_info(chunk, offset);

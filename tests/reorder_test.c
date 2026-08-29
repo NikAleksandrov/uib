@@ -11,6 +11,7 @@
 #define TEST_BUFFER_LENGTH 128
 #define TEST_PAYLOAD_LENGTH 8
 #define TEST_RECV_COUNT 8
+#define TEST_IMMEDIATE 0x12345678U
 
 struct test_endpoint {
 	struct uib_context *context;
@@ -70,7 +71,8 @@ static int endpoint_init(struct test_endpoint *endpoint, const char *protocol,
 			  UIB_QP_RQ_PSN | UIB_QP_PATH_MTU | UIB_QP_AV) < 0)
 		return -1;
 	endpoint->mr = uib_reg_mr(endpoint->pd, endpoint->buffer,
-				  sizeof(endpoint->buffer), UIB_ACCESS_LOCAL_WRITE);
+				  sizeof(endpoint->buffer), UIB_ACCESS_LOCAL_WRITE |
+				  UIB_ACCESS_REMOTE_WRITE);
 	return endpoint->mr ? 0 : -1;
 }
 
@@ -210,6 +212,150 @@ static int inject_uet(struct test_endpoint *endpoint, uint32_t psn,
 	if (!length)
 		return -1;
 	return uib_qp_handle_packet(endpoint->qp, &source, packet, length);
+}
+
+static size_t build_uet_write_packet(uint8_t *packet, size_t capacity,
+				     struct test_endpoint *endpoint,
+				     uint32_t psn, uint16_t message_id,
+				     uint8_t flags, uint32_t offset,
+				     uint32_t total, const uint8_t *payload)
+{
+	struct uib_uet_pds_req *request;
+	struct uib_uet_ses_req *session;
+	uint32_t immediate = htonl(TEST_IMMEDIATE);
+	size_t packet_length;
+
+	packet_length = sizeof(*request) + sizeof(*session) +
+		TEST_PAYLOAD_LENGTH;
+	if (packet_length > capacity)
+		return 0;
+	memset(packet, 0, packet_length);
+	request = (struct uib_uet_pds_req *)packet;
+	session = (struct uib_uet_ses_req *)(request + 1);
+	request->prologue.type_next_flags = uib_uet_prologue_pack(
+		UIB_UET_PDS_TYPE_RUD_REQ, UIB_UET_NEXT_REQ_STD, 0);
+	request->psn = htonl(psn);
+	request->spdcid = htons(7);
+	request->dpdcid = htons((uint16_t)endpoint->qp->qp_num);
+	session->opcode = UIB_UET_SES_WRITE;
+	session->flags = flags;
+	session->msg_id = htons(message_id);
+	session->pid_on_fep = htons((uint16_t)endpoint->qp->qp_num);
+	session->buffer_offset = htobe64((uintptr_t)endpoint->buffer);
+	session->match_bits = htobe64(endpoint->mr->rkey);
+	session->request_len = htonl(total);
+	if (flags & UIB_UET_SES_FLAG_HD)
+		session->header_data = htobe64(immediate);
+	else if (!(flags & UIB_UET_SES_FLAG_SOM))
+		session->header_data = uib_uet_ses_fragment_info(
+			TEST_PAYLOAD_LENGTH, offset);
+	memcpy(session + 1, payload, TEST_PAYLOAD_LENGTH);
+	return packet_length;
+}
+
+static int inject_uet_write(struct test_endpoint *endpoint, uint32_t psn,
+			    uint16_t message_id, uint8_t flags,
+			    uint32_t offset, uint32_t total,
+			    const uint8_t *payload)
+{
+	struct sockaddr_in source;
+	uint8_t packet[128];
+	size_t length;
+
+	memset(&source, 0, sizeof(source));
+	source.sin_family = AF_INET;
+	source.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	length = build_uet_write_packet(packet, sizeof(packet), endpoint, psn,
+					message_id, flags, offset, total, payload);
+	if (!length)
+		return -1;
+	return uib_qp_handle_packet(endpoint->qp, &source, packet, length);
+}
+
+static void run_uet_write_imm_reorder(void)
+{
+	static const uint8_t payloads[2][TEST_PAYLOAD_LENGTH] = {
+		{ 0xc1, 1, 2, 3, 4, 5, 6, 7 },
+		{ 0xc2, 1, 2, 3, 4, 5, 6, 7 },
+	};
+	struct test_endpoint endpoint;
+	struct uib_wc completion;
+	uint32_t total = sizeof(payloads);
+	uint32_t immediate = htonl(TEST_IMMEDIATE);
+
+	check("uet.write-imm.setup",
+	      !endpoint_init(&endpoint, "uet", 19704, 100));
+	if (!endpoint.context || !endpoint.mr)
+		goto out;
+	check("uet.write-imm.post", !post_receives(&endpoint, 1, total));
+	check("uet.write-imm.eom-first",
+	      !inject_uet_write(&endpoint, 101, 9, UIB_UET_SES_FLAG_EOM,
+				8, total, payloads[1]) &&
+	      completion_count(&endpoint) == 0);
+	check("uet.write-imm.future-som",
+	      !inject_uet_write(&endpoint, 102, 10,
+				UIB_UET_SES_FLAG_SOM | UIB_UET_SES_FLAG_EOM,
+				0, TEST_PAYLOAD_LENGTH, payloads[0]) &&
+	      completion_count(&endpoint) == 0);
+	check("uet.write-imm.som",
+	      !inject_uet_write(&endpoint, 100, 9,
+				UIB_UET_SES_FLAG_SOM | UIB_UET_SES_FLAG_HD,
+				0, total, payloads[0]) &&
+	      completion_count(&endpoint) == 0);
+	check("uet.write-imm.eom-retry",
+	      !inject_uet_write(&endpoint, 101, 9, UIB_UET_SES_FLAG_EOM,
+				8, total, payloads[1]));
+	memset(&completion, 0, sizeof(completion));
+	check("uet.write-imm.completion",
+	      uib_poll_cq(endpoint.cq, 1, &completion) == 1 &&
+	      completion.status == UIB_WC_SUCCESS &&
+	      completion.opcode == UIB_WC_RECV_RDMA_WITH_IMM &&
+	      completion.byte_len == total && completion.imm_data == immediate);
+	check("uet.write-imm.payload",
+	      !memcmp(endpoint.buffer, payloads, sizeof(payloads)));
+
+out:
+	endpoint_cleanup(&endpoint);
+}
+
+static void run_uet_write_imm_error_cleanup(void)
+{
+	static const uint8_t payload[TEST_PAYLOAD_LENGTH] = {
+		0xd1, 1, 2, 3, 4, 5, 6, 7,
+	};
+	struct test_endpoint endpoint;
+	struct uib_wc completions[2];
+	uint8_t flags;
+
+	check("uet.write-error.setup",
+	      !endpoint_init(&endpoint, "uet", 19705, 200));
+	if (!endpoint.context || !endpoint.mr)
+		goto out;
+	check("uet.write-error.post", !post_receives(&endpoint, 2,
+						     TEST_PAYLOAD_LENGTH));
+	flags = UIB_UET_SES_FLAG_SOM | UIB_UET_SES_FLAG_EOM |
+		UIB_UET_SES_FLAG_HD;
+	check("uet.write-error.inject",
+	      !inject_uet_write(&endpoint, 200, 20, flags, 0,
+				4, payload));
+	memset(completions, 0, sizeof(completions));
+	check("uet.write-error.completion",
+	      uib_poll_cq(endpoint.cq, 2, completions) == 1 &&
+	      completions[0].status == UIB_WC_LOC_LEN_ERR &&
+	      completions[0].opcode == UIB_WC_RECV);
+	check("uet.write-error.recovery",
+	      !inject_uet_write(&endpoint, 201, 21, flags, 0,
+				TEST_PAYLOAD_LENGTH, payload));
+	memset(completions, 0, sizeof(completions));
+	check("uet.write-error.recovered",
+	      uib_poll_cq(endpoint.cq, 2, completions) == 1 &&
+	      completions[0].status == UIB_WC_SUCCESS &&
+	      completions[0].opcode == UIB_WC_RECV_RDMA_WITH_IMM &&
+	      completions[0].byte_len == TEST_PAYLOAD_LENGTH &&
+	      !memcmp(endpoint.buffer, payload, sizeof(payload)));
+
+out:
+	endpoint_cleanup(&endpoint);
 }
 
 static void run_rocev2_ordering(void)
@@ -399,6 +545,8 @@ int main(void)
 	run_rocev2_wrap();
 	run_uet_ordering();
 	run_uet_wrap();
+	run_uet_write_imm_reorder();
+	run_uet_write_imm_error_cleanup();
 	printf("RESULT %s\n", failed ? "FAIL" : "PASS");
 	return failed ? 1 : 0;
 }
