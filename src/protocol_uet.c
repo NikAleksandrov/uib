@@ -30,7 +30,7 @@
 #include "utils.h"
 
 #define UIB_UET_OUT_INDEX_MIN 64U
-#define UIB_UET_OUT_POOL_CLASSES 3U
+#define UIB_UET_OUT_POOL_CLASSES 4U
 #define UIB_UET_OUT_POOL_LIMIT UIB_UET_PDC_MPR
 #define UIB_UET_ACK_INTERVAL 16U
 #define UIB_UET_PACKET_MAX UIB_RECV_BUF_LEN
@@ -184,6 +184,7 @@ static size_t uet_out_pool_capacity(uint8_t pool_class)
 	static const size_t capacities[UIB_UET_OUT_POOL_CLASSES] = {
 		256,
 		2048,
+		8192,
 		UIB_UET_PACKET_MAX,
 	};
 

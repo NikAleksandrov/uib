@@ -1550,6 +1550,22 @@ int ibv_destroy_ah(struct ibv_ah *ah)
 	return 0;
 }
 
+static uint32_t provider_path_mtu(struct uibv_qp_wrap *wrapper,
+				  enum ibv_mtu verbs_mtu)
+{
+	const char *wire_mtu;
+	uint32_t path_mtu;
+
+	path_mtu = mtu_to_bytes(verbs_mtu);
+	if (!wrapper->core->ctx->pops ||
+	    strcmp(wrapper->core->ctx->pops->name, "uet"))
+		return path_mtu;
+	wire_mtu = getenv(UIB_ENV_UET_WIRE_MTU);
+	if (path_mtu == 4096 && wire_mtu && !strcmp(wire_mtu, "8192"))
+		return 8192;
+	return path_mtu;
+}
+
 int ibv_modify_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr, int mask)
 {
 	struct uibv_qp_wrap *wrapper;
@@ -1579,7 +1595,7 @@ int ibv_modify_qp(struct ibv_qp *qp, struct ibv_qp_attr *attr, int mask)
 		core_mask |= UIB_QP_SQ_PSN;
 	}
 	if (mask & IBV_QP_PATH_MTU) {
-		core_attr.path_mtu = mtu_to_bytes(attr->path_mtu);
+		core_attr.path_mtu = provider_path_mtu(wrapper, attr->path_mtu);
 		core_mask |= UIB_QP_PATH_MTU;
 	}
 	if (mask & IBV_QP_QKEY) {

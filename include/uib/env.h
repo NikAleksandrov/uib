@@ -57,6 +57,20 @@
 #define UIB_ENV_ACTIVE_MTU "UIB_ACTIVE_MTU"
 
 /**
+ * DOC: UIB_UET_WIRE_MTU
+ * @uib-env: Transparent provider
+ * @default: The verbs-negotiated path MTU.
+ * @values: `4096` or `8192`
+ *
+ * Promote a negotiated 4096-byte UET path to an 8192-byte wire packet. Both
+ * peers must use UIB and the network interface MTU must be at least 8256.
+ *
+ * Example:
+ * UIB_PROTOCOL=uet UIB_UET_WIRE_MTU=8192 app
+ */
+#define UIB_ENV_UET_WIRE_MTU "UIB_UET_WIRE_MTU"
+
+/**
  * DOC: UIB_TRANSPORT_MODE
  * @uib-env: Library and transparent provider
  * @default: `udp-io-uring`

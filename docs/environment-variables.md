@@ -49,7 +49,8 @@ when the relevant context, transport, benchmark, or test is created.
 
 | Variable | Default | Accepted values | Description | Example |
 |---|---|---|---|---|
-| <code>UIB_ACTIVE_MTU</code> | `auto` | `auto`, `256`, `512`, `1024`, `2048`, or `4096` | Set the active verbs port MTU advertised to applications. Auto selects the largest verbs MTU with a 64-byte allowance below the interface MTU matched by <code>UIB_BIND_IP</code>. Unknown interfaces and invalid values use `4096`. | <code>UIB_ACTIVE_MTU=1024 LD_PRELOAD=$PWD/libuibv.so ibv_rc_pingpong</code> |
+| <code>UIB_ACTIVE_MTU</code> | `auto` | `auto`, `256`, `512`, `1024`, `2048`, or `4096` | Set the active verbs port MTU advertised to applications. Auto selects the largest verbs MTU with a 64-byte allowance below the interface MTU matched by UIB_BIND_IP. Unknown interfaces and invalid values use 4096. | <code>UIB_ACTIVE_MTU=1024 LD_PRELOAD=$PWD/libuibv.so ibv_rc_pingpong</code> |
+| <code>UIB_UET_WIRE_MTU</code> | The verbs-negotiated path MTU. | `4096` or `8192` | Promote a negotiated 4096-byte UET path to an 8192-byte wire packet. Both peers must use UIB and the network interface MTU must be at least 8256. | <code>UIB_PROTOCOL=uet UIB_UET_WIRE_MTU=8192 app</code> |
 
 ## UDP transports
 
