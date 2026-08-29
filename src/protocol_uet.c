@@ -3407,10 +3407,13 @@ struct uet_post_context {
 	uint32_t total_len;
 	uint32_t chunk_max;
 	uint32_t packets;
+	uint32_t first_psn;
+	uint32_t clear_psn;
 	uint16_t msg_id;
 	uint8_t ses_opcode;
 	uint8_t request_header;
 	uint8_t fetching_atomic;
+	uint8_t send_syn;
 	size_t pds_len;
 };
 
@@ -3587,6 +3590,17 @@ static int uet_prepare_post(struct uib_qp *qp, struct uib_send_wr *wr,
 		context->destination.sin_port = htons(UIB_UET_DEFAULT_PORT);
 	pthread_mutex_lock(&qp->lock);
 	context->msg_id = context->uet->next_msg_id++;
+	if (!context->uet->tx_initialized) {
+		context->uet->next_psn = qp->sq_psn;
+		context->uet->tx_clear_psn = qp->sq_psn - 1;
+		context->uet->tx_initialized = 1;
+	}
+	context->first_psn = context->uet->next_psn;
+	context->uet->next_psn += context->packets;
+	context->clear_psn = context->uet->tx_clear_psn;
+	context->send_syn = context->uet->state == UIB_UET_PDC_CLOSED;
+	if (context->send_syn)
+		context->uet->state = UIB_UET_PDC_SYN_SENT;
 	pthread_mutex_unlock(&qp->lock);
 	return 0;
 }
@@ -3718,35 +3732,26 @@ static void uet_init_ses(struct uib_qp *qp, struct uib_send_wr *wr,
 		ses->header_data = uib_uet_ses_fragment_info(chunk, offset);
 }
 
-static void uet_assign_request_identity(struct uib_qp *qp,
-					struct uet_post_context *context,
+static void uet_assign_request_identity(struct uet_post_context *context,
 					struct uib_uet_outstanding *out,
+					uint32_t packet_index,
 					uint8_t *flags,
 					uint16_t *clear_psn_offset)
 {
 	int32_t offset;
 
-	pthread_mutex_lock(&qp->lock);
-	if (!context->uet->tx_initialized) {
-		context->uet->next_psn = qp->sq_psn;
-		context->uet->tx_clear_psn = qp->sq_psn - 1;
-		context->uet->tx_initialized = 1;
-	}
-	if (context->uet->state == UIB_UET_PDC_CLOSED) {
+	if (context->send_syn && !packet_index)
 		*flags |= UIB_UET_REQ_FLAG_SYN;
-		context->uet->state = UIB_UET_PDC_SYN_SENT;
-	}
-	out->psn = context->uet->next_psn++;
+	out->psn = context->first_psn + packet_index;
 	out->msg_id = context->request_header == UIB_UET_NEXT_REQ_STD ?
 		context->msg_id : (uint16_t)out->psn;
 	out->request_header = context->request_header;
-	offset = (int32_t)(context->uet->tx_clear_psn - out->psn);
+	offset = (int32_t)(context->clear_psn - out->psn);
 	if (offset < INT16_MIN)
 		offset = INT16_MIN;
 	if (offset > 0)
 		offset = 0;
 	*clear_psn_offset = htons((uint16_t)(int16_t)offset);
-	pthread_mutex_unlock(&qp->lock);
 }
 
 static int uet_build_request(struct uib_qp *qp, struct uib_send_wr *wr,
@@ -3788,7 +3793,7 @@ static int uet_build_request(struct uib_qp *qp, struct uib_send_wr *wr,
 	request = (struct uib_uet_pds_req *)out->packet;
 	wire_header = out->packet + context->pds_len;
 	wire_data = (uint8_t *)wire_header + header_len;
-	uet_assign_request_identity(qp, context, out, &flags,
+	uet_assign_request_identity(context, out, packet_index, &flags,
 				    &clear_psn_offset);
 	request->prologue.type_next_flags = uib_uet_prologue_pack(
 		context->uet->rccc_enabled ? UIB_UET_PDS_TYPE_RUD_CC_REQ :
