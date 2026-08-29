@@ -57,10 +57,15 @@ IBVERBS_1.10 {
 		ibv_set_ece;
 } IBVERBS_1.8;
 
+IBVERBS_1.11 {
+	global:
+		_ibv_query_gid_ex;
+} IBVERBS_1.10;
+
 IBVERBS_1.12 {
 	global:
 		ibv_reg_dmabuf_mr;
-} IBVERBS_1.10;
+} IBVERBS_1.11;
 
 IBVERBS_1.15 {
 	global:

@@ -25,6 +25,7 @@ static const struct required_symbol required_symbols[] = {
 	{ "ibv_query_device", "IBVERBS_1.1" },
 	{ "ibv_query_port", "IBVERBS_1.1" },
 	{ "ibv_query_gid", "IBVERBS_1.1" },
+	{ "_ibv_query_gid_ex", "IBVERBS_1.11" },
 	{ "ibv_query_pkey", "IBVERBS_1.1" },
 	{ "ibv_query_qp", "IBVERBS_1.1" },
 	{ "ibv_alloc_pd", "IBVERBS_1.1" },
@@ -83,6 +84,8 @@ int main(void)
 	int (*get_async_event)(struct ibv_context *, struct ibv_async_event *);
 	int (*query_device)(struct ibv_context *, struct ibv_device_attr *);
 	int (*query_port)(struct ibv_context *, uint8_t, struct ibv_port_attr *);
+	int (*query_gid_ex)(struct ibv_context *, uint32_t, uint32_t,
+			    struct ibv_gid_entry *, uint32_t, size_t);
 	struct ibv_pd *(*alloc_pd)(struct ibv_context *);
 	int (*dealloc_pd)(struct ibv_pd *);
 	struct ibv_mr *(*reg_mr_ex)(struct ibv_pd *,
@@ -114,6 +117,7 @@ int main(void)
 	struct ibv_async_event event;
 	struct ibv_device_attr device_attr;
 	struct ibv_port_attr port_attr;
+	struct ibv_gid_entry gid_entry;
 	struct ibv_device **devices = NULL;
 	struct ibv_context *context = NULL;
 	struct ibv_pd *pd = NULL;
@@ -152,6 +156,8 @@ int main(void)
 				      "IBVERBS_1.1");
 	query_device = load_symbol(handle, "ibv_query_device", "IBVERBS_1.1");
 	query_port = load_symbol(handle, "ibv_query_port", "IBVERBS_1.1");
+	query_gid_ex = load_symbol(handle, "_ibv_query_gid_ex",
+			       "IBVERBS_1.11");
 	alloc_pd = load_symbol(handle, "ibv_alloc_pd", "IBVERBS_1.1");
 	dealloc_pd = load_symbol(handle, "ibv_dealloc_pd", "IBVERBS_1.1");
 	reg_mr_ex = load_symbol(handle, "ibv_reg_mr_ex", "IBVERBS_1.15");
@@ -227,6 +233,17 @@ int main(void)
 	if (query_port(context, 1, &port_attr) ||
 	    port_attr.active_mtu != IBV_MTU_4096) {
 		fprintf(stderr, "uib0 did not derive the loopback active MTU\n");
+		goto out;
+	}
+	memset(&gid_entry, 0, sizeof(gid_entry));
+	if (query_gid_ex(context, 1, 0, &gid_entry, 0,
+			 sizeof(gid_entry)) ||
+	    gid_entry.gid_index != 0 || gid_entry.port_num != 1 ||
+	    gid_entry.gid_type != IBV_GID_TYPE_ROCE_V2 ||
+	    !gid_entry.ndev_ifindex || gid_entry.gid.raw[10] != 0xff ||
+	    gid_entry.gid.raw[11] != 0xff || gid_entry.gid.raw[12] != 127 ||
+	    gid_entry.gid.raw[15] != 1) {
+		fprintf(stderr, "uib0 extended GID query returned invalid data\n");
 		goto out;
 	}
 	flags = fcntl(context->async_fd, F_GETFL);

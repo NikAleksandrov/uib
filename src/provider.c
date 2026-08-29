@@ -147,6 +147,10 @@ static int                 (*real_query_port)(struct ibv_context *, uint8_t,
 					       struct _compat_ibv_port_attr *);
 static int                 (*real_query_gid)(struct ibv_context *, uint8_t, int,
 					      union ibv_gid *);
+static int                 (*real_query_gid_ex)(struct ibv_context *, uint32_t,
+						 uint32_t,
+						 struct ibv_gid_entry *,
+						 uint32_t, size_t);
 static int                 (*real_query_pkey)(struct ibv_context *, uint8_t,
 					      int, __be16 *);
 static int                 (*real_query_ece)(struct ibv_qp *, struct ibv_ece *);
@@ -199,6 +203,7 @@ static void uibv_init(void)
 	real_query_device      = dlsym(RTLD_NEXT, "ibv_query_device");
 	real_query_port        = dlsym(RTLD_NEXT, "ibv_query_port");
 	real_query_gid         = dlsym(RTLD_NEXT, "ibv_query_gid");
+	real_query_gid_ex      = dlsym(RTLD_NEXT, "_ibv_query_gid_ex");
 	real_query_pkey        = dlsym(RTLD_NEXT, "ibv_query_pkey");
 	real_query_ece         = dlsym(RTLD_NEXT, "ibv_query_ece");
 	real_set_ece           = dlsym(RTLD_NEXT, "ibv_set_ece");
@@ -1752,6 +1757,29 @@ int ibv_query_port(struct ibv_context *ctx, uint8_t port,
 	return 0;
 }
 
+static uint32_t ipv4_ifindex(uint32_t ip)
+{
+	struct sockaddr_in *address;
+	struct ifaddrs *interfaces;
+	struct ifaddrs *interface;
+	uint32_t ifindex = 0;
+
+	if (getifaddrs(&interfaces))
+		return 0;
+	for (interface = interfaces; interface; interface = interface->ifa_next) {
+		if (!interface->ifa_addr ||
+		    interface->ifa_addr->sa_family != AF_INET)
+			continue;
+		address = (struct sockaddr_in *)interface->ifa_addr;
+		if (address->sin_addr.s_addr != ip)
+			continue;
+		ifindex = if_nametoindex(interface->ifa_name);
+		break;
+	}
+	freeifaddrs(interfaces);
+	return ifindex;
+}
+
 int ibv_query_gid(struct ibv_context *ctx, uint8_t port, int index,
 		  union ibv_gid *gid)
 {
@@ -1764,13 +1792,40 @@ int ibv_query_gid(struct ibv_context *ctx, uint8_t port, int index,
 		return EINVAL;
 	wrapper = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
 	ip = wrapper->core->local_addr.sin_addr.s_addr;
-
 	if (ip == htonl(INADDR_ANY))
 		return EADDRNOTAVAIL;
 	memset(gid, 0, sizeof(*gid));
 	gid->raw[10] = 0xff;
 	gid->raw[11] = 0xff;
 	memcpy(gid->raw + 12, &ip, 4);
+	return 0;
+}
+
+int _ibv_query_gid_ex(struct ibv_context *ctx, uint32_t port,
+		      uint32_t index, struct ibv_gid_entry *entry,
+		      uint32_t flags, size_t entry_size)
+{
+	struct uibv_ctx_wrap *wrapper;
+	uint32_t ip;
+	int rc;
+
+	if (!ctx_is_ours(ctx))
+		return real_query_gid_ex ?
+			real_query_gid_ex(ctx, port, index, entry, flags,
+					  entry_size) : ENOSYS;
+	if (!entry || port != 1 || index != 0 || flags ||
+	    entry_size < sizeof(*entry))
+		return EINVAL;
+	wrapper = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
+	ip = wrapper->core->local_addr.sin_addr.s_addr;
+	memset(entry, 0, sizeof(*entry));
+	rc = ibv_query_gid(ctx, (uint8_t)port, (int)index, &entry->gid);
+	if (rc)
+		return rc;
+	entry->gid_index = index;
+	entry->port_num = port;
+	entry->gid_type = IBV_GID_TYPE_ROCE_V2;
+	entry->ndev_ifindex = ipv4_ifindex(ip);
 	return 0;
 }
 
