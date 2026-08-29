@@ -218,8 +218,8 @@ void uib_dcqcn_on_cnp(struct uib_dcqcn *dcqcn, uint64_t now_ns)
 void uib_dcqcn_on_loss(struct uib_dcqcn *dcqcn, size_t bytes,
 		       uint64_t now_ns)
 {
+	(void)now_ns;
 	if (!dcqcn)
 		return;
 	dcqcn->inflight = bytes < dcqcn->inflight ? dcqcn->inflight - bytes : 0;
-	uib_dcqcn_on_cnp(dcqcn, now_ns);
 }

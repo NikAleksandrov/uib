@@ -2512,6 +2512,15 @@ Accepted values: udp\-io\-uring, udp\-sync, udp\-zc\-afxdp, or tcp\-devmem
 .br
 Example: \fBUIB_TRANSPORT_MODE=udp\-sync ./examples/direct_traffic rocev2\fP
 .TP
+.B UIB_RETRY_TIMEOUT_US
+Set the initial retransmission timeout used by reliable RoCEv2 and UET queue pairs. Increase it for high\-latency paths; decrease it for tightly controlled simulations where faster loss recovery is required.
+.br
+Default: 20000 microseconds
+.br
+Accepted values: 1000 through 60000000
+.br
+Example: \fBUIB_RETRY_TIMEOUT_US=50000 LD_PRELOAD=$PWD/libuibv.so app\fP
+.TP
 .B UIB_STATS_OUTPUT
 Emit one machine\-readable UIB_STATS JSON record when each context closes. Simulation collectors use stderr to verify the selected UIB backend and aggregate its packet and zero\-copy counters without application changes. Statistics are diagnostic evidence and do not change application results.
 .br

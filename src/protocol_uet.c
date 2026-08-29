@@ -84,6 +84,7 @@ struct uib_uet_outstanding {
 	uint16_t entropy;
 	uint8_t retries;
 	uint8_t sent;
+	uint8_t fast_retransmitted;
 	uint8_t indexed;
 	uint8_t pool_class;
 	uint32_t refs;
@@ -308,6 +309,7 @@ uet_alloc_outstanding(struct uib_uet_qp *uet, size_t packet_len)
 	out->entropy = 0;
 	out->retries = 0;
 	out->sent = 0;
+	out->fast_retransmitted = 0;
 	out->indexed = 0;
 	out->refs = 1;
 	return out;
@@ -766,7 +768,7 @@ static int uet_qp_init(struct uib_qp *qp)
 		uet->optimized_mode = UIB_UET_OPTIMIZED_MEDIUM;
 	uet->multipath.entropy_base = UIB_UET_DEFAULT_ENTROPY_BASE;
 	uet->multipath.path_count = UIB_UET_MAX_PATHS;
-	uet->multipath.ecn_hold_ns = UIB_UET_RTX_NS;
+	uet->multipath.ecn_hold_ns = qp->ctx->retry_timeout_ns;
 	uet->multipath.failure_hold_ns = UIB_UET_DEFAULT_FAILURE_HOLD_NS;
 	multipath = getenv(UIB_ENV_UET_MULTIPATH);
 	if (multipath && !strcmp(multipath, "oblivious"))
@@ -1413,7 +1415,8 @@ static int uet_send_credit_request_locked(struct uib_qp *qp,
 	if (rc < 0)
 		return rc;
 	uib_uet_rccc_mark_target_sent(rccc);
-	uet->credit_request_deadline_ns = now_ns + UIB_UET_RTX_NS;
+	uet->credit_request_deadline_ns = now_ns +
+					 qp->ctx->retry_timeout_ns;
 	uib_qp_retry_schedule(qp, uet->credit_request_deadline_ns);
 	return 0;
 }
@@ -1484,7 +1487,8 @@ static int uet_drain_locked(struct uib_qp *qp)
 		out = outstanding[i];
 		out->sent = 1;
 		uet->sent_count++;
-		out->deadline_ns = out->tx_time_ns + UIB_UET_RTX_NS;
+		out->deadline_ns = out->tx_time_ns +
+					      qp->ctx->retry_timeout_ns;
 		if (out->deadline_ns < deadline)
 			deadline = out->deadline_ns;
 		if (out->entropy) {
@@ -2429,6 +2433,7 @@ static int uet_accept_request(struct uib_qp *qp,
 	struct uib_uet_qp *uet = qp->protocol_private;
 	const struct uib_uet_pds_cc_req *cc_request;
 	uint32_t credit_target;
+	uint32_t offset;
 	int rc;
 
 	pthread_mutex_lock(&qp->lock);
@@ -2449,6 +2454,18 @@ static int uet_accept_request(struct uib_qp *qp,
 		uet->rx_initialized = 1;
 	}
 	uet_apply_request_clear(uet, request);
+	if (opcode == UIB_UET_SES_SEND && !uet->recv_active &&
+	    uet_psn_before(uet->rx_base_psn, psn)) {
+		offset = psn - uet->rx_base_psn;
+		if (offset >= UIB_UET_PDC_MPR) {
+			pthread_mutex_unlock(&qp->lock);
+			return -ERANGE;
+		}
+		uet_debug(qp, "defer request psn=%u msg=%u expected_psn=%u",
+			  psn, msg_id, uet->rx_base_psn);
+		pthread_mutex_unlock(&qp->lock);
+		return 1;
+	}
 	if (opcode == UIB_UET_SES_SEND && uet->recv_active &&
 	    uet->recv_msg_id != msg_id) {
 		uet_debug(qp, "defer request psn=%u msg=%u active_msg=%u",
@@ -3009,6 +3026,42 @@ static enum uib_wc_status uet_response_wc_status(uint8_t response_code)
 	}
 }
 
+static void uet_mark_retransmit(void *packet)
+{
+	struct uib_uet_prologue *prologue;
+	uint16_t value;
+
+	prologue = packet;
+	value = ntohs(prologue->type_next_flags);
+	value |= UIB_UET_REQ_FLAG_RETX;
+	prologue->type_next_flags = htons(value);
+}
+
+static void uet_fast_retransmit_gap_locked(struct uib_qp *qp,
+					   const struct uet_ack_view *view)
+{
+	struct uib_uet_qp *uet;
+	struct uib_uet_outstanding *out;
+	uint32_t expected_psn;
+
+	uet = qp->protocol_private;
+	expected_psn = view->cack + 1;
+	if (!uet_psn_before(expected_psn, view->ack_psn))
+		return;
+	out = uet_find_outstanding(uet, expected_psn, 0);
+	if (!out || !out->sent || out->fast_retransmitted ||
+	    out->retries >= UIB_UET_MAX_RETRIES)
+		return;
+	uet_mark_retransmit(out->packet);
+	uib_congestion_on_loss(&uet->congestion, out->nominal_len);
+	uet->sent_count--;
+	out->sent = 0;
+	out->fast_retransmitted = 1;
+	out->retries++;
+	out->deadline_ns = 0;
+	uet->tx_cursor = uet_first_unsent(uet);
+}
+
 static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
@@ -3048,6 +3101,7 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 		return out ? -EREMOTEIO : 0;
 	}
 	uet_complete_cumulative_locked(qp, view.cack);
+	uet_fast_retransmit_gap_locked(qp, &view);
 	out = uet_find_outstanding(uet, view.ack_psn, view.msg_id);
 	if (!out) {
 		rc = 0;
@@ -3736,20 +3790,12 @@ static int uet_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
 	return 0;
 }
 
-static void uet_mark_retransmit(void *packet)
-{
-	struct uib_uet_prologue *prologue = packet;
-	uint16_t value = ntohs(prologue->type_next_flags);
-
-	value |= UIB_UET_REQ_FLAG_RETX;
-	prologue->type_next_flags = htons(value);
-}
-
 static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
 	struct uib_uet_outstanding *out;
 	uint64_t next_deadline = UINT64_MAX;
+	int charge_retry;
 
 	pthread_mutex_lock(&qp->lock);
 	out = uet->out_head;
@@ -3762,7 +3808,8 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 			out = out->next;
 			continue;
 		}
-		if (out->retries >= UIB_UET_MAX_RETRIES) {
+		charge_retry = out == uet->out_head;
+		if (charge_retry && out->retries >= UIB_UET_MAX_RETRIES) {
 			struct uib_uet_wr_track *track = out->track;
 
 			uet_remove_track_locked(qp, track, UIB_WC_RETRY_EXC_ERR);
@@ -3771,7 +3818,7 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 		}
 		uet_mark_retransmit(out->packet);
 		uet_debug(qp, "retransmit psn=%u msg=%u attempt=%u", out->psn,
-			  out->msg_id, out->retries + 1);
+			  out->msg_id, out->retries + charge_retry);
 		uib_congestion_on_loss(&uet->congestion, out->nominal_len);
 		if (out->entropy) {
 			uet->paths[out->path_index].timeouts++;
@@ -3784,7 +3831,8 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 		}
 		uet->sent_count--;
 		out->sent = 0;
-		out->retries++;
+		if (charge_retry)
+			out->retries++;
 		out = out->next;
 	}
 	uet->tx_cursor = uet_first_unsent(uet);

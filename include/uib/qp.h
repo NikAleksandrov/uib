@@ -166,6 +166,8 @@ struct uib_qp {
 	uint32_t            dest_qp_num;
 	uint32_t            sq_psn;
 	uint32_t            rq_psn;
+	uint32_t            sequence_retry_psn;
+	uint8_t             sequence_retry_active;
 	uint32_t            qkey;
 	uint32_t            path_mtu;
 	struct sockaddr_in  remote_addr;
@@ -215,7 +217,6 @@ struct uib_qp {
 	pthread_mutex_t     lock;
 };
 
-#define UIB_RTO_NS         (200ULL * 1000 * 1000)
 #define UIB_MAX_RETRIES    7
 
 void uib_qp_retransmit_tick(struct uib_qp *qp, uint64_t now_ns);

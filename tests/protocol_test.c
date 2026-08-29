@@ -98,6 +98,7 @@ static int connect_qp(struct uib_qp *qp, struct uib_qp *peer,
 int main(void)
 {
 	struct uib_context *a = NULL, *b = NULL;
+	struct uib_context *config_context = NULL;
 	struct uib_pd *apd = NULL, *bpd = NULL;
 	struct uib_cq *acq = NULL, *bcq = NULL;
 	struct uib_qp *aqp = NULL, *bqp = NULL;
@@ -142,10 +143,28 @@ int main(void)
 	      !uib_open_device_protocol("127.0.0.1", 18518, "missing") &&
 	      errno == EPROTONOSUPPORT);
 
+	setenv(UIB_ENV_RETRY_TIMEOUT_US, "invalid", 1);
+	errno = 0;
+	config_context = uib_open_device_protocol("127.0.0.1", 18519,
+						  "dummy");
+	check("retry-timeout.invalid", !config_context && errno == EINVAL);
+	setenv(UIB_ENV_RETRY_TIMEOUT_US, "1000", 1);
+	config_context = uib_open_device_protocol("127.0.0.1", 18519,
+						  "dummy");
+	check("retry-timeout.minimum", config_context &&
+	      config_context->retry_timeout_ns == 1000000ULL);
+	if (config_context)
+		uib_close_device(config_context);
+	config_context = NULL;
+	unsetenv(UIB_ENV_RETRY_TIMEOUT_US);
+
 	a = uib_open_device_protocol("127.0.0.1", 18516, "dummy");
 	b = uib_open_device_protocol("127.0.0.1", 18517, "dummy");
 	check("dummy.open", a && b && a->pops == &uib_dummy_protocol_ops &&
 	      b->pops == &uib_dummy_protocol_ops);
+	check("retry-timeout.default", a && b &&
+	      a->retry_timeout_ns == 20000000ULL &&
+	      b->retry_timeout_ns == 20000000ULL);
 	if (!a || !b)
 		goto out;
 	check("loan.capabilities",

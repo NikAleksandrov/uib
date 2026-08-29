@@ -115,7 +115,8 @@ static void test_dcqcn(void)
 	      dcqcn.current_rate > initial_rate / 2 &&
 	      dcqcn.current_rate <= config.maximum_rate);
 	uib_dcqcn_on_loss(&dcqcn, 1000, 7200);
-	check("dcqcn.loss-feedback", dcqcn.cnp_events == 2);
+	check("dcqcn.loss-accounting",
+	      dcqcn.inflight == 0 && dcqcn.cnp_events == 1);
 }
 
 static void test_rccc(void)

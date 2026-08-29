@@ -57,6 +57,21 @@
 #define UIB_ENV_TRANSPORT_MODE "UIB_TRANSPORT_MODE"
 
 /**
+ * DOC: UIB_RETRY_TIMEOUT_US
+ * @uib-env: Library and transparent provider
+ * @default: `20000` microseconds
+ * @values: `1000` through `60000000`
+ *
+ * Set the initial retransmission timeout used by reliable RoCEv2 and UET
+ * queue pairs. Increase it for high-latency paths; decrease it for tightly
+ * controlled simulations where faster loss recovery is required.
+ *
+ * Example:
+ * UIB_RETRY_TIMEOUT_US=50000 LD_PRELOAD=$PWD/libuibv.so app
+ */
+#define UIB_ENV_RETRY_TIMEOUT_US "UIB_RETRY_TIMEOUT_US"
+
+/**
  * DOC: UIB_STATS_OUTPUT
  * @uib-env: Library and transparent provider
  * @default: `off`

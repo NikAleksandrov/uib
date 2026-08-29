@@ -1062,7 +1062,7 @@ static int rocev2_drain_locked(struct uib_qp *qp)
 				&qp->congestion);
 
 			if (!next)
-				next = transmit_time + UIB_RTO_NS;
+				next = transmit_time + qp->ctx->retry_timeout_ns;
 			else if (next <= transmit_time)
 				next = transmit_time + 1;
 			uib_qp_retry_schedule(qp, next);
@@ -1076,11 +1076,13 @@ static int rocev2_drain_locked(struct uib_qp *qp)
 			outstanding[i]->sent = 0;
 			outstanding[i]->congestion_inflight = 0;
 		}
-		uib_qp_retry_schedule(qp, transmit_time + UIB_RTO_NS);
+		uib_qp_retry_schedule(qp, transmit_time +
+				      qp->ctx->retry_timeout_ns);
 		return rc;
 	}
 	for (i = 0; i < count; i++) {
-		outstanding[i]->deadline_ns = transmit_time + UIB_RTO_NS;
+		outstanding[i]->deadline_ns = transmit_time +
+					      qp->ctx->retry_timeout_ns;
 		if (!qp->retry_scheduled ||
 		    outstanding[i]->deadline_ns < qp->retry_deadline_ns)
 			uib_qp_retry_schedule(qp,
@@ -1990,6 +1992,9 @@ static void ack_outstanding(struct uib_qp *qp, uint32_t ack_psn)
 			(uint32_t)acknowledged;
 		uib_congestion_on_ack(&qp->congestion, &event);
 	}
+	if (qp->sequence_retry_active &&
+	    psn_cmp(ack_psn, qp->sequence_retry_psn) >= 0)
+		qp->sequence_retry_active = 0;
 	qp->last_acked_psn = ack_psn;
 	outstanding_retry_reschedule(qp);
 	rocev2_drain_locked(qp);
@@ -2779,6 +2784,60 @@ static int rocev2_handle_read_response(struct rocev2_rx_packet *rx)
 	return rc;
 }
 
+static int rocev2_prepare_retry_list_locked(struct uib_qp *qp,
+					    struct uib_outstanding *head,
+					    uint32_t expected_psn)
+{
+	struct uib_outstanding *out;
+
+	for (out = head; out; out = out->next) {
+		if (!out->sent || psn_cmp(out->psn, expected_psn) < 0)
+			continue;
+		if (!psn_cmp(out->psn, expected_psn) &&
+		    out->retries >= UIB_MAX_RETRIES)
+			return -ETIMEDOUT;
+		if (out->congestion_inflight) {
+			uib_congestion_on_loss(&qp->congestion,
+					       out->nominal_len);
+			out->congestion_inflight = 0;
+		}
+		rocev2_request_ack(out);
+		out->sent = 0;
+		if (!psn_cmp(out->psn, expected_psn))
+			out->retries++;
+		out->deadline_ns = 0;
+	}
+	return 0;
+}
+
+static void rocev2_handle_sequence_nak(struct uib_qp *qp,
+				       uint32_t expected_psn)
+{
+	int rc;
+
+	pthread_mutex_lock(&qp->lock);
+	if (qp->sequence_retry_active &&
+	    psn_cmp(expected_psn, qp->sequence_retry_psn) <= 0) {
+		pthread_mutex_unlock(&qp->lock);
+		return;
+	}
+	qp->sequence_retry_psn = expected_psn;
+	qp->sequence_retry_active = 1;
+	rc = rocev2_prepare_retry_list_locked(qp, qp->out_head, expected_psn);
+	if (!rc)
+		rc = rocev2_prepare_retry_list_locked(qp, qp->read_head,
+						       expected_psn);
+	if (rc < 0)
+		qp->state = UIB_QPS_ERR;
+	else {
+		uib_qp_retry_cancel(qp);
+		rocev2_drain_locked(qp);
+	}
+	pthread_mutex_unlock(&qp->lock);
+	if (rc < 0)
+		fail_outstanding(qp, UIB_WC_RETRY_EXC_ERR);
+}
+
 static int rocev2_handle_acknowledgement(struct rocev2_rx_packet *rx)
 {
 	const struct uib_aeth *aeth;
@@ -2793,7 +2852,9 @@ static int rocev2_handle_acknowledgement(struct rocev2_rx_packet *rx)
 		ack_outstanding(rx->qp, rx->psn);
 	} else if ((syndrome & UIB_AETH_CODE_MASK) == UIB_AETH_RNR_CODE) {
 		return 0;
-	} else if (syndrome != UIB_AETH_NAK_PSN_SEQ) {
+	} else if (syndrome == UIB_AETH_NAK_PSN_SEQ) {
+		rocev2_handle_sequence_nak(rx->qp, rx->psn);
+	} else {
 		pthread_mutex_lock(&rx->qp->lock);
 		rx->qp->state = UIB_QPS_ERR;
 		pthread_mutex_unlock(&rx->qp->lock);
@@ -2938,7 +2999,7 @@ static void rocev2_retransmit_list(struct uib_qp *qp,
 			}
 			if (!uib_congestion_can_send(&qp->congestion,
 						     out->nominal_len)) {
-				out->deadline_ns = now + UIB_RTO_NS;
+				out->deadline_ns = now + qp->ctx->retry_timeout_ns;
 				if (out->deadline_ns < *next_deadline)
 					*next_deadline = out->deadline_ns;
 				continue;
@@ -2951,13 +3012,13 @@ static void rocev2_retransmit_list(struct uib_qp *qp,
 				uib_congestion_on_loss(&qp->congestion,
 						       out->nominal_len);
 				out->congestion_inflight = 0;
-				out->deadline_ns = now + UIB_RTO_NS;
+				out->deadline_ns = now + qp->ctx->retry_timeout_ns;
 				if (out->deadline_ns < *next_deadline)
 					*next_deadline = out->deadline_ns;
 				continue;
 			}
 			out->retries++;
-			out->deadline_ns = now + UIB_RTO_NS;
+			out->deadline_ns = now + qp->ctx->retry_timeout_ns;
 		}
 		if (out->deadline_ns < *next_deadline)
 			*next_deadline = out->deadline_ns;

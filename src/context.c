@@ -15,6 +15,31 @@
 #include "uib/protocol.h"
 #include "observability.h"
 
+#define UIB_RETRY_TIMEOUT_DEFAULT_US 20000ULL
+#define UIB_RETRY_TIMEOUT_MIN_US      1000ULL
+#define UIB_RETRY_TIMEOUT_MAX_US  60000000ULL
+
+static int retry_timeout_init(struct uib_context *ctx)
+{
+	const char *setting;
+	unsigned long long timeout_us;
+	char *end;
+
+	setting = getenv(UIB_ENV_RETRY_TIMEOUT_US);
+	if (!setting) {
+		ctx->retry_timeout_ns = UIB_RETRY_TIMEOUT_DEFAULT_US * 1000ULL;
+		return 0;
+	}
+	errno = 0;
+	timeout_us = strtoull(setting, &end, 10);
+	if (errno || end == setting || *end ||
+	    timeout_us < UIB_RETRY_TIMEOUT_MIN_US ||
+	    timeout_us > UIB_RETRY_TIMEOUT_MAX_US)
+		return -EINVAL;
+	ctx->retry_timeout_ns = timeout_us * 1000ULL;
+	return 0;
+}
+
 /**
  * uib_open_device - Open a context using the environment-selected protocol.
  * @bind_ip: Local IPv4 address in presentation format
@@ -56,6 +81,11 @@ struct uib_context *uib_open_device_protocol(const char *bind_ip,
 		return NULL;
 	}
 	ctx->mode = uib_transport_mode_from_env();
+	rc = retry_timeout_init(ctx);
+	if (rc < 0) {
+		errno = -rc;
+		goto err_context;
+	}
 	uib_zerocopy_init(ctx);
 	ctx->bind_port = bind_port ? bind_port : ctx->pops->default_port;
 	if (bind_ip && *bind_ip)
@@ -93,6 +123,7 @@ err_table:
 	free(ctx->qp_table);
 	pthread_mutex_destroy(&ctx->qp_lock);
 	pthread_mutex_destroy(&ctx->zerocopy_lock);
+err_context:
 	free(ctx);
 	return NULL;
 }

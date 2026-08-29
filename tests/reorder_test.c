@@ -328,6 +328,15 @@ static void run_uet_ordering(void)
 	check("uet.delayed-hole-close", !inject_uet(&endpoint, 101, 1, 0,
 						     TEST_PAYLOAD_LENGTH,
 						     total, payloads[1]) &&
+	      completion_count(&endpoint) == 0);
+	check("uet.retry-deferred-third", !inject_uet(&endpoint, 102, 1, 0,
+						      2 * TEST_PAYLOAD_LENGTH,
+						      total, payloads[2]) &&
+	      completion_count(&endpoint) == 0);
+	check("uet.retry-deferred-eom", !inject_uet(&endpoint, 103, 1,
+						    UIB_UET_SES_FLAG_EOM,
+						    3 * TEST_PAYLOAD_LENGTH,
+						    total, payloads[3]) &&
 	      completion_count(&endpoint) == 1);
 	check("uet.reordered-payload",
 	      !memcmp(endpoint.buffer, payloads, sizeof(payloads)));
@@ -366,6 +375,15 @@ static void run_uet_wrap(void)
 	check("uet.wrap.base", !inject_uet(&endpoint, UINT32_MAX - 1, 2,
 					   UIB_UET_SES_FLAG_SOM, 0, total,
 					   payloads[0]) &&
+	      completion_count(&endpoint) == 0);
+	check("uet.wrap.maximum-retry", !inject_uet(&endpoint, UINT32_MAX, 2,
+						    0, TEST_PAYLOAD_LENGTH,
+						    total, payloads[1]) &&
+	      completion_count(&endpoint) == 0);
+	check("uet.wrap.zero-retry", !inject_uet(&endpoint, 0, 2,
+						 UIB_UET_SES_FLAG_EOM,
+						 2 * TEST_PAYLOAD_LENGTH,
+						 total, payloads[2]) &&
 	      completion_count(&endpoint) == 1);
 	check("uet.wrap.data",
 	      !memcmp(endpoint.buffer, payloads, sizeof(payloads)));

@@ -32,6 +32,7 @@ struct uib_context {
 	uint32_t            qp_next_id;
 	uint32_t            qp_free_count;
 	uint32_t            retry_heap_size;
+	uint64_t            retry_timeout_ns;
 	struct uib_zerocopy_stats zerocopy;
 };
 
