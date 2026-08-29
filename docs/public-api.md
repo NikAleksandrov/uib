@@ -2131,6 +2131,28 @@ Return value:
 
 0 on success or a negative error code on failure.
 
+### [`uib_transport_send_iov_ref_batch`](../include/uib/transport.h)
+
+```c
+int uib_transport_send_iov_ref_batch(struct uib_context *ctx,
+				     const struct uib_transport_iov_ref *refs,
+				     size_t count);
+```
+
+Description:
+
+Send retained scatter/gather packets.
+
+Parameters:
+
+- `ctx` — UIB device context
+- `refs` — Array of scatter/gather send requests
+- `count` — Number of array entries
+
+Return value:
+
+0 on success or a negative error code on failure.
+
 ### [`uib_transport_get_stats`](../include/uib/transport.h)
 
 ```c

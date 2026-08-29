@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <netinet/in.h>
+#include <sys/uio.h>
 
 struct uib_context;
 struct uib_mr;
@@ -18,6 +19,16 @@ struct uib_transport_ref {
 	uib_transport_release_fn  release;
 	void                     *opaque;
 	size_t                    len;
+	uint16_t                  entropy;
+};
+
+struct uib_transport_iov_ref {
+	const struct sockaddr_in *dst;
+	const struct iovec       *iov;
+	uib_transport_release_fn  release;
+	void                     *opaque;
+	size_t                    len;
+	size_t                    iov_count;
 	uint16_t                  entropy;
 };
 
@@ -51,6 +62,9 @@ struct uib_transport_ops {
 	int  (*send_ref_batch)(struct uib_context *ctx,
 			       const struct uib_transport_ref *refs,
 			       size_t count);
+	int  (*send_iov_ref_batch)(struct uib_context *ctx,
+				   const struct uib_transport_iov_ref *refs,
+				   size_t count);
 	int  (*mr_register)(struct uib_context *ctx, struct uib_mr *mr);
 	void (*mr_deregister)(struct uib_context *ctx, struct uib_mr *mr);
 	int  (*get_stats)(struct uib_context *ctx,

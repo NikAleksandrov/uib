@@ -2000,6 +2000,19 @@ Parameter \fBcount\fP: Number of array entries
 .br
 Return value: 0 on success or a negative error code on failure.
 .TP
+.B uib_transport_send_iov_ref_batch
+int uib_transport_send_iov_ref_batch(struct uib_context *ctx, const struct uib_transport_iov_ref *refs, size_t count);
+.br
+Send retained scatter/gather packets.
+.br
+Parameter \fBctx\fP: UIB device context
+.br
+Parameter \fBrefs\fP: Array of scatter/gather send requests
+.br
+Parameter \fBcount\fP: Number of array entries
+.br
+Return value: 0 on success or a negative error code on failure.
+.TP
 .B uib_transport_get_stats
 int uib_transport_get_stats(struct uib_context *ctx, struct uib_transport_stats *stats);
 .br

@@ -278,6 +278,78 @@ out:
 	free(allocation);
 }
 
+static void run_iov_batch(uint16_t sender_port, uint16_t receiver_port,
+			  int check_gso)
+{
+	struct uib_transport_iov_ref refs[TEST_GSO_PACKETS];
+	struct uib_transport_stats rx_stats;
+	struct uib_transport_stats tx_stats;
+	struct uib_context *receiver;
+	struct uib_context *sender;
+	struct sockaddr_in destination;
+	struct iovec vectors[TEST_GSO_PACKETS][2];
+	uint8_t packets[TEST_GSO_PACKETS][TEST_PACKET_LENGTH];
+	uint8_t warmup[TEST_PACKET_LENGTH];
+	unsigned int i;
+	int rc;
+
+	setenv("UIB_UDP_GSO", "auto", 1);
+	setenv("UIB_ZEROCOPY", "off", 1);
+	sender = uib_open_device_protocol("127.0.0.1", sender_port, "dummy");
+	receiver = uib_open_device_protocol("127.0.0.1", receiver_port,
+					    "dummy");
+	check("iov.contexts", sender && receiver);
+	if (!sender || !receiver)
+		goto out;
+	destination = receiver->local_addr;
+	memset(warmup, 0xa5, sizeof(warmup));
+	rc = uib_transport_send(sender, &destination, warmup, sizeof(warmup));
+	check("iov.warmup", !rc);
+	memset(&tx_stats, 0, sizeof(tx_stats));
+	memset(&rx_stats, 0, sizeof(rx_stats));
+	rc = wait_for_traffic(sender, receiver, &tx_stats, &rx_stats, 1);
+	check("iov.warmup_completion", !rc);
+	released = 0;
+	for (i = 0; i < TEST_GSO_PACKETS; i++) {
+		memset(packets[i], (int)i, sizeof(packets[i]));
+		vectors[i][0].iov_base = packets[i];
+		vectors[i][0].iov_len = 37;
+		vectors[i][1].iov_base = packets[i] + 37;
+		vectors[i][1].iov_len = sizeof(packets[i]) - 37;
+		refs[i].dst = &destination;
+		refs[i].iov = vectors[i];
+		refs[i].release = release_packet;
+		refs[i].opaque = &released;
+		refs[i].len = sizeof(packets[i]);
+		refs[i].iov_count = 2;
+		refs[i].entropy = 0;
+	}
+	rc = uib_transport_send_iov_ref_batch(sender, refs,
+					       TEST_GSO_PACKETS);
+	check("iov.enqueue_batch", !rc);
+	memset(&tx_stats, 0, sizeof(tx_stats));
+	memset(&rx_stats, 0, sizeof(rx_stats));
+	rc = wait_for_traffic(sender, receiver, &tx_stats, &rx_stats,
+			      TEST_GSO_PACKETS + 1);
+	check("iov.async_completion", !rc);
+	check("iov.release_callbacks", released == TEST_GSO_PACKETS);
+	check("iov.packet_counters",
+	      tx_stats.tx_completed == TEST_GSO_PACKETS + 1 &&
+	      rx_stats.rx_packets == TEST_GSO_PACKETS + 1);
+	if (check_gso && tx_stats.gso_enabled) {
+		check("iov.gso_counters", tx_stats.tx_gso_batches > 0 &&
+		      tx_stats.tx_gso_packets == TEST_GSO_PACKETS);
+	} else {
+		printf("%-32s %s\n", "iov.gso_counters", "SKIP");
+	}
+
+out:
+	if (sender)
+		uib_close_device(sender);
+	if (receiver)
+		uib_close_device(receiver);
+}
+
 static void run_shutdown_drain(void)
 {
 	struct uib_transport_stats stats;
@@ -337,6 +409,10 @@ int main(void)
 	setenv("UIB_URING_SQPOLL", "off", 1);
 	run_gso_batch(19614, 19615, 0);
 	run_gso_batch(19616, 19617, 1);
+	run_iov_batch(19618, 19619, 1);
+	setenv("UIB_TRANSPORT_MODE", "udp-sync", 1);
+	run_iov_batch(19620, 19621, 0);
+	setenv("UIB_TRANSPORT_MODE", "udp-io-uring", 1);
 	run_shutdown_drain();
 	run_invalid_batch();
 	printf("RESULT %s\n", failed ? "FAIL" : "PASS");

@@ -329,6 +329,80 @@ int uib_transport_send_ref_batch(struct uib_context *ctx,
 	return 0;
 }
 
+static int transport_send_iov_ref(struct uib_context *ctx,
+				  const struct uib_transport_iov_ref *ref)
+{
+	uint8_t *buffer;
+	size_t length;
+	size_t offset;
+	size_t i;
+	int rc;
+
+	if (!ref->iov_count || !ref->iov || !ref->release)
+		return -EINVAL;
+	buffer = malloc(ref->len ? ref->len : 1);
+	if (!buffer)
+		return -ENOMEM;
+	offset = 0;
+	for (i = 0; i < ref->iov_count; i++) {
+		length = ref->iov[i].iov_len;
+		if (length > ref->len - offset) {
+			rc = -EINVAL;
+			goto out;
+		}
+		memcpy(buffer + offset, ref->iov[i].iov_base, length);
+		offset += length;
+	}
+	if (offset != ref->len) {
+		rc = -EINVAL;
+		goto out;
+	}
+	if (ref->entropy)
+		rc = uib_transport_send_entropy(ctx, ref->dst, buffer,
+						ref->len, ref->entropy);
+	else
+		rc = ctx->tops->send(ctx, ref->dst, buffer, ref->len);
+out:
+	free(buffer);
+	return rc;
+}
+
+/**
+ * uib_transport_send_iov_ref_batch - Send retained scatter/gather packets.
+ * @ctx: UIB device context
+ * @refs: Array of scatter/gather send requests
+ * @count: Number of array entries
+ * @uib-api: Packet transports
+ *
+ * The transport retains every referenced byte range until it invokes the
+ * request's release callback. Backends without scatter/gather support use a
+ * contiguous copy of each packet.
+ *
+ * Return: 0 on success or a negative error code on failure.
+ */
+int uib_transport_send_iov_ref_batch(struct uib_context *ctx,
+				     const struct uib_transport_iov_ref *refs,
+				     size_t count)
+{
+	size_t i;
+	int rc;
+
+	if (!count)
+		return 0;
+	if (ctx->tops->send_iov_ref_batch)
+		return ctx->tops->send_iov_ref_batch(ctx, refs, count);
+	for (i = 0; i < count; i++) {
+		rc = transport_send_iov_ref(ctx, &refs[i]);
+		refs[i].release(refs[i].opaque);
+		if (rc < 0) {
+			for (i++; i < count; i++)
+				refs[i].release(refs[i].opaque);
+			return rc;
+		}
+	}
+	return 0;
+}
+
 /**
  * uib_transport_get_stats - Read transport, batching, and packet counters.
  * @ctx: UIB device context

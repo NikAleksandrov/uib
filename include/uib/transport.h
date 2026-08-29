@@ -57,6 +57,9 @@ int uib_transport_send_ref(struct uib_context *ctx,
 int uib_transport_send_ref_batch(struct uib_context *ctx,
 				 const struct uib_transport_ref *refs,
 				 size_t count);
+int uib_transport_send_iov_ref_batch(struct uib_context *ctx,
+				     const struct uib_transport_iov_ref *refs,
+				     size_t count);
 int uib_transport_get_stats(struct uib_context *ctx,
 			    struct uib_transport_stats *stats);
 

@@ -137,6 +137,7 @@ UIB_0.1 {
 		uib_transport_retransmit_walk;
 		uib_transport_send;
 		uib_transport_send_entropy;
+		uib_transport_send_iov_ref_batch;
 		uib_transport_send_ref;
 		uib_transport_send_ref_batch;
 		uib_udp_ops;
