@@ -895,6 +895,9 @@ scaling-benchmark: examples $(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) \
 	UIB_TRANSPORT_MODE=udp-sync ./examples/stress_bench --protocol uet \
 		--iterations $${UIB_SCALE_TRAFFIC_ITERS:-30000} --size 1024 --window 128
 
+context-scaling-benchmark: examples
+	./examples/context_scaling_benchmark.sh
+
 scaling-test: examples $(QP_SCALE_TEST) $(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) \
 		$(SCALING_PROVIDER_BENCH) $(SCALING_PROVIDER_WR_BENCH)
 	./$(QP_SCALE_TEST)
@@ -1141,7 +1144,7 @@ clean:
 	zerocopy-e2e-test \
 	benchmark-all benchmark-local benchmark-congestion benchmark-report benchmark-doc \
 	benchmark-smoke ib-write-bw-test dummy-reorder-test \
-	scaling-benchmark scaling-test \
+	scaling-benchmark context-scaling-benchmark scaling-test \
 	provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test \
 	nccl-test rccl-test ucx-libfabric-test mpi-compat-test \
 	gpu-dmabuf-test external-dmabuf-test remote-benchmark-test \

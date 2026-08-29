@@ -180,6 +180,19 @@ and atomic traffic through UIB. Its versioned source builds run in CI with:
     make upstream-compat-test \
     UIB_RDMA_CORE_VERSION=64.0 UIB_LIBFABRIC_VERSION=2.6.0
 
+Independent-context scaling uses the existing verified stress workload and
+records per-lane and aggregate bandwidth plus client/server CPU time:
+
+    UIB_CONTEXT_SCALE_LANES="1 2 4 8" \
+    UIB_BENCH_PROTOCOL=uet make context-scaling-benchmark
+
+The harness inherits the normal benchmark, transport, and congestion-control
+variables. It uses one UDP receive worker per process unless
+`UIB_UDP_WORKERS` is set, which avoids multiplying an automatic CPU-count
+worker pool across every benchmark process. The result directory retains the
+exact commit, kernel, CPU set, inherited UIB variables, per-lane logs, summed
+steady-state lane rate and whole-trial wall-clock rate.
+
 Fedora 44 and Alpine 3.24 are the current stable release lines represented by
 the explicit image tags. Update the matrix and dependency installer together
 when a newer stable line is adopted; explicit tags keep old results

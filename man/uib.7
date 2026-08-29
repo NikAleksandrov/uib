@@ -3382,6 +3382,42 @@ Accepted values: A positive integer.
 .br
 Example: \fBUIB_SCALE_TRAFFIC_ITERS=100000 make scaling\-benchmark\fP
 .TP
+.B UIB_CONTEXT_SCALE_LANES
+Select independent context/QP lane counts for the context\-scaling benchmark. Each lane uses a distinct UDP port pair.
+.br
+Default: 1 2 4 8
+.br
+Accepted values: Space\-separated positive integers from 1 through 32.
+.br
+Example: \fBUIB_CONTEXT_SCALE_LANES="1 4 8" make context\-scaling\-benchmark\fP
+.TP
+.B UIB_CONTEXT_SCALE_TRIALS
+Set the number of measurements for every context/QP lane count.
+.br
+Default: 3
+.br
+Accepted values: A positive integer.
+.br
+Example: \fBUIB_CONTEXT_SCALE_TRIALS=5 make context\-scaling\-benchmark\fP
+.TP
+.B UIB_CONTEXT_SCALE_PORT_BASE
+Set the first loopback control port. Data ports begin 64 ports later. Change this value when another local service uses the default range.
+.br
+Default: 22400
+.br
+Accepted values: A positive port number no greater than 65400.
+.br
+Example: \fBUIB_CONTEXT_SCALE_PORT_BASE=24000 make context\-scaling\-benchmark\fP
+.TP
+.B UIB_CONTEXT_SCALE_TIMEOUT
+Set the timeout for each server or client process in a scaling trial.
+.br
+Default: 120
+.br
+Accepted values: A positive number of seconds.
+.br
+Example: \fBUIB_CONTEXT_SCALE_TIMEOUT=300 make context\-scaling\-benchmark\fP
+.TP
 .B UIB_MR_SCALE_LOOKUPS
 Set lookups in the registered\-memory scaling benchmark.
 .br

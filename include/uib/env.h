@@ -1244,6 +1244,60 @@
 #define UIB_ENV_SCALE_TRAFFIC_ITERS "UIB_SCALE_TRAFFIC_ITERS"
 
 /**
+ * DOC: UIB_CONTEXT_SCALE_LANES
+ * @uib-env: Test and scaling harnesses
+ * @default: `1 2 4 8`
+ * @values: Space-separated positive integers from `1` through `32`.
+ *
+ * Select independent context/QP lane counts for the context-scaling benchmark.
+ * Each lane uses a distinct UDP port pair.
+ *
+ * Example:
+ * UIB_CONTEXT_SCALE_LANES="1 4 8" make context-scaling-benchmark
+ */
+#define UIB_ENV_CONTEXT_SCALE_LANES "UIB_CONTEXT_SCALE_LANES"
+
+/**
+ * DOC: UIB_CONTEXT_SCALE_TRIALS
+ * @uib-env: Test and scaling harnesses
+ * @default: `3`
+ * @values: A positive integer.
+ *
+ * Set the number of measurements for every context/QP lane count.
+ *
+ * Example:
+ * UIB_CONTEXT_SCALE_TRIALS=5 make context-scaling-benchmark
+ */
+#define UIB_ENV_CONTEXT_SCALE_TRIALS "UIB_CONTEXT_SCALE_TRIALS"
+
+/**
+ * DOC: UIB_CONTEXT_SCALE_PORT_BASE
+ * @uib-env: Test and scaling harnesses
+ * @default: `22400`
+ * @values: A positive port number no greater than `65400`.
+ *
+ * Set the first loopback control port. Data ports begin 64 ports later.
+ * Change this value when another local service uses the default range.
+ *
+ * Example:
+ * UIB_CONTEXT_SCALE_PORT_BASE=24000 make context-scaling-benchmark
+ */
+#define UIB_ENV_CONTEXT_SCALE_PORT_BASE "UIB_CONTEXT_SCALE_PORT_BASE"
+
+/**
+ * DOC: UIB_CONTEXT_SCALE_TIMEOUT
+ * @uib-env: Test and scaling harnesses
+ * @default: `120`
+ * @values: A positive number of seconds.
+ *
+ * Set the timeout for each server or client process in a scaling trial.
+ *
+ * Example:
+ * UIB_CONTEXT_SCALE_TIMEOUT=300 make context-scaling-benchmark
+ */
+#define UIB_ENV_CONTEXT_SCALE_TIMEOUT "UIB_CONTEXT_SCALE_TIMEOUT"
+
+/**
  * DOC: UIB_MR_SCALE_LOOKUPS
  * @uib-env: Test and scaling harnesses
  * @default: `1000000`
