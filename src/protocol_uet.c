@@ -32,6 +32,7 @@
 #define UIB_UET_OUT_INDEX_MIN 64U
 #define UIB_UET_OUT_POOL_CLASSES 3U
 #define UIB_UET_OUT_POOL_LIMIT UIB_UET_PDC_MPR
+#define UIB_UET_ACK_INTERVAL 16U
 #define UIB_UET_PACKET_MAX UIB_RECV_BUF_LEN
 
 enum uib_uet_pdc_state {
@@ -2715,6 +2716,8 @@ static int uet_handle_request(struct uib_qp *qp,
 	uint8_t packet_type;
 	uint8_t opcode;
 	int duplicate;
+	int ack_requested;
+	int out_of_order;
 	int rc;
 
 	if (len < sizeof(*request))
@@ -2731,11 +2734,14 @@ static int uet_handle_request(struct uib_qp *qp,
 	psn = ntohl(request->psn);
 	msg_id = ntohs(ses.msg_id);
 	opcode = ses.opcode & UIB_UET_SES_OPCODE_MASK;
+	ack_requested = !!(uib_uet_prologue_flags(&request->prologue) &
+			   UIB_UET_REQ_FLAG_AR);
 	rc = uet_accept_request(qp, request, len, packet_type, opcode,
 				ses.flags & UIB_UET_SES_FLAGS_MASK, msg_id, psn,
 				receive_time_ns, &duplicate, &cack);
 	if (rc)
 		return rc < 0 ? rc : 0;
+	out_of_order = psn != cack;
 
 	result.response_code = uet_validate_session(qp, &ses);
 	if (duplicate && opcode != UIB_UET_SES_READ) {
@@ -2770,6 +2776,12 @@ static int uet_handle_request(struct uib_qp *qp,
 		uet_mark_guaranteed(uet, psn);
 	cack = uet_cack_psn(uet);
 	pthread_mutex_unlock(&qp->lock);
+	if (!ack_requested && !duplicate && !out_of_order &&
+	    result.response_code == UIB_UET_SES_RC_OK &&
+	    (opcode == UIB_UET_SES_SEND || opcode == UIB_UET_SES_WRITE)) {
+		free(result.owned_data);
+		return 0;
+	}
 
 	rc = uet_send_response(qp, src, request, &ses, cack, &encoding,
 			       result.data, result.data_len,
@@ -3135,7 +3147,7 @@ static void uet_mark_retransmit(void *packet)
 
 	prologue = packet;
 	value = ntohs(prologue->type_next_flags);
-	value |= UIB_UET_REQ_FLAG_RETX;
+	value |= UIB_UET_REQ_FLAG_RETX | UIB_UET_REQ_FLAG_AR;
 	prologue->type_next_flags = htons(value);
 }
 
@@ -3752,9 +3764,12 @@ static int uet_build_request(struct uib_qp *qp, struct uib_send_wr *wr,
 	uint32_t offset;
 	uint32_t chunk;
 	uint32_t target;
-	uint8_t flags = UIB_UET_REQ_FLAG_AR;
+	uint8_t flags = 0;
 	uint16_t clear_psn_offset;
 
+	if (!((packet_index + 1) % UIB_UET_ACK_INTERVAL) ||
+	    packet_index == context->packets - 1)
+		flags |= UIB_UET_REQ_FLAG_AR;
 	offset = packet_index * context->chunk_max;
 	chunk = wr->opcode == UIB_WR_RDMA_READ || context->fetching_atomic ?
 		context->total_len : context->total_len - offset;
