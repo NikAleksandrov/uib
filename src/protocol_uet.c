@@ -3551,8 +3551,6 @@ static int uet_prepare_post(struct uib_qp *qp, struct uib_send_wr *wr,
 		(context->total_len ?
 		 (context->total_len + context->chunk_max - 1) /
 		 context->chunk_max : 1);
-	if (context->packets > UIB_UET_PDC_MPR)
-		return -EMSGSIZE;
 	if (wr->opcode != UIB_WR_RDMA_WRITE_WITH_IMM &&
 	    context->packets == 1 &&
 	    context->total_len <= UIB_UET_SES_LENGTH_MASK &&

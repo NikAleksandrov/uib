@@ -9,7 +9,7 @@
 
 #include <infiniband/verbs.h>
 
-#define TEST_LENGTH 256
+#define TEST_LENGTH (128 * 1024)
 #define TEST_IMMEDIATE 0x12345678U
 
 struct endpoint {
