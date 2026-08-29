@@ -161,7 +161,8 @@ int main(void)
 	int i;
 	int rc = 1;
 
-	setenv("UIB_PROTOCOL", "rocev2", 1);
+	if (!getenv("UIB_PROTOCOL"))
+		setenv("UIB_PROTOCOL", "rocev2", 1);
 	setenv("UIB_URING_RX_MODE", "multishot", 1);
 	devices = ibv_get_device_list(&device_count);
 	for (i = 0; devices && i < device_count; i++) {
