@@ -42,11 +42,31 @@ enum uib_uet_pdc_state {
 };
 
 struct uib_uet_wr_track {
+	struct uib_uet_wr_track *next;
+	struct uib_uet_wr_track *prev;
 	uint64_t wr_id;
 	enum uib_wr_opcode opcode;
 	int signaled;
 	uint32_t total_len;
 	uint32_t pending;
+	uint32_t packets;
+	uint32_t next_packet;
+	uint32_t first_psn;
+	uint32_t clear_psn;
+	uint32_t chunk_max;
+	uint64_t nominal_bytes;
+	struct sockaddr_in destination;
+	const uint8_t *message;
+	uint8_t *owned_message;
+	struct uib_mr *mr;
+	struct uib_send_wr wr;
+	uint16_t msg_id;
+	uint8_t ses_opcode;
+	uint8_t request_header;
+	uint8_t fetching_atomic;
+	uint8_t send_syn;
+	uint8_t rccc_accounted;
+	size_t pds_len;
 	struct uib_sge *read_sgl;
 	int read_num_sge;
 	struct uib_uet_read_fragment {
@@ -114,6 +134,7 @@ struct uib_uet_qp {
 	uint64_t rx_bitmap[2];
 	uint32_t out_count;
 	uint32_t sent_count;
+	uint32_t materialized_count;
 	int rx_initialized;
 	int tx_initialized;
 	struct uib_uet_outstanding *out_head;
@@ -121,6 +142,8 @@ struct uib_uet_qp {
 	struct uib_uet_outstanding *ack_head;
 	struct uib_uet_outstanding *ack_tail;
 	struct uib_uet_outstanding *tx_cursor;
+	struct uib_uet_wr_track *track_head;
+	struct uib_uet_wr_track *track_tail;
 	struct uib_uet_out_pool *out_pool;
 	struct uib_psn_index out_index;
 	uint32_t unindexed_count;
@@ -180,6 +203,8 @@ struct uib_uet_qp {
 		int valid;
 	} message_error[UIB_UET_PDC_MPR];
 };
+
+static int uet_refill_locked(struct uib_qp *qp);
 
 static size_t uet_out_pool_capacity(uint8_t pool_class)
 {
@@ -1139,6 +1164,8 @@ static void uet_free_track(struct uib_uet_wr_track *track)
 {
 	if (!track)
 		return;
+	uib_mr_put(track->mr);
+	free(track->owned_message);
 	free(track->read_sgl);
 	free(track->read_fragments);
 	free(track);
@@ -1223,6 +1250,33 @@ static void uet_link_outstanding(struct uib_uet_qp *uet,
 	uet->out_count++;
 }
 
+static void uet_link_track(struct uib_uet_qp *uet,
+			   struct uib_uet_wr_track *track)
+{
+	track->next = NULL;
+	track->prev = uet->track_tail;
+	if (uet->track_tail)
+		uet->track_tail->next = track;
+	else
+		uet->track_head = track;
+	uet->track_tail = track;
+}
+
+static void uet_unlink_track(struct uib_uet_qp *uet,
+			     struct uib_uet_wr_track *track)
+{
+	if (track->prev)
+		track->prev->next = track->next;
+	else
+		uet->track_head = track->next;
+	if (track->next)
+		track->next->prev = track->prev;
+	else
+		uet->track_tail = track->prev;
+	track->next = NULL;
+	track->prev = NULL;
+}
+
 static void uet_unlink_outstanding(struct uib_uet_qp *uet,
 				   struct uib_uet_outstanding *out)
 {
@@ -1254,6 +1308,7 @@ static void uet_unlink_outstanding(struct uib_uet_qp *uet,
 	if (out->sent)
 		uet->sent_count--;
 	uet->out_count--;
+	uet->materialized_count--;
 	out->next = NULL;
 	out->prev = NULL;
 	out->ack_next = NULL;
@@ -1263,21 +1318,20 @@ static void uet_unlink_outstanding(struct uib_uet_qp *uet,
 static void uet_qp_fini(struct uib_qp *qp)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_wr_track *next_track;
+	struct uib_uet_wr_track *track;
+	struct uib_uet_outstanding *next;
+	struct uib_uet_outstanding *out;
 
 	if (!uet)
 		return;
-	while (uet->out_head) {
-		struct uib_uet_wr_track *track = uet->out_head->track;
-		struct uib_uet_outstanding *next;
-		struct uib_uet_outstanding *out;
-
-		for (out = uet->out_head; out; out = next) {
-			next = out->next;
-			if (out->track != track)
-				continue;
-			uet_unlink_outstanding(uet, out);
-			uet_free_outstanding(out);
-		}
+	for (out = uet->out_head; out; out = next) {
+		next = out->next;
+		uet_unlink_outstanding(uet, out);
+		uet_free_outstanding(out);
+	}
+	for (track = uet->track_head; track; track = next_track) {
+		next_track = track->next;
 		uet_free_track(track);
 	}
 	if (uet->recv_active)
@@ -1292,6 +1346,8 @@ static void uet_qp_fini(struct uib_qp *qp)
 static void uet_track_done(struct uib_qp *qp, struct uib_uet_wr_track *track,
 			   enum uib_wc_status status)
 {
+	struct uib_uet_qp *uet = qp->protocol_private;
+
 	if (!track->pending)
 		return;
 	if (status != UIB_WC_SUCCESS)
@@ -1306,6 +1362,7 @@ static void uet_track_done(struct uib_qp *qp, struct uib_uet_wr_track *track,
 			    track->opcode == UIB_WR_ATOMIC_FETCH_ADD ||
 			    track->opcode == UIB_WR_ATOMIC_CMP_SWAP ?
 			    track->total_len : 0, track->response_code);
+	uet_unlink_track(uet, track);
 	uet_free_track(track);
 }
 
@@ -3218,6 +3275,7 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 			status = uet_response_wc_status(view.response_code);
 			uet_remove_track_locked(qp, out->track, status);
 		}
+		uet_refill_locked(qp);
 		pthread_mutex_unlock(&qp->lock);
 		if (clear_required)
 			uet_send_control(qp, &qp->remote_addr,
@@ -3236,7 +3294,7 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 		uet_complete_out_locked(qp, out, UIB_WC_SUCCESS);
 		rc = 0;
 	}
-	uet_drain_locked(qp);
+	uet_refill_locked(qp);
 	pthread_mutex_unlock(&qp->lock);
 	if (clear_required)
 		uet_send_control(qp, &qp->remote_addr,
@@ -3269,6 +3327,7 @@ static int uet_handle_nack(struct uib_qp *qp, const void *packet, size_t len)
 
 		uib_congestion_on_nack(&uet->congestion, &event);
 		uet_remove_track_locked(qp, out->track, UIB_WC_REM_OP_ERR);
+		uet_refill_locked(qp);
 	}
 	pthread_mutex_unlock(&qp->lock);
 	return found ? -EREMOTEIO : 0;
@@ -3408,6 +3467,7 @@ static struct uib_uet_wr_track *uet_alloc_track(struct uib_qp *qp,
 }
 
 struct uet_post_context {
+	struct uib_qp *qp;
 	struct uib_uet_qp *uet;
 	struct uib_uet_wr_track *track;
 	struct uib_uet_outstanding *prepared_head;
@@ -3419,6 +3479,9 @@ struct uet_post_context {
 	uint32_t total_len;
 	uint32_t chunk_max;
 	uint32_t packets;
+	uint32_t allocation_packets;
+	uint32_t reserved_packets;
+	uint32_t prepared_packets;
 	uint32_t first_psn;
 	uint32_t clear_psn;
 	uint16_t msg_id;
@@ -3434,6 +3497,11 @@ static void uet_post_context_release(struct uet_post_context *context)
 	struct uib_uet_outstanding *next;
 	struct uib_uet_outstanding *out;
 
+	if (context->reserved_packets) {
+		pthread_mutex_lock(&context->qp->lock);
+		context->uet->materialized_count -= context->reserved_packets;
+		pthread_mutex_unlock(&context->qp->lock);
+	}
 	for (out = context->prepared_head; out; out = next) {
 		next = out->next;
 		uet_free_outstanding(out);
@@ -3490,7 +3558,7 @@ static int uet_prepare_message(struct uib_qp *qp, struct uib_send_wr *wr,
 
 	if (wr->opcode == UIB_WR_RDMA_READ || context->fetching_atomic)
 		return 0;
-	if (wr->num_sge == 1) {
+	if (wr->num_sge == 1 && !(wr->send_flags & UIB_SEND_INLINE)) {
 		context->mr = uib_mr_lookup_local(
 			qp->pd, wr->sg_list[0].lkey,
 			(const void *)(uintptr_t)wr->sg_list[0].addr,
@@ -3554,6 +3622,7 @@ static int uet_prepare_post(struct uib_qp *qp, struct uib_send_wr *wr,
 	int rc;
 
 	memset(context, 0, sizeof(*context));
+	context->qp = qp;
 	context->uet = qp->protocol_private;
 	context->destination = qp->remote_addr;
 	context->request_header = UIB_UET_NEXT_REQ_STD;
@@ -3614,6 +3683,8 @@ static int uet_prepare_post(struct uib_qp *qp, struct uib_send_wr *wr,
 static void uet_reserve_post(struct uib_qp *qp,
 			     struct uet_post_context *context)
 {
+	uint32_t capacity;
+
 	pthread_mutex_lock(&qp->lock);
 	context->msg_id = context->uet->next_msg_id++;
 	if (!context->uet->tx_initialized) {
@@ -3629,7 +3700,60 @@ static void uet_reserve_post(struct uib_qp *qp,
 	context->send_syn = context->uet->state == UIB_UET_PDC_CLOSED;
 	if (context->send_syn)
 		context->uet->state = UIB_UET_PDC_SYN_SENT;
+	capacity = UIB_UET_PDC_MPR - context->uet->materialized_count;
+	context->reserved_packets = context->prepared_packets < capacity ?
+		context->prepared_packets : capacity;
+	context->uet->materialized_count += context->reserved_packets;
 	pthread_mutex_unlock(&qp->lock);
+}
+
+static void uet_store_post(struct uib_send_wr *wr,
+			   struct uet_post_context *context)
+{
+	struct uib_uet_wr_track *track = context->track;
+
+	track->wr = *wr;
+	track->wr.next = NULL;
+	track->wr.sg_list = NULL;
+	track->packets = context->packets;
+	track->next_packet = 0;
+	track->first_psn = context->first_psn;
+	track->clear_psn = context->clear_psn;
+	track->chunk_max = context->chunk_max;
+	track->destination = context->destination;
+	track->message = context->message;
+	track->owned_message = context->owned_message;
+	track->mr = context->mr;
+	track->msg_id = context->msg_id;
+	track->ses_opcode = context->ses_opcode;
+	track->request_header = context->request_header;
+	track->fetching_atomic = context->fetching_atomic;
+	track->send_syn = context->send_syn;
+	track->pds_len = context->pds_len;
+	context->owned_message = NULL;
+	context->mr = NULL;
+}
+
+static void uet_load_post(struct uib_uet_qp *uet,
+			  struct uib_uet_wr_track *track,
+			  struct uet_post_context *context)
+{
+	memset(context, 0, sizeof(*context));
+	context->uet = uet;
+	context->track = track;
+	context->destination = track->destination;
+	context->message = track->message;
+	context->total_len = track->total_len;
+	context->chunk_max = track->chunk_max;
+	context->packets = track->packets;
+	context->first_psn = track->first_psn;
+	context->clear_psn = track->clear_psn;
+	context->msg_id = track->msg_id;
+	context->ses_opcode = track->ses_opcode;
+	context->request_header = track->request_header;
+	context->fetching_atomic = track->fetching_atomic;
+	context->send_syn = track->send_syn;
+	context->pds_len = track->pds_len;
 }
 
 static void uet_encode_atomic(struct uib_send_wr *wr,
@@ -3809,36 +3933,90 @@ static int uet_request_layout(struct uib_qp *qp,
 	return layout->packet_len > qp->path_mtu ? -EMSGSIZE : 0;
 }
 
-static int uet_allocate_requests(struct uib_qp *qp,
-				 struct uib_send_wr *wr,
-				 struct uet_post_context *context)
+static struct uib_uet_outstanding *
+uet_allocate_request(struct uib_qp *qp, struct uib_send_wr *wr,
+		     struct uet_post_context *context, uint32_t packet_index)
 {
 	struct uet_request_layout layout;
 	struct uib_uet_outstanding *out;
-	uint32_t packet_index;
 	int rc;
 
-	for (packet_index = 0; packet_index < context->packets;
+	rc = uet_request_layout(qp, wr, context, packet_index, &layout);
+	if (rc < 0)
+		return NULL;
+	out = uet_alloc_outstanding(context->uet, layout.packet_len);
+	if (!out)
+		return NULL;
+	out->track = context->track;
+	out->dst = context->destination;
+	out->packet_len = layout.packet_len;
+	out->read_offset = layout.offset;
+	out->read_len = layout.chunk;
+	out->nominal_len = (uint32_t)layout.packet_len + 40;
+	return out;
+}
+
+static void uet_snapshot_packet_slots(struct uib_qp *qp,
+				      struct uet_post_context *context)
+{
+	uint32_t capacity;
+
+	pthread_mutex_lock(&qp->lock);
+	capacity = UIB_UET_PDC_MPR - context->uet->materialized_count;
+	context->allocation_packets = context->packets < capacity ?
+		context->packets : capacity;
+	pthread_mutex_unlock(&qp->lock);
+}
+
+static int uet_allocate_prepared(struct uib_qp *qp,
+				 struct uib_send_wr *wr,
+				 struct uet_post_context *context)
+{
+	struct uib_uet_outstanding *out;
+	uint32_t packet_index;
+
+	for (packet_index = 0; packet_index < context->allocation_packets;
 	     packet_index++) {
-		rc = uet_request_layout(qp, wr, context, packet_index, &layout);
-		if (rc < 0)
-			return rc;
-		out = uet_alloc_outstanding(context->uet, layout.packet_len);
+		out = uet_allocate_request(qp, wr, context, packet_index);
 		if (!out)
 			return -ENOMEM;
-		out->track = context->track;
-		out->dst = context->destination;
-		out->packet_len = layout.packet_len;
-		out->read_offset = layout.offset;
-		out->read_len = layout.chunk;
-		out->nominal_len = (uint32_t)layout.packet_len + 40;
 		if (context->prepared_tail)
 			context->prepared_tail->next = out;
 		else
 			context->prepared_head = out;
 		context->prepared_tail = out;
+		context->prepared_packets++;
 	}
 	return 0;
+}
+
+static void uet_trim_prepared(struct uet_post_context *context)
+{
+	struct uib_uet_outstanding *previous;
+	struct uib_uet_outstanding *next;
+	struct uib_uet_outstanding *out;
+	uint32_t packet_index;
+
+	if (context->prepared_packets == context->reserved_packets)
+		return;
+	previous = NULL;
+	out = context->prepared_head;
+	for (packet_index = 0; packet_index < context->reserved_packets;
+	     packet_index++) {
+		previous = out;
+		out = out->next;
+	}
+	if (previous)
+		previous->next = NULL;
+	else
+		context->prepared_head = NULL;
+	context->prepared_tail = previous;
+	context->prepared_packets = context->reserved_packets;
+	while (out) {
+		next = out->next;
+		uet_free_outstanding(out);
+		out = next;
+	}
 }
 
 static void uet_encode_request(struct uib_qp *qp, struct uib_send_wr *wr,
@@ -3896,7 +4074,7 @@ static void uet_encode_request(struct uib_qp *qp, struct uib_send_wr *wr,
 		  out->psn, out->msg_id, context->ses_opcode, data_len);
 }
 
-static void uet_encode_requests(struct uib_qp *qp, struct uib_send_wr *wr,
+static void uet_encode_prepared(struct uib_qp *qp, struct uib_send_wr *wr,
 				struct uet_post_context *context)
 {
 	struct uib_uet_outstanding *out;
@@ -3909,14 +4087,69 @@ static void uet_encode_requests(struct uib_qp *qp, struct uib_send_wr *wr,
 	}
 }
 
+static int uet_materialize_locked(struct uib_qp *qp,
+				  struct uib_uet_wr_track **failed)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uet_post_context context;
+	struct uib_uet_wr_track *track;
+	struct uib_uet_outstanding *out;
+
+	*failed = NULL;
+	for (track = uet->track_head;
+	     track && uet->materialized_count < UIB_UET_PDC_MPR;
+	     track = track->next) {
+		uet_load_post(uet, track, &context);
+		while (track->next_packet < track->packets &&
+		       uet->materialized_count < UIB_UET_PDC_MPR) {
+			out = uet_allocate_request(qp, &track->wr, &context,
+						   track->next_packet);
+			if (!out) {
+				*failed = track;
+				return -ENOMEM;
+			}
+			uet_encode_request(qp, &track->wr, &context, out,
+					   track->next_packet);
+			uet->materialized_count++;
+			uet_link_outstanding(uet, out);
+			track->next_packet++;
+		}
+	}
+	return 0;
+}
+
+static int uet_refill_locked(struct uib_qp *qp)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_wr_track *failed;
+	struct uib_uet_rccc *rccc;
+	int rc;
+
+	rccc = uet->rccc_enabled ?
+		(struct uib_uet_rccc *)uet->congestion.state.bytes : NULL;
+	do {
+		rc = uet_materialize_locked(qp, &failed);
+		if (rc >= 0)
+			break;
+		if (failed->rccc_accounted)
+			uib_uet_rccc_on_cancel_data(rccc,
+						failed->nominal_bytes);
+		uet_remove_track_locked(qp, failed, UIB_WC_LOC_PROT_ERR);
+	} while (uet->track_head);
+	if (rc < 0)
+		return rc;
+	return uet_drain_locked(qp);
+}
+
 static int uet_publish_post(struct uib_qp *qp,
 			    struct uet_post_context *context,
-			    struct uib_uet_rccc *rccc,
-			    uint64_t nominal_bytes)
+			    struct uib_uet_rccc *rccc)
 {
+	struct uib_uet_wr_track *failed;
 	struct uib_uet_wr_track *track;
 	struct uib_uet_outstanding *next;
 	struct uib_uet_outstanding *out;
+	int post_error;
 	int rc;
 
 	track = context->track;
@@ -3928,12 +4161,15 @@ static int uet_publish_post(struct uib_qp *qp,
 			return -rc;
 		}
 	}
+	uet_link_track(context->uet, track);
 	for (out = context->prepared_head; out; out = next) {
 		next = out->next;
 		uet_link_outstanding(context->uet, out);
 	}
+	track->next_packet = context->prepared_packets;
 	context->prepared_head = NULL;
 	context->prepared_tail = NULL;
+	context->reserved_packets = 0;
 	context->track = NULL;
 	if (context->request_header == UIB_UET_NEXT_REQ_SMALL)
 		context->uet->optimized_stats.small_requests += context->packets;
@@ -3943,14 +4179,29 @@ static int uet_publish_post(struct uib_qp *qp,
 		context->uet->optimized_stats.standard_requests += context->packets;
 	context->uet->publish_psn += context->packets;
 	pthread_cond_broadcast(&context->uet->publish_cond);
-	rc = uet_drain_locked(qp);
-	if (rc < 0) {
-		if (rccc)
-			uib_uet_rccc_on_cancel_data(rccc, nominal_bytes);
+	post_error = 0;
+	do {
+		rc = uet_materialize_locked(qp, &failed);
+		if (rc >= 0)
+			break;
+		if (failed == track)
+			post_error = rc;
+		if (failed->rccc_accounted && rccc)
+			uib_uet_rccc_on_cancel_data(rccc,
+						failed->nominal_bytes);
+		uet_remove_track_locked(qp, failed, UIB_WC_LOC_PROT_ERR);
+	} while (context->uet->track_head);
+	if (!rc)
+		rc = uet_drain_locked(qp);
+	if (rc < 0 && !post_error) {
+		if (track->rccc_accounted && rccc)
+			uib_uet_rccc_on_cancel_data(rccc,
+						track->nominal_bytes);
 		uet_remove_track_locked(qp, track, UIB_WC_LOC_PROT_ERR);
+		post_error = rc;
 	}
 	pthread_mutex_unlock(&qp->lock);
-	return rc;
+	return post_error;
 }
 
 static uint64_t uet_post_nominal_bytes(const struct uib_send_wr *wr,
@@ -3986,19 +4237,24 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 	rc = uet_prepare_post(qp, wr, &context);
 	if (rc < 0)
 		goto out;
-	rc = uet_allocate_requests(qp, wr, &context);
+	uet_snapshot_packet_slots(qp, &context);
+	rc = uet_allocate_prepared(qp, wr, &context);
 	if (rc < 0)
 		goto out;
 	uet_reserve_post(qp, &context);
+	uet_trim_prepared(&context);
+	uet_store_post(wr, &context);
 	if (context.uet->rccc_enabled) {
 		rccc = (struct uib_uet_rccc *)context.uet->congestion.state.bytes;
 		nominal_bytes = uet_post_nominal_bytes(wr, &context);
+		context.track->nominal_bytes = nominal_bytes;
+		context.track->rccc_accounted = 1;
 		pthread_mutex_lock(&qp->lock);
 		uib_uet_rccc_on_new_data(rccc, nominal_bytes);
 		pthread_mutex_unlock(&qp->lock);
 	}
-	uet_encode_requests(qp, wr, &context);
-	rc = uet_publish_post(qp, &context, rccc, nominal_bytes);
+	uet_encode_prepared(qp, wr, &context);
+	rc = uet_publish_post(qp, &context, rccc);
 out:
 	uet_post_context_release(&context);
 	return rc;
@@ -4071,7 +4327,7 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 		out = out->next;
 	}
 	uet->tx_cursor = uet_first_unsent(uet);
-	uet_drain_locked(qp);
+	uet_refill_locked(qp);
 	if (uet->rccc_enabled && uet->tx_cursor &&
 	    uet->credit_request_deadline_ns &&
 	    uet->credit_request_deadline_ns < next_deadline)

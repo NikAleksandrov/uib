@@ -12,7 +12,9 @@
 #define TEST_PORT 19730
 #define TEST_LARGE_LENGTH (512U * 1024U)
 #define TEST_SMALL_LENGTH 8U
-#define TEST_BUFFER_LENGTH (TEST_LARGE_LENGTH + TEST_SMALL_LENGTH)
+#define TEST_INLINE_LENGTH 64U
+#define TEST_INLINE_OFFSET (TEST_LARGE_LENGTH + TEST_SMALL_LENGTH)
+#define TEST_BUFFER_LENGTH (TEST_INLINE_OFFSET + TEST_INLINE_LENGTH)
 #define TEST_TIMEOUT_NS (5ULL * 1000ULL * 1000ULL * 1000ULL)
 
 struct test_endpoint {
@@ -163,6 +165,11 @@ static int wait_completions(struct uib_cq *cq)
 				completions[i].status);
 			return -1;
 		}
+		if (completions[i].wr_id != (uint64_t)i + 1) {
+			fprintf(stderr, "completion %d has wr id %llu\n", i,
+				(unsigned long long)completions[i].wr_id);
+			return -1;
+		}
 	}
 	return 0;
 }
@@ -183,6 +190,50 @@ static int wait_psn_reservation(struct uib_qp *qp)
 	return -1;
 }
 
+static int test_inline_write(struct test_endpoint *sender,
+			     struct test_endpoint *receiver)
+{
+	uint8_t expected[TEST_INLINE_LENGTH];
+	struct uib_send_wr request;
+	struct uib_send_wr *bad;
+	struct uib_wc completion;
+	struct uib_sge sge;
+	uint64_t deadline;
+	int count;
+	int rc;
+
+	memset(expected, 0x3c, sizeof(expected));
+	memcpy(sender->buffer + TEST_INLINE_OFFSET, expected, sizeof(expected));
+	memset(&sge, 0, sizeof(sge));
+	sge.addr = (uintptr_t)(sender->buffer + TEST_INLINE_OFFSET);
+	sge.length = TEST_INLINE_LENGTH;
+	sge.lkey = sender->mr->lkey;
+	memset(&request, 0, sizeof(request));
+	request.wr_id = 3;
+	request.opcode = UIB_WR_RDMA_WRITE;
+	request.send_flags = UIB_SEND_SIGNALED | UIB_SEND_INLINE;
+	request.sg_list = &sge;
+	request.num_sge = 1;
+	request.rdma.remote_addr =
+		(uintptr_t)(receiver->buffer + TEST_INLINE_OFFSET);
+	request.rdma.rkey = receiver->mr->rkey;
+	rc = uib_post_send(sender->qp, &request, &bad);
+	memset(sender->buffer + TEST_INLINE_OFFSET, 0, TEST_INLINE_LENGTH);
+	if (rc)
+		return -1;
+	deadline = now_ns() + TEST_TIMEOUT_NS;
+	do {
+		count = uib_poll_cq(sender->cq, 1, &completion);
+		if (count < 0)
+			return -1;
+	} while (!count && now_ns() < deadline);
+	if (count != 1 || completion.status != UIB_WC_SUCCESS ||
+	    completion.wr_id != 3)
+		return -1;
+	return memcmp(receiver->buffer + TEST_INLINE_OFFSET, expected,
+		      sizeof(expected)) ? -1 : 0;
+}
+
 int main(void)
 {
 	struct test_endpoint receiver;
@@ -193,10 +244,14 @@ int main(void)
 	pthread_t small_thread;
 	int rc;
 
-	setenv("UIB_TRANSPORT_MODE", "udp-sync", 1);
-	setenv("UIB_UET_CC", "none", 1);
-	setenv("UIB_UDP_WORKERS", "1", 1);
-	setenv("UIB_UDP_WORKER_AFFINITY", "off", 1);
+	if (!getenv("UIB_TRANSPORT_MODE"))
+		setenv("UIB_TRANSPORT_MODE", "udp-sync", 1);
+	if (!getenv("UIB_UET_CC"))
+		setenv("UIB_UET_CC", "none", 1);
+	if (!getenv("UIB_UDP_WORKERS"))
+		setenv("UIB_UDP_WORKERS", "1", 1);
+	if (!getenv("UIB_UDP_WORKER_AFFINITY"))
+		setenv("UIB_UDP_WORKER_AFFINITY", "off", 1);
 	memset(&sender, 0, sizeof(sender));
 	memset(&receiver, 0, sizeof(receiver));
 	memset(&large, 0, sizeof(large));
@@ -257,8 +312,12 @@ int main(void)
 	}
 	if (wait_completions(sender.cq))
 		goto out;
-	if (memcmp(sender.buffer, receiver.buffer, TEST_BUFFER_LENGTH)) {
+	if (memcmp(sender.buffer, receiver.buffer, TEST_INLINE_OFFSET)) {
 		fprintf(stderr, "remote data does not match\n");
+		goto out;
+	}
+	if (test_inline_write(&sender, &receiver)) {
+		fprintf(stderr, "inline write did not preserve its payload\n");
 		goto out;
 	}
 	rc = 0;
