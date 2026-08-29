@@ -570,6 +570,7 @@ URING_ASYNC_TEST := tests/uring_async_test
 PTR_RING_TEST := tests/ptr_ring_test
 PROVIDER_CQ_EVENT_TEST := tests/provider_cq_event_test
 REORDER_TEST := tests/reorder_test
+UET_CONCURRENT_POST_TEST := tests/uet_concurrent_post_test
 TRANSPORT_TEST := tests/transport_test
 QP_SCALE_TEST := tests/qp_scale_test
 QP_LOOKUP_BENCH := tests/qp_lookup_bench
@@ -599,6 +600,7 @@ DEPS += $(MPI_COMPAT_TEST).d
 DEPS += $(CQ_EVENT_TEST).d $(URING_ASYNC_TEST).d $(PTR_RING_TEST).d
 DEPS += $(PROVIDER_CQ_EVENT_TEST).d
 DEPS += $(REORDER_TEST).d
+DEPS += $(UET_CONCURRENT_POST_TEST).d
 DEPS += $(TRANSPORT_TEST).d
 DEPS += $(QP_SCALE_TEST).d
 DEPS += $(QP_LOOKUP_BENCH).d
@@ -718,6 +720,9 @@ host-zc-virtme-test:
 
 $(REORDER_TEST): tests/reorder_test.c $(LIB_STATIC)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_STATIC) $(LDFLAGS) $(LDLIBS)
+
+$(UET_CONCURRENT_POST_TEST): tests/uet_concurrent_post_test.c $(LIB_SHARED)
+	$(CC) $(CFLAGS) -o $@ $< -L. -Wl,-rpath,'$$ORIGIN/..' -luib $(LDFLAGS) $(LDLIBS)
 
 ifeq ($(HAVE_IBVERBS),1)
 rxe-test-build: $(RXE_TEST)
@@ -961,6 +966,7 @@ test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_
 	$(ROCEV2_ECN_TEST) \
 	$(ZEROCOPY_TEST) \
 	$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PTR_RING_TEST) $(REORDER_TEST) \
+	$(UET_CONCURRENT_POST_TEST) \
 	$(TRANSPORT_TEST) $(QP_SCALE_TEST) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
 	$(HOST_ZC_E2E_TEST) $(MR_LIFETIME_TEST) $(NCCL_PROVIDER_TEST)
 	./$(BTH_TEST)
@@ -977,6 +983,7 @@ test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_
 	./$(URING_ASYNC_TEST)
 	./$(PTR_RING_TEST)
 	./$(REORDER_TEST)
+	./$(UET_CONCURRENT_POST_TEST)
 	./$(TRANSPORT_TEST)
 	./$(QP_SCALE_TEST)
 	./$(PSN_INDEX_TEST)
@@ -1042,7 +1049,7 @@ install: $(LIB_TARGETS) $(MAN_PAGE)
 	install -m 644 $(LIB_STATIC) $(DESTDIR)$(PREFIX)/lib/
 	install -m 755 $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/
 	ln -sfn $(LIB_SHARED_REAL) $(DESTDIR)$(PREFIX)/lib/$(LIB_SHARED_SONAME)
-	ln -sfn $(LIB_SHARED_SONAME) $(DESTDIR)$(PREFIX)/lib/$(LIB_STATIC)
+	ln -sfn $(LIB_SHARED_SONAME) $(DESTDIR)$(PREFIX)/lib/$(LIB_SHARED)
 ifeq ($(ENABLE_PROVIDER),1)
 	install -m 755 $(LIB_PROVIDER) $(DESTDIR)$(PREFIX)/lib/
 endif
@@ -1060,7 +1067,7 @@ clean:
 	$(MAKE) -C examples clean
 	rm -f $(OBJS) $(PROV_OBJS) $(STANDALONE_OBJS_0) \
 		$(STANDALONE_OBJS_1) $(DEPS) \
-		$(LIB_STATIC) $(LIB_STATIC) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) $(LIB_PROVIDER) \
+		$(LIB_STATIC) $(LIB_SHARED) $(LIB_SHARED_SONAME) $(LIB_SHARED_REAL) $(LIB_PROVIDER) \
 		.libuib-standalone-uib-0.a .libuib-standalone-uib-1.a \
 		$(LIB_STANDALONE) $(STATIC_LINK_TEST) \
 		$(TEST_BIN) $(FRAME_TEST) $(DMABUF_TEST) \
@@ -1072,7 +1079,8 @@ clean:
 		$(EXTERNAL_DMABUF_TEST) $(MPI_COMPAT_TEST) \
 		$(CQ_EVENT_TEST) $(URING_ASYNC_TEST) $(PROVIDER_CQ_EVENT_TEST) \
 		$(PTR_RING_TEST) \
-		$(REORDER_TEST) $(TRANSPORT_TEST) $(QP_SCALE_TEST) \
+		$(REORDER_TEST) $(UET_CONCURRENT_POST_TEST) \
+		$(TRANSPORT_TEST) $(QP_SCALE_TEST) \
 		$(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) $(MR_LIFETIME_TEST) \
 		$(PROVIDER_DISPATCH_BENCH) \
 		$(PROVIDER_WR_BENCH) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
