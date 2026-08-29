@@ -2340,6 +2340,82 @@ static int udp_sync_send(struct uib_context *ctx,
 	return udp_sync_send_entropy(ctx, destination, buffer, length, 0);
 }
 
+static int udp_sync_send_ref_batch(struct uib_context *ctx,
+				   const struct uib_transport_ref *refs,
+				   size_t count)
+{
+	struct mmsghdr messages[UIB_URING_BATCH_MAX];
+	struct iovec vectors[UIB_URING_BATCH_MAX];
+	struct uib_udp_backend *be = ctx->backend;
+	size_t batch;
+	size_t offset;
+	size_t i;
+	int sent;
+	int rc;
+
+	if (be->raw_mode || be->test_drop_tx ||
+	    ctx->zerocopy.mode != UIB_ZEROCOPY_OFF) {
+		for (i = 0; i < count; i++) {
+			rc = udp_sync_send_entropy(ctx, refs[i].dst,
+						   refs[i].buf, refs[i].len,
+						   refs[i].entropy);
+			refs[i].release(refs[i].opaque);
+			if (rc < 0) {
+				for (i++; i < count; i++)
+					refs[i].release(refs[i].opaque);
+				return rc;
+			}
+		}
+		return 0;
+	}
+
+	offset = 0;
+	while (offset < count) {
+		batch = count - offset;
+		if (batch > UIB_URING_BATCH_MAX)
+			batch = UIB_URING_BATCH_MAX;
+		memset(messages, 0, batch * sizeof(*messages));
+		for (i = 0; i < batch; i++) {
+			vectors[i].iov_base = (void *)refs[offset + i].buf;
+			vectors[i].iov_len = refs[offset + i].len;
+			messages[i].msg_hdr.msg_name =
+				(void *)refs[offset + i].dst;
+			messages[i].msg_hdr.msg_namelen =
+				sizeof(*refs[offset + i].dst);
+			messages[i].msg_hdr.msg_iov = &vectors[i];
+			messages[i].msg_hdr.msg_iovlen = 1;
+		}
+		sent = sendmmsg(be->fd, messages, (unsigned int)batch,
+				MSG_NOSIGNAL);
+		if (sent < 0) {
+			rc = -errno;
+			sent = 0;
+		} else if ((size_t)sent != batch) {
+			rc = -EIO;
+		} else {
+			rc = 0;
+		}
+		__atomic_fetch_add(&be->stats.tx_submitted, batch,
+				   __ATOMIC_RELAXED);
+		__atomic_fetch_add(&be->stats.tx_completed, (size_t)sent,
+				   __ATOMIC_RELAXED);
+		if (rc < 0)
+			__atomic_fetch_add(&be->stats.tx_errors, 1,
+					   __ATOMIC_RELAXED);
+		for (i = 0; i < batch; i++)
+			refs[offset + i].release(refs[offset + i].opaque);
+		for (i = 0; i < (size_t)sent; i++)
+			uib_zerocopy_account_copy(ctx, refs[offset + i].len);
+		offset += batch;
+		if (rc < 0) {
+			for (i = offset; i < count; i++)
+				refs[i].release(refs[i].opaque);
+			return rc;
+		}
+	}
+	return 0;
+}
+
 static int udp_get_stats(struct uib_context *ctx,
 			 struct uib_transport_stats *stats)
 {
@@ -2403,5 +2479,6 @@ const struct uib_transport_ops uib_udp_sync_ops = {
 	.fini = udp_fini,
 	.send = udp_sync_send,
 	.send_entropy = udp_sync_send_entropy,
+	.send_ref_batch = udp_sync_send_ref_batch,
 	.get_stats = udp_get_stats,
 };
