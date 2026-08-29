@@ -41,6 +41,19 @@
  */
 #define UIB_ENV_BIND_PORT "UIB_BIND_PORT"
 
+/**
+ * DOC: UIB_ACTIVE_MTU
+ * @uib-env: Transparent provider
+ * @default: `auto`
+ * @values: `auto`, `256`, `512`, `1024`, `2048`, or `4096`
+ *
+ * Set the active verbs port MTU advertised to applications. Auto selects the
+ * largest verbs MTU with a 64-byte allowance below the interface MTU matched
+ * by UIB_BIND_IP. Unknown interfaces and invalid values use 4096.
+ *
+ * Example:
+ * UIB_ACTIVE_MTU=1024 LD_PRELOAD=$PWD/libuibv.so ibv_rc_pingpong
+ */
 #define UIB_ENV_ACTIVE_MTU "UIB_ACTIVE_MTU"
 
 /**

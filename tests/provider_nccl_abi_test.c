@@ -213,6 +213,13 @@ int main(void)
 		fprintf(stderr, "uib0 did not use the default for an invalid MTU\n");
 		goto out;
 	}
+	setenv("UIB_ACTIVE_MTU", "auto", 1);
+	memset(&port_attr, 0, sizeof(port_attr));
+	if (query_port(context, 1, &port_attr) ||
+	    port_attr.active_mtu != IBV_MTU_4096) {
+		fprintf(stderr, "uib0 did not derive the loopback active MTU\n");
+		goto out;
+	}
 	flags = fcntl(context->async_fd, F_GETFL);
 	if (flags < 0 || fcntl(context->async_fd, F_SETFL,
 				     flags | O_NONBLOCK) < 0) {

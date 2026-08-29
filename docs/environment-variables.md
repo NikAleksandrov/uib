@@ -49,7 +49,7 @@ when the relevant context, transport, benchmark, or test is created.
 
 | Variable | Default | Accepted values | Description | Example |
 |---|---|---|---|---|
-| <code>UIB_ACTIVE_MTU</code> | `4096` | `256`, `512`, `1024`, `2048`, or `4096` | Set the active verbs port MTU advertised to applications. Invalid values use the default. | <code>UIB_ACTIVE_MTU=1024 LD_PRELOAD=$PWD/libuibv.so ibv_rc_pingpong</code> |
+| <code>UIB_ACTIVE_MTU</code> | `auto` | `auto`, `256`, `512`, `1024`, `2048`, or `4096` | Set the active verbs port MTU advertised to applications. Auto selects the largest verbs MTU with a 64-byte allowance below the interface MTU matched by <code>UIB_BIND_IP</code>. Unknown interfaces and invalid values use `4096`. | <code>UIB_ACTIVE_MTU=1024 LD_PRELOAD=$PWD/libuibv.so ibv_rc_pingpong</code> |
 
 ## UDP transports
 

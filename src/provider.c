@@ -6,8 +6,11 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <ifaddrs.h>
 #include <arpa/inet.h>
+#include <net/if.h>
 #include <sys/eventfd.h>
+#include <sys/ioctl.h>
 
 #include <infiniband/verbs.h>
 
@@ -231,11 +234,64 @@ static enum ibv_mtu bytes_to_mtu(uint32_t mtu)
 	return IBV_MTU_4096;
 }
 
-static enum ibv_mtu active_mtu_from_env(void)
+static enum ibv_mtu active_mtu_from_link(uint32_t link_mtu)
+{
+	if (link_mtu >= 4160)
+		return IBV_MTU_4096;
+	if (link_mtu >= 2112)
+		return IBV_MTU_2048;
+	if (link_mtu >= 1088)
+		return IBV_MTU_1024;
+	if (link_mtu >= 576)
+		return IBV_MTU_512;
+	return IBV_MTU_256;
+}
+
+static enum ibv_mtu active_mtu_from_bind_ip(const char *bind_ip)
+{
+	struct sockaddr_in *address;
+	struct ifaddrs *interfaces;
+	struct ifaddrs *interface;
+	struct ifreq request;
+	struct in_addr bind_addr;
+	enum ibv_mtu mtu = IBV_MTU_4096;
+	int fd;
+
+	if (!bind_ip || inet_pton(AF_INET, bind_ip, &bind_addr) != 1 ||
+	    bind_addr.s_addr == htonl(INADDR_ANY) ||
+	    getifaddrs(&interfaces))
+		return mtu;
+	fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	if (fd < 0) {
+		freeifaddrs(interfaces);
+		return mtu;
+	}
+	for (interface = interfaces; interface; interface = interface->ifa_next) {
+		if (!interface->ifa_addr ||
+		    interface->ifa_addr->sa_family != AF_INET)
+			continue;
+		address = (struct sockaddr_in *)interface->ifa_addr;
+		if (address->sin_addr.s_addr != bind_addr.s_addr)
+			continue;
+		memset(&request, 0, sizeof(request));
+		snprintf(request.ifr_name, sizeof(request.ifr_name), "%s",
+			 interface->ifa_name);
+		if (!ioctl(fd, SIOCGIFMTU, &request))
+			mtu = active_mtu_from_link((uint32_t)request.ifr_mtu);
+		break;
+	}
+	close(fd);
+	freeifaddrs(interfaces);
+	return mtu;
+}
+
+static enum ibv_mtu active_mtu_from_env(const char *bind_ip)
 {
 	const char *value = getenv(UIB_ENV_ACTIVE_MTU);
 
-	if (!value || !*value || !strcmp(value, "4096"))
+	if (!value || !*value || !strcmp(value, "auto"))
+		return active_mtu_from_bind_ip(bind_ip);
+	if (!strcmp(value, "4096"))
 		return IBV_MTU_4096;
 	if (!strcmp(value, "2048"))
 		return IBV_MTU_2048;
@@ -1630,16 +1686,18 @@ int ibv_query_device(struct ibv_context *ctx, struct ibv_device_attr *attr)
 int ibv_query_port(struct ibv_context *ctx, uint8_t port,
 		   struct _compat_ibv_port_attr *attr)
 {
+	struct uibv_ctx_wrap *wrapper;
 	struct ibv_port_attr *port_attr;
 
 	if (!ctx_is_ours(ctx))
 		return real_query_port ? real_query_port(ctx, port, attr) : -1;
+	wrapper = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
 	port_attr = (struct ibv_port_attr *)attr;
 
 	memset(port_attr, 0, sizeof(*port_attr));
 	port_attr->state = IBV_PORT_ACTIVE;
 	port_attr->max_mtu = IBV_MTU_4096;
-	port_attr->active_mtu = active_mtu_from_env();
+	port_attr->active_mtu = active_mtu_from_env(wrapper->core->bind_ip);
 	port_attr->max_msg_sz = 4096;
 	port_attr->gid_tbl_len = 1;
 	port_attr->pkey_tbl_len = 1;
