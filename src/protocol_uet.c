@@ -2462,7 +2462,8 @@ static void uet_clear_guaranteed(struct uib_uet_qp *uet, uint32_t clear_psn)
 {
 	uint32_t i;
 
-	if (uet_psn_before(clear_psn, uet->rx_clear_psn))
+	if (clear_psn == uet->rx_clear_psn ||
+	    uet_psn_before(clear_psn, uet->rx_clear_psn))
 		return;
 	uet->rx_clear_psn = clear_psn;
 	for (i = 0; i < UIB_UET_PDC_MPR; i++) {
