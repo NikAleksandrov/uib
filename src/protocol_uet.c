@@ -3917,15 +3917,18 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 	struct uib_uet_qp *uet = qp->protocol_private;
 	struct uib_uet_outstanding *out;
 	uint64_t next_deadline = UINT64_MAX;
+	uint32_t sent_remaining;
 	int charge_retry;
 
 	pthread_mutex_lock(&qp->lock);
 	out = uet->out_head;
-	while (out) {
+	sent_remaining = uet->sent_count;
+	while (out && sent_remaining) {
 		if (!out->sent) {
 			out = out->next;
 			continue;
 		}
+		sent_remaining--;
 		if ((int64_t)(now_ns - out->deadline_ns) < 0) {
 			out = out->next;
 			continue;
@@ -3936,6 +3939,7 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 
 			uet_remove_track_locked(qp, track, UIB_WC_RETRY_EXC_ERR);
 			out = uet->out_head;
+			sent_remaining = uet->sent_count;
 			continue;
 		}
 		uet_mark_retransmit(out->packet);
@@ -3963,8 +3967,13 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 	    uet->credit_request_deadline_ns &&
 	    uet->credit_request_deadline_ns < next_deadline)
 		next_deadline = uet->credit_request_deadline_ns;
-	for (out = uet->out_head; out; out = out->next) {
-		if (out->sent && out->deadline_ns < next_deadline)
+	sent_remaining = uet->sent_count;
+	for (out = uet->out_head; out && sent_remaining;
+	     out = out->next) {
+		if (!out->sent)
+			continue;
+		sent_remaining--;
+		if (out->deadline_ns < next_deadline)
 			next_deadline = out->deadline_ns;
 	}
 	if (next_deadline != UINT64_MAX)
