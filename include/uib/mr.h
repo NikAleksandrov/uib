@@ -80,6 +80,7 @@ struct uib_mr *uib_reg_mr_dmabuf_iova(struct uib_pd *pd, int dmabuf_fd,
 int uib_dereg_mr(struct uib_mr *mr);
 
 /* Lookups return a referenced MR. Release it with uib_mr_put(). */
+void uib_mr_get(struct uib_mr *mr);
 void uib_mr_put(struct uib_mr *mr);
 
 int uib_mr_check_local(struct uib_pd *pd, uint32_t lkey,

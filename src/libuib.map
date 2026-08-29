@@ -72,6 +72,7 @@ UIB_0.1 {
 		uib_mr_check_remote_address;
 		uib_mr_cpu_begin;
 		uib_mr_cpu_end;
+		uib_mr_get;
 		uib_mr_lookup_local;
 		uib_mr_place;
 		uib_mr_put;

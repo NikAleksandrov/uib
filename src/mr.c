@@ -49,6 +49,19 @@ static void mr_lifetime_destroy(struct uib_mr *mr)
 }
 
 /**
+ * uib_mr_get - Retain an existing memory-region reference.
+ * @mr: Referenced memory region
+ * @uib-api: Memory regions
+ *
+ * The caller must already own a reference that keeps @mr alive.
+ */
+void uib_mr_get(struct uib_mr *mr)
+{
+	if (mr)
+		__atomic_add_fetch(&mr->refs, 1, __ATOMIC_RELAXED);
+}
+
+/**
  * uib_mr_put - Release an MR reference returned by a lookup.
  * @mr: Memory region
  * @uib-api: Memory regions

@@ -90,9 +90,13 @@ struct uib_uet_outstanding {
 	struct uib_uet_outstanding *ack_prev;
 	struct uib_uet_wr_track *track;
 	struct uib_uet_out_pool *pool;
+	struct uib_mr *payload_mr;
 	struct sockaddr_in dst;
 	uint8_t *packet;
+	const uint8_t *payload;
 	size_t packet_len;
+	size_t header_len;
+	size_t payload_len;
 	uint64_t deadline_ns;
 	uint64_t tx_time_ns;
 	uint32_t psn;
@@ -329,9 +333,13 @@ uet_alloc_outstanding(struct uib_uet_qp *uet, size_t packet_len)
 	out->ack_prev = NULL;
 	out->track = NULL;
 	out->pool = pool;
+	out->payload_mr = NULL;
 	out->pool_class = pool_class;
 	out->packet = out->storage;
+	out->payload = NULL;
 	out->packet_len = packet_len;
+	out->header_len = packet_len;
+	out->payload_len = 0;
 	out->deadline_ns = 0;
 	out->tx_time_ns = 0;
 	out->psn = 0;
@@ -1174,11 +1182,15 @@ static void uet_free_track(struct uib_uet_wr_track *track)
 static void uet_free_outstanding(void *opaque)
 {
 	struct uib_uet_outstanding *out = opaque;
+	struct uib_mr *mr;
 
 	if (!out)
 		return;
 	if (__atomic_sub_fetch(&out->refs, 1, __ATOMIC_ACQ_REL))
 		return;
+	mr = out->payload_mr;
+	out->payload_mr = NULL;
+	uib_mr_put(mr);
 	uet_out_pool_push(out);
 }
 
@@ -1502,7 +1514,8 @@ static int uet_drain_locked(struct uib_qp *qp)
 	struct uib_uet_outstanding *outstanding[UIB_UET_PDC_MPR];
 	struct uib_uet_outstanding *candidate;
 	struct uib_uet_outstanding *out;
-	struct uib_transport_ref refs[UIB_UET_PDC_MPR];
+	struct uib_transport_iov_ref refs[UIB_UET_PDC_MPR];
+	struct iovec vectors[UIB_UET_PDC_MPR][2];
 	struct uib_congestion congestion_before;
 	uint64_t deadline;
 	uint64_t now_ns;
@@ -1523,12 +1536,20 @@ static int uet_drain_locked(struct uib_qp *qp)
 		candidate->tx_time_ns = now_ns;
 		if (!candidate->entropy)
 			uet_select_path(uet, candidate, now_ns);
+		vectors[count][0].iov_base = candidate->packet;
+		vectors[count][0].iov_len = candidate->header_len;
 		refs[count].dst = &candidate->dst;
-		refs[count].buf = candidate->packet;
+		refs[count].iov = vectors[count];
 		refs[count].release = uet_free_outstanding;
 		refs[count].opaque = candidate;
 		refs[count].len = candidate->packet_len;
+		refs[count].iov_count = 1;
 		refs[count].entropy = candidate->entropy;
+		if (candidate->payload_len) {
+			vectors[count][1].iov_base = (void *)candidate->payload;
+			vectors[count][1].iov_len = candidate->payload_len;
+			refs[count].iov_count++;
+		}
 		outstanding[count] = candidate;
 		__atomic_add_fetch(&candidate->refs, 1, __ATOMIC_RELAXED);
 		uib_congestion_on_send(&uet->congestion,
@@ -1552,7 +1573,7 @@ static int uet_drain_locked(struct uib_qp *qp)
 		}
 		return 0;
 	}
-	rc = uib_transport_send_ref_batch(qp->ctx, refs, count);
+	rc = uib_transport_send_iov_ref_batch(qp->ctx, refs, count);
 	if (rc < 0) {
 		uet->congestion = congestion_before;
 		return rc;
@@ -3940,20 +3961,33 @@ uet_allocate_request(struct uib_qp *qp, struct uib_send_wr *wr,
 {
 	struct uet_request_layout layout;
 	struct uib_uet_outstanding *out;
+	size_t allocation_len;
+	int direct_payload;
 	int rc;
 
 	rc = uet_request_layout(qp, wr, context, packet_index, &layout);
 	if (rc < 0)
 		return NULL;
-	out = uet_alloc_outstanding(context->uet, layout.packet_len);
+	direct_payload = context->mr && layout.data_len &&
+		layout.data_len == layout.chunk;
+	allocation_len = direct_payload ? layout.packet_len - layout.data_len :
+		layout.packet_len;
+	out = uet_alloc_outstanding(context->uet, allocation_len);
 	if (!out)
 		return NULL;
 	out->track = context->track;
 	out->dst = context->destination;
 	out->packet_len = layout.packet_len;
+	out->header_len = allocation_len;
 	out->read_offset = layout.offset;
 	out->read_len = layout.chunk;
 	out->nominal_len = (uint32_t)layout.packet_len + 40;
+	if (direct_payload) {
+		out->payload = context->message + layout.offset;
+		out->payload_len = layout.data_len;
+		out->payload_mr = context->mr;
+		uib_mr_get(out->payload_mr);
+	}
 	return out;
 }
 
@@ -4044,7 +4078,8 @@ static void uet_encode_request(struct uib_qp *qp, struct uib_send_wr *wr,
 	offset = out->read_offset;
 	chunk = out->read_len;
 	header_len = uet_request_header_len(context->request_header);
-	data_len = out->packet_len - context->pds_len - header_len;
+	data_len = out->payload_len ? out->payload_len :
+		out->packet_len - context->pds_len - header_len;
 	request = (struct uib_uet_pds_req *)out->packet;
 	wire_header = out->packet + context->pds_len;
 	wire_data = (uint8_t *)wire_header + header_len;
@@ -4066,7 +4101,8 @@ static void uet_encode_request(struct uib_qp *qp, struct uib_send_wr *wr,
 	}
 	uet_init_ses(qp, wr, context, out, &ses, packet_index, chunk, offset,
 		     wire_data, data_len);
-	if (data_len && wr->opcode != UIB_WR_ATOMIC_FETCH_ADD &&
+	if (data_len && !out->payload_len &&
+	    wr->opcode != UIB_WR_ATOMIC_FETCH_ADD &&
 	    wr->opcode != UIB_WR_ATOMIC_CMP_SWAP &&
 	    wr->opcode != UIB_WR_UET_ATOMIC)
 		memcpy(wire_data, context->message + offset, data_len);

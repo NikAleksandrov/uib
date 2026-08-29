@@ -934,6 +934,20 @@ A referenced matching MR, or NULL if no match is found.
 
 ## Memory regions
 
+### [`uib_mr_get`](../include/uib/mr.h)
+
+```c
+void uib_mr_get(struct uib_mr *mr);
+```
+
+Description:
+
+Retain an existing memory-region reference.
+
+Parameters:
+
+- `mr` — Referenced memory region
+
 ### [`uib_mr_put`](../include/uib/mr.h)
 
 ```c

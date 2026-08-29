@@ -916,6 +916,13 @@ Parameter \fBctx\fP: UIB device context
 Return value: A bitmask of enum uib_host_zc_capability values, or 0 for an invalid context.
 .SS "Memory regions"
 .TP
+.B uib_mr_get
+void uib_mr_get(struct uib_mr *mr);
+.br
+Retain an existing memory\-region reference.
+.br
+Parameter \fBmr\fP: Referenced memory region
+.TP
 .B uib_mr_put
 void uib_mr_put(struct uib_mr *mr);
 .br
