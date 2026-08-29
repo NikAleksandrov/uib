@@ -30,8 +30,11 @@ struct uib_transport_stats {
 	uint64_t rx_packets;
 	uint64_t rx_gro_batches;
 	uint64_t rx_completion_batches;
+	uint64_t rx_dispatch_drops;
 	uint32_t rx_largest_batch;
 	uint32_t rx_batch;
+	uint32_t rx_workers;
+	uint32_t rx_workers_pinned;
 	uint32_t tx_batch;
 	uint32_t sqpoll_requested;
 	uint32_t sqpoll_active;

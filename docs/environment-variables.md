@@ -55,6 +55,8 @@ when the relevant context, transport, benchmark, or test is created.
 
 | Variable | Default | Accepted values | Description | Example |
 |---|---|---|---|---|
+| <code>UIB_UDP_WORKERS</code> | `auto`, one receive-dispatch worker per allowed CPU | `auto` or a positive integer; with affinity enabled, no greater | than the allowed CPU count Set the number of UDP receive-dispatch workers. Packets for one QP always use the same worker, while different QPs can be processed in parallel. With affinity enabled, an explicit count cannot exceed the process's allowed CPU count. | <code>UIB_UDP_WORKERS=8 LD_PRELOAD=$PWD/libuibv.so app</code> |
+| <code>UIB_UDP_WORKER_AFFINITY</code> | `on` | `off` or `on` | Pin UDP receive-dispatch workers to distinct CPUs from the process's allowed CPU set. Set this to `off` when an external scheduler manages thread placement. | <code>UIB_UDP_WORKERS=4 UIB_UDP_WORKER_AFFINITY=off app</code> |
 | <code>UIB_UDP_GSO</code> | `auto` | `auto`, `off`, or `on` | Combine equal-sized RDMA packets into UDP GSO sends. `on` fails context creation when the kernel does not support UDP GSO; `auto` falls back. | <code>UIB_UDP_GSO=off ./examples/stress_bench --protocol rocev2</code> |
 
 ## AF_XDP transport

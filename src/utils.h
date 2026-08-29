@@ -2,6 +2,7 @@
 #ifndef UIB_UTILS_H
 #define UIB_UTILS_H
 
+#include <sched.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -25,5 +26,11 @@ uint64_t uib_mul_div_u64(uint64_t a, uint64_t b, uint64_t divisor);
 size_t uib_align_up(size_t value, size_t alignment);
 int uib_parse_u64(const char *text, unsigned int base, uint64_t *value);
 int uib_env_u64(const char *name, uint64_t *value);
+int uib_env_bool(const char *name, int default_value, int *value);
+int uib_worker_configuration(unsigned int *count, cpu_set_t *allowed,
+			     int *affinity, const char *workers_env,
+			     const char *affinity_env,
+			     unsigned int automatic_limit);
+int uib_worker_cpu(const cpu_set_t *allowed, unsigned int index);
 
 #endif

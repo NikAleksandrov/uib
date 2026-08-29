@@ -1202,6 +1202,26 @@ UIB_PROTOCOL=rocev2
 UIB_TRANSPORT_MODE=udp-io-uring
 ```
 
+UDP receive processing uses one pinned worker for every CPU allowed to the
+process. Packets from the same QP stay on the same worker, so QP ordering is
+preserved while independent QPs can run in parallel. A scheduler CPU set is
+honored automatically. Override this only when reserving CPUs for the model or
+when the scheduler already pins individual threads:
+
+```yaml
+uib:
+  environment:
+    UIB_UDP_WORKERS: "8"
+    UIB_UDP_WORKER_AFFINITY: "off"
+```
+
+`UIB_UDP_WORKERS` accepts `auto` or a positive integer. `auto` is the default
+and uses the allowed CPU count. `UIB_UDP_WORKER_AFFINITY` accepts `on` or
+`off` and defaults to `on`; with affinity on, the worker count cannot exceed
+the allowed CPU count. Dispatch queues are bounded, and overload drops are
+reported as `rxDispatchDrops` in `UIB_STATS` rather than consuming unbounded
+memory.
+
 The precise HCA filter syntax is validated against the pinned NCCL release.
 
 Three distribution methods are supported:

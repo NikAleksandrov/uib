@@ -6,7 +6,8 @@ project_dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 test_dir=$(mktemp -d)
 trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
 
-UIB_STATS_OUTPUT=stderr UIB_TRANSPORT_MODE=udp-sync \
+UIB_STATS_OUTPUT=stderr UIB_TRANSPORT_MODE=udp-sync UIB_UDP_WORKERS=2 \
+	UIB_UDP_WORKER_AFFINITY=off \
 	"$project_dir/tests/loopback" > "$test_dir/stdout" 2> "$test_dir/stderr"
 python3 - "$test_dir/stderr" <<'PY'
 import json
@@ -30,6 +31,12 @@ assert sum(record["transportCounters"]["txCompleted"]
            for record in records) > 0
 assert sum(record["transportCounters"]["rxPackets"]
            for record in records) > 0
+assert all(record["transportCounters"]["rxWorkers"] == 2
+           for record in records)
+assert all(record["transportCounters"]["rxWorkersPinned"] == 0
+           for record in records)
+assert all(record["transportCounters"]["rxDispatchDrops"] == 0
+           for record in records)
 assert all("zeroCopyCounters" in record for record in records)
 PY
 

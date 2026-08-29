@@ -102,6 +102,7 @@ int main(void)
 	struct uib_pd *apd = NULL, *bpd = NULL;
 	struct uib_cq *acq = NULL, *bcq = NULL;
 	struct uib_qp *aqp = NULL, *bqp = NULL;
+	struct uib_qp *aqp2 = NULL, *bqp2 = NULL;
 	struct uib_mr *smr = NULL, *rmr = NULL;
 	uint8_t send_buf[TEST_LEN], recv_buf[TEST_LEN];
 	struct uib_qp_init_attr init = {
@@ -129,6 +130,8 @@ int main(void)
 	size_t i;
 
 	setvbuf(stdout, NULL, _IONBF, 0);
+	setenv(UIB_ENV_UDP_WORKERS, "2", 1);
+	setenv(UIB_ENV_UDP_WORKER_AFFINITY, "off", 1);
 
 	check("select.rocev2.default",
 	      uib_protocol_find(NULL) == &uib_rocev2_protocol_ops);
@@ -178,11 +181,18 @@ int main(void)
 	aqp = uib_create_qp(apd, &init);
 	init.send_cq = init.recv_cq = bcq;
 	bqp = uib_create_qp(bpd, &init);
-	check("dummy.resources", apd && bpd && acq && bcq && aqp && bqp);
-	if (!apd || !bpd || !acq || !bcq || !aqp || !bqp)
+	init.send_cq = init.recv_cq = acq;
+	aqp2 = uib_create_qp(apd, &init);
+	init.send_cq = init.recv_cq = bcq;
+	bqp2 = uib_create_qp(bpd, &init);
+	check("dummy.resources", apd && bpd && acq && bcq && aqp && bqp &&
+	      aqp2 && bqp2);
+	if (!apd || !bpd || !acq || !bcq || !aqp || !bqp || !aqp2 || !bqp2)
 		goto out;
 	check("dummy.connect", !connect_qp(aqp, bqp, 18517) &&
-	      !connect_qp(bqp, aqp, 18516));
+	      !connect_qp(bqp, aqp, 18516) &&
+	      !connect_qp(aqp2, bqp2, 18517) &&
+	      !connect_qp(bqp2, aqp2, 18516));
 
 	for (i = 0; i < sizeof(send_buf); i++)
 		send_buf[i] = (uint8_t)(i ^ 0xa5);
@@ -217,6 +227,16 @@ int main(void)
 	      wc.status == UIB_WC_SUCCESS && wc.opcode == UIB_WC_RECV &&
 	      wc.byte_len == TEST_LEN);
 	check("dummy.data", !memcmp(send_buf, recv_buf, sizeof(send_buf)));
+
+	recv_wr.wr_id = 0x23;
+	check("workers.second.post_recv", !uib_post_recv(bqp2, &recv_wr, NULL));
+	send_wr.wr_id = 0x12;
+	check("workers.second.post_send", !uib_post_send(aqp2, &send_wr, NULL));
+	check("workers.second.send_wc", !wait_wc(acq, &wc) &&
+	      wc.status == UIB_WC_SUCCESS && wc.opcode == UIB_WC_SEND);
+	check("workers.second.recv_wc", !wait_wc(bcq, &wc) &&
+	      wc.wr_id == 0x23 && wc.status == UIB_WC_SUCCESS &&
+	      wc.opcode == UIB_WC_RECV && wc.byte_len == TEST_LEN);
 
 	check("loan.post", !uib_post_recv_loan(bqp, 0x44,
 					     sizeof(send_buf)));
@@ -306,6 +326,10 @@ out:
 		uib_destroy_qp(aqp);
 	if (bqp)
 		uib_destroy_qp(bqp);
+	if (aqp2)
+		uib_destroy_qp(aqp2);
+	if (bqp2)
+		uib_destroy_qp(bqp2);
 	if (acq)
 		uib_destroy_cq(acq);
 	if (bcq)
@@ -318,6 +342,8 @@ out:
 		uib_close_device(a);
 	if (b)
 		uib_close_device(b);
+	unsetenv(UIB_ENV_UDP_WORKERS);
+	unsetenv(UIB_ENV_UDP_WORKER_AFFINITY);
 	printf("RESULT %s\n", failed ? "FAIL" : "PASS");
 	return failed ? 1 : 0;
 }

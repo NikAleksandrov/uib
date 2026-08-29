@@ -100,6 +100,10 @@
  */
 #define UIB_ENV_UDP_MODE "UIB_UDP_MODE"
 
+#define UIB_ENV_UDP_WORKERS "UIB_UDP_WORKERS"
+
+#define UIB_ENV_UDP_WORKER_AFFINITY "UIB_UDP_WORKER_AFFINITY"
+
 /**
  * DOC: UIB_URING_RX_MODE
  * @uib-env: Library and transparent provider

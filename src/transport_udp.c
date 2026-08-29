@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <poll.h>
+#include <sched.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/uio.h>
@@ -20,6 +21,7 @@
 #include "uib/afxdp_frame.h"
 #include "ptr_ring.h"
 #include "transport_internal.h"
+#include "utils.h"
 
 #define UIB_URING_DEPTH              256
 #define UIB_URING_BATCH_DEFAULT      64
@@ -44,6 +46,8 @@
 	(CMSG_SPACE(sizeof(uint16_t)) + CMSG_SPACE(sizeof(uint8_t)))
 #define UIB_URING_SQPOLL_IDLE_DEFAULT 2000
 #define UIB_SOCKET_BUFFER_SIZE       (4 * 1024 * 1024)
+#define UIB_UDP_RX_WORK_QUEUE        1024
+#define UIB_UDP_RX_WORKER_STACK      (512 * 1024)
 #define UIB_UDP_COPY_CAPACITY        (8192 + sizeof(struct iphdr) + \
 				       sizeof(struct udphdr))
 
@@ -113,6 +117,29 @@ struct uib_udp_tx {
 	uint8_t            storage[];
 };
 
+struct uib_udp_backend;
+
+struct uib_udp_rx_work {
+	struct sockaddr_in source;
+	size_t             length;
+	uint8_t            ecn;
+	uint8_t            data[];
+};
+
+struct uib_udp_rx_worker {
+	struct uib_udp_backend *backend;
+	struct uib_ptr_ring     queue;
+	pthread_cond_t          cond;
+	pthread_mutex_t         lock;
+	pthread_t               thread;
+	unsigned int            cpu;
+	int                     cpu_set;
+	int                     started;
+	int                     initialized;
+	int                     init_done;
+	int                     init_rc;
+};
+
 struct uib_udp_backend {
 	struct uib_udp_tx       *tx_inflight;
 	struct uib_udp_tx       *tx_retry_head;
@@ -133,6 +160,8 @@ struct uib_udp_backend {
 	pthread_cond_t           init_cond;
 	pthread_mutex_t          init_lock;
 	pthread_t                worker;
+	struct uib_context      *ctx;
+	struct uib_udp_rx_worker *rx_workers;
 	void                    *rx_buffers;
 	size_t                   rx_buffer_len;
 	size_t                   page_size;
@@ -141,6 +170,7 @@ struct uib_udp_backend {
 	unsigned int             sqpoll_idle;
 	unsigned int             sqpoll_cpu;
 	unsigned int             test_drop_tx;
+	unsigned int             rx_worker_count;
 	uint32_t                 zerocopy_sequence;
 	int                      zerocopy_enabled;
 	int                      multishot_required;
@@ -178,6 +208,97 @@ static int test_drop_packet(struct uib_udp_backend *be)
 			return 1;
 	}
 	return 0;
+}
+
+static void rx_worker_signal_init(struct uib_udp_rx_worker *worker, int rc)
+{
+	pthread_mutex_lock(&worker->lock);
+	worker->init_rc = rc;
+	worker->init_done = 1;
+	pthread_cond_signal(&worker->cond);
+	pthread_mutex_unlock(&worker->lock);
+}
+
+static void *rx_worker_loop(void *argument)
+{
+	struct uib_udp_rx_worker *worker = argument;
+	struct uib_udp_backend *be = worker->backend;
+	struct uib_udp_rx_work *work;
+	cpu_set_t cpus;
+	int rc;
+
+	rc = 0;
+	if (worker->cpu_set) {
+		CPU_ZERO(&cpus);
+		CPU_SET(worker->cpu, &cpus);
+		rc = pthread_setaffinity_np(pthread_self(), sizeof(cpus), &cpus);
+	}
+	rx_worker_signal_init(worker, rc ? -rc : 0);
+	if (rc)
+		return NULL;
+	for (;;) {
+		work = uib_ptr_ring_pop(&worker->queue);
+		if (work) {
+			uib_transport_deliver_ecn(be->ctx, &work->source,
+						  work->data, work->length,
+						  work->ecn);
+			free(work);
+			continue;
+		}
+		pthread_mutex_lock(&worker->lock);
+		while (__atomic_load_n(&be->worker_run, __ATOMIC_ACQUIRE) &&
+		       !uib_ptr_ring_count(&worker->queue))
+			pthread_cond_wait(&worker->cond, &worker->lock);
+		rc = __atomic_load_n(&be->worker_run, __ATOMIC_ACQUIRE);
+		pthread_mutex_unlock(&worker->lock);
+		if (!rc && !uib_ptr_ring_count(&worker->queue))
+			break;
+	}
+	return NULL;
+}
+
+static void dispatch_packet(struct uib_context *ctx, const void *buffer,
+			    size_t length,
+			    const struct sockaddr_in *source, uint8_t ecn)
+{
+	struct uib_udp_backend *be = ctx->backend;
+	struct uib_udp_rx_worker *worker;
+	struct uib_udp_rx_work *work;
+	uint64_t position;
+	uint32_t qpn;
+	unsigned int index;
+	int was_empty;
+	int rc;
+
+	if (!ctx->pops || !ctx->pops->packet_qpn ||
+	    length < ctx->pops->min_packet ||
+	    ctx->pops->packet_qpn(buffer, length, &qpn) < 0)
+		return;
+	index = qpn % be->rx_worker_count;
+	worker = &be->rx_workers[index];
+	work = malloc(sizeof(*work) + length);
+	if (!work)
+		goto drop;
+	work->source = *source;
+	work->length = length;
+	work->ecn = ecn;
+	memcpy(work->data, buffer, length);
+	rc = uib_ptr_ring_reserve(&worker->queue, 1, &position, &was_empty);
+	if (rc < 0) {
+		free(work);
+		goto drop;
+	}
+	uib_ptr_ring_publish(&worker->queue, position, work);
+	if (was_empty) {
+		pthread_mutex_lock(&worker->lock);
+		pthread_cond_signal(&worker->cond);
+		pthread_mutex_unlock(&worker->lock);
+	}
+	return;
+
+drop:
+	__atomic_fetch_add(&be->stats.rx_dispatch_drops, 1,
+			   __ATOMIC_RELAXED);
 }
 
 static int raw_decode(struct uib_context *ctx, void *buffer, size_t frame_len,
@@ -249,7 +370,7 @@ static void deliver_packet(struct uib_context *ctx, void *buffer, size_t length,
 	    raw_decode(ctx, buffer, length, &decoded_source, &rdma,
 		       &rdma_len, &ecn) < 0)
 		return;
-	uib_transport_deliver_ecn(ctx, &decoded_source, rdma, rdma_len, ecn);
+	dispatch_packet(ctx, rdma, rdma_len, &decoded_source, ecn);
 	__atomic_fetch_add(&be->stats.rx_packets, 1, __ATOMIC_RELAXED);
 }
 
@@ -1330,6 +1451,106 @@ static int udp_probe(void)
 	return 1;
 }
 
+static void cleanup_rx_workers(struct uib_udp_backend *be)
+{
+	struct uib_udp_rx_worker *worker;
+	struct uib_udp_rx_work *work;
+	unsigned int i;
+
+	if (!be->rx_workers)
+		return;
+	__atomic_store_n(&be->worker_run, 0, __ATOMIC_RELEASE);
+	for (i = 0; i < be->rx_worker_count; i++) {
+		worker = &be->rx_workers[i];
+		if (!worker->initialized)
+			continue;
+		pthread_mutex_lock(&worker->lock);
+		pthread_cond_signal(&worker->cond);
+		pthread_mutex_unlock(&worker->lock);
+	}
+	for (i = 0; i < be->rx_worker_count; i++) {
+		worker = &be->rx_workers[i];
+		if (worker->started)
+			pthread_join(worker->thread, NULL);
+		if (!worker->initialized)
+			continue;
+		while ((work = uib_ptr_ring_pop(&worker->queue)) != NULL)
+			free(work);
+		uib_ptr_ring_destroy(&worker->queue);
+		pthread_cond_destroy(&worker->cond);
+		pthread_mutex_destroy(&worker->lock);
+	}
+	free(be->rx_workers);
+	be->rx_workers = NULL;
+	be->rx_worker_count = 0;
+}
+
+static int init_rx_workers(struct uib_udp_backend *be)
+{
+	struct uib_udp_rx_worker *worker;
+	pthread_attr_t attr;
+	cpu_set_t allowed;
+	unsigned int count = 0;
+	unsigned int i;
+	int affinity;
+	int attr_ready;
+	int cpu;
+	int rc;
+
+	rc = uib_worker_configuration(&count, &allowed, &affinity,
+				      UIB_ENV_UDP_WORKERS,
+				      UIB_ENV_UDP_WORKER_AFFINITY, 0);
+	if (rc < 0)
+		return rc;
+	be->rx_workers = calloc(count, sizeof(*be->rx_workers));
+	if (!be->rx_workers)
+		return -ENOMEM;
+	be->rx_worker_count = count;
+	for (i = 0; i < count; i++) {
+		worker = &be->rx_workers[i];
+		worker->backend = be;
+		pthread_mutex_init(&worker->lock, NULL);
+		pthread_cond_init(&worker->cond, NULL);
+		worker->initialized = 1;
+		rc = uib_ptr_ring_init(&worker->queue,
+				       UIB_UDP_RX_WORK_QUEUE);
+		if (rc < 0)
+			return rc;
+		if (affinity) {
+			cpu = uib_worker_cpu(&allowed, i);
+			if (cpu < 0)
+				return -EINVAL;
+			worker->cpu = (unsigned int)cpu;
+			worker->cpu_set = 1;
+		}
+	}
+	attr_ready = !pthread_attr_init(&attr);
+	if (attr_ready)
+		pthread_attr_setstacksize(&attr, UIB_UDP_RX_WORKER_STACK);
+	for (i = 0; i < count; i++) {
+		worker = &be->rx_workers[i];
+		rc = pthread_create(&worker->thread, attr_ready ? &attr : NULL,
+				    rx_worker_loop, worker);
+		if (rc) {
+			rc = -rc;
+			goto out;
+		}
+		worker->started = 1;
+		pthread_mutex_lock(&worker->lock);
+		while (!worker->init_done)
+			pthread_cond_wait(&worker->cond, &worker->lock);
+		rc = worker->init_rc;
+		pthread_mutex_unlock(&worker->lock);
+		if (rc < 0)
+			goto out;
+	}
+
+out:
+	if (attr_ready)
+		pthread_attr_destroy(&attr);
+	return rc;
+}
+
 static int parse_batch_size(const char *name, unsigned int *value)
 {
 	const char *setting = getenv(name);
@@ -1467,6 +1688,7 @@ static void cleanup_backend(struct uib_udp_backend *be)
 {
 	struct uib_udp_tx *tx;
 
+	cleanup_rx_workers(be);
 	if (be->fd >= 0)
 		close(be->fd);
 	if (be->wake_fd >= 0)
@@ -1558,6 +1780,7 @@ static int udp_init_common(struct uib_context *ctx, int asynchronous)
 		return -ENOMEM;
 	be->fd = -1;
 	be->wake_fd = -1;
+	be->ctx = ctx;
 	page_size = sysconf(_SC_PAGESIZE);
 	be->page_size = page_size > 0 ? (size_t)page_size : 4096;
 	pthread_mutex_init(&be->init_lock, NULL);
@@ -1597,6 +1820,9 @@ static int udp_init_common(struct uib_context *ctx, int asynchronous)
 	}
 	__atomic_store_n(&be->worker_run, 1, __ATOMIC_RELEASE);
 	__atomic_store_n(&be->accepting, 1, __ATOMIC_RELEASE);
+	rc = init_rx_workers(be);
+	if (rc < 0)
+		goto error;
 	thread_rc = pthread_create(&be->worker, NULL, worker_loop, ctx);
 	if (thread_rc) {
 		rc = -thread_rc;
@@ -2139,10 +2365,16 @@ static int udp_get_stats(struct uib_context *ctx,
 	stats->rx_completion_batches =
 		__atomic_load_n(&be->stats.rx_completion_batches,
 				__ATOMIC_RELAXED);
+	stats->rx_dispatch_drops =
+		__atomic_load_n(&be->stats.rx_dispatch_drops,
+				__ATOMIC_RELAXED);
 	stats->rx_largest_batch = __atomic_load_n(&be->stats.rx_largest_batch,
 						  __ATOMIC_RELAXED);
 	stats->rx_mode = be->stats.rx_mode;
 	stats->rx_batch = be->rx_batch;
+	stats->rx_workers = be->rx_worker_count;
+	stats->rx_workers_pinned = be->rx_worker_count &&
+		be->rx_workers[0].cpu_set ? be->rx_worker_count : 0;
 	stats->tx_batch = be->tx_batch;
 	stats->sqpoll_requested = be->sqpoll_requested;
 	stats->sqpoll_active = be->sqpoll_active;

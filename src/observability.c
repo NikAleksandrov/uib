@@ -70,8 +70,10 @@ static int append_transport(char *buffer, size_t length,
 		"\"rxPackets\":%" PRIu64 ","
 		"\"rxGroBatches\":%" PRIu64 ","
 		"\"rxCompletionBatches\":%" PRIu64 ","
+		"\"rxDispatchDrops\":%" PRIu64 ","
 		"\"rxLargestBatch\":%u,"
-		"\"rxBatch\":%u,\"txBatch\":%u,"
+		"\"rxBatch\":%u,\"rxWorkers\":%u,"
+		"\"rxWorkersPinned\":%u,\"txBatch\":%u,"
 		"\"sqpollRequested\":%u,\"sqpollActive\":%u,"
 		"\"gsoEnabled\":%u,\"groEnabled\":%u,"
 		"\"rxMode\":%u}",
@@ -79,7 +81,9 @@ static int append_transport(char *buffer, size_t length,
 		stats->tx_errors, stats->tx_gso_batches,
 		stats->tx_gso_packets, stats->rx_packets,
 		stats->rx_gro_batches, stats->rx_completion_batches,
-		stats->rx_largest_batch, stats->rx_batch, stats->tx_batch,
+		stats->rx_dispatch_drops, stats->rx_largest_batch,
+		stats->rx_batch, stats->rx_workers, stats->rx_workers_pinned,
+		stats->tx_batch,
 		stats->sqpoll_requested, stats->sqpoll_active,
 		stats->gso_enabled, stats->gro_enabled, stats->rx_mode);
 }
