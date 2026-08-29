@@ -31,6 +31,9 @@ ifeq ($(strip $(URCU_LIBS)),)
 endif
 HAVE_IBVERBS ?= $(shell printf '#include <infiniband/verbs.h>\n' | \
 	$(CC) -x c -fsyntax-only - >/dev/null 2>&1 && echo 1 || echo 0)
+HAVE_IBV_REG_MR_EX ?= $(shell printf '#include <infiniband/verbs.h>\nstruct ibv_mr_init_attr attr;\nint x = IBV_REG_MR_MASK_ADDR;\n' | \
+	$(CC) $(IBVERBS_CFLAGS) -x c -fsyntax-only - >/dev/null 2>&1 && \
+	echo 1 || echo 0)
 HAVE_MPI ?= $(shell command -v $(MPICC) >/dev/null 2>&1 && echo 1 || echo 0)
 ENABLE_PROVIDER ?= $(HAVE_IBVERBS)
 HAVE_VIRTME ?= $(shell command -v vng >/dev/null 2>&1 && echo 1 || echo 0)
@@ -49,6 +52,10 @@ LDLIBS += $(URING_LIBS) $(MNL_LIBS) $(URCU_LIBS)
 ifeq ($(HAVE_ZLIB),1)
   CFLAGS += -DUIB_HAVE_ZLIB $(ZLIB_CFLAGS)
   LDLIBS += $(ZLIB_LIBS)
+endif
+
+ifeq ($(HAVE_IBV_REG_MR_EX),1)
+  CFLAGS += -DUIB_HAVE_IBV_REG_MR_EX
 endif
 
 # AF_XDP backend (udp-zc-afxdp) is compiled with real libxdp glue only when

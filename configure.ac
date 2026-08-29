@@ -171,6 +171,19 @@ AS_IF([test "x$enable_provider" = xyes && test "$HAVE_IBVERBS" != 1],
 AS_IF([test "x$enable_provider" = xno], [ENABLE_PROVIDER=0],
 	[ENABLE_PROVIDER=$HAVE_IBVERBS])
 
+HAVE_IBV_REG_MR_EX=0
+AS_IF([test "$HAVE_IBVERBS" = 1], [
+	saved_CPPFLAGS=$CPPFLAGS
+	CPPFLAGS="$CPPFLAGS $IBVERBS_CFLAGS"
+	AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
+		[[#include <infiniband/verbs.h>]],
+		[[struct ibv_mr_init_attr attr = { 0 };
+		  attr.comp_mask = IBV_REG_MR_MASK_ADDR;
+		  return attr.comp_mask == 0;]])],
+		[HAVE_IBV_REG_MR_EX=1])
+	CPPFLAGS=$saved_CPPFLAGS
+])
+
 HAVE_AFXDP=0
 AFXDP_CFLAGS=
 AFXDP_LIBS=
@@ -233,6 +246,7 @@ AC_SUBST([HAVE_ZLIB])
 AC_SUBST([ZLIB_CFLAGS])
 AC_SUBST([ZLIB_LIBS])
 AC_SUBST([HAVE_IBVERBS])
+AC_SUBST([HAVE_IBV_REG_MR_EX])
 AC_SUBST([ENABLE_PROVIDER])
 AC_SUBST([IBVERBS_CFLAGS])
 AC_SUBST([IBVERBS_LIBS])
@@ -250,6 +264,7 @@ AC_MSG_NOTICE([configuration summary:])
 AC_MSG_NOTICE([  libmnl networking:   required])
 AC_MSG_NOTICE([  optimized CRC32:     $HAVE_ZLIB])
 AC_MSG_NOTICE([  libibverbs provider: $ENABLE_PROVIDER])
+AC_MSG_NOTICE([  ibv_reg_mr_ex ABI:   $HAVE_IBV_REG_MR_EX])
 AC_MSG_NOTICE([  AF_XDP transport:    $HAVE_AFXDP])
 AC_MSG_NOTICE([  TCP devmem UAPI:     $HAVE_DEVMEM])
 AC_MSG_NOTICE([  DMA-BUF MRs:         $HAVE_DMABUF])

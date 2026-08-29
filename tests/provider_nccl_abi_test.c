@@ -7,7 +7,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 
-#include <infiniband/verbs.h>
+#include "../src/provider_ibverbs_compat.h"
 
 struct required_symbol {
 	const char *name;
@@ -31,6 +31,7 @@ static const struct required_symbol required_symbols[] = {
 	{ "ibv_dealloc_pd", "IBVERBS_1.1" },
 	{ "ibv_reg_mr", "IBVERBS_1.1" },
 	{ "ibv_reg_mr_iova2", "IBVERBS_1.8" },
+	{ "ibv_reg_mr_ex", "IBVERBS_1.15" },
 	{ "ibv_query_ece", "IBVERBS_1.10" },
 	{ "ibv_set_ece", "IBVERBS_1.10" },
 	{ "ibv_reg_dmabuf_mr", "IBVERBS_1.12" },
@@ -84,6 +85,9 @@ int main(void)
 	int (*query_port)(struct ibv_context *, uint8_t, struct ibv_port_attr *);
 	struct ibv_pd *(*alloc_pd)(struct ibv_context *);
 	int (*dealloc_pd)(struct ibv_pd *);
+	struct ibv_mr *(*reg_mr_ex)(struct ibv_pd *,
+				   struct ibv_mr_init_attr *);
+	int (*dereg_mr)(struct ibv_mr *);
 	struct ibv_cq *(*create_cq)(struct ibv_context *, int, void *,
 				    struct ibv_comp_channel *, int);
 	int (*destroy_cq)(struct ibv_cq *);
@@ -106,12 +110,14 @@ int main(void)
 	struct ibv_recv_wr *bad_recv;
 	struct ibv_srq_init_attr srq_init_attr;
 	struct ibv_srq_attr srq_attr;
+	struct ibv_mr_init_attr mr_attr;
 	struct ibv_async_event event;
 	struct ibv_device_attr device_attr;
 	struct ibv_port_attr port_attr;
 	struct ibv_device **devices = NULL;
 	struct ibv_context *context = NULL;
 	struct ibv_pd *pd = NULL;
+	struct ibv_mr *mr = NULL;
 	struct ibv_cq *cq = NULL;
 	struct ibv_qp *qp = NULL;
 	struct ibv_srq *srq = NULL;
@@ -120,6 +126,7 @@ int main(void)
 	int flags;
 	int count;
 	int rc = EXIT_FAILURE;
+	uint8_t mr_buffer[64];
 
 	handle = dlopen("./libuibv.so", RTLD_NOW | RTLD_LOCAL);
 	if (!handle) {
@@ -147,6 +154,8 @@ int main(void)
 	query_port = load_symbol(handle, "ibv_query_port", "IBVERBS_1.1");
 	alloc_pd = load_symbol(handle, "ibv_alloc_pd", "IBVERBS_1.1");
 	dealloc_pd = load_symbol(handle, "ibv_dealloc_pd", "IBVERBS_1.1");
+	reg_mr_ex = load_symbol(handle, "ibv_reg_mr_ex", "IBVERBS_1.15");
+	dereg_mr = load_symbol(handle, "ibv_dereg_mr", "IBVERBS_1.1");
 	create_cq = load_symbol(handle, "ibv_create_cq", "IBVERBS_1.1");
 	destroy_cq = load_symbol(handle, "ibv_destroy_cq", "IBVERBS_1.1");
 	create_qp = load_symbol(handle, "ibv_create_qp", "IBVERBS_1.1");
@@ -237,6 +246,22 @@ int main(void)
 		fprintf(stderr, "provider QP test setup failed\n");
 		goto out;
 	}
+	memset(&mr_attr, 0, sizeof(mr_attr));
+	mr_attr.addr = mr_buffer;
+	mr_attr.length = sizeof(mr_buffer);
+	mr_attr.iova = (uintptr_t)mr_buffer;
+	mr_attr.access = IBV_ACCESS_LOCAL_WRITE;
+	mr_attr.comp_mask = IBV_REG_MR_MASK_ADDR | IBV_REG_MR_MASK_IOVA;
+	mr = reg_mr_ex(pd, &mr_attr);
+	if (!mr) {
+		fprintf(stderr, "provider extended MR registration failed\n");
+		goto out;
+	}
+	if (dereg_mr(mr)) {
+		fprintf(stderr, "provider extended MR deregistration failed\n");
+		goto out;
+	}
+	mr = NULL;
 	memset(&qp_init_attr, 0, sizeof(qp_init_attr));
 	qp_init_attr.send_cq = cq;
 	qp_init_attr.recv_cq = cq;
@@ -307,6 +332,8 @@ int main(void)
 	}
 	rc = EXIT_SUCCESS;
 out:
+	if (mr && dereg_mr(mr))
+		rc = EXIT_FAILURE;
 	if (qp && destroy_qp(qp))
 		rc = EXIT_FAILURE;
 	if (srq && destroy_srq(srq))

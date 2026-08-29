@@ -655,6 +655,7 @@ HAVE_AFXDP
 IBVERBS_LIBS
 IBVERBS_CFLAGS
 ENABLE_PROVIDER
+HAVE_IBV_REG_MR_EX
 HAVE_IBVERBS
 ZLIB_LIBS
 ZLIB_CFLAGS
@@ -4059,6 +4060,34 @@ else case e in #(
 esac
 fi
 
+HAVE_IBV_REG_MR_EX=0
+if test "$HAVE_IBVERBS" = 1
+then :
+
+	saved_CPPFLAGS=$CPPFLAGS
+	CPPFLAGS="$CPPFLAGS $IBVERBS_CFLAGS"
+	cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+#include <infiniband/verbs.h>
+int
+main (void)
+{
+struct ibv_mr_init_attr attr = { 0 };
+		  attr.comp_mask = IBV_REG_MR_MASK_ADDR;
+		  return attr.comp_mask == 0;
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"
+then :
+  HAVE_IBV_REG_MR_EX=1
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.beam conftest.$ac_ext
+	CPPFLAGS=$saved_CPPFLAGS
+
+fi
+
 HAVE_AFXDP=0
 AFXDP_CFLAGS=
 AFXDP_LIBS=
@@ -4292,6 +4321,7 @@ fi
 
 
 
+
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}: configuration summary:" >&5
 printf "%s\n" "$as_me: configuration summary:" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   libmnl networking:   required" >&5
@@ -4300,6 +4330,8 @@ printf "%s\n" "$as_me:   libmnl networking:   required" >&6;}
 printf "%s\n" "$as_me:   optimized CRC32:     $HAVE_ZLIB" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   libibverbs provider: $ENABLE_PROVIDER" >&5
 printf "%s\n" "$as_me:   libibverbs provider: $ENABLE_PROVIDER" >&6;}
+{ printf "%s\n" "$as_me:${as_lineno-$LINENO}:   ibv_reg_mr_ex ABI:   $HAVE_IBV_REG_MR_EX" >&5
+printf "%s\n" "$as_me:   ibv_reg_mr_ex ABI:   $HAVE_IBV_REG_MR_EX" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   AF_XDP transport:    $HAVE_AFXDP" >&5
 printf "%s\n" "$as_me:   AF_XDP transport:    $HAVE_AFXDP" >&6;}
 { printf "%s\n" "$as_me:${as_lineno-$LINENO}:   TCP devmem UAPI:     $HAVE_DEVMEM" >&5

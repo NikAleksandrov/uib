@@ -12,7 +12,7 @@
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
 
-#include <infiniband/verbs.h>
+#include "provider_ibverbs_compat.h"
 
 #undef ibv_reg_mr
 #undef ibv_reg_mr_iova
@@ -107,6 +107,8 @@ static struct ibv_mr      *(*real_reg_mr_iova)(struct ibv_pd *, void *, size_t,
 					       uint64_t, int);
 static struct ibv_mr      *(*real_reg_mr_iova2)(struct ibv_pd *, void *, size_t,
 						uint64_t, unsigned int);
+static struct ibv_mr      *(*real_reg_mr_ex)(struct ibv_pd *,
+					     struct ibv_mr_init_attr *);
 static struct ibv_mr      *(*real_reg_dmabuf_mr)(struct ibv_pd *, uint64_t,
 						 size_t, uint64_t, int, int);
 static int                 (*real_dereg_mr)(struct ibv_mr *);
@@ -174,6 +176,7 @@ static void uibv_init(void)
 	real_reg_mr            = dlsym(RTLD_NEXT, "ibv_reg_mr");
 	real_reg_mr_iova       = dlsym(RTLD_NEXT, "ibv_reg_mr_iova");
 	real_reg_mr_iova2      = dlsym(RTLD_NEXT, "ibv_reg_mr_iova2");
+	real_reg_mr_ex         = dlsym(RTLD_NEXT, "ibv_reg_mr_ex");
 	real_reg_dmabuf_mr     = dlsym(RTLD_NEXT, "ibv_reg_dmabuf_mr");
 	real_dereg_mr          = dlsym(RTLD_NEXT, "ibv_dereg_mr");
 	real_create_comp_channel = dlsym(RTLD_NEXT, "ibv_create_comp_channel");
@@ -1286,6 +1289,47 @@ struct ibv_mr *ibv_reg_mr_iova2(struct ibv_pd *pd, void *addr, size_t length,
 		return real_reg_mr_iova2 ?
 			real_reg_mr_iova2(pd, addr, length, iova, access) : NULL;
 	return provider_reg_mr(pd, addr, length, iova, access);
+}
+
+struct ibv_mr *ibv_reg_mr_ex(struct ibv_pd *pd,
+			     struct ibv_mr_init_attr *attr)
+{
+	const uint64_t supported = IBV_REG_MR_MASK_IOVA |
+		IBV_REG_MR_MASK_ADDR | IBV_REG_MR_MASK_FD |
+		IBV_REG_MR_MASK_FD_OFFSET;
+	uint64_t offset;
+	uint64_t iova;
+
+	if (!ctx_is_ours(pd->context))
+		return real_reg_mr_ex ? real_reg_mr_ex(pd, attr) : NULL;
+	if (!attr) {
+		errno = EINVAL;
+		return NULL;
+	}
+	if (attr->comp_mask & ~supported) {
+		errno = EOPNOTSUPP;
+		return NULL;
+	}
+	if (attr->comp_mask & IBV_REG_MR_MASK_FD) {
+		if (attr->comp_mask & IBV_REG_MR_MASK_ADDR) {
+			errno = EINVAL;
+			return NULL;
+		}
+		offset = attr->comp_mask & IBV_REG_MR_MASK_FD_OFFSET ?
+			attr->fd_offset : 0;
+		iova = attr->comp_mask & IBV_REG_MR_MASK_IOVA ? attr->iova : 0;
+		return ibv_reg_dmabuf_mr(pd, offset, attr->length, iova,
+				    attr->fd, attr->access);
+	}
+	if (!(attr->comp_mask & IBV_REG_MR_MASK_ADDR) ||
+	    (attr->comp_mask & IBV_REG_MR_MASK_FD_OFFSET)) {
+		errno = EINVAL;
+		return NULL;
+	}
+	iova = attr->comp_mask & IBV_REG_MR_MASK_IOVA ? attr->iova :
+		(uint64_t)(uintptr_t)attr->addr;
+	return provider_reg_mr(pd, attr->addr, attr->length, iova,
+			       (unsigned int)attr->access);
 }
 
 struct ibv_mr *ibv_reg_dmabuf_mr(struct ibv_pd *pd, uint64_t offset,

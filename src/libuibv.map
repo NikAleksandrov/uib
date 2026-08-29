@@ -62,6 +62,11 @@ IBVERBS_1.12 {
 		ibv_reg_dmabuf_mr;
 } IBVERBS_1.10;
 
+IBVERBS_1.15 {
+	global:
+		ibv_reg_mr_ex;
+} IBVERBS_1.12;
+
 EFA_1.1 {
 	global:
 		efadv_query_device;
