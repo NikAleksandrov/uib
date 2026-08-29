@@ -62,11 +62,13 @@ if [ ! -r "$project_dir/libuibv.so" ]; then
 	exit 1
 fi
 
-env LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.1 \
-	UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
-	UIB_ZEROCOPY=off UCX_TLS=rc,ud UCX_NET_DEVICES=uib0:1 \
-	ucx_info -d > "$test_dir/ucx-info.log" 2>&1
-grep -F uib0 "$test_dir/ucx-info.log" >/dev/null
+if [ -n "$ucx_tests$uct_tests" ]; then
+	env LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.1 \
+		UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
+		UIB_ZEROCOPY=off UCX_TLS=rc,ud UCX_NET_DEVICES=uib0:1 \
+		ucx_info -d > "$test_dir/ucx-info.log" 2>&1
+	grep -F uib0 "$test_dir/ucx-info.log" >/dev/null
+fi
 
 env LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.1 \
 	UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
@@ -156,13 +158,17 @@ run_libfabric_test()
 	log_name=$2
 	provider='verbs;ofi_rxd'
 	shift 2
+	if "$test_name" -h 2>&1 | \
+		grep -Eq '(^|[[:space:]])-v([[:space:]]|$)'; then
+		set -- -v "$@"
+	fi
 	timeout -k 2 "$test_timeout" env \
 		LD_PRELOAD="$project_dir/libuibv.so" UIB_BIND_IP=127.0.0.1 \
 		UIB_BIND_PORT="$bind_port" UIB_TRANSPORT_MODE=udp-sync \
 		UIB_ZEROCOPY=off FI_PROVIDER="$provider" FI_LOG_LEVEL=info \
 		FI_VERBS_DGRAM_USE_NAME_SERVER=0 \
 		"$test_name" -p "$provider" -d uib0-dgram \
-		-I "$iterations" -S "$message_sizes" -v -b \
+		-I "$iterations" -S "$message_sizes" -b \
 		"$@" \
 		> "$test_dir/$log_name-server.log" \
 		2>&1 &
@@ -174,14 +180,14 @@ run_libfabric_test()
 		UIB_ZEROCOPY=off FI_PROVIDER="$provider" FI_LOG_LEVEL=info \
 		FI_VERBS_DGRAM_USE_NAME_SERVER=0 \
 		"$test_name" -p "$provider" -d uib0-dgram \
-		-I "$iterations" -S "$message_sizes" -v -b \
+		-I "$iterations" -S "$message_sizes" -b \
 		"$@" 127.0.0.1 \
 		> "$test_dir/$log_name-client.log" 2>&1
 	wait "$server_pid"
 	server_pid=
-	grep -F 'Using verbs provider' \
+	grep -E 'Using verbs provider|ofi_rxd:verbs:' \
 		"$test_dir/$log_name-client.log" >/dev/null
-	grep -F 'Using ofi_rxd provider' \
+	grep -E 'Using ofi_rxd provider|::ofi_rxd:' \
 		"$test_dir/$log_name-client.log" >/dev/null
 	grep -F uib0-dgram "$test_dir/$log_name-client.log" >/dev/null
 	if grep -Ei 'Using (tcp|sockets) provider' \

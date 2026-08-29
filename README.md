@@ -170,6 +170,16 @@ supported development system with:
 
     make distribution-compat-test
 
+A separate source-compatibility matrix builds UIB against pinned upstream
+rdma-core/libibverbs and libfabric releases. It covers the current release,
+one maintained older generation and one legacy generation. The gate rejects
+system-libibverbs fallback, checks provider ABI and CQ behavior, discovers
+`uib0` with an unchanged rdma-core tool, and runs libfabric RxD message, RMA
+and atomic traffic through UIB. Its versioned source builds run in CI with:
+
+    make upstream-compat-test \
+    UIB_RDMA_CORE_VERSION=64.0 UIB_LIBFABRIC_VERSION=2.6.0
+
 Fedora 44 and Alpine 3.24 are the current stable release lines represented by
 the explicit image tags. Update the matrix and dependency installer together
 when a newer stable line is adopted; explicit tags keep old results

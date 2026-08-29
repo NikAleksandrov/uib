@@ -1,0 +1,72 @@
+name: Upstream RDMA compatibility
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-rdma-compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upstream:
+    name: rdma-core ${{ matrix.rdma_core }} / libfabric ${{ matrix.libfabric }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - generation: current
+            rdma_core: '64.0'
+            libfabric: '2.6.0'
+          - generation: maintained-older
+            rdma_core: '55.4'
+            libfabric: '2.2.0'
+          - generation: legacy
+            rdma_core: '48.0'
+            libfabric: '1.20.0'
+
+    steps:
+      - name: Check out UIB
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Build and test the pinned upstream stack
+        env:
+          UIB_RDMA_CORE_VERSION: ${{ matrix.rdma_core }}
+          UIB_LIBFABRIC_VERSION: ${{ matrix.libfabric }}
+          UIB_UPSTREAM_REPORT: >-
+            upstream-compatibility-${{ matrix.generation }}.txt
+        run: |
+          docker run --rm --privileged \
+            --security-opt seccomp=unconfined \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --workdir /src \
+            --env UIB_RDMA_CORE_VERSION \
+            --env UIB_LIBFABRIC_VERSION \
+            --env UIB_UPSTREAM_REPORT \
+            --env UIB_TEST_JOBS=2 \
+            ubuntu:24.04 \
+            sh -eux -c '
+              ./scripts/install-ci-dependencies.sh
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                bzip2 cmake curl libnl-3-dev libnl-route-3-dev \
+                libudev-dev ninja-build
+              rm -rf /var/lib/apt/lists/*
+              make upstream-compat-test
+            '
+
+      - name: Upload compatibility report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: upstream-compatibility-${{ matrix.generation }}
+          path: upstream-compatibility-${{ matrix.generation }}.txt
+          if-no-files-found: error
