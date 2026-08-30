@@ -127,6 +127,15 @@ struct uib_uet_out_pool {
 	int                          closing;
 };
 
+struct uib_uet_deferred {
+	struct uib_uet_outstanding *packet;
+	struct sockaddr_in          source;
+	uint32_t                    psn;
+	uint16_t                    msg_id;
+	uint8_t                     opcode;
+	uint8_t                     ecn_marked;
+};
+
 struct uib_uet_qp {
 	enum uib_uet_pdc_state state;
 	pthread_cond_t publish_cond;
@@ -139,6 +148,8 @@ struct uib_uet_qp {
 	uint32_t tx_clear_psn;
 	uint32_t rx_clear_psn;
 	uint64_t rx_bitmap[2];
+	struct uib_uet_deferred deferred[UIB_UET_PDC_MPR];
+	uint32_t deferred_count;
 	uint32_t out_count;
 	uint32_t sent_count;
 	uint32_t materialized_count;
@@ -1339,6 +1350,7 @@ static void uet_qp_fini(struct uib_qp *qp)
 	struct uib_uet_wr_track *track;
 	struct uib_uet_outstanding *next;
 	struct uib_uet_outstanding *out;
+	uint32_t i;
 
 	if (!uet)
 		return;
@@ -1351,6 +1363,8 @@ static void uet_qp_fini(struct uib_qp *qp)
 		next_track = track->next;
 		uet_free_track(track);
 	}
+	for (i = 0; i < UIB_UET_PDC_MPR; i++)
+		uet_free_outstanding(uet->deferred[i].packet);
 	if (uet->recv_active)
 		uib_qp_release_recv(&uet->recv_slot);
 	pthread_cond_destroy(&uet->publish_cond);
@@ -2664,6 +2678,121 @@ struct uet_request_result {
 	uint8_t storage[16];
 };
 
+static int uet_defer_request(struct uib_qp *qp,
+			     const struct sockaddr_in *source,
+			     const void *packet, size_t packet_len,
+			     uint32_t psn, uint16_t msg_id, uint8_t opcode,
+			     int ecn_marked)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_outstanding *old;
+	struct uib_uet_outstanding *out;
+	struct uib_uet_deferred *deferred;
+	uint32_t slot;
+
+	out = uet_alloc_outstanding(uet, packet_len);
+	if (!out)
+		return -ENOMEM;
+	memcpy(out->packet, packet, packet_len);
+	out->psn = psn;
+	slot = psn % UIB_UET_PDC_MPR;
+	pthread_mutex_lock(&qp->lock);
+	deferred = &uet->deferred[slot];
+	if (deferred->packet && deferred->psn == psn) {
+		pthread_mutex_unlock(&qp->lock);
+		uet_free_outstanding(out);
+		return 0;
+	}
+	old = deferred->packet;
+	if (!old)
+		__atomic_add_fetch(&uet->deferred_count, 1, __ATOMIC_RELAXED);
+	deferred->packet = out;
+	deferred->source = *source;
+	deferred->psn = psn;
+	deferred->msg_id = msg_id;
+	deferred->opcode = opcode;
+	deferred->ecn_marked = !!ecn_marked;
+	pthread_mutex_unlock(&qp->lock);
+	uet_free_outstanding(old);
+	return 0;
+}
+
+static int uet_deferred_ready(const struct uib_uet_qp *uet,
+			      const struct uib_uet_deferred *deferred)
+{
+	if (uet->recv_active && deferred->opcode == UIB_UET_SES_SEND &&
+	    deferred->msg_id == uet->recv_msg_id)
+		return 1;
+	if (uet->write_active && deferred->opcode == UIB_UET_SES_WRITE &&
+	    deferred->msg_id == uet->write_msg_id)
+		return 1;
+	return 0;
+}
+
+static void uet_drop_deferred_copy(struct uib_qp *qp, uint32_t psn)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_outstanding *packet;
+	struct uib_uet_deferred *deferred;
+	uint32_t slot;
+
+	packet = NULL;
+	if (!__atomic_load_n(&uet->deferred_count, __ATOMIC_RELAXED))
+		return;
+	slot = psn % UIB_UET_PDC_MPR;
+	pthread_mutex_lock(&qp->lock);
+	deferred = &uet->deferred[slot];
+	if (deferred->packet && deferred->psn == psn) {
+		packet = deferred->packet;
+		memset(deferred, 0, sizeof(*deferred));
+		__atomic_sub_fetch(&uet->deferred_count, 1,
+				   __ATOMIC_RELAXED);
+	}
+	pthread_mutex_unlock(&qp->lock);
+	uet_free_outstanding(packet);
+}
+
+static struct uib_uet_outstanding *
+uet_take_deferred(struct uib_qp *qp, struct sockaddr_in *source,
+		  int *ecn_marked)
+{
+	struct uib_uet_qp *uet = qp->protocol_private;
+	struct uib_uet_outstanding *packet;
+	struct uib_uet_deferred *deferred;
+	uint32_t best_offset;
+	uint32_t offset;
+	uint32_t best;
+	uint32_t i;
+
+	packet = NULL;
+	if (!__atomic_load_n(&uet->deferred_count, __ATOMIC_RELAXED))
+		return NULL;
+	best_offset = UINT32_MAX;
+	best = 0;
+	pthread_mutex_lock(&qp->lock);
+	for (i = 0; i < UIB_UET_PDC_MPR; i++) {
+		deferred = &uet->deferred[i];
+		if (!deferred->packet || !uet_deferred_ready(uet, deferred))
+			continue;
+		offset = deferred->psn - uet->rx_base_psn;
+		if (offset >= best_offset)
+			continue;
+		best = i;
+		best_offset = offset;
+	}
+	if (best_offset != UINT32_MAX) {
+		deferred = &uet->deferred[best];
+		packet = deferred->packet;
+		*source = deferred->source;
+		*ecn_marked = deferred->ecn_marked;
+		memset(deferred, 0, sizeof(*deferred));
+		__atomic_sub_fetch(&uet->deferred_count, 1,
+				   __ATOMIC_RELAXED);
+	}
+	pthread_mutex_unlock(&qp->lock);
+	return packet;
+}
+
 static int uet_accept_request(struct uib_qp *qp,
 			      const struct uib_uet_pds_req *request,
 			      size_t packet_len, uint8_t packet_type,
@@ -2847,9 +2976,10 @@ static int uet_record_message_error(struct uib_uet_qp *uet, uint16_t msg_id,
 	return 1;
 }
 
-static int uet_handle_request(struct uib_qp *qp,
-			      const struct sockaddr_in *src,
-			      const void *packet, size_t len, int ecn_marked)
+static int uet_handle_request_one(struct uib_qp *qp,
+				  const struct sockaddr_in *src,
+				  const void *packet, size_t len,
+				  int ecn_marked)
 {
 	const struct uib_uet_pds_req *request = packet;
 	struct uib_uet_ses_req ses;
@@ -2892,8 +3022,13 @@ static int uet_handle_request(struct uib_qp *qp,
 	rc = uet_accept_request(qp, request, len, packet_type, opcode,
 				ses.flags & UIB_UET_SES_FLAGS_MASK, msg_id, psn,
 				receive_time_ns, &duplicate, &cack);
-	if (rc)
-		return rc < 0 ? rc : 0;
+	if (rc < 0)
+		return rc;
+	if (rc > 0)
+		return uet_defer_request(qp, src, packet, len, psn, msg_id,
+					 opcode,
+					 ecn_marked);
+	uet_drop_deferred_copy(qp, psn);
 	out_of_order = psn != cack;
 
 	result.response_code = uet_validate_session(qp, &ses);
@@ -2942,6 +3077,33 @@ static int uet_handle_request(struct uib_qp *qp,
 			       receive_time_ns, ecn_marked, request_header);
 	free(result.owned_data);
 	return rc;
+}
+
+static int uet_handle_request(struct uib_qp *qp,
+			      const struct sockaddr_in *source,
+			      const void *packet, size_t len, int ecn_marked)
+{
+	struct uib_uet_outstanding *deferred;
+	struct sockaddr_in deferred_source;
+	int deferred_ecn;
+	int rc;
+
+	rc = uet_handle_request_one(qp, source, packet, len, ecn_marked);
+	if (rc < 0)
+		return rc;
+	for (;;) {
+		deferred = uet_take_deferred(qp, &deferred_source,
+					       &deferred_ecn);
+		if (!deferred)
+			return 0;
+		rc = uet_handle_request_one(qp, &deferred_source,
+					    deferred->packet,
+					    deferred->packet_len,
+					    deferred_ecn);
+		uet_free_outstanding(deferred);
+		if (rc < 0)
+			return rc;
+	}
 }
 
 static void uet_complete_out_locked(struct uib_qp *qp,

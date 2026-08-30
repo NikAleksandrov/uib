@@ -426,9 +426,8 @@ static void run_uet_write_imm_reorder(void)
 	check("uet.write-imm.som",
 	      !inject_uet_write(&endpoint, 100, 9,
 				UIB_UET_SES_FLAG_SOM | UIB_UET_SES_FLAG_HD,
-				0, total, payloads[0]) &&
-	      completion_count(&endpoint) == 0);
-	check("uet.write-imm.eom-retry",
+				0, total, payloads[0]));
+	check("uet.write-imm.eom-duplicate",
 	      !inject_uet_write(&endpoint, 101, 9, UIB_UET_SES_FLAG_EOM,
 				8, total, payloads[1]));
 	memset(&completion, 0, sizeof(completion));
@@ -597,19 +596,19 @@ static void run_uet_ordering(void)
 						UIB_UET_SES_FLAG_SOM, 0,
 						total, payloads[0]) &&
 	      completion_count(&endpoint) == 0);
-	check("uet.delayed-hole-close", !inject_uet(&endpoint, 101, 1, 0,
+	check("uet.deferred-auto-replay", !inject_uet(&endpoint, 101, 1, 0,
 						     TEST_PAYLOAD_LENGTH,
 						     total, payloads[1]) &&
-	      completion_count(&endpoint) == 0);
-	check("uet.retry-deferred-third", !inject_uet(&endpoint, 102, 1, 0,
+	      completion_count(&endpoint) == 1);
+	check("uet.replayed-third-duplicate", !inject_uet(&endpoint, 102, 1, 0,
 						      2 * TEST_PAYLOAD_LENGTH,
 						      total, payloads[2]) &&
 	      completion_count(&endpoint) == 0);
-	check("uet.retry-deferred-eom", !inject_uet(&endpoint, 103, 1,
+	check("uet.replayed-eom-duplicate", !inject_uet(&endpoint, 103, 1,
 						    UIB_UET_SES_FLAG_EOM,
 						    3 * TEST_PAYLOAD_LENGTH,
 						    total, payloads[3]) &&
-	      completion_count(&endpoint) == 1);
+	      completion_count(&endpoint) == 0);
 	check("uet.reordered-payload",
 	      !memcmp(endpoint.buffer, payloads, sizeof(payloads)));
 	check("uet.stale-after-window", !inject_uet(&endpoint, 100, 1,
@@ -647,16 +646,16 @@ static void run_uet_wrap(void)
 	check("uet.wrap.base", !inject_uet(&endpoint, UINT32_MAX - 1, 2,
 					   UIB_UET_SES_FLAG_SOM, 0, total,
 					   payloads[0]) &&
-	      completion_count(&endpoint) == 0);
-	check("uet.wrap.maximum-retry", !inject_uet(&endpoint, UINT32_MAX, 2,
+	      completion_count(&endpoint) == 1);
+	check("uet.wrap.maximum-duplicate", !inject_uet(&endpoint, UINT32_MAX, 2,
 						    0, TEST_PAYLOAD_LENGTH,
 						    total, payloads[1]) &&
 	      completion_count(&endpoint) == 0);
-	check("uet.wrap.zero-retry", !inject_uet(&endpoint, 0, 2,
+	check("uet.wrap.zero-duplicate", !inject_uet(&endpoint, 0, 2,
 						 UIB_UET_SES_FLAG_EOM,
 						 2 * TEST_PAYLOAD_LENGTH,
 						 total, payloads[2]) &&
-	      completion_count(&endpoint) == 1);
+	      completion_count(&endpoint) == 0);
 	check("uet.wrap.data",
 	      !memcmp(endpoint.buffer, payloads, sizeof(payloads)));
 
