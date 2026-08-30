@@ -36,6 +36,10 @@ struct uib_uet_nscc {
 	int64_t inflight;
 	uint64_t saved_cwnd;
 	uint64_t base_rtt_ns;
+	uint64_t base_rtt_sample_ns;
+	uint64_t base_rtt_window_ns;
+	uint64_t target_qdelay_ns;
+	uint64_t qa_threshold_ns;
 	uint64_t max_wnd;
 	uint64_t achieved_bytes;
 	uint64_t received_bytes;

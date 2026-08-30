@@ -12,6 +12,9 @@
 #define UIB_NSCC_BASE_RTT_NS 12000ULL
 #define UIB_NSCC_LINKSPEED 12500000000ULL
 #define UIB_NSCC_BASE_BDP 150000U
+#define UIB_NSCC_BASE_RTT_WINDOW_NS 10000000ULL
+
+static void nscc_scale_thresholds(struct uib_uet_nscc *nscc, uint64_t rtt);
 
 /**
  * uib_uet_nscc_config_default - Derive default NSCC settings for an MTU.
@@ -69,6 +72,7 @@ void uib_uet_nscc_init(struct uib_uet_nscc *nscc,
 	nscc->cwnd = config->max_wnd;
 	nscc->max_wnd = config->max_wnd;
 	nscc->base_rtt_ns = config->config_base_rtt_ns;
+	nscc_scale_thresholds(nscc, config->config_base_rtt_ns);
 	nscc->last_adjust_ns = now_ns;
 	nscc->last_decrease_ns = now_ns;
 }
@@ -117,13 +121,36 @@ void uib_uet_nscc_on_send(struct uib_uet_nscc *nscc, size_t bytes)
 	nscc->inflight += (int64_t)bytes;
 }
 
-static void nscc_update_base_rtt(struct uib_uet_nscc *nscc, uint64_t rtt)
+/*
+ * The specification derives the target queueing delay and the quick-adapt
+ * delay threshold from the configured base round trip. Keep that ratio
+ * against the measured base round trip so a path slower than the configured
+ * default is not permanently reported as congested. A path whose base round
+ * trip matches the configured value keeps the configured thresholds exactly.
+ */
+static void nscc_scale_thresholds(struct uib_uet_nscc *nscc, uint64_t rtt)
+{
+	uint64_t reference = nscc->config.config_base_rtt_ns;
+
+	if (!reference) {
+		nscc->target_qdelay_ns = nscc->config.target_qdelay_ns;
+		nscc->qa_threshold_ns = nscc->config.qa_threshold_ns;
+		return;
+	}
+	if (rtt < reference)
+		rtt = reference;
+	nscc->target_qdelay_ns = uib_mul_div_u64(
+		nscc->config.target_qdelay_ns, rtt, reference);
+	nscc->qa_threshold_ns = uib_mul_div_u64(
+		nscc->config.qa_threshold_ns, rtt, reference);
+}
+
+static void nscc_apply_base_rtt(struct uib_uet_nscc *nscc, uint64_t rtt)
 {
 	uint64_t window;
 
-	if (!rtt || rtt >= nscc->base_rtt_ns)
-		return;
 	nscc->base_rtt_ns = rtt;
+	nscc_scale_thresholds(nscc, rtt);
 	window = uib_mul_div_u64(nscc->config.sender_linkspeed, rtt,
 			     1000000000ULL);
 	nscc->max_wnd = window + window / 2;
@@ -131,6 +158,33 @@ static void nscc_update_base_rtt(struct uib_uet_nscc *nscc, uint64_t rtt)
 		nscc->max_wnd = nscc->config.mtu;
 	if (nscc->cwnd > nscc->max_wnd)
 		nscc->cwnd = nscc->max_wnd;
+}
+
+/*
+ * Track the base round trip as a minimum over a bounded observation window
+ * rather than as an all-time minimum. A monotonically decreasing estimate
+ * cannot follow a path whose round trip is longer than the configured
+ * default, and every later sample is then reported as queueing delay.
+ */
+static void nscc_update_base_rtt(struct uib_uet_nscc *nscc, uint64_t rtt,
+				 uint64_t now)
+{
+	if (!rtt)
+		return;
+	if (!nscc->base_rtt_sample_ns || rtt < nscc->base_rtt_sample_ns)
+		nscc->base_rtt_sample_ns = rtt;
+	if (!nscc->base_rtt_window_ns)
+		nscc->base_rtt_window_ns = now + UIB_NSCC_BASE_RTT_WINDOW_NS;
+	if (rtt < nscc->base_rtt_ns) {
+		nscc_apply_base_rtt(nscc, rtt);
+		return;
+	}
+	if (now < nscc->base_rtt_window_ns)
+		return;
+	if (nscc->base_rtt_sample_ns > nscc->base_rtt_ns)
+		nscc_apply_base_rtt(nscc, nscc->base_rtt_sample_ns);
+	nscc->base_rtt_sample_ns = 0;
+	nscc->base_rtt_window_ns = now + UIB_NSCC_BASE_RTT_WINDOW_NS;
 }
 
 static uint64_t nscc_average_delay(const struct uib_uet_nscc *nscc)
@@ -167,7 +221,7 @@ static int nscc_quick_adapt(struct uib_uet_nscc *nscc, int loss,
 
 		if (nscc->qa_endtime_ns &&
 		    (nscc->trigger_qa || loss ||
-		     delay > nscc->config.qa_threshold_ns) &&
+		     delay > nscc->qa_threshold_ns) &&
 		    nscc->achieved_bytes < gate) {
 			nscc->cwnd = max_t(uint64_t, nscc->achieved_bytes,
 					     nscc->config.mtu);
@@ -179,7 +233,7 @@ static int nscc_quick_adapt(struct uib_uet_nscc *nscc, int loss,
 		}
 		nscc->achieved_bytes = 0;
 		nscc->qa_endtime_ns = now + nscc->base_rtt_ns +
-				      nscc->config.target_qdelay_ns;
+				      nscc->target_qdelay_ns;
 	}
 	if (acted) {
 		nscc->inc_bytes = 0;
@@ -242,14 +296,14 @@ static void nscc_proportional_increase(struct uib_uet_nscc *nscc,
 	nscc_fast_increase(nscc, bytes, delay);
 	if (nscc->increase_mode)
 		return;
-	gap = nscc->config.target_qdelay_ns - delay;
+	gap = nscc->target_qdelay_ns - delay;
 	scale_a = uib_mul_div_u64(nscc->config.bdp, UIB_UET_NSCC_SCALE,
 			      UIB_NSCC_BASE_BDP);
 	increment = uib_mul_div_u64(4ULL * nscc->config.mtu, scale_a,
-				UIB_UET_NSCC_SCALE);
+				    UIB_UET_NSCC_SCALE);
 	increment = uib_mul_div_u64(increment, bytes, 1);
 	increment = uib_mul_div_u64(increment, gap,
-				nscc->config.target_qdelay_ns);
+				    nscc->target_qdelay_ns);
 	nscc->inc_bytes += increment;
 }
 
@@ -261,11 +315,11 @@ static void nscc_multiplicative_decrease(struct uib_uet_nscc *nscc,
 
 	nscc->increase_mode = 0;
 	nscc->fi_count = 0;
-	if (delay <= nscc->config.target_qdelay_ns ||
+	if (delay <= nscc->target_qdelay_ns ||
 	    now - nscc->last_decrease_ns <= nscc->base_rtt_ns)
 		return;
 	fraction = uib_mul_div_u64(nscc->config.gamma_q16,
-			       delay - nscc->config.target_qdelay_ns, delay);
+				   delay - nscc->target_qdelay_ns, delay);
 	if (fraction > UIB_UET_NSCC_SCALE - nscc->config.max_md_jump_q16)
 		fraction = UIB_UET_NSCC_SCALE -
 			nscc->config.max_md_jump_q16;
@@ -320,21 +374,21 @@ void uib_uet_nscc_on_ack(struct uib_uet_nscc *nscc,
 	} else {
 		return;
 	}
-	nscc_update_base_rtt(nscc, rtt);
+	nscc_update_base_rtt(nscc, rtt, ack->ack_time_ns);
 	delay = rtt > nscc->base_rtt_ns ? rtt - nscc->base_rtt_ns : 0;
 	nscc_update_delay(nscc, delay, ack->newly_received);
 	if (nscc_quick_adapt(nscc, 0, ack->ecn_marked, delay,
 			     ack->ack_time_ns))
 		return;
 	if (!ack->ecn_marked && !receiver_limited) {
-		if (delay >= nscc->config.target_qdelay_ns)
+		if (delay >= nscc->target_qdelay_ns)
 			nscc->inc_bytes += (uint64_t)nscc->config.fi *
 					   ack->newly_received;
 		else
 			nscc_proportional_increase(nscc,
 					   ack->newly_received, delay);
 	} else if (ack->ecn_marked &&
-		   delay >= nscc->config.target_qdelay_ns) {
+		   delay >= nscc->target_qdelay_ns) {
 		nscc_multiplicative_decrease(nscc, ack->ack_time_ns);
 	}
 	if (ack->ack_time_ns - nscc->last_adjust_ns >=
