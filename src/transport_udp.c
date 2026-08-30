@@ -49,6 +49,10 @@
 #define UIB_URING_SQPOLL_IDLE_DEFAULT 2000
 #define UIB_SOCKET_BUFFER_SIZE       (4 * 1024 * 1024)
 #define UIB_UDP_RX_WORK_QUEUE        1024
+#define UIB_UDP_RX_POOL_CLASSES      4
+#define UIB_UDP_RX_POOL_LIMIT        256
+#define UIB_UDP_RX_LARGE_POOL_LIMIT  16
+#define UIB_UDP_RX_POOL_WARM         4
 #define UIB_UDP_RX_WORKER_STACK      (512 * 1024)
 #define UIB_UDP_COPY_CAPACITY        (8192 + sizeof(struct iphdr) + \
 				       sizeof(struct udphdr))
@@ -127,19 +131,23 @@ struct uib_udp_rx_work {
 	struct sockaddr_in source;
 	size_t             length;
 	uint8_t            ecn;
+	uint8_t            pool_class;
 	uint8_t            data[];
 };
 
 struct uib_udp_rx_worker {
 	struct uib_udp_backend *backend;
 	struct uib_ptr_ring     queue;
+	struct uib_ptr_ring     pool[UIB_UDP_RX_POOL_CLASSES];
 	pthread_cond_t          cond;
 	pthread_mutex_t         lock;
 	pthread_t               thread;
 	unsigned int            cpu;
+	unsigned int            pools_initialized;
 	int                     cpu_set;
 	int                     started;
 	int                     initialized;
+	int                     queue_initialized;
 	int                     init_done;
 	int                     init_rc;
 };
@@ -214,6 +222,72 @@ static int test_drop_packet(struct uib_udp_backend *be)
 	return 0;
 }
 
+static size_t rx_work_capacity(uint8_t pool_class)
+{
+	static const size_t capacities[UIB_UDP_RX_POOL_CLASSES] = {
+		256,
+		2048,
+		8192,
+		UIB_RECV_BUF_LEN,
+	};
+
+	return capacities[pool_class];
+}
+
+static uint8_t rx_work_pool_class(size_t length)
+{
+	uint8_t pool_class;
+
+	for (pool_class = 0; pool_class < UIB_UDP_RX_POOL_CLASSES;
+	     pool_class++) {
+		if (length <= rx_work_capacity(pool_class))
+			return pool_class;
+	}
+	return UIB_UDP_RX_POOL_CLASSES;
+}
+
+static struct uib_udp_rx_work *rx_work_new(uint8_t pool_class)
+{
+	struct uib_udp_rx_work *work;
+
+	work = malloc(sizeof(*work) + rx_work_capacity(pool_class));
+	if (work)
+		work->pool_class = pool_class;
+	return work;
+}
+
+static struct uib_udp_rx_work *
+rx_work_alloc(struct uib_udp_rx_worker *worker, size_t length)
+{
+	struct uib_udp_rx_work *work;
+	uint8_t pool_class;
+
+	pool_class = rx_work_pool_class(length);
+	if (pool_class == UIB_UDP_RX_POOL_CLASSES)
+		return NULL;
+	work = uib_ptr_ring_pop(&worker->pool[pool_class]);
+	if (work) {
+		__atomic_fetch_add(&worker->backend->stats.rx_pool_hits, 1,
+				   __ATOMIC_RELAXED);
+	} else {
+		__atomic_fetch_add(&worker->backend->stats.rx_pool_misses, 1,
+				   __ATOMIC_RELAXED);
+		work = rx_work_new(pool_class);
+	}
+	return work;
+}
+
+static void rx_work_release(struct uib_udp_rx_worker *worker,
+			    struct uib_udp_rx_work *work)
+{
+	if (!work)
+		return;
+	if (work->pool_class < worker->pools_initialized &&
+	    !uib_ptr_ring_push(&worker->pool[work->pool_class], work))
+		return;
+	free(work);
+}
+
 static void rx_worker_signal_init(struct uib_udp_rx_worker *worker, int rc)
 {
 	pthread_mutex_lock(&worker->lock);
@@ -246,7 +320,7 @@ static void *rx_worker_loop(void *argument)
 			uib_transport_deliver_ecn(be->ctx, &work->source,
 						  work->data, work->length,
 						  work->ecn);
-			free(work);
+			rx_work_release(worker, work);
 			continue;
 		}
 		pthread_mutex_lock(&worker->lock);
@@ -280,7 +354,7 @@ static void dispatch_packet(struct uib_context *ctx, const void *buffer,
 		return;
 	index = qpn % be->rx_worker_count;
 	worker = &be->rx_workers[index];
-	work = malloc(sizeof(*work) + length);
+	work = rx_work_alloc(worker, length);
 	if (!work)
 		goto drop;
 	work->source = *source;
@@ -289,7 +363,7 @@ static void dispatch_packet(struct uib_context *ctx, const void *buffer,
 	memcpy(work->data, buffer, length);
 	rc = uib_ptr_ring_reserve(&worker->queue, 1, &position, &was_empty);
 	if (rc < 0) {
-		free(work);
+		rx_work_release(worker, work);
 		goto drop;
 	}
 	uib_ptr_ring_publish(&worker->queue, position, work);
@@ -1464,6 +1538,53 @@ static int udp_probe(void)
 	return 1;
 }
 
+static int init_rx_work_pools(struct uib_udp_rx_worker *worker)
+{
+	struct uib_udp_rx_work *work;
+	unsigned int pool_class;
+	unsigned int i;
+	int rc;
+
+	for (pool_class = 0; pool_class < UIB_UDP_RX_POOL_CLASSES;
+	     pool_class++) {
+		rc = uib_ptr_ring_init(&worker->pool[pool_class],
+				       pool_class == UIB_UDP_RX_POOL_CLASSES - 1 ?
+				       UIB_UDP_RX_LARGE_POOL_LIMIT :
+				       UIB_UDP_RX_POOL_LIMIT);
+		if (rc < 0)
+			return rc;
+		worker->pools_initialized++;
+	}
+	for (pool_class = 0; pool_class < UIB_UDP_RX_POOL_CLASSES - 1;
+	     pool_class++) {
+		for (i = 0; i < UIB_UDP_RX_POOL_WARM; i++) {
+			work = rx_work_new((uint8_t)pool_class);
+			if (!work)
+				break;
+			if (uib_ptr_ring_push(&worker->pool[pool_class], work)) {
+				free(work);
+				break;
+			}
+		}
+	}
+	return 0;
+}
+
+static void cleanup_rx_work_pools(struct uib_udp_rx_worker *worker)
+{
+	struct uib_udp_rx_work *work;
+	unsigned int pool_class;
+
+	for (pool_class = 0; pool_class < worker->pools_initialized;
+	     pool_class++) {
+		while ((work = uib_ptr_ring_pop(&worker->pool[pool_class])) !=
+		       NULL)
+			free(work);
+		uib_ptr_ring_destroy(&worker->pool[pool_class]);
+	}
+	worker->pools_initialized = 0;
+}
+
 static void cleanup_rx_workers(struct uib_udp_backend *be)
 {
 	struct uib_udp_rx_worker *worker;
@@ -1487,9 +1608,12 @@ static void cleanup_rx_workers(struct uib_udp_backend *be)
 			pthread_join(worker->thread, NULL);
 		if (!worker->initialized)
 			continue;
-		while ((work = uib_ptr_ring_pop(&worker->queue)) != NULL)
-			free(work);
-		uib_ptr_ring_destroy(&worker->queue);
+		if (worker->queue_initialized) {
+			while ((work = uib_ptr_ring_pop(&worker->queue)) != NULL)
+				free(work);
+			uib_ptr_ring_destroy(&worker->queue);
+		}
+		cleanup_rx_work_pools(worker);
 		pthread_cond_destroy(&worker->cond);
 		pthread_mutex_destroy(&worker->lock);
 	}
@@ -1527,6 +1651,10 @@ static int init_rx_workers(struct uib_udp_backend *be)
 		worker->initialized = 1;
 		rc = uib_ptr_ring_init(&worker->queue,
 				       UIB_UDP_RX_WORK_QUEUE);
+		if (rc < 0)
+			return rc;
+		worker->queue_initialized = 1;
+		rc = init_rx_work_pools(worker);
 		if (rc < 0)
 			return rc;
 		if (affinity) {
@@ -3068,6 +3196,10 @@ static int udp_get_stats(struct uib_context *ctx,
 	stats->rx_dispatch_drops =
 		__atomic_load_n(&be->stats.rx_dispatch_drops,
 				__ATOMIC_RELAXED);
+	stats->rx_pool_hits = __atomic_load_n(&be->stats.rx_pool_hits,
+					     __ATOMIC_RELAXED);
+	stats->rx_pool_misses = __atomic_load_n(&be->stats.rx_pool_misses,
+					       __ATOMIC_RELAXED);
 	stats->rx_largest_batch = __atomic_load_n(&be->stats.rx_largest_batch,
 						  __ATOMIC_RELAXED);
 	stats->rx_mode = be->stats.rx_mode;

@@ -71,6 +71,8 @@ static int append_transport(char *buffer, size_t length,
 		"\"rxGroBatches\":%" PRIu64 ","
 		"\"rxCompletionBatches\":%" PRIu64 ","
 		"\"rxDispatchDrops\":%" PRIu64 ","
+		"\"rxPoolHits\":%" PRIu64 ","
+		"\"rxPoolMisses\":%" PRIu64 ","
 		"\"rxLargestBatch\":%u,"
 		"\"rxBatch\":%u,\"rxWorkers\":%u,"
 		"\"rxWorkersPinned\":%u,\"txBatch\":%u,"
@@ -81,7 +83,8 @@ static int append_transport(char *buffer, size_t length,
 		stats->tx_errors, stats->tx_gso_batches,
 		stats->tx_gso_packets, stats->rx_packets,
 		stats->rx_gro_batches, stats->rx_completion_batches,
-		stats->rx_dispatch_drops, stats->rx_largest_batch,
+		stats->rx_dispatch_drops, stats->rx_pool_hits,
+		stats->rx_pool_misses, stats->rx_largest_batch,
 		stats->rx_batch, stats->rx_workers, stats->rx_workers_pinned,
 		stats->tx_batch,
 		stats->sqpoll_requested, stats->sqpoll_active,

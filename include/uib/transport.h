@@ -31,6 +31,8 @@ struct uib_transport_stats {
 	uint64_t rx_gro_batches;
 	uint64_t rx_completion_batches;
 	uint64_t rx_dispatch_drops;
+	uint64_t rx_pool_hits;
+	uint64_t rx_pool_misses;
 	uint32_t rx_largest_batch;
 	uint32_t rx_batch;
 	uint32_t rx_workers;

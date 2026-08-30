@@ -37,6 +37,13 @@ assert all(record["transportCounters"]["rxWorkersPinned"] == 0
            for record in records)
 assert all(record["transportCounters"]["rxDispatchDrops"] == 0
            for record in records)
+assert sum(record["transportCounters"]["rxPoolHits"]
+           for record in records) > 0
+assert sum(record["transportCounters"]["rxPoolHits"] +
+           record["transportCounters"]["rxPoolMisses"]
+           for record in records) == sum(
+               record["transportCounters"]["rxPackets"]
+               for record in records)
 assert all("zeroCopyCounters" in record for record in records)
 PY
 
