@@ -2652,11 +2652,11 @@ Example: \fBUIB_PROTOCOL=uet UIB_UET_WIRE_MTU=8192 app\fP
 .SS "UDP transports"
 .TP
 .B UIB_UDP_WORKERS
-than the allowed CPU count Set the number of UDP receive\-dispatch workers. Packets for one QP always use the same worker, while different QPs can be processed in parallel. With affinity enabled, an explicit count cannot exceed the process's allowed CPU count.
+Set the number of UDP receive\-dispatch workers. Packets for one QP always use the same worker, while different QPs can be processed in parallel. With affinity enabled, an explicit count cannot exceed the process's allowed CPU count.
 .br
 Default: auto, one receive\-dispatch worker per allowed CPU
 .br
-Accepted values: auto or a positive integer; with affinity enabled, no greater
+Accepted values: auto or a positive integer
 .br
 Example: \fBUIB_UDP_WORKERS=8 LD_PRELOAD=$PWD/libuibv.so app\fP
 .TP
@@ -2677,6 +2677,25 @@ Default: auto
 Accepted values: auto, off, or on
 .br
 Example: \fBUIB_UDP_GSO=off ./examples/stress_bench \-\-protocol rocev2\fP
+.SS "Ultra Ethernet transmit path"
+.TP
+.B UIB_TX_WORKERS
+Set the number of persistent workers that prepare admitted UET work requests. PSN assignment, ordered publication, ACK handling, retries, congestion control, and CQ production remain sequenced per QP. With affinity enabled, an explicit count cannot exceed the process's allowed CPU count.
+.br
+Default: auto, one preparation worker per allowed CPU
+.br
+Accepted values: auto or a positive integer
+.br
+Example: \fBUIB_TX_WORKERS=8 LD_PRELOAD=$PWD/libuibv.so app\fP
+.TP
+.B UIB_TX_WORKER_AFFINITY
+Pin UET preparation workers to distinct CPUs in the process's allowed CPU set. Set this to off when a scheduler or launcher controls placement.
+.br
+Default: on
+.br
+Accepted values: off or on
+.br
+Example: \fBUIB_TX_WORKERS=4 UIB_TX_WORKER_AFFINITY=off app\fP
 .SS "AF_XDP transport"
 .TP
 .B UIB_AFXDP_IFACE

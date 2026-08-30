@@ -131,6 +131,10 @@
 
 #define UIB_ENV_UDP_WORKER_AFFINITY "UIB_UDP_WORKER_AFFINITY"
 
+#define UIB_ENV_TX_WORKERS "UIB_TX_WORKERS"
+
+#define UIB_ENV_TX_WORKER_AFFINITY "UIB_TX_WORKER_AFFINITY"
+
 /**
  * DOC: UIB_URING_RX_MODE
  * @uib-env: Library and transparent provider

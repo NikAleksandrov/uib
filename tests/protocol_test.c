@@ -132,6 +132,8 @@ int main(void)
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setenv(UIB_ENV_UDP_WORKERS, "2", 1);
 	setenv(UIB_ENV_UDP_WORKER_AFFINITY, "off", 1);
+	setenv(UIB_ENV_TX_WORKERS, "2", 1);
+	setenv(UIB_ENV_TX_WORKER_AFFINITY, "off", 1);
 
 	check("select.rocev2.default",
 	      uib_protocol_find(NULL) == &uib_rocev2_protocol_ops);
@@ -145,6 +147,21 @@ int main(void)
 	check("open.unknown",
 	      !uib_open_device_protocol("127.0.0.1", 18518, "missing") &&
 	      errno == EPROTONOSUPPORT);
+
+	setenv(UIB_ENV_TRANSPORT_MODE, "udp-sync", 1);
+	config_context = uib_open_device_protocol("127.0.0.1", 18520,
+						  "uet");
+	check("tx-workers.open", config_context != NULL);
+	if (config_context)
+		uib_close_device(config_context);
+	config_context = NULL;
+	setenv(UIB_ENV_TX_WORKERS, "0", 1);
+	errno = 0;
+	config_context = uib_open_device_protocol("127.0.0.1", 18520,
+						  "uet");
+	check("tx-workers.invalid", !config_context && errno == EINVAL);
+	setenv(UIB_ENV_TX_WORKERS, "2", 1);
+	unsetenv(UIB_ENV_TRANSPORT_MODE);
 
 	setenv(UIB_ENV_RETRY_TIMEOUT_US, "invalid", 1);
 	errno = 0;
@@ -344,6 +361,8 @@ out:
 		uib_close_device(b);
 	unsetenv(UIB_ENV_UDP_WORKERS);
 	unsetenv(UIB_ENV_UDP_WORKER_AFFINITY);
+	unsetenv(UIB_ENV_TX_WORKERS);
+	unsetenv(UIB_ENV_TX_WORKER_AFFINITY);
 	printf("RESULT %s\n", failed ? "FAIL" : "PASS");
 	return failed ? 1 : 0;
 }
