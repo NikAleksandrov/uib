@@ -56,12 +56,17 @@ struct uib_uet_wr_track {
 	struct uib_uet_wr_track *next;
 	struct uib_uet_wr_track *prev;
 	struct uib_uet_track_pool *pool;
+	struct uib_qp *qp;
+	struct uib_uet_outstanding *prepared_head;
+	struct uib_uet_outstanding *prepared_tail;
 	uint64_t wr_id;
 	enum uib_wr_opcode opcode;
 	int signaled;
 	uint32_t total_len;
 	uint32_t pending;
 	uint32_t packets;
+	uint32_t prepared_packets;
+	uint32_t reserved_packets;
 	uint32_t next_packet;
 	uint32_t first_psn;
 	uint32_t clear_psn;
@@ -4234,6 +4239,7 @@ static void uet_store_post(struct uib_send_wr *wr,
 {
 	struct uib_uet_wr_track *track = context->track;
 
+	track->qp = context->qp;
 	track->wr = *wr;
 	track->wr.next = NULL;
 	track->wr.sg_list = NULL;
@@ -4253,6 +4259,14 @@ static void uet_store_post(struct uib_send_wr *wr,
 	track->fetching_atomic = context->fetching_atomic;
 	track->send_syn = context->send_syn;
 	track->pds_len = context->pds_len;
+	track->prepared_head = context->prepared_head;
+	track->prepared_tail = context->prepared_tail;
+	track->prepared_packets = context->prepared_packets;
+	track->reserved_packets = context->reserved_packets;
+	context->prepared_head = NULL;
+	context->prepared_tail = NULL;
+	context->prepared_packets = 0;
+	context->reserved_packets = 0;
 	context->owned_message = NULL;
 	context->owned_message_buffer = NULL;
 	context->mr = NULL;
@@ -4263,8 +4277,17 @@ static void uet_load_post(struct uib_uet_qp *uet,
 			  struct uet_post_context *context)
 {
 	memset(context, 0, sizeof(*context));
+	context->qp = track->qp;
 	context->uet = uet;
 	context->track = track;
+	context->prepared_head = track->prepared_head;
+	context->prepared_tail = track->prepared_tail;
+	context->prepared_packets = track->prepared_packets;
+	context->reserved_packets = track->reserved_packets;
+	track->prepared_head = NULL;
+	track->prepared_tail = NULL;
+	track->prepared_packets = 0;
+	track->reserved_packets = 0;
 	context->destination = track->destination;
 	context->message = track->message;
 	context->total_len = track->total_len;
@@ -4766,9 +4789,29 @@ static uint64_t uet_post_nominal_bytes(const struct uib_send_wr *wr,
 	return total;
 }
 
+static int uet_process_post(struct uib_uet_wr_track *track)
+{
+	struct uib_qp *qp;
+	struct uib_uet_qp *uet;
+	struct uet_post_context context;
+	struct uib_uet_rccc *rccc;
+	int rc;
+
+	qp = track->qp;
+	uet = qp->protocol_private;
+	uet_load_post(uet, track, &context);
+	rccc = uet->rccc_enabled ?
+		(struct uib_uet_rccc *)uet->congestion.state.bytes : NULL;
+	uet_encode_prepared(qp, &track->wr, &context);
+	rc = uet_publish_post(qp, &context, rccc);
+	uet_post_context_release(&context);
+	return rc;
+}
+
 static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 {
 	struct uet_post_context context;
+	struct uib_uet_wr_track *track;
 	struct uib_uet_rccc *rccc = NULL;
 	uint64_t nominal_bytes = 0;
 	int rc;
@@ -4792,8 +4835,9 @@ static int uet_post_one(struct uib_qp *qp, struct uib_send_wr *wr)
 		uib_uet_rccc_on_new_data(rccc, nominal_bytes);
 		pthread_mutex_unlock(&qp->lock);
 	}
-	uet_encode_prepared(qp, wr, &context);
-	rc = uet_publish_post(qp, &context, rccc);
+	track = context.track;
+	context.track = NULL;
+	rc = uet_process_post(track);
 out:
 	uet_post_context_release(&context);
 	return rc;
