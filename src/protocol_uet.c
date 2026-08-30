@@ -183,7 +183,6 @@ struct uib_uet_outstanding {
 	uint8_t rto_retries;
 	uint8_t sent;
 	uint8_t sack_acked;
-	uint8_t fast_retransmitted;
 	uint8_t indexed;
 	uint8_t pool_class;
 	uint32_t refs;
@@ -497,7 +496,6 @@ uet_alloc_outstanding(struct uib_uet_qp *uet, size_t packet_len)
 	out->rto_retries = 0;
 	out->sent = 0;
 	out->sack_acked = 0;
-	out->fast_retransmitted = 0;
 	out->indexed = 0;
 	out->refs = 1;
 	return out;
@@ -3888,7 +3886,6 @@ static void uet_apply_sack_locked(struct uib_qp *qp,
 		if (!out || out->sack_acked)
 			continue;
 		out->sack_acked = 1;
-		out->fast_retransmitted = 0;
 		if (out->sent) {
 			out->sent = 0;
 			uet->sent_count--;
@@ -4007,31 +4004,6 @@ static void uet_mark_retransmit(void *packet)
 	prologue->type_next_flags = htons(value);
 }
 
-static void uet_fast_retransmit_gap_locked(struct uib_qp *qp,
-					   const struct uet_ack_view *view)
-{
-	struct uib_uet_qp *uet;
-	struct uib_uet_outstanding *out;
-	uint32_t expected_psn;
-
-	uet = qp->protocol_private;
-	expected_psn = view->cack + 1;
-	if (!uet_psn_before(expected_psn, view->ack_psn))
-		return;
-	out = uet_find_outstanding(uet, expected_psn, 0);
-	if (!out || !out->sent || out->fast_retransmitted ||
-	    out->retries >= UIB_UET_MAX_RETRIES)
-		return;
-	uet_mark_retransmit(out->packet);
-	uib_congestion_on_loss(&uet->congestion, out->nominal_len);
-	uet->sent_count--;
-	out->sent = 0;
-	out->fast_retransmitted = 1;
-	out->retries++;
-	out->deadline_ns = 0;
-	uet->tx_cursor = uet_first_unsent(uet);
-}
-
 static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
@@ -4074,7 +4046,6 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 	uet_complete_cumulative_locked(qp, view.cack);
 	if (view.extension)
 		uet_apply_sack_locked(qp, &view);
-	uet_fast_retransmit_gap_locked(qp, &view);
 	out = uet_find_outstanding(uet, view.ack_psn, view.msg_id);
 	if (!out) {
 		rc = 0;

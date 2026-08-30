@@ -158,6 +158,57 @@ static int capture_ack(int fd, uint32_t request_psn,
 	return -1;
 }
 
+static int post_two_uet_sends(struct test_endpoint *endpoint)
+{
+	struct uib_send_wr requests[2];
+	struct uib_sge sges[2];
+	unsigned int i;
+
+	memset(requests, 0, sizeof(requests));
+	memset(sges, 0, sizeof(sges));
+	for (i = 0; i < 2; i++) {
+		sges[i].addr = (uintptr_t)endpoint->buffer +
+			i * TEST_PAYLOAD_LENGTH;
+		sges[i].length = TEST_PAYLOAD_LENGTH;
+		sges[i].lkey = endpoint->mr->lkey;
+		requests[i].wr_id = 0x100 + i;
+		requests[i].sg_list = &sges[i];
+		requests[i].num_sge = 1;
+		requests[i].opcode = UIB_WR_SEND;
+		requests[i].send_flags = UIB_SEND_SIGNALED;
+	}
+	requests[0].next = &requests[1];
+	return uib_post_send(endpoint->qp, requests, NULL);
+}
+
+static int capture_uet_request(int fd, uint32_t *psn, uint16_t *msg_id,
+			       uint32_t *identity)
+{
+	const struct uib_uet_pds_cc_req *cc_request;
+	const struct uib_uet_pds_req *request;
+	const struct uib_uet_ses_req *session;
+	uint8_t packet[256];
+	size_t request_len;
+	ssize_t length;
+	uint8_t type;
+
+	length = recv(fd, packet, sizeof(packet), 0);
+	if (length < (ssize_t)sizeof(*request))
+		return -1;
+	request = (const struct uib_uet_pds_req *)packet;
+	type = uib_uet_prologue_type(&request->prologue);
+	request_len = type == UIB_UET_PDS_TYPE_RUD_CC_REQ ?
+		sizeof(*cc_request) : sizeof(*request);
+	if ((size_t)length < request_len + sizeof(*session) ||
+	    uib_uet_prologue_next(&request->prologue) != UIB_UET_NEXT_REQ_STD)
+		return -1;
+	session = (const struct uib_uet_ses_req *)(packet + request_len);
+	*psn = ntohl(request->psn);
+	*msg_id = ntohs(session->msg_id);
+	*identity = ntohl(session->index_gen_job_id);
+	return 0;
+}
+
 static int post_receives(struct test_endpoint *endpoint, unsigned int count,
 			 size_t stride)
 {
@@ -657,6 +708,75 @@ out:
 	endpoint_cleanup(&endpoint);
 }
 
+static void run_uet_sack_gap_is_not_loss(void)
+{
+	struct uib_uet_pds_ack_ext *extension;
+	struct uib_uet_ses_rsp *response;
+	struct uib_uet_pds_ack *ack;
+	struct sockaddr_in source;
+	struct test_endpoint endpoint;
+	uint8_t ack_packet[sizeof(*ack) + sizeof(*extension) +
+			   sizeof(*response)];
+	uint8_t unexpected[256];
+	uint32_t identities[2];
+	uint16_t msg_ids[2];
+	uint32_t psns[2];
+	ssize_t length;
+	int capture_fd;
+	int rc;
+
+	setenv("UIB_UET_OPTIMIZED", "off", 1);
+	capture_fd = ack_capture_open(19709);
+	check("uet.sack-gap.capture", capture_fd >= 0);
+	check("uet.sack-gap.setup",
+	      !endpoint_init(&endpoint, "uet", 19710, 400));
+	if (capture_fd < 0 || !endpoint.context || !endpoint.mr)
+		goto out;
+	check("uet.sack-gap.remote",
+	      !endpoint_set_remote_port(&endpoint, 19709));
+	check("uet.sack-gap.post", !post_two_uet_sends(&endpoint));
+	rc = capture_uet_request(capture_fd, &psns[0], &msg_ids[0],
+				 &identities[0]);
+	rc |= capture_uet_request(capture_fd, &psns[1], &msg_ids[1],
+				  &identities[1]);
+	check("uet.sack-gap.requests", !rc && psns[1] == psns[0] + 1);
+	if (rc)
+		goto out;
+
+	memset(ack_packet, 0, sizeof(ack_packet));
+	ack = (struct uib_uet_pds_ack *)ack_packet;
+	extension = (struct uib_uet_pds_ack_ext *)(ack + 1);
+	response = (struct uib_uet_ses_rsp *)(extension + 1);
+	rc = uib_uet_build_ack(ack, sizeof(ack_packet), psns[0] - 1,
+			       psns[1], 1, endpoint.qp->qp_num,
+			       UIB_UET_NEXT_RSP);
+	ack->prologue.type_next_flags = uib_uet_prologue_pack(
+		UIB_UET_PDS_TYPE_ACK_CC, UIB_UET_NEXT_RSP, 0);
+	extension->sack_psn_offset = htons(1);
+	response->list_opcode_version_rc = htons(
+		(UIB_UET_SES_RSP_DEFAULT << UIB_UET_SES_RSP_OPCODE_SHIFT) |
+		UIB_UET_SES_RC_OK);
+	response->msg_id = htons(msg_ids[1]);
+	response->index_gen_job_id = htonl(identities[1]);
+	response->modified_len = htonl(TEST_PAYLOAD_LENGTH);
+	memset(&source, 0, sizeof(source));
+	source.sin_family = AF_INET;
+	source.sin_port = htons(19709);
+	source.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	rc = rc < 0 ? rc : uib_qp_handle_packet(endpoint.qp, &source,
+						ack_packet,
+						sizeof(ack_packet));
+	length = recv(capture_fd, unexpected, sizeof(unexpected), MSG_DONTWAIT);
+	check("uet.sack-gap.no-retransmit",
+	      !rc && length < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+
+out:
+	if (capture_fd >= 0)
+		close(capture_fd);
+	endpoint_cleanup(&endpoint);
+	setenv("UIB_UET_OPTIMIZED", "auto", 1);
+}
+
 static void run_uet_wrap(void)
 {
 	static const uint8_t payloads[3][TEST_PAYLOAD_LENGTH] = {
@@ -708,6 +828,7 @@ int main(void)
 	run_uet_sack();
 	run_uet_ordering();
 	run_uet_next_message_replay();
+	run_uet_sack_gap_is_not_loss();
 	run_uet_wrap();
 	run_uet_write_imm_reorder();
 	run_uet_write_imm_error_cleanup();
