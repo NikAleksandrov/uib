@@ -32,5 +32,6 @@ int uib_worker_configuration(unsigned int *count, cpu_set_t *allowed,
 			     const char *affinity_env,
 			     unsigned int automatic_limit);
 int uib_worker_cpu(const cpu_set_t *allowed, unsigned int index);
+unsigned int uib_worker_cpu_reserve(unsigned int count);
 
 #endif

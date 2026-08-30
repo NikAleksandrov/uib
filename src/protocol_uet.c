@@ -1152,6 +1152,7 @@ static int uet_context_init(struct uib_context *ctx)
 	cpu_set_t allowed;
 	cpu_set_t worker_set;
 	unsigned int count = 0;
+	unsigned int cpu_start;
 	unsigned int i;
 	int attr_ready;
 	int cpu;
@@ -1162,6 +1163,7 @@ static int uet_context_init(struct uib_context *ctx)
 				      UIB_ENV_TX_WORKER_AFFINITY, 0);
 	if (rc < 0)
 		return rc;
+	cpu_start = attr_ready ? uib_worker_cpu_reserve(count) : 0;
 	context = calloc(1, sizeof(*context));
 	if (!context)
 		return -ENOMEM;
@@ -1190,7 +1192,7 @@ static int uet_context_init(struct uib_context *ctx)
 			goto error;
 		}
 		if (attr_ready) {
-			cpu = uib_worker_cpu(&allowed, i);
+			cpu = uib_worker_cpu(&allowed, cpu_start + i);
 			CPU_ZERO(&worker_set);
 			CPU_SET(cpu, &worker_set);
 			rc = pthread_attr_setaffinity_np(&attr,

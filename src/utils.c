@@ -7,6 +7,8 @@
 
 #include "utils.h"
 
+static unsigned int worker_cpu_next;
+
 uint64_t uib_now_ns(void)
 {
 	struct timespec ts;
@@ -118,9 +120,14 @@ int uib_worker_configuration(unsigned int *count, cpu_set_t *allowed,
 
 int uib_worker_cpu(const cpu_set_t *allowed, unsigned int index)
 {
+	unsigned int allowed_count;
 	unsigned int seen;
 	int cpu;
 
+	allowed_count = (unsigned int)CPU_COUNT(allowed);
+	if (!allowed_count)
+		return -1;
+	index %= allowed_count;
 	seen = 0;
 	for (cpu = 0; cpu < CPU_SETSIZE; cpu++) {
 		if (!CPU_ISSET(cpu, allowed))
@@ -130,4 +137,9 @@ int uib_worker_cpu(const cpu_set_t *allowed, unsigned int index)
 		seen++;
 	}
 	return -1;
+}
+
+unsigned int uib_worker_cpu_reserve(unsigned int count)
+{
+	return __atomic_fetch_add(&worker_cpu_next, count, __ATOMIC_RELAXED);
 }

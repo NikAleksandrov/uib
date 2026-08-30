@@ -1663,6 +1663,7 @@ static int init_rx_workers(struct uib_udp_backend *be)
 	pthread_attr_t attr;
 	cpu_set_t allowed;
 	unsigned int count = 0;
+	unsigned int cpu_start;
 	unsigned int i;
 	int affinity;
 	int attr_ready;
@@ -1674,6 +1675,7 @@ static int init_rx_workers(struct uib_udp_backend *be)
 				      UIB_ENV_UDP_WORKER_AFFINITY, 0);
 	if (rc < 0)
 		return rc;
+	cpu_start = affinity ? uib_worker_cpu_reserve(count) : 0;
 	be->rx_workers = calloc(count, sizeof(*be->rx_workers));
 	if (!be->rx_workers)
 		return -ENOMEM;
@@ -1693,7 +1695,7 @@ static int init_rx_workers(struct uib_udp_backend *be)
 		if (rc < 0)
 			return rc;
 		if (affinity) {
-			cpu = uib_worker_cpu(&allowed, i);
+			cpu = uib_worker_cpu(&allowed, cpu_start + i);
 			if (cpu < 0)
 				return -EINVAL;
 			worker->cpu = (unsigned int)cpu;
@@ -2815,7 +2817,6 @@ static int udp_flow_start_thread(pthread_t *thread,
 {
 	pthread_attr_t attr;
 	cpu_set_t thread_set;
-	unsigned int allowed_count;
 	int cpu;
 	int rc;
 
@@ -2826,12 +2827,7 @@ static int udp_flow_start_thread(pthread_t *thread,
 	if (rc)
 		goto out;
 	if (affinity) {
-		allowed_count = (unsigned int)CPU_COUNT(allowed);
-		if (!allowed_count) {
-			rc = EINVAL;
-			goto out;
-		}
-		cpu = rx_worker_cpu(allowed, index % allowed_count);
+		cpu = uib_worker_cpu(allowed, index);
 		if (cpu < 0) {
 			rc = EINVAL;
 			goto out;
@@ -2855,6 +2851,7 @@ static int init_udp_flows(struct uib_context *ctx,
 	struct uib_udp_flow *flow;
 	cpu_set_t allowed;
 	unsigned int count;
+	unsigned int cpu_start;
 	unsigned int i;
 	int affinity;
 	int rc;
@@ -2874,6 +2871,7 @@ static int init_udp_flows(struct uib_context *ctx,
 	CPU_ZERO(&allowed);
 	if (affinity && sched_getaffinity(0, sizeof(allowed), &allowed) < 0)
 		return -errno;
+	cpu_start = affinity ? uib_worker_cpu_reserve(count * 2) : 0;
 	be->flows = calloc(count, sizeof(*be->flows));
 	if (!be->flows)
 		return -ENOMEM;
@@ -2907,12 +2905,13 @@ static int init_udp_flows(struct uib_context *ctx,
 		if (!flow->rx_buffer)
 			return -ENOMEM;
 		rc = udp_flow_start_thread(&flow->rx_thread, udp_flow_rx_loop,
-					   flow, &allowed, i * 2, affinity);
+					   flow, &allowed, cpu_start + i * 2,
+					   affinity);
 		if (rc)
 			return -rc;
 		flow->rx_started = 1;
 		rc = udp_flow_start_thread(&flow->tx_thread, udp_flow_tx_loop,
-					   flow, &allowed, i * 2 + 1,
+					   flow, &allowed, cpu_start + i * 2 + 1,
 					   affinity);
 		if (rc)
 			return -rc;
