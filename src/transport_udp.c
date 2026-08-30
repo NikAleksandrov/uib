@@ -502,36 +502,6 @@ static void deliver_udp_payload(struct uib_context *ctx, void *buffer,
 	}
 }
 
-static void deliver_udp_payload_direct(struct uib_context *ctx, void *buffer,
-				       size_t length,
-				       const struct sockaddr_in *source,
-				       uint16_t gro_size, uint8_t ecn)
-{
-	struct uib_udp_backend *be;
-	uint8_t *payload;
-	size_t segment;
-	size_t offset;
-
-	be = ctx->backend;
-	payload = buffer;
-	if (!gro_size || gro_size >= length) {
-		uib_transport_deliver_ecn(ctx, source, buffer, length, ecn);
-		__atomic_fetch_add(&be->stats.rx_packets, 1,
-				   __ATOMIC_RELAXED);
-		return;
-	}
-	__atomic_fetch_add(&be->stats.rx_gro_batches, 1, __ATOMIC_RELAXED);
-	for (offset = 0; offset < length; offset += segment) {
-		segment = length - offset;
-		if (segment > gro_size)
-			segment = gro_size;
-		uib_transport_deliver_ecn(ctx, source, payload + offset,
-					  segment, ecn);
-		__atomic_fetch_add(&be->stats.rx_packets, 1,
-				   __ATOMIC_RELAXED);
-	}
-}
-
 static uint16_t message_gro_size(const struct msghdr *message)
 {
 	struct cmsghdr *control;
@@ -2759,9 +2729,8 @@ static void *udp_flow_rx_loop(void *argument)
 			continue;
 		gro_size = message_gro_size(&message);
 		ecn = message_ecn(&message);
-		deliver_udp_payload_direct(be->ctx, flow->rx_buffer,
-					   (size_t)received, &source,
-					   gro_size, ecn);
+		deliver_udp_payload(be->ctx, flow->rx_buffer,
+				    (size_t)received, &source, gro_size, ecn);
 	}
 	return NULL;
 }
