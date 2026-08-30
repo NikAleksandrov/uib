@@ -2873,9 +2873,19 @@ static int udp_sync_send_iov_ref_gso(
 	header->cmsg_type = UDP_SEGMENT;
 	header->cmsg_len = CMSG_LEN(sizeof(segment_size));
 	memcpy(CMSG_DATA(header), &segment_size, sizeof(segment_size));
-	sent = uib_zerocopy_sendmsg(ctx, be->fd, &message, MSG_NOSIGNAL,
-				    be->zerocopy_enabled,
-				    &be->zerocopy_sequence);
+	if (ctx->zerocopy.mode == UIB_ZEROCOPY_AUTO &&
+	    segment_size < ctx->zerocopy.threshold) {
+		sent = sendmsg(be->fd, &message, MSG_NOSIGNAL);
+		if (sent >= 0)
+			uib_zerocopy_account_copy(ctx, (size_t)sent);
+		else
+			sent = -errno;
+	} else {
+		sent = uib_zerocopy_sendmsg(ctx, be->fd, &message,
+					    MSG_NOSIGNAL,
+					    be->zerocopy_enabled,
+					    &be->zerocopy_sequence);
+	}
 	__atomic_fetch_add(&be->stats.tx_submitted, count, __ATOMIC_RELAXED);
 	if (sent >= 0 && (size_t)sent == length) {
 		completed = count;

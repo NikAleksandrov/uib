@@ -279,8 +279,9 @@ out:
 }
 
 static void run_iov_batch(uint16_t sender_port, uint16_t receiver_port,
-			  int check_gso)
+			  int check_gso, int automatic_copy)
 {
+	struct uib_zerocopy_stats zerocopy_stats;
 	struct uib_transport_iov_ref refs[TEST_GSO_PACKETS];
 	struct uib_transport_stats rx_stats;
 	struct uib_transport_stats tx_stats;
@@ -294,7 +295,9 @@ static void run_iov_batch(uint16_t sender_port, uint16_t receiver_port,
 	int rc;
 
 	setenv("UIB_UDP_GSO", "auto", 1);
-	setenv("UIB_ZEROCOPY", "off", 1);
+	setenv("UIB_ZEROCOPY", automatic_copy ? "auto" : "off", 1);
+	if (automatic_copy)
+		setenv("UIB_ZEROCOPY_THRESHOLD", "257", 1);
 	sender = uib_open_device_protocol("127.0.0.1", sender_port, "dummy");
 	receiver = uib_open_device_protocol("127.0.0.1", receiver_port,
 					    "dummy");
@@ -341,6 +344,14 @@ static void run_iov_batch(uint16_t sender_port, uint16_t receiver_port,
 		      tx_stats.tx_gso_packets == TEST_GSO_PACKETS);
 	} else {
 		printf("%-32s %s\n", "iov.gso_counters", "SKIP");
+	}
+	if (automatic_copy) {
+		memset(&zerocopy_stats, 0, sizeof(zerocopy_stats));
+		rc = uib_zerocopy_get_stats(sender, &zerocopy_stats);
+		check("iov.auto-copy-stats", !rc);
+		check("iov.auto-copy",
+		      zerocopy_stats.copied_calls > 0 &&
+		      !zerocopy_stats.zerocopy_calls);
 	}
 
 out:
@@ -409,9 +420,10 @@ int main(void)
 	setenv("UIB_URING_SQPOLL", "off", 1);
 	run_gso_batch(19614, 19615, 0);
 	run_gso_batch(19616, 19617, 1);
-	run_iov_batch(19618, 19619, 1);
+	run_iov_batch(19618, 19619, 1, 0);
 	setenv("UIB_TRANSPORT_MODE", "udp-sync", 1);
-	run_iov_batch(19620, 19621, 1);
+	run_iov_batch(19620, 19621, 1, 0);
+	run_iov_batch(19622, 19623, 1, 1);
 	setenv("UIB_TRANSPORT_MODE", "udp-io-uring", 1);
 	run_shutdown_drain();
 	run_invalid_batch();
