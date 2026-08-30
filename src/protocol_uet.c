@@ -3594,29 +3594,47 @@ static int uet_handle_request_one(struct uib_qp *qp,
 		uet_execute_request(qp, request, &ses, data, data_len,
 				    request_header, psn, &result);
 	}
-	pthread_mutex_lock(&qp->lock);
-	if (result.response_code != UIB_UET_SES_RC_OK)
+	if (result.response_code == UIB_UET_SES_RC_OK) {
+		encoding = uet_response_construct(result.response_code,
+						  (uint32_t)result.data_len,
+						  result.modified_len,
+						  ntohl(ses.request_len),
+						  result.guarantee_error);
+		pthread_mutex_lock(&qp->lock);
+		if (!duplicate && opcode != UIB_UET_SES_READ)
+			uet_response_cache_store(uet, psn, msg_id,
+						 result.response_code,
+						 result.modified_len,
+						 result.data,
+						 result.data_len);
+		if (encoding.guaranteed_delivery)
+			uet_mark_guaranteed(uet, psn);
+		cack = uet_cack_psn(uet);
+		pthread_mutex_unlock(&qp->lock);
+	} else {
+		pthread_mutex_lock(&qp->lock);
 		result.guarantee_error = uet_record_message_error(
 			uet, msg_id, psn, &result.response_code);
-	if (!duplicate && opcode != UIB_UET_SES_READ)
-		uet_response_cache_store(uet, psn, msg_id, result.response_code,
-					 result.modified_len, result.data,
-					 result.data_len);
-	pthread_mutex_unlock(&qp->lock);
-	if (result.response_code != UIB_UET_SES_RC_OK) {
+		if (!duplicate && opcode != UIB_UET_SES_READ)
+			uet_response_cache_store(uet, psn, msg_id,
+						 result.response_code,
+						 result.modified_len,
+						 result.data,
+						 result.data_len);
+		pthread_mutex_unlock(&qp->lock);
 		uet_request_result_release(&result);
 		result.modified_len = 0;
+		encoding = uet_response_construct(result.response_code,
+						  (uint32_t)result.data_len,
+						  result.modified_len,
+						  ntohl(ses.request_len),
+						  result.guarantee_error);
+		pthread_mutex_lock(&qp->lock);
+		if (encoding.guaranteed_delivery)
+			uet_mark_guaranteed(uet, psn);
+		cack = uet_cack_psn(uet);
+		pthread_mutex_unlock(&qp->lock);
 	}
-	encoding = uet_response_construct(result.response_code,
-					  (uint32_t)result.data_len,
-					  result.modified_len,
-					  ntohl(ses.request_len),
-					  result.guarantee_error);
-	pthread_mutex_lock(&qp->lock);
-	if (encoding.guaranteed_delivery)
-		uet_mark_guaranteed(uet, psn);
-	cack = uet_cack_psn(uet);
-	pthread_mutex_unlock(&qp->lock);
 	pdc_idle = result.response_code == UIB_UET_SES_RC_OK &&
 		((opcode == UIB_UET_SES_SEND && !uet->recv_active) ||
 		 (opcode == UIB_UET_SES_WRITE && !uet->write_active));
