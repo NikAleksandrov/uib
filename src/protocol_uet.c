@@ -2463,9 +2463,11 @@ static uint8_t uet_validate_session(struct uib_qp *qp,
 static int uet_handle_read(struct uib_qp *qp,
 			   const struct uib_uet_ses_req *ses,
 			   const void **data, void **owned_data,
+			   struct uib_uet_outstanding **owned_buffer,
 			   size_t *data_len,
 			   int address_only, uint8_t *response_code)
 {
+	struct uib_uet_qp *uet = qp->protocol_private;
 	uint64_t address = be64toh(ses->buffer_offset);
 	uint32_t rkey = (uint32_t)be64toh(ses->match_bits);
 	uint32_t length = ntohl(ses->request_len);
@@ -2477,7 +2479,11 @@ static int uet_handle_read(struct uib_qp *qp,
 				  response_code);
 	if (!mr)
 		return -EACCES;
-	*owned_data = malloc(length ? length : 1);
+	*owned_buffer = uet_alloc_outstanding(uet, length ? length : 1);
+	if (*owned_buffer)
+		*owned_data = (*owned_buffer)->packet;
+	else
+		*owned_data = malloc(length ? length : 1);
 	if (!*owned_data) {
 		uib_mr_put(mr);
 		*response_code = UIB_UET_SES_RC_UNCOR_TRANSIENT;
@@ -2486,7 +2492,11 @@ static int uet_handle_read(struct uib_qp *qp,
 	rc = uib_mr_read(mr, address, *owned_data, length);
 	uib_mr_put(mr);
 	if (rc < 0) {
-		free(*owned_data);
+		if (*owned_buffer)
+			uet_free_outstanding(*owned_buffer);
+		else
+			free(*owned_data);
+		*owned_buffer = NULL;
 		*owned_data = NULL;
 		*response_code = rc == -ERANGE ? UIB_UET_SES_RC_BAD_ADDR :
 			UIB_UET_SES_RC_HOST_UNSUCCESS_CMPL;
@@ -2876,6 +2886,7 @@ static int uet_parse_request(const struct uib_uet_pds_req *request, size_t len,
 struct uet_request_result {
 	const void *data;
 	void *owned_data;
+	struct uib_uet_outstanding *owned_buffer;
 	size_t data_len;
 	uint32_t modified_len;
 	uint32_t response_identity;
@@ -2883,6 +2894,18 @@ struct uet_request_result {
 	uint8_t guarantee_error;
 	uint8_t storage[16];
 };
+
+static void uet_request_result_release(struct uet_request_result *result)
+{
+	if (result->owned_buffer)
+		uet_free_outstanding(result->owned_buffer);
+	else
+		free(result->owned_data);
+	result->owned_buffer = NULL;
+	result->owned_data = NULL;
+	result->data = NULL;
+	result->data_len = 0;
+}
 
 static int uet_defer_request(struct uib_qp *qp,
 			     const struct sockaddr_in *source,
@@ -3119,7 +3142,7 @@ static int uet_execute_request(struct uib_qp *qp,
 		break;
 	case UIB_UET_SES_READ:
 		rc = uet_handle_read(qp, ses, &result->data, &result->owned_data,
-				     &result->data_len,
+				     &result->owned_buffer, &result->data_len,
 				     request_header == UIB_UET_NEXT_REQ_SMALL,
 				     &result->response_code);
 		result->modified_len = result->data_len;
@@ -3254,10 +3277,7 @@ static int uet_handle_request_one(struct uib_qp *qp,
 					 result.data_len);
 	pthread_mutex_unlock(&qp->lock);
 	if (result.response_code != UIB_UET_SES_RC_OK) {
-		free(result.owned_data);
-		result.owned_data = NULL;
-		result.data = NULL;
-		result.data_len = 0;
+		uet_request_result_release(&result);
 		result.modified_len = 0;
 	}
 	encoding = uet_response_construct(result.response_code,
@@ -3273,7 +3293,7 @@ static int uet_handle_request_one(struct uib_qp *qp,
 	if (!ack_requested && !duplicate && !out_of_order &&
 	    result.response_code == UIB_UET_SES_RC_OK &&
 	    (opcode == UIB_UET_SES_SEND || opcode == UIB_UET_SES_WRITE)) {
-		free(result.owned_data);
+		uet_request_result_release(&result);
 		return 0;
 	}
 
@@ -3281,7 +3301,7 @@ static int uet_handle_request_one(struct uib_qp *qp,
 			       result.data, result.data_len,
 			       result.modified_len,
 			       receive_time_ns, ecn_marked, request_header);
-	free(result.owned_data);
+	uet_request_result_release(&result);
 	return rc;
 }
 
