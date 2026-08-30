@@ -5,6 +5,9 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <endian.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
 
 #include "uib/uib.h"
 
@@ -88,6 +91,71 @@ static void endpoint_cleanup(struct test_endpoint *endpoint)
 		uib_dealloc_pd(endpoint->pd);
 	if (endpoint->context)
 		uib_close_device(endpoint->context);
+}
+
+static int endpoint_set_remote_port(struct test_endpoint *endpoint,
+				    uint16_t port)
+{
+	struct uib_qp_attr attr;
+
+	memset(&attr, 0, sizeof(attr));
+	attr.remote_addr.sin_family = AF_INET;
+	attr.remote_addr.sin_port = htons(port);
+	attr.remote_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	return uib_modify_qp(endpoint->qp, &attr, UIB_QP_AV);
+}
+
+static int ack_capture_open(uint16_t port)
+{
+	struct sockaddr_in address;
+	struct timeval timeout;
+	int fd;
+
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0)
+		return -1;
+	memset(&address, 0, sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_port = htons(port);
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	timeout.tv_sec = 1;
+	timeout.tv_usec = 0;
+	if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+		       sizeof(timeout)) < 0 ||
+	    bind(fd, (const struct sockaddr *)&address, sizeof(address)) < 0) {
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+static int capture_ack(int fd, uint32_t request_psn,
+		       struct uib_uet_pds_ack *ack,
+		       struct uib_uet_pds_ack_ext *extension)
+{
+	uint8_t packet[256];
+	struct uib_uet_pds_ack *wire_ack;
+	int16_t offset;
+	ssize_t length;
+	unsigned int i;
+
+	for (i = 0; i < 4; i++) {
+		length = recv(fd, packet, sizeof(packet), 0);
+		if (length < (ssize_t)(sizeof(*wire_ack) +
+				       sizeof(*extension)))
+			continue;
+		wire_ack = (struct uib_uet_pds_ack *)packet;
+		if (uib_uet_prologue_type(&wire_ack->prologue) !=
+		    UIB_UET_PDS_TYPE_ACK_CC)
+			continue;
+		offset = (int16_t)ntohs(wire_ack->ack_psn_offset);
+		if (ntohl(wire_ack->cack_psn) + offset != request_psn)
+			continue;
+		memcpy(ack, wire_ack, sizeof(*ack));
+		memcpy(extension, wire_ack + 1, sizeof(*extension));
+		return 0;
+	}
+	return -1;
 }
 
 static int post_receives(struct test_endpoint *endpoint, unsigned int count,
@@ -270,6 +338,64 @@ static int inject_uet_write(struct test_endpoint *endpoint, uint32_t psn,
 	if (!length)
 		return -1;
 	return uib_qp_handle_packet(endpoint->qp, &source, packet, length);
+}
+
+static void run_uet_sack(void)
+{
+	static const uint8_t payloads[3][TEST_PAYLOAD_LENGTH] = {
+		{ 0xe1, 1, 2, 3, 4, 5, 6, 7 },
+		{ 0xe2, 1, 2, 3, 4, 5, 6, 7 },
+		{ 0xe3, 1, 2, 3, 4, 5, 6, 7 },
+	};
+	struct uib_uet_pds_ack_ext extension;
+	struct uib_uet_pds_ack ack;
+	struct test_endpoint endpoint;
+	uint64_t bitmap;
+	uint32_t sack_psn;
+	uint32_t cack_psn;
+	uint32_t total;
+	int16_t offset;
+	int capture_fd;
+
+	total = sizeof(payloads);
+	capture_fd = ack_capture_open(19707);
+	check("uet.sack.capture", capture_fd >= 0);
+	check("uet.sack.setup",
+	      !endpoint_init(&endpoint, "uet", 19706, 100));
+	if (capture_fd < 0 || !endpoint.context || !endpoint.mr)
+		goto out;
+	check("uet.sack.remote-port",
+	      !endpoint_set_remote_port(&endpoint, 19707));
+	check("uet.sack.post", !post_receives(&endpoint, 1, total));
+	check("uet.sack.som",
+	      !inject_uet(&endpoint, 100, 30, UIB_UET_SES_FLAG_SOM,
+			  0, total, payloads[0]));
+	check("uet.sack.future",
+	      !inject_uet(&endpoint, 102, 30, UIB_UET_SES_FLAG_EOM,
+			  2 * TEST_PAYLOAD_LENGTH, total, payloads[2]));
+	memset(&ack, 0, sizeof(ack));
+	memset(&extension, 0, sizeof(extension));
+	check("uet.sack.future-ack",
+	      !capture_ack(capture_fd, 102, &ack, &extension));
+	cack_psn = ntohl(ack.cack_psn);
+	offset = (int16_t)ntohs(extension.sack_psn_offset);
+	sack_psn = cack_psn + offset;
+	bitmap = be64toh(extension.sack_bitmap);
+	check("uet.sack.cumulative", cack_psn == 100);
+	check("uet.sack.aligned", !(sack_psn & 7));
+	check("uet.sack.received",
+	      sack_psn <= 102 && 102 - sack_psn < 64 &&
+	      (bitmap & (1ULL << (102 - sack_psn))));
+	check("uet.sack.hole",
+	      sack_psn <= 101 && 101 - sack_psn < 64 &&
+	      !(bitmap & (1ULL << (101 - sack_psn))));
+	check("uet.sack.mpr",
+	      (ntohs(extension.cc_type_flags_mpr) & 0xff) == 1);
+
+out:
+	if (capture_fd >= 0)
+		close(capture_fd);
+	endpoint_cleanup(&endpoint);
 }
 
 static void run_uet_write_imm_reorder(void)
@@ -541,8 +667,10 @@ out:
 int main(void)
 {
 	setenv("UIB_ZEROCOPY", "off", 1);
+	setenv("UIB_TRANSPORT_MODE", "udp-sync", 1);
 	run_rocev2_ordering();
 	run_rocev2_wrap();
+	run_uet_sack();
 	run_uet_ordering();
 	run_uet_wrap();
 	run_uet_write_imm_reorder();
