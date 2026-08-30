@@ -11,6 +11,7 @@ struct uib_qp;
 struct uib_send_wr;
 
 struct uib_rx_meta {
+	uint64_t rx_time_ns;
 	uint8_t ecn;
 };
 

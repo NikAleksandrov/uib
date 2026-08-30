@@ -1691,7 +1691,7 @@ static void uet_transport_release(void *opaque)
 	out = opaque;
 	if (!out)
 		return;
-	now_ns = uet_now_ns();
+	now_ns = uib_now_ns();
 	rto = __atomic_load_n(&out->rto_ns, __ATOMIC_RELAXED);
 	deadline = rto > UINT64_MAX - now_ns ? UINT64_MAX : now_ns + rto;
 	__atomic_store_n(&out->tx_time_ns, now_ns, __ATOMIC_RELAXED);
@@ -3849,7 +3849,8 @@ static void uet_ack_path_feedback(struct uib_uet_qp *uet,
 
 static void uet_ack_congestion_feedback(struct uib_uet_qp *uet,
 					 const struct uet_ack_view *view,
-					 struct uib_uet_outstanding *out)
+					 struct uib_uet_outstanding *out,
+					 uint64_t rx_time_ns)
 {
 	const struct uib_uet_nscc_wire_state *cc_state;
 	const struct uib_uet_rccc_wire_state *credit_state;
@@ -3908,7 +3909,7 @@ static void uet_ack_congestion_feedback(struct uib_uet_qp *uet,
 	event.receiver_cwnd_penalty = penalty;
 	event.restore_cwnd = restore;
 common:
-	event.ack_time_ns = uib_now_ns();
+	event.ack_time_ns = rx_time_ns ? rx_time_ns : uib_now_ns();
 	event.ecn_marked = !!(uib_uet_prologue_flags(&view->ack->prologue) &
 			       UIB_UET_ACK_FLAG_M);
 	event.retransmit = !!(uib_uet_prologue_flags(&view->ack->prologue) &
@@ -4085,7 +4086,8 @@ static void uet_mark_retransmit(void *packet)
 	prologue->type_next_flags = htons(value);
 }
 
-static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
+static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len,
+			  uint64_t rx_time_ns)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
 	struct uib_uet_outstanding *out;
@@ -4104,7 +4106,7 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len)
 	uet->state = UIB_UET_PDC_ESTABLISHED;
 	out = uet_find_outstanding(uet, view.ack_psn, view.msg_id);
 	uet_ack_path_feedback(uet, &view, out);
-	uet_ack_congestion_feedback(uet, &view, out);
+	uet_ack_congestion_feedback(uet, &view, out, rx_time_ns);
 	clear_required = !!(uib_uet_prologue_flags(&view.ack->prologue) &
 			    UIB_UET_ACK_FLAG_REQ_CLEAR);
 	if (clear_required &&
@@ -4261,7 +4263,8 @@ static int uet_handle_packet(struct uib_qp *qp,
 					  meta && meta->ecn == IPTOS_ECN_CE);
 	case UIB_UET_PDS_TYPE_ACK:
 	case UIB_UET_PDS_TYPE_ACK_CC:
-		return uet_handle_ack(qp, packet, len);
+		return uet_handle_ack(qp, packet, len,
+				      meta ? meta->rx_time_ns : 0);
 	case UIB_UET_PDS_TYPE_NACK:
 		return uet_handle_nack(qp, packet, len);
 	case UIB_UET_PDS_TYPE_CTRL_MSG:

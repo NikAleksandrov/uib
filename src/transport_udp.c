@@ -151,6 +151,7 @@ struct uib_udp_flow {
 
 struct uib_udp_rx_work {
 	struct sockaddr_in source;
+	uint64_t           rx_time_ns;
 	size_t             length;
 	uint8_t            ecn;
 	uint8_t            pool_class;
@@ -347,7 +348,7 @@ static void *rx_worker_loop(void *argument)
 		if (work) {
 			uib_transport_deliver_ecn(be->ctx, &work->source,
 						  work->data, work->length,
-						  work->ecn);
+						  work->ecn, work->rx_time_ns);
 			rx_work_release(worker, work);
 			continue;
 		}
@@ -386,6 +387,7 @@ static void dispatch_packet(struct uib_context *ctx, const void *buffer,
 	if (!work)
 		goto drop;
 	work->source = *source;
+	work->rx_time_ns = uib_now_ns();
 	work->length = length;
 	work->ecn = ecn;
 	memcpy(work->data, buffer, length);

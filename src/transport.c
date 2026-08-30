@@ -36,14 +36,15 @@ void uib_transport_deliver(struct uib_context *ctx,
 			   const struct sockaddr_in *src, const void *buf,
 			   size_t len)
 {
-	uib_transport_deliver_ecn(ctx, src, buf, len, 0);
+	uib_transport_deliver_ecn(ctx, src, buf, len, 0, 0);
 }
 
 void uib_transport_deliver_ecn(struct uib_context *ctx,
 			       const struct sockaddr_in *src, const void *buf,
-			       size_t len, uint8_t ecn)
+			       size_t len, uint8_t ecn, uint64_t rx_time_ns)
 {
 	struct uib_rx_meta meta = {
+		.rx_time_ns = rx_time_ns,
 		.ecn = ecn,
 	};
 	struct uib_qp *qp;
