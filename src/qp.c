@@ -192,6 +192,7 @@ struct uib_qp *uib_create_qp(struct uib_pd *pd,
 	qp->max_send_sge = attr->max_send_sge ? attr->max_send_sge : 1;
 	qp->max_recv_sge = attr->srq ? attr->srq->max_sge :
 		(attr->max_recv_sge ? attr->max_recv_sge : 1);
+	qp->max_send_wr  = attr->max_send_wr ? attr->max_send_wr : 64;
 	qp->path_mtu     = UIB_PMTU;
 	qp->out_pool     = outstanding_pool_create(attr->max_send_wr);
 	if (!qp->out_pool) {

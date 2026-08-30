@@ -182,6 +182,7 @@ struct uib_qp {
 
 	uint32_t            max_send_sge;
 	uint32_t            max_recv_sge;
+	uint32_t            max_send_wr;
 
 	struct uib_outstanding *out_head;
 	struct uib_outstanding *out_tail;
