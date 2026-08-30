@@ -173,6 +173,7 @@ struct uib_uet_outstanding {
 	size_t payload_len;
 	uint64_t deadline_ns;
 	uint64_t tx_time_ns;
+	uint64_t rto_ns;
 	uint32_t psn;
 	uint32_t nominal_len;
 	uint32_t read_offset;
@@ -184,6 +185,7 @@ struct uib_uet_outstanding {
 	uint8_t retries;
 	uint8_t rto_retries;
 	uint8_t sent;
+	uint8_t tx_pending;
 	uint8_t sack_acked;
 	uint8_t indexed;
 	uint8_t pool_class;
@@ -487,6 +489,7 @@ uet_alloc_outstanding(struct uib_uet_qp *uet, size_t packet_len)
 	out->payload_len = 0;
 	out->deadline_ns = 0;
 	out->tx_time_ns = 0;
+	out->rto_ns = 0;
 	out->psn = 0;
 	out->nominal_len = 0;
 	out->read_offset = 0;
@@ -498,6 +501,7 @@ uet_alloc_outstanding(struct uib_uet_qp *uet, size_t packet_len)
 	out->retries = 0;
 	out->rto_retries = 0;
 	out->sent = 0;
+	out->tx_pending = 0;
 	out->sack_acked = 0;
 	out->indexed = 0;
 	out->refs = 1;
@@ -1674,6 +1678,25 @@ static void uet_free_outstanding(void *opaque)
 	uet_out_pool_push(out);
 }
 
+static void uet_transport_release(void *opaque)
+{
+	struct uib_uet_outstanding *out;
+	uint64_t deadline;
+	uint64_t now_ns;
+	uint64_t rto;
+
+	out = opaque;
+	if (!out)
+		return;
+	now_ns = uet_now_ns();
+	rto = __atomic_load_n(&out->rto_ns, __ATOMIC_RELAXED);
+	deadline = rto > UINT64_MAX - now_ns ? UINT64_MAX : now_ns + rto;
+	__atomic_store_n(&out->tx_time_ns, now_ns, __ATOMIC_RELAXED);
+	__atomic_store_n(&out->deadline_ns, deadline, __ATOMIC_RELAXED);
+	__atomic_store_n(&out->tx_pending, 0, __ATOMIC_RELEASE);
+	uet_free_outstanding(out);
+}
+
 static void uet_outstanding_index_add(struct uib_uet_qp *uet,
 				      struct uib_uet_outstanding *out)
 {
@@ -2020,6 +2043,7 @@ static int uet_drain_locked(struct uib_qp *qp)
 	struct uib_transport_iov_ref refs[UIB_UET_PDC_MPR];
 	struct iovec vectors[UIB_UET_PDC_MPR][2];
 	struct uib_congestion congestion_before;
+	uint64_t packet_deadline;
 	uint64_t deadline;
 	uint64_t now_ns;
 	uint64_t rto;
@@ -2037,14 +2061,19 @@ static int uet_drain_locked(struct uib_qp *qp)
 		if (!uib_congestion_can_send(&uet->congestion,
 					     candidate->nominal_len))
 			break;
+		rto = uet_rto_interval(qp, candidate);
+		candidate->rto_ns = rto;
 		candidate->tx_time_ns = now_ns;
+		candidate->deadline_ns = rto > UINT64_MAX - now_ns ?
+			UINT64_MAX : now_ns + rto;
+		__atomic_store_n(&candidate->tx_pending, 1, __ATOMIC_RELEASE);
 		if (!candidate->entropy)
 			uet_select_path(uet, candidate, now_ns);
 		vectors[count][0].iov_base = candidate->packet;
 		vectors[count][0].iov_len = candidate->header_len;
 		refs[count].dst = &candidate->dst;
 		refs[count].iov = vectors[count];
-		refs[count].release = uet_free_outstanding;
+		refs[count].release = uet_transport_release;
 		refs[count].opaque = candidate;
 		refs[count].len = candidate->packet_len;
 		refs[count].iov_count = 1;
@@ -2080,6 +2109,9 @@ static int uet_drain_locked(struct uib_qp *qp)
 	}
 	rc = uib_transport_send_iov_ref_batch(qp->ctx, refs, count);
 	if (rc < 0) {
+		for (i = 0; i < count; i++)
+			__atomic_store_n(&outstanding[i]->tx_pending, 0,
+					 __ATOMIC_RELEASE);
 		uet->congestion = congestion_before;
 		return rc;
 	}
@@ -2088,11 +2120,10 @@ static int uet_drain_locked(struct uib_qp *qp)
 		out = outstanding[i];
 		out->sent = 1;
 		uet->sent_count++;
-		rto = uet_rto_interval(qp, out);
-		out->deadline_ns = rto > UINT64_MAX - out->tx_time_ns ?
-			UINT64_MAX : out->tx_time_ns + rto;
-		if (out->deadline_ns < deadline)
-			deadline = out->deadline_ns;
+		packet_deadline = __atomic_load_n(&out->deadline_ns,
+						  __ATOMIC_RELAXED);
+		if (packet_deadline < deadline)
+			deadline = packet_deadline;
 		if (out->entropy) {
 			uet->paths[out->path_index].sent++;
 			uet->multipath_stats.packets++;
@@ -3877,7 +3908,8 @@ common:
 	event.retransmit = !!(uib_uet_prologue_flags(&view->ack->prologue) &
 			       UIB_UET_ACK_FLAG_RETX);
 	if (out) {
-		event.tx_time_ns = out->tx_time_ns;
+		event.tx_time_ns = __atomic_load_n(&out->tx_time_ns,
+						   __ATOMIC_RELAXED);
 		event.tx_retries = out->retries;
 	} else {
 		event.tx_retries = 2;
@@ -5228,6 +5260,7 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 	struct uib_uet_qp *uet = qp->protocol_private;
 	struct uib_uet_outstanding *out;
 	uint64_t next_deadline = UINT64_MAX;
+	uint64_t packet_deadline;
 	uint32_t sent_remaining;
 
 	pthread_mutex_lock(&qp->lock);
@@ -5239,7 +5272,13 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 			continue;
 		}
 		sent_remaining--;
-		if ((int64_t)(now_ns - out->deadline_ns) < 0) {
+		if (__atomic_load_n(&out->tx_pending, __ATOMIC_ACQUIRE)) {
+			out = out->next;
+			continue;
+		}
+		packet_deadline = __atomic_load_n(&out->deadline_ns,
+						  __ATOMIC_RELAXED);
+		if ((int64_t)(now_ns - packet_deadline) < 0) {
 			out = out->next;
 			continue;
 		}
@@ -5282,8 +5321,16 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 		if (!out->sent)
 			continue;
 		sent_remaining--;
-		if (out->deadline_ns < next_deadline)
-			next_deadline = out->deadline_ns;
+		if (__atomic_load_n(&out->tx_pending, __ATOMIC_ACQUIRE)) {
+			packet_deadline = qp->ctx->retry_timeout_ns >
+				UINT64_MAX - now_ns ? UINT64_MAX :
+				now_ns + qp->ctx->retry_timeout_ns;
+		} else {
+			packet_deadline = __atomic_load_n(&out->deadline_ns,
+							  __ATOMIC_RELAXED);
+		}
+		if (packet_deadline < next_deadline)
+			next_deadline = packet_deadline;
 	}
 	if (next_deadline != UINT64_MAX)
 		uib_qp_retry_schedule(qp, next_deadline);
