@@ -37,6 +37,7 @@
 #define UIB_UET_PACKET_MAX UIB_RECV_BUF_LEN
 #define UIB_UET_TRACK_POOL_MAX 1024U
 #define UIB_UET_READ_FRAGMENTS_INLINE 8U
+#define UIB_UET_GATHER_POOL_WARM 8U
 
 enum uib_uet_pdc_state {
 	UIB_UET_PDC_CLOSED,
@@ -69,6 +70,7 @@ struct uib_uet_wr_track {
 	struct sockaddr_in destination;
 	const uint8_t *message;
 	uint8_t *owned_message;
+	struct uib_uet_outstanding *owned_message_buffer;
 	struct uib_mr *mr;
 	struct uib_send_wr wr;
 	uint16_t msg_id;
@@ -244,6 +246,7 @@ struct uib_uet_qp {
 };
 
 static int uet_refill_locked(struct uib_qp *qp);
+static void uet_free_outstanding(void *opaque);
 
 static size_t uet_out_pool_capacity(uint8_t pool_class)
 {
@@ -347,6 +350,16 @@ static void uet_out_pool_prewarm_mtu(struct uib_uet_out_pool *pool,
 	uet_out_pool_prewarm(pool, header_class, UIB_UET_PDC_MPR);
 	if (packet_class != header_class)
 		uet_out_pool_prewarm(pool, packet_class, UIB_UET_PDC_MPR);
+}
+
+static void uet_out_pool_prewarm_gather(struct uib_uet_out_pool *pool)
+{
+	uint8_t pool_class;
+
+	for (pool_class = 0; pool_class < UIB_UET_OUT_POOL_CLASSES;
+	     pool_class++)
+		uet_out_pool_prewarm(pool, pool_class,
+				     UIB_UET_GATHER_POOL_WARM);
 }
 
 static void uet_out_pool_destroy(struct uib_uet_out_pool *pool)
@@ -983,6 +996,7 @@ static int uet_qp_init(struct uib_qp *qp)
 		free(uet);
 		return -ENOMEM;
 	}
+	uet_out_pool_prewarm_gather(uet->out_pool);
 	uet_out_pool_prewarm_mtu(uet->out_pool, qp->path_mtu);
 	uet->track_pool = uet_track_pool_create(qp->max_send_wr,
 					       qp->max_send_sge);
@@ -1375,7 +1389,10 @@ static void uet_free_track(struct uib_uet_wr_track *track)
 	if (!track)
 		return;
 	uib_mr_put(track->mr);
-	free(track->owned_message);
+	if (track->owned_message_buffer)
+		uet_free_outstanding(track->owned_message_buffer);
+	else
+		free(track->owned_message);
 	if (track->read_sgl != track->inline_read_sgl)
 		free(track->read_sgl);
 	if (track->read_fragments != track->inline_read_fragments)
@@ -3948,6 +3965,7 @@ struct uet_post_context {
 	struct sockaddr_in destination;
 	const uint8_t *message;
 	uint8_t *owned_message;
+	struct uib_uet_outstanding *owned_message_buffer;
 	struct uib_mr *mr;
 	uint32_t total_len;
 	uint32_t chunk_max;
@@ -3981,7 +3999,10 @@ static void uet_post_context_release(struct uet_post_context *context)
 	}
 	uet_free_track(context->track);
 	uib_mr_put(context->mr);
-	free(context->owned_message);
+	if (context->owned_message_buffer)
+		uet_free_outstanding(context->owned_message_buffer);
+	else
+		free(context->owned_message);
 }
 
 static int uet_ses_opcode(const struct uib_send_wr *wr, uint8_t *opcode)
@@ -4046,8 +4067,13 @@ static int uet_prepare_message(struct uib_qp *qp, struct uib_send_wr *wr,
 		uib_mr_put(context->mr);
 		context->mr = NULL;
 	}
-	context->owned_message = malloc(context->total_len ?
-						context->total_len : 1);
+	context->owned_message_buffer = uet_alloc_outstanding(
+		context->uet, context->total_len ? context->total_len : 1);
+	if (context->owned_message_buffer)
+		context->owned_message = context->owned_message_buffer->packet;
+	else
+		context->owned_message = malloc(context->total_len ?
+							context->total_len : 1);
 	if (!context->owned_message)
 		return -ENOMEM;
 	rc = uib_qp_gather(qp->pd, wr->sg_list, wr->num_sge,
@@ -4199,6 +4225,7 @@ static void uet_store_post(struct uib_send_wr *wr,
 	track->destination = context->destination;
 	track->message = context->message;
 	track->owned_message = context->owned_message;
+	track->owned_message_buffer = context->owned_message_buffer;
 	track->mr = context->mr;
 	track->msg_id = context->msg_id;
 	track->ses_opcode = context->ses_opcode;
@@ -4207,6 +4234,7 @@ static void uet_store_post(struct uib_send_wr *wr,
 	track->send_syn = context->send_syn;
 	track->pds_len = context->pds_len;
 	context->owned_message = NULL;
+	context->owned_message_buffer = NULL;
 	context->mr = NULL;
 }
 

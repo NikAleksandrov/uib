@@ -232,6 +232,29 @@ static void post_send_buf(struct uib_qp *qp, uint64_t wr_id,
 	uib_post_send(qp, &wr, &bad);
 }
 
+static void post_send_split(struct uib_qp *qp, uint64_t wr_id, void *buf,
+			    uint32_t first_len, uint32_t total_len,
+			    uint32_t lkey)
+{
+	struct uib_send_wr wr;
+	struct uib_send_wr *bad;
+	struct uib_sge sge[2];
+
+	sge[0].addr = (uintptr_t)buf;
+	sge[0].length = first_len;
+	sge[0].lkey = lkey;
+	sge[1].addr = (uintptr_t)buf + first_len;
+	sge[1].length = total_len - first_len;
+	sge[1].lkey = lkey;
+	memset(&wr, 0, sizeof(wr));
+	wr.wr_id = wr_id;
+	wr.opcode = UIB_WR_SEND;
+	wr.send_flags = UIB_SEND_SIGNALED;
+	wr.sg_list = sge;
+	wr.num_sge = ARRAY_SIZE(sge);
+	uib_post_send(qp, &wr, &bad);
+}
+
 static void post_atomic(struct uib_qp *qp, uint64_t wr_id,
 			enum uib_wr_opcode opcode, uint64_t *result,
 			uint32_t lkey, uint64_t remote_addr, uint32_t rkey,
@@ -516,7 +539,7 @@ int main(void)
 	ia.qp_type = UIB_QPT_RC;
 	ia.max_send_wr = 64;
 	ia.max_recv_wr = 64;
-	ia.max_send_sge = 1;
+	ia.max_send_sge = 2;
 	ia.max_recv_sge = 1;
 	qpA = uib_create_qp(pdA, &ia);
 
@@ -526,7 +549,7 @@ int main(void)
 	ia.qp_type = UIB_QPT_RC;
 	ia.max_send_wr = 64;
 	ia.max_recv_wr = 64;
-	ia.max_send_sge = 1;
+	ia.max_send_sge = 2;
 	ia.max_recv_sge = 1;
 	qpB = uib_create_qp(pdB, &ia);
 	if (!qpA || !qpB) {
@@ -565,6 +588,14 @@ int main(void)
 	report_wc("send.big.recv", cqB);
 	report_wc("send.big.send", cqA);
 	check_bytes("send.big.data", recvB, sendA, BIG_LEN);
+
+	memset(recvB, 0, BIG_LEN);
+	post_recv_buf(qpB, 0xB003, recvB, BIG_LEN, mrB->lkey);
+	nap_ms(20);
+	post_send_split(qpA, 0xA007, sendA, 4097, BIG_LEN, mrA->lkey);
+	report_wc("send.split.recv", cqB);
+	report_wc("send.split.send", cqA);
+	check_bytes("send.split.data", recvB, sendA, BIG_LEN);
 
 	for (i = 0; i < BIG_LEN; i++)
 		writeA[i] = (uint8_t)(i ^ 0x5a);
