@@ -621,6 +621,42 @@ out:
 	endpoint_cleanup(&endpoint);
 }
 
+static void run_uet_next_message_replay(void)
+{
+	static const uint8_t payloads[4][TEST_PAYLOAD_LENGTH] = {
+		{ 0x61, 1, 2, 3, 4, 5, 6, 7 },
+		{ 0x62, 1, 2, 3, 4, 5, 6, 7 },
+		{ 0x63, 1, 2, 3, 4, 5, 6, 7 },
+		{ 0x64, 1, 2, 3, 4, 5, 6, 7 },
+	};
+	struct test_endpoint endpoint;
+	uint32_t total;
+
+	total = 2 * TEST_PAYLOAD_LENGTH;
+	check("uet.next.setup", !endpoint_init(&endpoint, "uet", 19708, 200));
+	if (!endpoint.context || !endpoint.mr)
+		goto out;
+	check("uet.next.post", !post_receives(&endpoint, 2, total));
+	check("uet.next.first-som",
+	      !inject_uet(&endpoint, 200, 10, UIB_UET_SES_FLAG_SOM, 0,
+			  total, payloads[0]));
+	check("uet.next.defer-som",
+	      !inject_uet(&endpoint, 202, 11, UIB_UET_SES_FLAG_SOM, 0,
+			  total, payloads[2]));
+	check("uet.next.defer-eom",
+	      !inject_uet(&endpoint, 203, 11, UIB_UET_SES_FLAG_EOM,
+			  TEST_PAYLOAD_LENGTH, total, payloads[3]));
+	check("uet.next.finish-first",
+	      !inject_uet(&endpoint, 201, 10, UIB_UET_SES_FLAG_EOM,
+			  TEST_PAYLOAD_LENGTH, total, payloads[1]) &&
+	      completion_count(&endpoint) == 2);
+	check("uet.next.data",
+	      !memcmp(endpoint.buffer, payloads, sizeof(payloads)));
+
+out:
+	endpoint_cleanup(&endpoint);
+}
+
 static void run_uet_wrap(void)
 {
 	static const uint8_t payloads[3][TEST_PAYLOAD_LENGTH] = {
@@ -671,6 +707,7 @@ int main(void)
 	run_rocev2_wrap();
 	run_uet_sack();
 	run_uet_ordering();
+	run_uet_next_message_replay();
 	run_uet_wrap();
 	run_uet_write_imm_reorder();
 	run_uet_write_imm_error_cleanup();

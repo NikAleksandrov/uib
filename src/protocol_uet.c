@@ -210,6 +210,7 @@ struct uib_uet_deferred {
 struct uib_uet_qp {
 	enum uib_uet_pdc_state state;
 	pthread_cond_t prep_cond;
+	pthread_mutex_t rx_lock;
 	uint16_t spdcid;
 	uint16_t dpdcid;
 	uint16_t next_msg_id;
@@ -1250,12 +1251,22 @@ static int uet_qp_init(struct uib_qp *qp)
 		free(uet);
 		return -ENOMEM;
 	}
-	if (pthread_cond_init(&uet->prep_cond, NULL)) {
+	rc = pthread_mutex_init(&uet->rx_lock, NULL);
+	if (rc) {
 		uib_psn_index_destroy(&uet->out_index);
 		uet_track_pool_destroy(uet->track_pool);
 		uet_out_pool_destroy(uet->out_pool);
 		free(uet);
-		return -ENOMEM;
+		return -rc;
+	}
+	rc = pthread_cond_init(&uet->prep_cond, NULL);
+	if (rc) {
+		pthread_mutex_destroy(&uet->rx_lock);
+		uib_psn_index_destroy(&uet->out_index);
+		uet_track_pool_destroy(uet->track_pool);
+		uet_out_pool_destroy(uet->out_pool);
+		free(uet);
+		return -rc;
 	}
 	uet->spdcid = (uint16_t)qp->qp_num;
 	uet->next_msg_id = 1;
@@ -1283,6 +1294,7 @@ static int uet_qp_init(struct uib_qp *qp)
 	rc = uet_congestion_init(qp, uet);
 	if (rc) {
 		pthread_cond_destroy(&uet->prep_cond);
+		pthread_mutex_destroy(&uet->rx_lock);
 		uib_psn_index_destroy(&uet->out_index);
 		uet_track_pool_destroy(uet->track_pool);
 		uet_out_pool_destroy(uet->out_pool);
@@ -1824,6 +1836,7 @@ static void uet_qp_fini(struct uib_qp *qp)
 	if (uet->recv_active)
 		uib_qp_release_recv(&uet->recv_slot);
 	pthread_cond_destroy(&uet->prep_cond);
+	pthread_mutex_destroy(&uet->rx_lock);
 	uib_psn_index_destroy(&uet->out_index);
 	uet_track_pool_destroy(uet->track_pool);
 	uet_out_pool_destroy(uet->out_pool);
@@ -3202,6 +3215,10 @@ static int uet_defer_request(struct uib_qp *qp,
 static int uet_deferred_ready(const struct uib_uet_qp *uet,
 			      const struct uib_uet_deferred *deferred)
 {
+	if (deferred->psn == uet->rx_base_psn &&
+	    ((deferred->opcode == UIB_UET_SES_SEND && !uet->recv_active) ||
+	     (deferred->opcode == UIB_UET_SES_WRITE && !uet->write_active)))
+		return 1;
 	if (uet->recv_active && deferred->opcode == UIB_UET_SES_SEND &&
 	    deferred->msg_id == uet->recv_msg_id)
 		return 1;
@@ -3562,27 +3579,36 @@ static int uet_handle_request(struct uib_qp *qp,
 			      const struct sockaddr_in *source,
 			      const void *packet, size_t len, int ecn_marked)
 {
+	struct uib_uet_qp *uet;
 	struct uib_uet_outstanding *deferred;
 	struct sockaddr_in deferred_source;
 	int deferred_ecn;
 	int rc;
 
+	uet = qp->protocol_private;
+	pthread_mutex_lock(&uet->rx_lock);
 	rc = uet_handle_request_one(qp, source, packet, len, ecn_marked);
 	if (rc < 0)
-		return rc;
+		goto out;
 	for (;;) {
 		deferred = uet_take_deferred(qp, &deferred_source,
 					       &deferred_ecn);
-		if (!deferred)
-			return 0;
+		if (!deferred) {
+			rc = 0;
+			break;
+		}
 		rc = uet_handle_request_one(qp, &deferred_source,
 					    deferred->packet,
 					    deferred->packet_len,
 					    deferred_ecn);
 		uet_free_outstanding(deferred);
 		if (rc < 0)
-			return rc;
+			break;
 	}
+
+out:
+	pthread_mutex_unlock(&uet->rx_lock);
+	return rc;
 }
 
 static void uet_complete_out_locked(struct uib_qp *qp,
