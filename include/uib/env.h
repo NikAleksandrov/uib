@@ -127,6 +127,20 @@
  */
 #define UIB_ENV_UDP_MODE "UIB_UDP_MODE"
 
+/**
+ * DOC: UIB_UDP_WORKERS
+ * @uib-env: UDP transports
+ * @default: `auto`, a bounded pool no larger than the allowed CPU count
+ * @values: `auto` or a positive integer
+ *
+ * Set the number of UDP receive-dispatch workers. Packets for one QP always
+ * use the same worker, while different QPs can be processed in parallel.
+ * With affinity enabled, an explicit count cannot exceed the process's
+ * allowed CPU count.
+ *
+ * Example:
+ * UIB_UDP_WORKERS=8 LD_PRELOAD=$PWD/libuibv.so app
+ */
 #define UIB_ENV_UDP_WORKERS "UIB_UDP_WORKERS"
 
 /**

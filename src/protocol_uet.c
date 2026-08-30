@@ -45,6 +45,7 @@
 #define UIB_UET_PREP_WORKER_QUEUE_SIZE 256U
 #define UIB_UET_PREP_CHUNK 32U
 #define UIB_UET_PREP_WORKER_STACK_SIZE (256U * 1024U)
+#define UIB_UET_PREP_WORKERS_AUTO_MAX 2U
 
 enum uib_uet_pdc_state {
 	UIB_UET_PDC_CLOSED,
@@ -1161,7 +1162,8 @@ static int uet_context_init(struct uib_context *ctx)
 
 	rc = uib_worker_configuration(&count, &allowed, &attr_ready,
 				      UIB_ENV_TX_WORKERS,
-				      UIB_ENV_TX_WORKER_AFFINITY, 0);
+				      UIB_ENV_TX_WORKER_AFFINITY,
+				      UIB_UET_PREP_WORKERS_AUTO_MAX);
 	if (rc < 0)
 		return rc;
 	cpu_start = attr_ready ? uib_worker_cpu_reserve(count) : 0;

@@ -48,6 +48,7 @@
 	(CMSG_SPACE(sizeof(uint16_t)) + CMSG_SPACE(sizeof(uint8_t)))
 #define UIB_URING_SQPOLL_IDLE_DEFAULT 2000
 #define UIB_SOCKET_BUFFER_SIZE       (4 * 1024 * 1024)
+#define UIB_UDP_RX_WORKERS_AUTO_MAX  2U
 #define UIB_UDP_RX_WORK_QUEUE        1024
 #define UIB_UDP_RX_POOL_CLASSES      4
 #define UIB_UDP_RX_POOL_LIMIT        256
@@ -1674,7 +1675,8 @@ static int init_rx_workers(struct uib_udp_backend *be)
 
 	rc = uib_worker_configuration(&count, &allowed, &affinity,
 				      UIB_ENV_UDP_WORKERS,
-				      UIB_ENV_UDP_WORKER_AFFINITY, 0);
+				      UIB_ENV_UDP_WORKER_AFFINITY,
+				      UIB_UDP_RX_WORKERS_AUTO_MAX);
 	if (rc < 0)
 		return rc;
 	cpu_start = affinity ? uib_worker_cpu_reserve(count) : 0;
