@@ -27,6 +27,7 @@ __pycache__/
 
 # example binaries
 /examples/direct_traffic
+/examples/qp_scaling_bench
 /examples/verbs_traffic
 /examples/stress_bench
 

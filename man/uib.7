@@ -3418,6 +3418,51 @@ Accepted values: A positive number of seconds.
 .br
 Example: \fBUIB_CONTEXT_SCALE_TIMEOUT=300 make context\-scaling\-benchmark\fP
 .TP
+.B UIB_QP_SCALE_COUNTS
+Select QP counts for the shared\-context scaling benchmark. All QPs in one measurement share a context, CQ, memory region, and transport endpoint.
+.br
+Default: 1 2 4 8
+.br
+Accepted values: Space\-separated positive integers from 1 through 256.
+.br
+Example: \fBUIB_QP_SCALE_COUNTS="1 4 8" make qp\-scaling\-benchmark\fP
+.TP
+.B UIB_QP_SCALE_QPS
+Select one QP count when running examples/qp_scaling_bench directly. The matrix harness sets this variable from UIB_QP_SCALE_COUNTS.
+.br
+Default: 1
+.br
+Accepted values: A positive integer from 1 through 256.
+.br
+Example: \fBUIB_QP_SCALE_QPS=4 ./examples/qp_scaling_bench\fP
+.TP
+.B UIB_QP_SCALE_TRIALS
+Set the number of measurements for each shared\-context QP count.
+.br
+Default: 3
+.br
+Accepted values: A positive integer.
+.br
+Example: \fBUIB_QP_SCALE_TRIALS=5 make qp\-scaling\-benchmark\fP
+.TP
+.B UIB_QP_SCALE_TIMEOUT
+Set the timeout for one shared\-context scaling measurement.
+.br
+Default: 120
+.br
+Accepted values: A positive number of seconds.
+.br
+Example: \fBUIB_QP_SCALE_TIMEOUT=300 make qp\-scaling\-benchmark\fP
+.TP
+.B UIB_QP_SCALE_PORT
+Set the first local UDP port used by the shared\-context scaling benchmark. Its peer uses the following port.
+.br
+Default: 22550
+.br
+Accepted values: A positive port number no greater than 65534.
+.br
+Example: \fBUIB_QP_SCALE_PORT=24550 make qp\-scaling\-benchmark\fP
+.TP
 .B UIB_MR_SCALE_LOOKUPS
 Set lookups in the registered\-memory scaling benchmark.
 .br

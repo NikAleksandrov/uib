@@ -898,6 +898,9 @@ scaling-benchmark: examples $(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) \
 context-scaling-benchmark: examples
 	./examples/context_scaling_benchmark.sh
 
+qp-scaling-benchmark: examples
+	./examples/qp_scaling_benchmark.sh
+
 scaling-test: examples $(QP_SCALE_TEST) $(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) \
 		$(SCALING_PROVIDER_BENCH) $(SCALING_PROVIDER_WR_BENCH)
 	./$(QP_SCALE_TEST)
@@ -931,6 +934,15 @@ examples-test: examples
 	./examples/direct_traffic rocev2
 	./examples/direct_traffic uet
 	./examples/direct_traffic dummy
+	UIB_TRANSPORT_MODE=udp-sync UIB_UDP_WORKERS=1 \
+		UIB_QP_SCALE_QPS=2 UIB_BENCH_ITERATIONS=16 \
+		UIB_BENCH_SIZE=4096 UIB_BENCH_WINDOW=8 UIB_BENCH_MTU=1024 \
+		./examples/qp_scaling_bench
+	UIB_TRANSPORT_MODE=udp-sync UIB_UDP_WORKERS=1 \
+		UIB_QP_SCALE_QPS=2 UIB_BENCH_PROTOCOL=rocev2 \
+		UIB_BENCH_ITERATIONS=16 UIB_BENCH_SIZE=4096 \
+		UIB_BENCH_WINDOW=8 UIB_BENCH_MTU=1024 \
+		./examples/qp_scaling_bench
 ifeq ($(HAVE_IBVERBS),1)
 	UIB_BIND_PORT=19100 LD_PRELOAD=$(CURDIR)/$(LIB_PROVIDER) \
 		./examples/verbs_traffic rocev2
@@ -1144,7 +1156,8 @@ clean:
 	zerocopy-e2e-test \
 	benchmark-all benchmark-local benchmark-congestion benchmark-report benchmark-doc \
 	benchmark-smoke ib-write-bw-test dummy-reorder-test \
-	scaling-benchmark context-scaling-benchmark scaling-test \
+	scaling-benchmark context-scaling-benchmark qp-scaling-benchmark \
+	scaling-test \
 	provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test \
 	nccl-test rccl-test ucx-libfabric-test mpi-compat-test \
 	gpu-dmabuf-test external-dmabuf-test remote-benchmark-test \

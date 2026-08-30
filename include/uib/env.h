@@ -1298,6 +1298,74 @@
 #define UIB_ENV_CONTEXT_SCALE_TIMEOUT "UIB_CONTEXT_SCALE_TIMEOUT"
 
 /**
+ * DOC: UIB_QP_SCALE_COUNTS
+ * @uib-env: Test and scaling harnesses
+ * @default: `1 2 4 8`
+ * @values: Space-separated positive integers from `1` through `256`.
+ *
+ * Select QP counts for the shared-context scaling benchmark. All QPs in one
+ * measurement share a context, CQ, memory region, and transport endpoint.
+ *
+ * Example:
+ * UIB_QP_SCALE_COUNTS="1 4 8" make qp-scaling-benchmark
+ */
+#define UIB_ENV_QP_SCALE_COUNTS "UIB_QP_SCALE_COUNTS"
+
+/**
+ * DOC: UIB_QP_SCALE_QPS
+ * @uib-env: Test and scaling harnesses
+ * @default: `1`
+ * @values: A positive integer from `1` through `256`.
+ *
+ * Select one QP count when running `examples/qp_scaling_bench` directly. The
+ * matrix harness sets this variable from `UIB_QP_SCALE_COUNTS`.
+ *
+ * Example:
+ * UIB_QP_SCALE_QPS=4 ./examples/qp_scaling_bench
+ */
+#define UIB_ENV_QP_SCALE_QPS "UIB_QP_SCALE_QPS"
+
+/**
+ * DOC: UIB_QP_SCALE_TRIALS
+ * @uib-env: Test and scaling harnesses
+ * @default: `3`
+ * @values: A positive integer.
+ *
+ * Set the number of measurements for each shared-context QP count.
+ *
+ * Example:
+ * UIB_QP_SCALE_TRIALS=5 make qp-scaling-benchmark
+ */
+#define UIB_ENV_QP_SCALE_TRIALS "UIB_QP_SCALE_TRIALS"
+
+/**
+ * DOC: UIB_QP_SCALE_TIMEOUT
+ * @uib-env: Test and scaling harnesses
+ * @default: `120`
+ * @values: A positive number of seconds.
+ *
+ * Set the timeout for one shared-context scaling measurement.
+ *
+ * Example:
+ * UIB_QP_SCALE_TIMEOUT=300 make qp-scaling-benchmark
+ */
+#define UIB_ENV_QP_SCALE_TIMEOUT "UIB_QP_SCALE_TIMEOUT"
+
+/**
+ * DOC: UIB_QP_SCALE_PORT
+ * @uib-env: Test and scaling harnesses
+ * @default: `22550`
+ * @values: A positive port number no greater than `65534`.
+ *
+ * Set the first local UDP port used by the shared-context scaling benchmark.
+ * Its peer uses the following port.
+ *
+ * Example:
+ * UIB_QP_SCALE_PORT=24550 make qp-scaling-benchmark
+ */
+#define UIB_ENV_QP_SCALE_PORT "UIB_QP_SCALE_PORT"
+
+/**
  * DOC: UIB_MR_SCALE_LOOKUPS
  * @uib-env: Test and scaling harnesses
  * @default: `1000000`

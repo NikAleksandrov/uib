@@ -8,7 +8,7 @@ CFLAGS += -I../include -pthread -D_GNU_SOURCE
 LDFLAGS += -L.. -Wl,-rpath,'$$ORIGIN/..' -pthread
 
 DIRECT_COMMON := direct_common.c
-PROGRAMS := direct_traffic stress_bench
+PROGRAMS := direct_traffic qp_scaling_bench stress_bench
 ifeq ($(HAVE_IBVERBS),1)
   PROGRAMS += verbs_traffic
 endif
@@ -23,11 +23,14 @@ stress_bench: stress_bench.c $(DIRECT_COMMON) ../libuib.so
 	$(CC) $(CFLAGS) -o $@ stress_bench.c $(DIRECT_COMMON) \
 		$(LDFLAGS) -luib
 
+qp_scaling_bench: qp_scaling_bench.c ../libuib.so
+	$(CC) $(CFLAGS) -o $@ qp_scaling_bench.c $(LDFLAGS) -luib
+
 verbs_traffic: verbs_traffic.c ../libuibv.so
 	$(CC) $(CFLAGS) $(IBVERBS_CFLAGS) -o $@ verbs_traffic.c $(LDFLAGS) \
 		-luibv $(IBVERBS_LIBS) -libverbs
 
 clean:
-	rm -f direct_traffic verbs_traffic stress_bench
+	rm -f direct_traffic qp_scaling_bench verbs_traffic stress_bench
 
 .PHONY: all clean

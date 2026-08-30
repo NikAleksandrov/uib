@@ -193,6 +193,19 @@ worker pool across every benchmark process. The result directory retains the
 exact commit, kernel, CPU set, inherited UIB variables, per-lane logs, summed
 steady-state lane rate and whole-trial wall-clock rate.
 
+Shared-context QP scaling isolates contention inside one UIB context and one
+transport endpoint. Unlike the independent-context test, every QP shares the
+same CQ, registered-memory region and UDP backend:
+
+    UIB_QP_SCALE_COUNTS="1 2 4 8" \
+    UIB_BENCH_PROTOCOL=uet make qp-scaling-benchmark
+
+The harness verifies every payload and completion, records wall and process
+CPU time, and inherits `UIB_BENCH_ITERATIONS`, `UIB_BENCH_SIZE`,
+`UIB_BENCH_WINDOW`, `UIB_BENCH_MTU`, transport and congestion-control
+settings. Compare its results with `context-scaling-benchmark` to distinguish
+shared-context limits from host-wide or kernel limits.
+
 Fedora 44 and Alpine 3.24 are the current stable release lines represented by
 the explicit image tags. Update the matrix and dependency installer together
 when a newer stable line is adopted; explicit tags keep old results
