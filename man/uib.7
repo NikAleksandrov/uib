@@ -3436,6 +3436,15 @@ Accepted values: A positive integer from 1 through 256.
 .br
 Example: \fBUIB_QP_SCALE_QPS=4 ./examples/qp_scaling_bench\fP
 .TP
+.B UIB_QP_SCALE_POSTING
+Select persistent per\-QP posting workers or one serial posting thread in the shared\-context benchmark. Use serial as the single\-producer control.
+.br
+Default: parallel
+.br
+Accepted values: parallel or serial
+.br
+Example: \fBUIB_QP_SCALE_POSTING=serial make qp\-scaling\-benchmark\fP
+.TP
 .B UIB_QP_SCALE_TRIALS
 Set the number of measurements for each shared\-context QP count.
 .br

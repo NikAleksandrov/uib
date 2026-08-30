@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <pthread.h>
 
 #include "uib/uib.h"
 
@@ -19,6 +20,7 @@ struct qp_scale_options {
 	uint32_t window;
 	uint32_t mtu;
 	uint16_t port;
+	int parallel;
 };
 
 struct qp_scale_group {
@@ -30,6 +32,31 @@ struct qp_scale_group {
 	uint8_t *buffer;
 	size_t buffer_length;
 	uint32_t qp_count;
+};
+
+struct qp_scale_pool;
+
+struct qp_scale_worker {
+	struct qp_scale_pool *pool;
+	pthread_t thread;
+	uint64_t generation;
+	uint32_t qp_index;
+	int started;
+};
+
+struct qp_scale_pool {
+	struct qp_scale_group *sender;
+	struct qp_scale_group *receiver;
+	const struct qp_scale_options *options;
+	struct qp_scale_worker *workers;
+	pthread_cond_t cond;
+	pthread_mutex_t lock;
+	uint64_t generation;
+	uint32_t completed;
+	uint32_t first;
+	uint32_t count;
+	int stop;
+	int rc;
 };
 
 static uint64_t clock_ns(clockid_t clock_id)
@@ -63,6 +90,7 @@ static int env_u32(const char *name, uint32_t fallback, uint32_t maximum,
 static int options_init(struct qp_scale_options *options)
 {
 	const char *protocol;
+	const char *posting;
 	uint32_t port;
 	int rc;
 
@@ -94,6 +122,13 @@ static int options_init(struct qp_scale_options *options)
 	if (!strcmp(options->protocol, "rocev2") && options->mtu > UIB_PMTU)
 		return -EINVAL;
 	options->port = (uint16_t)port;
+	posting = getenv("UIB_QP_SCALE_POSTING");
+	if (!posting || !*posting || !strcmp(posting, "parallel"))
+		options->parallel = 1;
+	else if (!strcmp(posting, "serial"))
+		options->parallel = 0;
+	else
+		return -EINVAL;
 	return 0;
 }
 
@@ -347,8 +382,14 @@ static int poll_batch(struct qp_scale_group *sender,
 		completed = uib_poll_cq(sender->cq, 64, completions);
 		for (i = 0; i < completed; i++) {
 			if (completions[i].status != UIB_WC_SUCCESS ||
-			    (completions[i].wr_id & QP_SCALE_RECV_FLAG))
+			    (completions[i].wr_id & QP_SCALE_RECV_FLAG)) {
+				fprintf(stderr,
+					"send CQE status=%u opcode=%u wr_id=%llu\n",
+					completions[i].status,
+					completions[i].opcode,
+					(unsigned long long)completions[i].wr_id);
 				return -EIO;
+			}
 			send_count++;
 		}
 		if (completed)
@@ -356,8 +397,14 @@ static int poll_batch(struct qp_scale_group *sender,
 		completed = uib_poll_cq(receiver->cq, 64, completions);
 		for (i = 0; i < completed; i++) {
 			if (completions[i].status != UIB_WC_SUCCESS ||
-			    !(completions[i].wr_id & QP_SCALE_RECV_FLAG))
+			    !(completions[i].wr_id & QP_SCALE_RECV_FLAG)) {
+				fprintf(stderr,
+					"receive CQE status=%u opcode=%u wr_id=%llu\n",
+					completions[i].status,
+					completions[i].opcode,
+					(unsigned long long)completions[i].wr_id);
 				return -EIO;
+			}
 			recv_count++;
 		}
 		if (completed)
@@ -370,36 +417,173 @@ static int poll_batch(struct qp_scale_group *sender,
 	return 0;
 }
 
+static int post_qp_batch(struct qp_scale_group *sender,
+			 struct qp_scale_group *receiver,
+			 const struct qp_scale_options *options,
+			 uint32_t qp_index, uint32_t first,
+			 uint32_t count)
+{
+	uint8_t *source;
+	uint8_t *target;
+	uint64_t sequence;
+	uint32_t slot;
+	int rc;
+
+	for (slot = 0; slot < count; slot++) {
+		sequence = (uint64_t)qp_index * options->iterations +
+			first + slot;
+		source = slot_buffer(sender, options, qp_index, slot);
+		target = slot_buffer(receiver, options, qp_index, slot);
+		fill_message(source, options->size, sequence);
+		memset(target, 0, options->size);
+		rc = post_receive(receiver, options, qp_index, slot,
+				  first + slot);
+		if (rc < 0)
+			return rc;
+		rc = post_send(sender, options, qp_index, slot, first + slot);
+		if (rc < 0)
+			return rc;
+	}
+	return 0;
+}
+
+static void *posting_worker(void *argument)
+{
+	struct qp_scale_worker *worker = argument;
+	struct qp_scale_pool *pool = worker->pool;
+	uint32_t count;
+	uint32_t first;
+	int rc;
+
+	pthread_mutex_lock(&pool->lock);
+	for (;;) {
+		while (!pool->stop && worker->generation == pool->generation)
+			pthread_cond_wait(&pool->cond, &pool->lock);
+		if (pool->stop)
+			break;
+		worker->generation = pool->generation;
+		first = pool->first;
+		count = pool->count;
+		pthread_mutex_unlock(&pool->lock);
+		rc = post_qp_batch(pool->sender, pool->receiver, pool->options,
+				   worker->qp_index, first, count);
+		pthread_mutex_lock(&pool->lock);
+		if (rc < 0 && !pool->rc)
+			pool->rc = rc;
+		pool->completed++;
+		if (pool->completed == pool->options->qps)
+			pthread_cond_broadcast(&pool->cond);
+	}
+	pthread_mutex_unlock(&pool->lock);
+	return NULL;
+}
+
+static void posting_pool_fini(struct qp_scale_pool *pool)
+{
+	uint32_t i;
+
+	if (!pool->workers)
+		return;
+	pthread_mutex_lock(&pool->lock);
+	pool->stop = 1;
+	pthread_cond_broadcast(&pool->cond);
+	pthread_mutex_unlock(&pool->lock);
+	for (i = 0; i < pool->options->qps; i++) {
+		if (pool->workers[i].started)
+			pthread_join(pool->workers[i].thread, NULL);
+	}
+	free(pool->workers);
+	pool->workers = NULL;
+	pthread_cond_destroy(&pool->cond);
+	pthread_mutex_destroy(&pool->lock);
+}
+
+static int posting_pool_init(struct qp_scale_pool *pool,
+			     struct qp_scale_group *sender,
+			     struct qp_scale_group *receiver,
+			     const struct qp_scale_options *options)
+{
+	struct qp_scale_worker *worker;
+	uint32_t i;
+	int rc;
+
+	memset(pool, 0, sizeof(*pool));
+	pool->sender = sender;
+	pool->receiver = receiver;
+	pool->options = options;
+	rc = pthread_mutex_init(&pool->lock, NULL);
+	if (rc)
+		return -rc;
+	rc = pthread_cond_init(&pool->cond, NULL);
+	if (rc) {
+		pthread_mutex_destroy(&pool->lock);
+		return -rc;
+	}
+	pool->workers = calloc(options->qps, sizeof(*pool->workers));
+	if (!pool->workers) {
+		pthread_cond_destroy(&pool->cond);
+		pthread_mutex_destroy(&pool->lock);
+		return -ENOMEM;
+	}
+	for (i = 0; i < options->qps; i++) {
+		worker = &pool->workers[i];
+		worker->pool = pool;
+		worker->qp_index = i;
+		rc = pthread_create(&worker->thread, NULL, posting_worker,
+				    worker);
+		if (rc) {
+			posting_pool_fini(pool);
+			return -rc;
+		}
+		worker->started = 1;
+	}
+	return 0;
+}
+
+static int posting_pool_run(struct qp_scale_pool *pool, uint32_t first,
+			    uint32_t count)
+{
+	int rc;
+
+	pthread_mutex_lock(&pool->lock);
+	pool->first = first;
+	pool->count = count;
+	pool->completed = 0;
+	pool->rc = 0;
+	pool->generation++;
+	pthread_cond_broadcast(&pool->cond);
+	while (pool->completed < pool->options->qps)
+		pthread_cond_wait(&pool->cond, &pool->lock);
+	rc = pool->rc;
+	pthread_mutex_unlock(&pool->lock);
+	return rc;
+}
+
 static int run_batch(struct qp_scale_group *sender,
 		     struct qp_scale_group *receiver,
 		     const struct qp_scale_options *options,
-		     uint32_t first, uint32_t count)
+		     struct qp_scale_pool *pool, uint32_t first,
+		     uint32_t count)
 {
-	uint8_t *source;
 	uint8_t *target;
 	uint64_t sequence;
 	uint32_t qp_index;
 	uint32_t slot;
 	int rc;
 
-	for (slot = 0; slot < count; slot++) {
+	if (pool) {
+		rc = posting_pool_run(pool, first, count);
+	} else {
+		rc = 0;
 		for (qp_index = 0; qp_index < options->qps; qp_index++) {
-			sequence = (uint64_t)qp_index * options->iterations +
-				first + slot;
-			source = slot_buffer(sender, options, qp_index, slot);
-			target = slot_buffer(receiver, options, qp_index, slot);
-			fill_message(source, options->size, sequence);
-			memset(target, 0, options->size);
-			rc = post_receive(receiver, options, qp_index, slot,
-					  first + slot);
+			rc = post_qp_batch(sender, receiver, options, qp_index,
+					   first, count);
 			if (rc < 0)
-				return rc;
-			rc = post_send(sender, options, qp_index, slot,
-				       first + slot);
-			if (rc < 0)
-				return rc;
+				break;
 		}
 	}
+	if (rc < 0)
+		return rc;
 	rc = poll_batch(sender, receiver, options->qps * count);
 	if (rc < 0)
 		return rc;
@@ -420,6 +604,8 @@ int main(void)
 	struct qp_scale_group receiver = {0};
 	struct qp_scale_group sender = {0};
 	struct qp_scale_options options;
+	struct qp_scale_pool pool = {0};
+	struct qp_scale_pool *posting;
 	uint64_t wall_start;
 	uint64_t wall_end;
 	uint64_t cpu_start;
@@ -443,6 +629,13 @@ int main(void)
 	rc = connect_groups(&sender, &receiver, options.mtu);
 	if (rc < 0)
 		goto out;
+	posting = NULL;
+	if (options.parallel) {
+		rc = posting_pool_init(&pool, &sender, &receiver, &options);
+		if (rc < 0)
+			goto out;
+		posting = &pool;
+	}
 	cpu_start = clock_ns(CLOCK_PROCESS_CPUTIME_ID);
 	wall_start = clock_ns(CLOCK_MONOTONIC);
 	first = 0;
@@ -450,7 +643,8 @@ int main(void)
 		count = options.iterations - first;
 		if (count > options.window)
 			count = options.window;
-		rc = run_batch(&sender, &receiver, &options, first, count);
+		rc = run_batch(&sender, &receiver, &options, posting, first,
+			       count);
 		if (rc < 0)
 			goto out;
 		first += count;
@@ -458,9 +652,10 @@ int main(void)
 	wall_end = clock_ns(CLOCK_MONOTONIC);
 	cpu_end = clock_ns(CLOCK_PROCESS_CPUTIME_ID);
 	bytes = (uint64_t)options.qps * options.iterations * options.size;
-	printf("CSV,%s,%u,%u,%u,%u,%u,%.9f,%.9f,%.9f\n",
-	       options.protocol, options.qps, options.iterations, options.size,
-	       options.window, options.mtu,
+	printf("CSV,%s,%u,%s,%u,%u,%u,%u,%.9f,%.9f,%.9f\n",
+	       options.protocol, options.qps,
+	       options.parallel ? "parallel" : "serial", options.iterations,
+	       options.size, options.window, options.mtu,
 	       (double)bytes * 8.0 / (double)(wall_end - wall_start),
 	       (double)(wall_end - wall_start) / 1000000000.0,
 	       (double)(cpu_end - cpu_start) / 1000000000.0);
@@ -470,6 +665,7 @@ int main(void)
 out:
 	if (rc < 0)
 		fprintf(stderr, "shared-QP scaling failed: %s\n", strerror(-rc));
+	posting_pool_fini(&pool);
 	group_close(&receiver);
 	group_close(&sender);
 	return rc < 0 ? 1 : rc;

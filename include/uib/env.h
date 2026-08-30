@@ -1326,6 +1326,20 @@
 #define UIB_ENV_QP_SCALE_QPS "UIB_QP_SCALE_QPS"
 
 /**
+ * DOC: UIB_QP_SCALE_POSTING
+ * @uib-env: Test and scaling harnesses
+ * @default: `parallel`
+ * @values: `parallel` or `serial`
+ *
+ * Select persistent per-QP posting workers or one serial posting thread in
+ * the shared-context benchmark. Use `serial` as the single-producer control.
+ *
+ * Example:
+ * UIB_QP_SCALE_POSTING=serial make qp-scaling-benchmark
+ */
+#define UIB_ENV_QP_SCALE_POSTING "UIB_QP_SCALE_POSTING"
+
+/**
  * DOC: UIB_QP_SCALE_TRIALS
  * @uib-env: Test and scaling harnesses
  * @default: `3`

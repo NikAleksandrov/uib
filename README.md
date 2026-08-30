@@ -203,8 +203,10 @@ same CQ, registered-memory region and UDP backend:
 The harness verifies every payload and completion, records wall and process
 CPU time, and inherits `UIB_BENCH_ITERATIONS`, `UIB_BENCH_SIZE`,
 `UIB_BENCH_WINDOW`, `UIB_BENCH_MTU`, transport and congestion-control
-settings. Compare its results with `context-scaling-benchmark` to distinguish
-shared-context limits from host-wide or kernel limits.
+settings. It uses persistent per-QP posting threads by default; set
+`UIB_QP_SCALE_POSTING=serial` for the single-producer control. Compare its
+results with `context-scaling-benchmark` to distinguish shared-context limits
+from host-wide or kernel limits.
 
 Fedora 44 and Alpine 3.24 are the current stable release lines represented by
 the explicit image tags. Update the matrix and dependency installer together

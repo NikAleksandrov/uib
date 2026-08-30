@@ -8,6 +8,7 @@ counts=${UIB_QP_SCALE_COUNTS:-1 2 4 8}
 trials=${UIB_QP_SCALE_TRIALS:-3}
 test_timeout=${UIB_QP_SCALE_TIMEOUT:-120}
 protocol=${UIB_BENCH_PROTOCOL:-uet}
+posting=${UIB_QP_SCALE_POSTING:-parallel}
 iterations=${UIB_BENCH_ITERATIONS:-2000}
 message_size=${UIB_BENCH_SIZE:-60000}
 window=${UIB_BENCH_WINDOW:-128}
@@ -58,8 +59,8 @@ if command -v git >/dev/null 2>&1; then
 fi
 
 mkdir -p -- "$output"
-printf '%s\n' 'trial,protocol,qps,iterations,message_size,window,mtu,'\
-'gbit_per_second,elapsed_seconds,cpu_seconds' > "$results"
+printf '%s\n' 'trial,protocol,qps,posting,iterations,message_size,window,'\
+'mtu,gbit_per_second,elapsed_seconds,cpu_seconds' > "$results"
 {
 	printf 'commit=%s\n' "$commit"
 	printf 'kernel=%s\n' "$(uname -r)"
@@ -69,6 +70,7 @@ printf '%s\n' 'trial,protocol,qps,iterations,message_size,window,mtu,'\
 	printf 'qp_counts=%s\n' "$counts"
 	printf 'trials=%s\n' "$trials"
 	printf 'protocol=%s\n' "$protocol"
+	printf 'posting=%s\n' "$posting"
 	printf 'iterations_per_qp=%s\n' "$iterations"
 	printf 'message_size=%s\n' "$message_size"
 	printf 'window_per_qp=%s\n' "$window"
@@ -86,6 +88,7 @@ for count in $counts; do
 		timeout -k 2 "$test_timeout" env \
 			UIB_QP_SCALE_QPS="$count" \
 			UIB_QP_SCALE_PORT="$port" \
+			UIB_QP_SCALE_POSTING="$posting" \
 			UIB_BENCH_PROTOCOL="$protocol" \
 			UIB_BENCH_ITERATIONS="$iterations" \
 			UIB_BENCH_SIZE="$message_size" \
