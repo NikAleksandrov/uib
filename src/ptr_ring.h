@@ -76,8 +76,11 @@ static inline int uib_ptr_ring_reserve(struct uib_ptr_ring *ring,
 			break;
 	}
 	*start = position;
-	if (was_empty)
+	if (was_empty) {
+		dequeue = __atomic_load_n(&ring->dequeue_pos,
+					  __ATOMIC_ACQUIRE);
 		*was_empty = position == dequeue;
+	}
 	return 0;
 }
 
