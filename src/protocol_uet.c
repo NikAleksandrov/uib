@@ -36,6 +36,8 @@
 #define UIB_UET_OUT_POOL_LIMIT UIB_UET_PDC_MPR
 #define UIB_UET_MPR_ENCODING (UIB_UET_PDC_MPR / 128)
 #define UIB_UET_ACK_INTERVAL 16U
+#define UIB_UET_ACK_GEN_TRIGGER 16384U
+#define UIB_UET_ACK_GEN_MIN_PACKET 1024U
 #define UIB_UET_PACKET_MAX UIB_RECV_BUF_LEN
 #define UIB_UET_TRACK_POOL_MAX 1024U
 #define UIB_UET_READ_FRAGMENTS_INLINE 8U
@@ -221,6 +223,7 @@ struct uib_uet_qp {
 	uint64_t rx_bitmap[2];
 	struct uib_uet_deferred deferred[UIB_UET_PDC_MPR];
 	uint32_t deferred_count;
+	uint32_t ack_gen_count;
 	uint32_t out_count;
 	uint32_t sent_count;
 	uint32_t materialized_count;
@@ -3292,20 +3295,24 @@ uet_take_deferred(struct uib_qp *qp, struct sockaddr_in *source,
 
 static int uet_accept_request(struct uib_qp *qp,
 			      const struct uib_uet_pds_req *request,
-			      size_t packet_len, uint8_t packet_type,
+			      size_t packet_len, size_t payload_len,
+			      uint8_t packet_type,
 			      uint8_t opcode, uint8_t ses_flags,
 			      uint16_t msg_id, uint32_t psn,
 			      uint64_t receive_time_ns, int *duplicate,
-			      uint32_t *cack)
+			      uint32_t *cack, int *ack_due, int *new_pdc)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
 	const struct uib_uet_pds_cc_req *cc_request;
 	uint32_t credit_target;
+	uint32_t ack_bytes;
 	uint32_t offset;
 	int stale;
 	int rc;
 
 	pthread_mutex_lock(&qp->lock);
+	*ack_due = 0;
+	*new_pdc = !uet->rx_initialized;
 	if (packet_type == UIB_UET_PDS_TYPE_RUD_CC_REQ && uet->rccc_enabled) {
 		cc_request = (const struct uib_uet_pds_cc_req *)request;
 		uib_uet_rccc_request_unpack(cc_request->req_cc_state, NULL,
@@ -3354,9 +3361,19 @@ static int uet_accept_request(struct uib_qp *qp,
 		return 1;
 	}
 	rc = uet_rx_mark(uet, psn, duplicate);
-	if (!rc && !*duplicate &&
-	    uib_congestion_enabled(&uet->congestion))
-		uet->receiver_bytes += (uint32_t)packet_len + 40;
+	if (!rc && !*duplicate) {
+		if (uib_congestion_enabled(&uet->congestion))
+			uet->receiver_bytes += (uint32_t)packet_len + 40;
+		ack_bytes = payload_len < UIB_UET_ACK_GEN_MIN_PACKET ?
+			UIB_UET_ACK_GEN_MIN_PACKET : (uint32_t)payload_len;
+		if (ack_bytes >= UIB_UET_ACK_GEN_TRIGGER -
+				 uet->ack_gen_count) {
+			uet->ack_gen_count = UIB_UET_ACK_GEN_TRIGGER;
+			*ack_due = 1;
+		} else {
+			uet->ack_gen_count += ack_bytes;
+		}
+	}
 	*cack = uet_cack_psn(uet);
 	pthread_mutex_unlock(&qp->lock);
 	uet_debug(qp, "rx request psn=%u cack=%u msg=%u duplicate=%d rc=%d",
@@ -3493,11 +3510,14 @@ static int uet_handle_request_one(struct uib_qp *qp,
 	uint32_t cack;
 	uint16_t msg_id;
 	uint8_t request_header;
+	uint8_t request_flags;
 	uint8_t packet_type;
 	uint8_t opcode;
 	int duplicate;
 	int ack_requested;
-	int out_of_order;
+	int ack_due;
+	int new_pdc;
+	int send_ack;
 	int rc;
 
 	if (len < sizeof(*request))
@@ -3514,11 +3534,12 @@ static int uet_handle_request_one(struct uib_qp *qp,
 	psn = ntohl(request->psn);
 	msg_id = ntohs(ses.msg_id);
 	opcode = ses.opcode & UIB_UET_SES_OPCODE_MASK;
-	ack_requested = !!(uib_uet_prologue_flags(&request->prologue) &
-			   UIB_UET_REQ_FLAG_AR);
-	rc = uet_accept_request(qp, request, len, packet_type, opcode,
+	request_flags = uib_uet_prologue_flags(&request->prologue);
+	ack_requested = !!(request_flags & UIB_UET_REQ_FLAG_AR);
+	rc = uet_accept_request(qp, request, len, data_len, packet_type, opcode,
 				ses.flags & UIB_UET_SES_FLAGS_MASK, msg_id, psn,
-				receive_time_ns, &duplicate, &cack);
+				receive_time_ns, &duplicate, &cack, &ack_due,
+				&new_pdc);
 	if (rc < 0)
 		return rc;
 	if (rc > 0)
@@ -3526,8 +3547,6 @@ static int uet_handle_request_one(struct uib_qp *qp,
 					 opcode,
 					 ecn_marked);
 	uet_drop_deferred_copy(qp, psn);
-	out_of_order = psn != cack;
-
 	result.response_code = uet_validate_session(qp, &ses);
 	if (duplicate && opcode != UIB_UET_SES_READ) {
 		uet_duplicate_response(qp, psn, msg_id, &result);
@@ -3558,17 +3577,25 @@ static int uet_handle_request_one(struct uib_qp *qp,
 		uet_mark_guaranteed(uet, psn);
 	cack = uet_cack_psn(uet);
 	pthread_mutex_unlock(&qp->lock);
-	if (!ack_requested && !duplicate && !out_of_order &&
-	    result.response_code == UIB_UET_SES_RC_OK &&
-	    (opcode == UIB_UET_SES_SEND || opcode == UIB_UET_SES_WRITE)) {
+	send_ack = ack_requested || ack_due || new_pdc || duplicate ||
+		ecn_marked ||
+		(request_flags & UIB_UET_REQ_FLAG_SYN) ||
+		encoding.guaranteed_delivery ||
+		result.response_code != UIB_UET_SES_RC_OK ||
+		(opcode != UIB_UET_SES_SEND && opcode != UIB_UET_SES_WRITE);
+	if (!send_ack) {
 		uet_request_result_release(&result);
 		return 0;
 	}
-
 	rc = uet_send_response(qp, src, request, &ses, cack, &encoding,
 			       result.data, result.data_len,
 			       result.modified_len,
 			       receive_time_ns, ecn_marked, request_header);
+	if (rc >= 0) {
+		pthread_mutex_lock(&qp->lock);
+		uet->ack_gen_count = 0;
+		pthread_mutex_unlock(&qp->lock);
+	}
 	uet_request_result_release(&result);
 	return rc;
 }

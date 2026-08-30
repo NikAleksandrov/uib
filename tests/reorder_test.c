@@ -11,7 +11,7 @@
 
 #include "uib/uib.h"
 
-#define TEST_BUFFER_LENGTH 128
+#define TEST_BUFFER_LENGTH 256
 #define TEST_PAYLOAD_LENGTH 8
 #define TEST_RECV_COUNT 8
 #define TEST_IMMEDIATE 0x12345678U
@@ -333,6 +333,32 @@ static int inject_uet(struct test_endpoint *endpoint, uint32_t psn,
 	return uib_qp_handle_packet(endpoint->qp, &source, packet, length);
 }
 
+static int inject_uet_ack_requested(struct test_endpoint *endpoint,
+				    uint32_t psn, uint16_t message_id,
+				    uint8_t flags, uint32_t offset,
+				    uint32_t total, const uint8_t *payload)
+{
+	struct uib_uet_pds_req *request;
+	struct sockaddr_in source;
+	uint8_t packet[128];
+	uint16_t packed;
+	size_t length;
+
+	memset(&source, 0, sizeof(source));
+	source.sin_family = AF_INET;
+	source.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	length = build_uet_packet(packet, sizeof(packet),
+				  endpoint->qp->qp_num, psn, message_id,
+				  flags, offset, total, payload);
+	if (!length)
+		return -1;
+	request = (struct uib_uet_pds_req *)packet;
+	packed = ntohs(request->prologue.type_next_flags);
+	request->prologue.type_next_flags = htons(packed |
+						 UIB_UET_REQ_FLAG_AR);
+	return uib_qp_handle_packet(endpoint->qp, &source, packet, length);
+}
+
 static size_t build_uet_write_packet(uint8_t *packet, size_t capacity,
 				     struct test_endpoint *endpoint,
 				     uint32_t psn, uint16_t message_id,
@@ -422,8 +448,10 @@ static void run_uet_sack(void)
 	      !inject_uet(&endpoint, 100, 30, UIB_UET_SES_FLAG_SOM,
 			  0, total, payloads[0]));
 	check("uet.sack.future",
-	      !inject_uet(&endpoint, 102, 30, UIB_UET_SES_FLAG_EOM,
-			  2 * TEST_PAYLOAD_LENGTH, total, payloads[2]));
+	      !inject_uet_ack_requested(&endpoint, 102, 30,
+					UIB_UET_SES_FLAG_EOM,
+					2 * TEST_PAYLOAD_LENGTH, total,
+					payloads[2]));
 	memset(&ack, 0, sizeof(ack));
 	memset(&extension, 0, sizeof(extension));
 	check("uet.sack.future-ack",
@@ -442,6 +470,61 @@ static void run_uet_sack(void)
 	      !(bitmap & (1ULL << (101 - sack_psn))));
 	check("uet.sack.mpr",
 	      (ntohs(extension.cc_type_flags_mpr) & 0xff) == 1);
+
+out:
+	if (capture_fd >= 0)
+		close(capture_fd);
+	endpoint_cleanup(&endpoint);
+}
+
+static void run_uet_coalesced_ack(void)
+{
+	static const uint8_t payload[TEST_PAYLOAD_LENGTH] = {
+		0xa5, 1, 2, 3, 4, 5, 6, 7,
+	};
+	struct uib_uet_pds_ack_ext extension;
+	struct uib_uet_pds_ack ack;
+	struct test_endpoint endpoint;
+	uint8_t unexpected[256];
+	uint32_t total;
+	uint8_t flags;
+	ssize_t length;
+	unsigned int i;
+	int capture_fd;
+	int rc;
+
+	total = 17 * TEST_PAYLOAD_LENGTH;
+	capture_fd = ack_capture_open(19711);
+	check("uet.coalesced.capture", capture_fd >= 0);
+	check("uet.coalesced.setup",
+	      !endpoint_init(&endpoint, "uet", 19712, 600));
+	if (capture_fd < 0 || !endpoint.context || !endpoint.mr)
+		goto out;
+	check("uet.coalesced.remote",
+	      !endpoint_set_remote_port(&endpoint, 19711));
+	check("uet.coalesced.post", !post_receives(&endpoint, 1, total));
+	rc = inject_uet(&endpoint, 600, 40, UIB_UET_SES_FLAG_SOM, 0,
+			total, payload);
+	memset(&ack, 0, sizeof(ack));
+	memset(&extension, 0, sizeof(extension));
+	rc |= capture_ack(capture_fd, 600, &ack, &extension);
+	check("uet.coalesced.first", !rc);
+	for (i = 1; i < 16; i++) {
+		rc = inject_uet(&endpoint, 600 + i, 40, 0,
+				i * TEST_PAYLOAD_LENGTH, total, payload);
+		if (rc)
+			break;
+	}
+	length = recv(capture_fd, unexpected, sizeof(unexpected), MSG_DONTWAIT);
+	check("uet.coalesced.pending",
+	      !rc && length < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+	flags = UIB_UET_SES_FLAG_EOM;
+	rc = inject_uet(&endpoint, 616, 40, flags,
+			16 * TEST_PAYLOAD_LENGTH, total, payload);
+	memset(&ack, 0, sizeof(ack));
+	memset(&extension, 0, sizeof(extension));
+	rc |= capture_ack(capture_fd, 616, &ack, &extension);
+	check("uet.coalesced.threshold", !rc && ntohl(ack.cack_psn) == 616);
 
 out:
 	if (capture_fd >= 0)
@@ -826,6 +909,7 @@ int main(void)
 	run_rocev2_ordering();
 	run_rocev2_wrap();
 	run_uet_sack();
+	run_uet_coalesced_ack();
 	run_uet_ordering();
 	run_uet_next_message_replay();
 	run_uet_sack_gap_is_not_loss();
