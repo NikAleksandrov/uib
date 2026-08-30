@@ -1914,10 +1914,10 @@ static int resolve_source_address(struct uib_context *ctx,
 	return 0;
 }
 
-static int build_raw_packet(struct uib_context *ctx,
-			    const struct sockaddr_in *destination,
-			    const void *buffer, size_t length,
-			    uint16_t entropy, struct uib_udp_tx *tx)
+static int prepare_raw_packet(struct uib_context *ctx,
+			      const struct sockaddr_in *destination,
+			      size_t length, uint16_t entropy,
+			      struct uib_udp_tx *tx)
 {
 	struct uib_wire_meta meta;
 	struct udphdr *udp;
@@ -1952,7 +1952,6 @@ static int build_raw_packet(struct uib_context *ctx,
 	udp->dest = destination->sin_port ? destination->sin_port :
 		htons(ctx->pops->default_port);
 	udp->len = htons((uint16_t)(sizeof(*udp) + length));
-	memcpy(udp + 1, buffer, length);
 	meta.src_ip = ip->saddr;
 	meta.dst_ip = ip->daddr;
 	meta.src_port = udp->source;
@@ -1962,6 +1961,42 @@ static int build_raw_packet(struct uib_context *ctx,
 	    ctx->pops->wire_encode(&meta, udp + 1, length) < 0)
 		return -EBADMSG;
 	return 0;
+}
+
+static int build_raw_packet(struct uib_context *ctx,
+			    const struct sockaddr_in *destination,
+			    const void *buffer, size_t length,
+			    uint16_t entropy, struct uib_udp_tx *tx)
+{
+	struct udphdr *udp;
+	struct iphdr *ip;
+
+	ip = tx->data;
+	udp = (struct udphdr *)(ip + 1);
+	memcpy(udp + 1, buffer, length);
+	return prepare_raw_packet(ctx, destination, length, entropy, tx);
+}
+
+static int build_raw_iov_packet(
+	struct uib_context *ctx, const struct uib_transport_iov_ref *ref,
+	struct uib_udp_tx *tx)
+{
+	struct udphdr *udp;
+	struct iphdr *ip;
+	uint8_t *payload;
+	size_t offset;
+	size_t i;
+
+	ip = tx->data;
+	udp = (struct udphdr *)(ip + 1);
+	payload = (uint8_t *)(udp + 1);
+	offset = 0;
+	for (i = 0; i < ref->iov_count; i++) {
+		memcpy(payload + offset, ref->iov[i].iov_base,
+		       ref->iov[i].iov_len);
+		offset += ref->iov[i].iov_len;
+	}
+	return prepare_raw_packet(ctx, ref->dst, ref->len, ref->entropy, tx);
 }
 
 static int enqueue_tx(struct uib_udp_backend *be, struct uib_udp_tx *tx)
@@ -2122,7 +2157,6 @@ static size_t udp_ref_run(struct uib_context *ctx,
 		while (start + run < count && run < UIB_UDP_GSO_MAX_SEGMENTS &&
 		       (run + 1) * refs[start].len <= UIB_UDP_GSO_CAPACITY &&
 		       refs[start + run].len == refs[start].len &&
-		       refs[start + run].entropy == refs[start].entropy &&
 		       !memcmp(refs[start + run].dst, refs[start].dst,
 			       sizeof(*refs[start].dst)))
 			run++;
@@ -2324,7 +2358,6 @@ static size_t udp_iov_ref_run(
 		       iov_count + refs[start + run].iov_count <=
 		       UIB_UDP_GSO_MAX_IOVS &&
 		       refs[start + run].len == refs[start].len &&
-		       refs[start + run].entropy == refs[start].entropy &&
 		       !memcmp(refs[start + run].dst, refs[start].dst,
 			       sizeof(*refs[start].dst))) {
 			iov_count += refs[start + run].iov_count;
@@ -2689,6 +2722,8 @@ static int udp_sync_send_iov_ref_one(
 	ssize_t sent;
 	int rc;
 
+	if (test_drop_packet(be))
+		return 0;
 	memset(&message, 0, sizeof(message));
 	message.msg_name = (void *)ref->dst;
 	message.msg_namelen = sizeof(*ref->dst);
@@ -2708,6 +2743,168 @@ static int udp_sync_send_iov_ref_one(
 	}
 	__atomic_fetch_add(&be->stats.tx_completed, 1, __ATOMIC_RELAXED);
 	rc = 0;
+	return rc;
+}
+
+static int udp_sync_send_raw_iov_ref(
+	struct uib_context *ctx, const struct uib_transport_iov_ref *ref)
+{
+	struct uib_udp_backend *be = ctx->backend;
+	struct uib_udp_tx *tx;
+	size_t storage_len;
+	ssize_t sent;
+	int rc;
+
+	if (test_drop_packet(be))
+		return 0;
+	storage_len = sizeof(struct iphdr) + sizeof(struct udphdr) + ref->len;
+	tx = alloc_copy_tx(be, storage_len);
+	if (!tx)
+		return -ENOMEM;
+	tx->data = tx->storage;
+	rc = build_raw_iov_packet(ctx, ref, tx);
+	if (rc < 0)
+		goto out;
+	sent = sendto(be->fd, tx->data, tx->length, MSG_NOSIGNAL,
+		      (const struct sockaddr *)ref->dst, sizeof(*ref->dst));
+	__atomic_fetch_add(&be->stats.tx_submitted, 1, __ATOMIC_RELAXED);
+	if (sent < 0) {
+		__atomic_fetch_add(&be->stats.tx_errors, 1, __ATOMIC_RELAXED);
+		rc = -errno;
+	} else if ((size_t)sent != tx->length) {
+		__atomic_fetch_add(&be->stats.tx_errors, 1, __ATOMIC_RELAXED);
+		rc = -EIO;
+	} else {
+		__atomic_fetch_add(&be->stats.tx_completed, 1,
+				   __ATOMIC_RELAXED);
+		uib_zerocopy_account_copy(ctx, (size_t)sent);
+		rc = 0;
+	}
+
+out:
+	free_tx(be, tx);
+	return rc;
+}
+
+static int udp_sync_send_iov_ref_fallback(
+	struct uib_context *ctx, const struct uib_transport_iov_ref *refs,
+	size_t count)
+{
+	struct uib_udp_backend *be = ctx->backend;
+	size_t i;
+	int rc;
+
+	for (i = 0; i < count; i++) {
+		if (be->raw_mode)
+			rc = udp_sync_send_raw_iov_ref(ctx, &refs[i]);
+		else
+			rc = udp_sync_send_iov_ref_one(ctx, &refs[i]);
+		refs[i].release(refs[i].opaque);
+		if (rc < 0) {
+			for (i++; i < count; i++)
+				refs[i].release(refs[i].opaque);
+			return rc;
+		}
+	}
+	return 0;
+}
+
+static int udp_sync_send_iov_ref_plain(
+	struct uib_context *ctx, struct uib_udp_backend *be,
+	const struct uib_transport_iov_ref *ref)
+{
+	struct msghdr message;
+	ssize_t sent;
+
+	memset(&message, 0, sizeof(message));
+	message.msg_name = (void *)ref->dst;
+	message.msg_namelen = sizeof(*ref->dst);
+	message.msg_iov = (struct iovec *)ref->iov;
+	message.msg_iovlen = ref->iov_count;
+	sent = uib_zerocopy_sendmsg(ctx, be->fd, &message, MSG_NOSIGNAL,
+				    be->zerocopy_enabled,
+				    &be->zerocopy_sequence);
+	if (sent < 0)
+		return (int)sent;
+	if ((size_t)sent != ref->len)
+		return -EIO;
+	return 0;
+}
+
+static int udp_sync_send_iov_ref_gso(
+	struct uib_context *ctx, const struct uib_transport_iov_ref *refs,
+	size_t count)
+{
+	struct iovec vectors[UIB_UDP_GSO_MAX_IOVS];
+	struct uib_udp_backend *be = ctx->backend;
+	union {
+		struct cmsghdr header;
+		uint8_t bytes[CMSG_SPACE(sizeof(uint16_t))];
+	} control;
+	struct cmsghdr *header;
+	struct msghdr message;
+	uint16_t segment_size;
+	size_t completed;
+	size_t vector_count;
+	size_t length;
+	ssize_t sent;
+	size_t i;
+	int rc;
+
+	vector_count = 0;
+	length = 0;
+	for (i = 0; i < count; i++) {
+		memcpy(&vectors[vector_count], refs[i].iov,
+		       refs[i].iov_count * sizeof(*vectors));
+		vector_count += refs[i].iov_count;
+		length += refs[i].len;
+	}
+	memset(&message, 0, sizeof(message));
+	memset(&control, 0, sizeof(control));
+	segment_size = (uint16_t)refs[0].len;
+	message.msg_name = (void *)refs[0].dst;
+	message.msg_namelen = sizeof(*refs[0].dst);
+	message.msg_iov = vectors;
+	message.msg_iovlen = vector_count;
+	message.msg_control = control.bytes;
+	message.msg_controllen = CMSG_SPACE(sizeof(segment_size));
+	header = CMSG_FIRSTHDR(&message);
+	header->cmsg_level = IPPROTO_UDP;
+	header->cmsg_type = UDP_SEGMENT;
+	header->cmsg_len = CMSG_LEN(sizeof(segment_size));
+	memcpy(CMSG_DATA(header), &segment_size, sizeof(segment_size));
+	sent = uib_zerocopy_sendmsg(ctx, be->fd, &message, MSG_NOSIGNAL,
+				    be->zerocopy_enabled,
+				    &be->zerocopy_sequence);
+	__atomic_fetch_add(&be->stats.tx_submitted, count, __ATOMIC_RELAXED);
+	if (sent >= 0 && (size_t)sent == length) {
+		completed = count;
+		__atomic_fetch_add(&be->stats.tx_gso_batches, 1,
+				   __ATOMIC_RELAXED);
+		__atomic_fetch_add(&be->stats.tx_gso_packets, count,
+				   __ATOMIC_RELAXED);
+		rc = 0;
+		goto account;
+	}
+	rc = sent < 0 ? (int)sent : -EIO;
+	if (be->gso_required || !zerocopy_retryable(rc)) {
+		completed = 0;
+		goto account;
+	}
+	__atomic_store_n(&be->gso_enabled, 0, __ATOMIC_RELEASE);
+	completed = 0;
+	for (i = 0; i < count; i++) {
+		rc = udp_sync_send_iov_ref_plain(ctx, be, &refs[i]);
+		if (rc < 0)
+			break;
+		completed++;
+	}
+
+account:
+	__atomic_fetch_add(&be->stats.tx_completed, completed,
+			   __ATOMIC_RELAXED);
+	if (rc < 0)
+		__atomic_fetch_add(&be->stats.tx_errors, 1, __ATOMIC_RELAXED);
 	return rc;
 }
 
@@ -2741,7 +2938,27 @@ static int udp_sync_send_iov_ref_batch(
 		vector_count += refs[i].iov_count;
 	}
 	if (be->raw_mode || be->test_drop_tx)
-		return udp_send_iov_ref_fallback(ctx, refs, count);
+		return udp_sync_send_iov_ref_fallback(ctx, refs, count);
+	if (__atomic_load_n(&be->gso_enabled, __ATOMIC_ACQUIRE)) {
+		offset = 0;
+		while (offset < count) {
+			batch = udp_iov_ref_run(ctx, be, refs, offset, count);
+			if (batch > 1)
+				rc = udp_sync_send_iov_ref_gso(ctx,
+							       &refs[offset], batch);
+			else
+				rc = udp_sync_send_iov_ref_one(ctx, &refs[offset]);
+			for (i = 0; i < batch; i++)
+				refs[offset + i].release(refs[offset + i].opaque);
+			offset += batch;
+			if (rc < 0) {
+				for (i = offset; i < count; i++)
+					refs[i].release(refs[i].opaque);
+				return rc;
+			}
+		}
+		return 0;
+	}
 	if (ctx->zerocopy.mode != UIB_ZEROCOPY_OFF) {
 		for (i = 0; i < count; i++) {
 			rc = udp_sync_send_iov_ref_one(ctx, &refs[i]);
