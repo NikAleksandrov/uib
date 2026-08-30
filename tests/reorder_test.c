@@ -532,6 +532,66 @@ out:
 	endpoint_cleanup(&endpoint);
 }
 
+static void run_uet_idle_ack(void)
+{
+	static const uint8_t payloads[3][TEST_PAYLOAD_LENGTH] = {
+		{ 0xa1, 1, 2, 3, 4, 5, 6, 7 },
+		{ 0xa2, 1, 2, 3, 4, 5, 6, 7 },
+		{ 0xa3, 1, 2, 3, 4, 5, 6, 7 },
+	};
+	struct uib_uet_pds_ack_ext extension;
+	struct uib_uet_pds_ack ack;
+	struct test_endpoint endpoint;
+	struct uib_wc completion;
+	uint8_t unexpected[256];
+	uint32_t total;
+	ssize_t length;
+	int capture_fd;
+	int rc;
+
+	total = sizeof(payloads);
+	capture_fd = ack_capture_open(19713);
+	check("uet.idle-ack.capture", capture_fd >= 0);
+	check("uet.idle-ack.setup",
+	      !endpoint_init(&endpoint, "uet", 19714, 700));
+	if (capture_fd < 0 || !endpoint.context || !endpoint.mr)
+		goto out;
+	check("uet.idle-ack.remote",
+	      !endpoint_set_remote_port(&endpoint, 19713));
+	check("uet.idle-ack.post", !post_receives(&endpoint, 1, total));
+	rc = inject_uet(&endpoint, 700, 41, UIB_UET_SES_FLAG_SOM, 0,
+			total, payloads[0]);
+	memset(&ack, 0, sizeof(ack));
+	memset(&extension, 0, sizeof(extension));
+	rc |= capture_ack(capture_fd, 700, &ack, &extension);
+	check("uet.idle-ack.first", !rc);
+	rc = inject_uet(&endpoint, 702, 41, UIB_UET_SES_FLAG_EOM,
+			2 * TEST_PAYLOAD_LENGTH, total, payloads[2]);
+	length = recv(capture_fd, unexpected, sizeof(unexpected), MSG_DONTWAIT);
+	check("uet.idle-ack.pending",
+	      !rc && length < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+	rc = inject_uet(&endpoint, 701, 41, 0, TEST_PAYLOAD_LENGTH, total,
+			payloads[1]);
+	memset(&ack, 0, sizeof(ack));
+	memset(&extension, 0, sizeof(extension));
+	rc |= capture_ack(capture_fd, 701, &ack, &extension);
+	check("uet.idle-ack.final",
+	      !rc && ntohl(ack.cack_psn) == 702);
+	memset(&completion, 0, sizeof(completion));
+	check("uet.idle-ack.completion",
+	      uib_poll_cq(endpoint.cq, 1, &completion) == 1 &&
+	      completion.status == UIB_WC_SUCCESS &&
+	      completion.opcode == UIB_WC_RECV &&
+	      completion.byte_len == total);
+	check("uet.idle-ack.payload",
+	      !memcmp(endpoint.buffer, payloads, sizeof(payloads)));
+
+out:
+	if (capture_fd >= 0)
+		close(capture_fd);
+	endpoint_cleanup(&endpoint);
+}
+
 static void run_uet_write_imm_reorder(void)
 {
 	static const uint8_t payloads[2][TEST_PAYLOAD_LENGTH] = {
@@ -910,6 +970,7 @@ int main(void)
 	run_rocev2_wrap();
 	run_uet_sack();
 	run_uet_coalesced_ack();
+	run_uet_idle_ack();
 	run_uet_ordering();
 	run_uet_next_message_replay();
 	run_uet_sack_gap_is_not_loss();

@@ -3517,6 +3517,7 @@ static int uet_handle_request_one(struct uib_qp *qp,
 	int ack_requested;
 	int ack_due;
 	int new_pdc;
+	int pdc_idle;
 	int send_ack;
 	int rc;
 
@@ -3577,8 +3578,11 @@ static int uet_handle_request_one(struct uib_qp *qp,
 		uet_mark_guaranteed(uet, psn);
 	cack = uet_cack_psn(uet);
 	pthread_mutex_unlock(&qp->lock);
+	pdc_idle = result.response_code == UIB_UET_SES_RC_OK &&
+		((opcode == UIB_UET_SES_SEND && !uet->recv_active) ||
+		 (opcode == UIB_UET_SES_WRITE && !uet->write_active));
 	send_ack = ack_requested || ack_due || new_pdc || duplicate ||
-		ecn_marked ||
+		ecn_marked || pdc_idle ||
 		(request_flags & UIB_UET_REQ_FLAG_SYN) ||
 		encoding.guaranteed_delivery ||
 		result.response_code != UIB_UET_SES_RC_OK ||
