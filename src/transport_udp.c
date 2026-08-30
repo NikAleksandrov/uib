@@ -52,7 +52,8 @@
 #define UIB_UDP_RX_POOL_CLASSES      4
 #define UIB_UDP_RX_POOL_LIMIT        256
 #define UIB_UDP_RX_LARGE_POOL_LIMIT  16
-#define UIB_UDP_RX_POOL_WARM         4
+#define UIB_UDP_RX_POOL_WARM_MIN     4
+#define UIB_UDP_RX_POOL_WARM_TOTAL   2048
 #define UIB_UDP_RX_WORKER_STACK      (512 * 1024)
 #define UIB_UDP_COPY_CAPACITY        (8192 + sizeof(struct iphdr) + \
 				       sizeof(struct udphdr))
@@ -1568,10 +1569,17 @@ static int udp_probe(void)
 static int init_rx_work_pools(struct uib_udp_rx_worker *worker)
 {
 	struct uib_udp_rx_work *work;
+	unsigned int warm_count;
 	unsigned int pool_class;
 	unsigned int i;
 	int rc;
 
+	warm_count = UIB_UDP_RX_POOL_WARM_TOTAL /
+		worker->backend->rx_worker_count;
+	if (warm_count < UIB_UDP_RX_POOL_WARM_MIN)
+		warm_count = UIB_UDP_RX_POOL_WARM_MIN;
+	if (warm_count > UIB_UDP_RX_POOL_LIMIT)
+		warm_count = UIB_UDP_RX_POOL_LIMIT;
 	for (pool_class = 0; pool_class < UIB_UDP_RX_POOL_CLASSES;
 	     pool_class++) {
 		rc = uib_ptr_ring_init(&worker->pool[pool_class],
@@ -1584,7 +1592,7 @@ static int init_rx_work_pools(struct uib_udp_rx_worker *worker)
 	}
 	for (pool_class = 0; pool_class < UIB_UDP_RX_POOL_CLASSES - 1;
 	     pool_class++) {
-		for (i = 0; i < UIB_UDP_RX_POOL_WARM; i++) {
+		for (i = 0; i < warm_count; i++) {
 			work = rx_work_new((uint8_t)pool_class);
 			if (!work)
 				break;
