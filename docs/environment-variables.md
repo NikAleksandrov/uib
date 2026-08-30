@@ -73,7 +73,7 @@ when the relevant context, transport, benchmark, or test is created.
 
 | Variable | Default | Accepted values | Description | Example |
 |---|---|---|---|---|
-| <code>UIB_UDP_FLOWS</code> | `1`, one UDP flow | a positive integer from `1` through `64` | Select the number of UDP data flows used by UET with `udp-sync`. Values greater than one assign QPs to independent, bounded TX and RX lanes. This mode is optional and disabled by default. A QP remains on one lane so PSN ordering, ACKs, retries, congestion control, and completions are not reordered between lane threads. Each lane uses the base UDP port plus `(lane + 1) * 128`; those ports must be free and allowed by host and container networking. Multi-flow mode requires `udp-sync`, cannot be used with raw UDP, and rejects `UIB_ZEROCOPY=required`. | <code>UIB_UDP_FLOWS=4 UIB_TX_WORKERS=4 app</code> |
+| <code>UIB_UDP_FLOWS</code> | `1`, one UDP flow | a positive integer from `1` through `64` | Select the number of UDP data flows used by UET with `udp-sync`. Values greater than one distribute a QP's messages across independent, bounded TX and RX lanes. This mode is optional and disabled by default. Every packet of one message remains on the same lane; adjacent messages may use different lanes. The QP receive sequencer preserves PSN, WQE, congestion-control, and completion ordering across the lanes. Each lane uses the base UDP port plus `(lane + 1) * 128`; those ports must be free and allowed by host and container networking. Multi-flow mode requires `udp-sync`, cannot be used with raw UDP, and rejects `UIB_ZEROCOPY=required`. | <code>UIB_UDP_FLOWS=4 UIB_TX_WORKERS=4 app</code> |
 
 ## AF_XDP transport
 
