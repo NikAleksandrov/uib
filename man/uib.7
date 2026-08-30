@@ -2661,7 +2661,7 @@ Accepted values: auto or a positive integer
 Example: \fBUIB_UDP_WORKERS=8 LD_PRELOAD=$PWD/libuibv.so app\fP
 .TP
 .B UIB_UDP_WORKER_AFFINITY
-Pin UDP receive\-dispatch workers to distinct CPUs from the process's allowed CPU set. Set this to off when an external scheduler manages thread placement.
+Pin UDP receive\-dispatch workers and optional multi\-flow RX/TX lane threads to CPUs from the process's allowed CPU set. Set this to off when an external scheduler manages thread placement.
 .br
 Default: on
 .br
@@ -2696,6 +2696,16 @@ Default: on
 Accepted values: off or on
 .br
 Example: \fBUIB_TX_WORKERS=4 UIB_TX_WORKER_AFFINITY=off app\fP
+.SS "Ultra Ethernet UDP scaling"
+.TP
+.B UIB_UDP_FLOWS
+Select the number of UDP data flows used by UET with udp\-sync. Values greater than one assign QPs to independent, bounded TX and RX lanes. This mode is optional and disabled by default. A QP remains on one lane so PSN ordering, ACKs, retries, congestion control, and completions are not reordered between lane threads. Each lane uses the base UDP port plus (lane + 1) * 128; those ports must be free and allowed by host and container networking. Multi\-flow mode requires udp\-sync, cannot be used with raw UDP, and rejects UIB_ZEROCOPY=required.
+.br
+Default: 1, one UDP flow
+.br
+Accepted values: a positive integer from 1 through 64
+.br
+Example: \fBUIB_UDP_FLOWS=4 UIB_TX_WORKERS=4 app\fP
 .SS "AF_XDP transport"
 .TP
 .B UIB_AFXDP_IFACE

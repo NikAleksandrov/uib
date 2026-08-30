@@ -129,11 +129,26 @@
 
 #define UIB_ENV_UDP_WORKERS "UIB_UDP_WORKERS"
 
+/**
+ * DOC: UIB_UDP_WORKER_AFFINITY
+ * @uib-env: UDP transports
+ * @default: `on`
+ * @values: `off` or `on`
+ *
+ * Pin UDP receive-dispatch workers and optional multi-flow RX/TX lane threads
+ * to CPUs from the process's allowed CPU set. Set this to `off` when an
+ * external scheduler manages thread placement.
+ *
+ * Example:
+ * UIB_UDP_WORKERS=4 UIB_UDP_WORKER_AFFINITY=off app
+ */
 #define UIB_ENV_UDP_WORKER_AFFINITY "UIB_UDP_WORKER_AFFINITY"
 
 #define UIB_ENV_TX_WORKERS "UIB_TX_WORKERS"
 
 #define UIB_ENV_TX_WORKER_AFFINITY "UIB_TX_WORKER_AFFINITY"
+
+#define UIB_ENV_UDP_FLOWS "UIB_UDP_FLOWS"
 
 /**
  * DOC: UIB_URING_RX_MODE

@@ -56,6 +56,10 @@
 #define UIB_UDP_RX_WORKER_STACK      (512 * 1024)
 #define UIB_UDP_COPY_CAPACITY        (8192 + sizeof(struct iphdr) + \
 				       sizeof(struct udphdr))
+#define UIB_UDP_FLOW_MAX             64U
+#define UIB_UDP_FLOW_PORT_STRIDE     128U
+#define UIB_UDP_FLOW_QUEUE_SIZE      256U
+#define UIB_UDP_FLOW_TX_BATCH        32U
 
 enum uib_udp_op_type {
 	UIB_UDP_OP_RX_MULTISHOT = 0,
@@ -127,6 +131,23 @@ struct uib_udp_tx {
 
 struct uib_udp_backend;
 
+struct uib_udp_flow {
+	struct uib_udp_backend *backend;
+	struct uib_ptr_ring     tx_queue;
+	pthread_cond_t          cond;
+	pthread_mutex_t         lock;
+	pthread_t               tx_thread;
+	pthread_t               rx_thread;
+	void                   *rx_buffer;
+	unsigned int            index;
+	int                     fd;
+	int                     run;
+	int                     queue_initialized;
+	int                     sync_initialized;
+	int                     tx_started;
+	int                     rx_started;
+};
+
 struct uib_udp_rx_work {
 	struct sockaddr_in source;
 	size_t             length;
@@ -174,6 +195,7 @@ struct uib_udp_backend {
 	pthread_t                worker;
 	struct uib_context      *ctx;
 	struct uib_udp_rx_worker *rx_workers;
+	struct uib_udp_flow     *flows;
 	void                    *rx_buffers;
 	size_t                   rx_buffer_len;
 	size_t                   page_size;
@@ -183,6 +205,7 @@ struct uib_udp_backend {
 	unsigned int             sqpoll_cpu;
 	unsigned int             test_drop_tx;
 	unsigned int             rx_worker_count;
+	unsigned int             flow_count;
 	uint32_t                 zerocopy_sequence;
 	int                      zerocopy_enabled;
 	int                      multishot_required;
@@ -207,6 +230,10 @@ struct uib_udp_backend {
 	int                      wake_fd;
 	int                      fd;
 };
+
+static int init_udp_flows(struct uib_context *ctx,
+			  struct uib_udp_backend *be);
+static void cleanup_udp_flows(struct uib_udp_backend *be);
 
 static int test_drop_packet(struct uib_udp_backend *be)
 {
@@ -472,6 +499,36 @@ static void deliver_udp_payload(struct uib_context *ctx, void *buffer,
 		if (segment > gro_size)
 			segment = gro_size;
 		deliver_packet(ctx, payload + offset, segment, source, ecn);
+	}
+}
+
+static void deliver_udp_payload_direct(struct uib_context *ctx, void *buffer,
+				       size_t length,
+				       const struct sockaddr_in *source,
+				       uint16_t gro_size, uint8_t ecn)
+{
+	struct uib_udp_backend *be;
+	uint8_t *payload;
+	size_t segment;
+	size_t offset;
+
+	be = ctx->backend;
+	payload = buffer;
+	if (!gro_size || gro_size >= length) {
+		uib_transport_deliver_ecn(ctx, source, buffer, length, ecn);
+		__atomic_fetch_add(&be->stats.rx_packets, 1,
+				   __ATOMIC_RELAXED);
+		return;
+	}
+	__atomic_fetch_add(&be->stats.rx_gro_batches, 1, __ATOMIC_RELAXED);
+	for (offset = 0; offset < length; offset += segment) {
+		segment = length - offset;
+		if (segment > gro_size)
+			segment = gro_size;
+		uib_transport_deliver_ecn(ctx, source, payload + offset,
+					  segment, ecn);
+		__atomic_fetch_add(&be->stats.rx_packets, 1,
+				   __ATOMIC_RELAXED);
 	}
 }
 
@@ -1829,6 +1886,7 @@ static void cleanup_backend(struct uib_udp_backend *be)
 {
 	struct uib_udp_tx *tx;
 
+	cleanup_udp_flows(be);
 	cleanup_rx_workers(be);
 	if (be->fd >= 0)
 		close(be->fd);
@@ -1952,6 +2010,9 @@ static int udp_init_common(struct uib_context *ctx, int asynchronous)
 		be->test_drop_tx = (unsigned int)strtoul(drop_tx, NULL, 10);
 	ctx->backend = be;
 	rc = setup_socket(ctx, be);
+	if (rc < 0)
+		goto error;
+	rc = init_udp_flows(ctx, be);
 	if (rc < 0)
 		goto error;
 	be->wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
@@ -2486,6 +2547,7 @@ static size_t udp_iov_ref_run(
 		       iov_count + refs[start + run].iov_count <=
 		       UIB_UDP_GSO_MAX_IOVS &&
 		       refs[start + run].len == refs[start].len &&
+		       refs[start + run].flow == refs[start].flow &&
 		       !memcmp(refs[start + run].dst, refs[start].dst,
 			       sizeof(*refs[start].dst))) {
 			iov_count += refs[start + run].iov_count;
@@ -2578,6 +2640,438 @@ static struct uib_udp_tx *udp_iov_ref_one_tx(
 	tx->message.msg_iov = tx->iov_list;
 	tx->message.msg_iovlen = ref->iov_count;
 	return tx;
+}
+
+static void udp_flow_account_tx(struct uib_udp_backend *be,
+				struct uib_udp_tx *tx, ssize_t sent)
+{
+	__atomic_fetch_add(&be->stats.tx_submitted, tx->packets,
+			   __ATOMIC_RELAXED);
+	if (sent >= 0 && (size_t)sent == tx->length) {
+		__atomic_fetch_add(&be->stats.tx_completed, tx->packets,
+				   __ATOMIC_RELAXED);
+		if (tx->gso_size) {
+			__atomic_fetch_add(&be->stats.tx_gso_batches, 1,
+					   __ATOMIC_RELAXED);
+			__atomic_fetch_add(&be->stats.tx_gso_packets,
+					   tx->packets, __ATOMIC_RELAXED);
+		}
+		uib_zerocopy_account_copy(be->ctx, tx->length);
+	} else {
+		__atomic_fetch_add(&be->stats.tx_errors, 1, __ATOMIC_RELAXED);
+	}
+}
+
+static void udp_flow_send_batch(struct uib_udp_flow *flow,
+				struct uib_udp_tx **txs, unsigned int count)
+{
+	struct mmsghdr messages[UIB_UDP_FLOW_TX_BATCH];
+	struct uib_udp_backend *be;
+	unsigned int completed;
+	unsigned int i;
+	int sent;
+
+	be = flow->backend;
+	memset(messages, 0, count * sizeof(*messages));
+	for (i = 0; i < count; i++)
+		messages[i].msg_hdr = txs[i]->message;
+	sent = sendmmsg(flow->fd, messages, count, MSG_NOSIGNAL);
+	completed = sent > 0 ? (unsigned int)sent : 0;
+	for (i = 0; i < completed; i++)
+		udp_flow_account_tx(be, txs[i], messages[i].msg_len);
+	for (i = completed; i < count; i++) {
+		sent = sendmsg(flow->fd, &txs[i]->message, MSG_NOSIGNAL);
+		udp_flow_account_tx(be, txs[i], sent);
+	}
+	for (i = 0; i < count; i++)
+		free_tx(be, txs[i]);
+}
+
+static void *udp_flow_tx_loop(void *argument)
+{
+	struct uib_udp_tx *txs[UIB_UDP_FLOW_TX_BATCH];
+	struct uib_udp_flow *flow;
+	unsigned int count;
+	int run;
+
+	flow = argument;
+	for (;;) {
+		count = 0;
+		while (count < UIB_UDP_FLOW_TX_BATCH) {
+			txs[count] = uib_ptr_ring_pop(&flow->tx_queue);
+			if (!txs[count])
+				break;
+			count++;
+		}
+		if (count) {
+			pthread_mutex_lock(&flow->lock);
+			pthread_cond_broadcast(&flow->cond);
+			pthread_mutex_unlock(&flow->lock);
+			udp_flow_send_batch(flow, txs, count);
+			continue;
+		}
+		pthread_mutex_lock(&flow->lock);
+		while (__atomic_load_n(&flow->run, __ATOMIC_ACQUIRE) &&
+		       !uib_ptr_ring_count(&flow->tx_queue))
+			pthread_cond_wait(&flow->cond, &flow->lock);
+		run = __atomic_load_n(&flow->run, __ATOMIC_ACQUIRE);
+		pthread_mutex_unlock(&flow->lock);
+		if (!run && !uib_ptr_ring_count(&flow->tx_queue))
+			break;
+	}
+	return NULL;
+}
+
+static void *udp_flow_rx_loop(void *argument)
+{
+	struct uib_udp_flow *flow;
+	struct uib_udp_backend *be;
+	struct sockaddr_in source;
+	struct msghdr message;
+	struct iovec vector;
+	uint8_t control[UIB_UDP_RX_CONTROL_SPACE];
+	uint16_t gro_size;
+	uint8_t ecn;
+	ssize_t received;
+
+	flow = argument;
+	be = flow->backend;
+	memset(&message, 0, sizeof(message));
+	vector.iov_base = flow->rx_buffer;
+	vector.iov_len = UIB_RECV_BUF_LEN;
+	message.msg_name = &source;
+	message.msg_iov = &vector;
+	message.msg_iovlen = 1;
+	while (__atomic_load_n(&flow->run, __ATOMIC_ACQUIRE)) {
+		message.msg_namelen = sizeof(source);
+		message.msg_control = control;
+		message.msg_controllen = sizeof(control);
+		message.msg_flags = 0;
+		received = recvmsg(flow->fd, &message, 0);
+		if (received < 0) {
+			if (errno == EINTR)
+				continue;
+			if (!__atomic_load_n(&flow->run, __ATOMIC_ACQUIRE))
+				break;
+			continue;
+		}
+		if (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC))
+			continue;
+		gro_size = message_gro_size(&message);
+		ecn = message_ecn(&message);
+		deliver_udp_payload_direct(be->ctx, flow->rx_buffer,
+					   (size_t)received, &source,
+					   gro_size, ecn);
+	}
+	return NULL;
+}
+
+static int udp_flow_socket(struct uib_context *ctx,
+			   struct uib_udp_backend *be,
+			   struct uib_udp_flow *flow)
+{
+	struct sockaddr_in address;
+	unsigned int port;
+	int socket_buffer;
+	int tos;
+	int gso_size;
+	int one;
+
+	address = be->local_addr;
+	port = ntohs(address.sin_port) +
+		(flow->index + 1) * UIB_UDP_FLOW_PORT_STRIDE;
+	if (port > UINT16_MAX)
+		return -ERANGE;
+	address.sin_port = htons((uint16_t)port);
+	flow->fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (flow->fd < 0)
+		return -errno;
+	one = 1;
+	tos = IPTOS_ECN_ECT0;
+	gso_size = 0;
+	socket_buffer = UIB_SOCKET_BUFFER_SIZE;
+	if (setsockopt(flow->fd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) < 0 ||
+	    setsockopt(flow->fd, IPPROTO_IP, IP_RECVTOS, &one,
+		       sizeof(one)) < 0)
+		return -errno;
+	if (be->gso_enabled &&
+	    setsockopt(flow->fd, IPPROTO_UDP, UDP_SEGMENT, &gso_size,
+		       sizeof(gso_size)) < 0)
+		return -errno;
+	if (be->gro_enabled &&
+	    setsockopt(flow->fd, IPPROTO_UDP, UDP_GRO, &one, sizeof(one)) < 0)
+		return -errno;
+	setsockopt(flow->fd, SOL_SOCKET, SO_RCVBUF, &socket_buffer,
+		   sizeof(socket_buffer));
+	setsockopt(flow->fd, SOL_SOCKET, SO_SNDBUF, &socket_buffer,
+		   sizeof(socket_buffer));
+	if (bind(flow->fd, (struct sockaddr *)&address, sizeof(address)) < 0)
+		return -errno;
+	return 0;
+}
+
+static int udp_flow_count(struct uib_context *ctx, unsigned int *count)
+{
+	const char *setting;
+	unsigned long value;
+	char *end;
+
+	*count = 1;
+	setting = getenv(UIB_ENV_UDP_FLOWS);
+	if (!setting || !*setting)
+		return 0;
+	errno = 0;
+	value = strtoul(setting, &end, 10);
+	if (errno || end == setting || *end || !value ||
+	    value > UIB_UDP_FLOW_MAX)
+		return -EINVAL;
+	if (value > 1 && ctx->pops != &uib_uet_protocol_ops)
+		return -EPROTONOSUPPORT;
+	*count = (unsigned int)value;
+	return 0;
+}
+
+static int udp_flow_start_thread(pthread_t *thread,
+				 void *(*function)(void *), void *argument,
+				 const cpu_set_t *allowed, unsigned int index,
+				 int affinity)
+{
+	pthread_attr_t attr;
+	cpu_set_t thread_set;
+	unsigned int allowed_count;
+	int cpu;
+	int rc;
+
+	rc = pthread_attr_init(&attr);
+	if (rc)
+		return rc;
+	rc = pthread_attr_setstacksize(&attr, UIB_UDP_RX_WORKER_STACK);
+	if (rc)
+		goto out;
+	if (affinity) {
+		allowed_count = (unsigned int)CPU_COUNT(allowed);
+		if (!allowed_count) {
+			rc = EINVAL;
+			goto out;
+		}
+		cpu = rx_worker_cpu(allowed, index % allowed_count);
+		if (cpu < 0) {
+			rc = EINVAL;
+			goto out;
+		}
+		CPU_ZERO(&thread_set);
+		CPU_SET(cpu, &thread_set);
+		rc = pthread_attr_setaffinity_np(&attr, sizeof(thread_set),
+						 &thread_set);
+	}
+	if (!rc)
+		rc = pthread_create(thread, &attr, function, argument);
+
+out:
+	pthread_attr_destroy(&attr);
+	return rc;
+}
+
+static int init_udp_flows(struct uib_context *ctx,
+			  struct uib_udp_backend *be)
+{
+	struct uib_udp_flow *flow;
+	cpu_set_t allowed;
+	unsigned int count;
+	unsigned int i;
+	int affinity;
+	int rc;
+
+	rc = udp_flow_count(ctx, &count);
+	if (rc < 0)
+		return rc;
+	if (count == 1)
+		return 0;
+	if (be->raw_mode || be->tx_batch)
+		return -ENOTSUP;
+	if (ctx->zerocopy.mode == UIB_ZEROCOPY_REQUIRED)
+		return -ENOTSUP;
+	rc = uib_env_bool(UIB_ENV_UDP_WORKER_AFFINITY, 1, &affinity);
+	if (rc)
+		return rc;
+	CPU_ZERO(&allowed);
+	if (affinity && sched_getaffinity(0, sizeof(allowed), &allowed) < 0)
+		return -errno;
+	be->flows = calloc(count, sizeof(*be->flows));
+	if (!be->flows)
+		return -ENOMEM;
+	for (i = 0; i < count; i++)
+		be->flows[i].fd = -1;
+	for (i = 0; i < count; i++) {
+		flow = &be->flows[i];
+		flow->backend = be;
+		flow->index = i;
+		flow->fd = -1;
+		flow->run = 1;
+		be->flow_count = i + 1;
+		rc = pthread_mutex_init(&flow->lock, NULL);
+		if (rc)
+			return -rc;
+		rc = pthread_cond_init(&flow->cond, NULL);
+		if (rc) {
+			pthread_mutex_destroy(&flow->lock);
+			return -rc;
+		}
+		flow->sync_initialized = 1;
+		rc = uib_ptr_ring_init(&flow->tx_queue,
+				       UIB_UDP_FLOW_QUEUE_SIZE);
+		if (rc < 0)
+			return rc;
+		flow->queue_initialized = 1;
+		rc = udp_flow_socket(ctx, be, flow);
+		if (rc < 0)
+			return rc;
+		flow->rx_buffer = malloc(UIB_RECV_BUF_LEN);
+		if (!flow->rx_buffer)
+			return -ENOMEM;
+		rc = udp_flow_start_thread(&flow->rx_thread, udp_flow_rx_loop,
+					   flow, &allowed, i * 2, affinity);
+		if (rc)
+			return -rc;
+		flow->rx_started = 1;
+		rc = udp_flow_start_thread(&flow->tx_thread, udp_flow_tx_loop,
+					   flow, &allowed, i * 2 + 1,
+					   affinity);
+		if (rc)
+			return -rc;
+		flow->tx_started = 1;
+	}
+	return 0;
+}
+
+static void cleanup_udp_flows(struct uib_udp_backend *be)
+{
+	struct uib_udp_flow *flow;
+	struct uib_udp_tx *tx;
+	unsigned int i;
+
+	if (!be->flows)
+		return;
+	for (i = 0; i < be->flow_count; i++) {
+		flow = &be->flows[i];
+		__atomic_store_n(&flow->run, 0, __ATOMIC_RELEASE);
+		if (flow->sync_initialized) {
+			pthread_mutex_lock(&flow->lock);
+			pthread_cond_broadcast(&flow->cond);
+			pthread_mutex_unlock(&flow->lock);
+		}
+		if (flow->fd >= 0)
+			shutdown(flow->fd, SHUT_RDWR);
+	}
+	for (i = 0; i < be->flow_count; i++) {
+		flow = &be->flows[i];
+		if (flow->tx_started)
+			pthread_join(flow->tx_thread, NULL);
+		if (flow->rx_started)
+			pthread_join(flow->rx_thread, NULL);
+		while (flow->queue_initialized &&
+		       (tx = uib_ptr_ring_pop(&flow->tx_queue)) != NULL)
+			free_tx(be, tx);
+		if (flow->queue_initialized)
+			uib_ptr_ring_destroy(&flow->tx_queue);
+		if (flow->sync_initialized) {
+			pthread_cond_destroy(&flow->cond);
+			pthread_mutex_destroy(&flow->lock);
+		}
+		if (flow->fd >= 0)
+			close(flow->fd);
+		free(flow->rx_buffer);
+	}
+	free(be->flows);
+	be->flows = NULL;
+	be->flow_count = 0;
+}
+
+static int udp_flow_enqueue(struct uib_udp_flow *flow,
+			    struct uib_udp_tx *tx)
+{
+	uint64_t position;
+	int was_empty;
+	int rc;
+
+	for (;;) {
+		rc = uib_ptr_ring_reserve(&flow->tx_queue, 1, &position,
+					  &was_empty);
+		if (!rc)
+			break;
+		pthread_mutex_lock(&flow->lock);
+		while (__atomic_load_n(&flow->run, __ATOMIC_ACQUIRE) &&
+		       uib_ptr_ring_count(&flow->tx_queue) >=
+		       UIB_UDP_FLOW_QUEUE_SIZE)
+			pthread_cond_wait(&flow->cond, &flow->lock);
+		if (!__atomic_load_n(&flow->run, __ATOMIC_ACQUIRE)) {
+			pthread_mutex_unlock(&flow->lock);
+			return -ESHUTDOWN;
+		}
+		pthread_mutex_unlock(&flow->lock);
+	}
+	uib_ptr_ring_publish(&flow->tx_queue, position, tx);
+	if (was_empty) {
+		pthread_mutex_lock(&flow->lock);
+		pthread_cond_signal(&flow->cond);
+		pthread_mutex_unlock(&flow->lock);
+	}
+	return 0;
+}
+
+static int udp_flow_send_iov_ref_batch(
+	struct uib_context *ctx, const struct uib_transport_iov_ref *refs,
+	size_t count)
+{
+	struct uib_udp_backend *be;
+	struct uib_udp_flow *flow;
+	struct uib_udp_tx *tx;
+	unsigned int lane;
+	unsigned int port;
+	size_t run;
+	size_t i;
+	int rc;
+
+	be = ctx->backend;
+	for (i = 0; i < count; i++) {
+		rc = udp_iov_ref_validate(&refs[i]);
+		if (rc < 0) {
+			for (i = 0; i < count; i++)
+				refs[i].release(refs[i].opaque);
+			return rc;
+		}
+	}
+	i = 0;
+	while (i < count) {
+		run = udp_iov_ref_run(ctx, be, refs, i, count);
+		tx = run > 1 ? udp_iov_ref_gso_tx(ctx, be, refs, i, run) :
+			udp_iov_ref_one_tx(ctx, be, &refs[i]);
+		if (!tx) {
+			for (; i < count; i++)
+				refs[i].release(refs[i].opaque);
+			return -ENOMEM;
+		}
+		lane = refs[i].flow % be->flow_count;
+		flow = &be->flows[lane];
+		port = ntohs(tx->destination.sin_port) +
+			(lane + 1) * UIB_UDP_FLOW_PORT_STRIDE;
+		if (port > UINT16_MAX) {
+			free_tx(be, tx);
+			for (i += run; i < count; i++)
+				refs[i].release(refs[i].opaque);
+			return -ERANGE;
+		}
+		tx->destination.sin_port = htons((uint16_t)port);
+		rc = udp_flow_enqueue(flow, tx);
+		if (rc < 0) {
+			free_tx(be, tx);
+			for (i += run; i < count; i++)
+				refs[i].release(refs[i].opaque);
+			return rc;
+		}
+		i += run;
+	}
+	return 0;
 }
 
 static int udp_send_iov_ref_batch(
@@ -2703,14 +3197,34 @@ static int udp_sync_send_entropy(struct uib_context *ctx,
 				 uint16_t entropy)
 {
 	struct uib_udp_backend *be = ctx->backend;
+	struct sockaddr_in flow_destination;
 	struct uib_udp_tx *tx = NULL;
 	struct msghdr message;
 	struct iovec iov;
+	unsigned int base_port;
+	unsigned int flow_port;
+	unsigned int delta;
+	unsigned int lane;
 	ssize_t sent;
+	int socket_fd;
 	int rc;
 
 	if (test_drop_packet(be))
 		return 0;
+	flow_destination = *destination;
+	socket_fd = be->fd;
+	base_port = ntohs(destination->sin_port);
+	flow_port = entropy;
+	if (be->flow_count && flow_port >= base_port +
+					       UIB_UDP_FLOW_PORT_STRIDE) {
+		delta = flow_port - base_port;
+		lane = delta / UIB_UDP_FLOW_PORT_STRIDE - 1;
+		if (!(delta % UIB_UDP_FLOW_PORT_STRIDE) &&
+		    lane < be->flow_count) {
+			flow_destination.sin_port = htons((uint16_t)flow_port);
+			socket_fd = be->flows[lane].fd;
+		}
+	}
 	if (be->raw_mode) {
 		tx = alloc_copy_tx(be, sizeof(struct iphdr) +
 				   sizeof(struct udphdr) + length);
@@ -2721,9 +3235,9 @@ static int udp_sync_send_entropy(struct uib_context *ctx,
 				      tx);
 		if (rc < 0)
 			goto out;
-		sent = sendto(be->fd, tx->data, tx->length, MSG_NOSIGNAL,
-			      (const struct sockaddr *)destination,
-			      sizeof(*destination));
+		sent = sendto(socket_fd, tx->data, tx->length, MSG_NOSIGNAL,
+			      (const struct sockaddr *)&flow_destination,
+			      sizeof(flow_destination));
 		if (sent >= 0)
 			uib_zerocopy_account_copy(ctx, (size_t)sent);
 		else
@@ -2733,11 +3247,11 @@ static int udp_sync_send_entropy(struct uib_context *ctx,
 		memset(&message, 0, sizeof(message));
 		iov.iov_base = (void *)buffer;
 		iov.iov_len = length;
-		message.msg_name = (void *)destination;
-		message.msg_namelen = sizeof(*destination);
+		message.msg_name = &flow_destination;
+		message.msg_namelen = sizeof(flow_destination);
 		message.msg_iov = &iov;
 		message.msg_iovlen = 1;
-		sent = uib_zerocopy_sendmsg(ctx, be->fd, &message,
+		sent = uib_zerocopy_sendmsg(ctx, socket_fd, &message,
 					    MSG_NOSIGNAL,
 					    be->zerocopy_enabled,
 					    &be->zerocopy_sequence);
@@ -3061,6 +3575,8 @@ static int udp_sync_send_iov_ref_batch(
 	int sent;
 	int rc;
 
+	if (be->flow_count && !be->test_drop_tx)
+		return udp_flow_send_iov_ref_batch(ctx, refs, count);
 	vector_count = 0;
 	for (i = 0; i < count; i++) {
 		rc = udp_iov_ref_validate(&refs[i]);

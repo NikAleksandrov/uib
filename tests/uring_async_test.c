@@ -325,6 +325,7 @@ static void run_iov_batch(uint16_t sender_port, uint16_t receiver_port,
 		refs[i].opaque = &released;
 		refs[i].len = sizeof(packets[i]);
 		refs[i].iov_count = 2;
+		refs[i].flow = 0;
 		refs[i].entropy = (uint16_t)(i + 1);
 	}
 	rc = uib_transport_send_iov_ref_batch(sender, refs,

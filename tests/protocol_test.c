@@ -161,6 +161,40 @@ int main(void)
 						  "uet");
 	check("tx-workers.invalid", !config_context && errno == EINVAL);
 	setenv(UIB_ENV_TX_WORKERS, "2", 1);
+	setenv(UIB_ENV_UDP_FLOWS, "2", 1);
+	config_context = uib_open_device_protocol("127.0.0.1", 18520,
+						  "uet");
+	check("udp-flows.open", config_context != NULL);
+	if (config_context)
+		uib_close_device(config_context);
+	config_context = NULL;
+	setenv(UIB_ENV_ZEROCOPY, "required", 1);
+	errno = 0;
+	config_context = uib_open_device_protocol("127.0.0.1", 18520,
+						  "uet");
+	check("udp-flows.required-zc", !config_context && errno == ENOTSUP);
+	unsetenv(UIB_ENV_ZEROCOPY);
+	unsetenv(UIB_ENV_TRANSPORT_MODE);
+	errno = 0;
+	config_context = uib_open_device_protocol("127.0.0.1", 18520,
+						  "uet");
+	check("udp-flows.async", !config_context && errno == ENOTSUP);
+	setenv(UIB_ENV_TRANSPORT_MODE, "udp-sync", 1);
+	errno = 0;
+	config_context = uib_open_device_protocol("127.0.0.1", 65500,
+						  "uet");
+	check("udp-flows.port-range", !config_context && errno == ERANGE);
+	errno = 0;
+	config_context = uib_open_device_protocol("127.0.0.1", 18520,
+						  "dummy");
+	check("udp-flows.protocol", !config_context &&
+	      errno == EPROTONOSUPPORT);
+	setenv(UIB_ENV_UDP_FLOWS, "65", 1);
+	errno = 0;
+	config_context = uib_open_device_protocol("127.0.0.1", 18520,
+						  "uet");
+	check("udp-flows.invalid", !config_context && errno == EINVAL);
+	unsetenv(UIB_ENV_UDP_FLOWS);
 	unsetenv(UIB_ENV_TRANSPORT_MODE);
 
 	setenv(UIB_ENV_RETRY_TIMEOUT_US, "invalid", 1);

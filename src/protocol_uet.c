@@ -2034,6 +2034,7 @@ static int uet_drain_locked(struct uib_qp *qp)
 		refs[count].opaque = candidate;
 		refs[count].len = candidate->packet_len;
 		refs[count].iov_count = 1;
+		refs[count].flow = qp->qp_num;
 		refs[count].entropy = candidate->entropy;
 		if (candidate->payload_len) {
 			vectors[count][1].iov_base = (void *)candidate->payload;

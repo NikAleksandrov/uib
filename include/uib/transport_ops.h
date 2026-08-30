@@ -29,6 +29,7 @@ struct uib_transport_iov_ref {
 	void                     *opaque;
 	size_t                    len;
 	size_t                    iov_count;
+	uint32_t                  flow;
 	uint16_t                  entropy;
 };
 
