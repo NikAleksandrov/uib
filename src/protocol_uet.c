@@ -305,6 +305,7 @@ struct uib_uet_qp {
 };
 
 static int uet_refill_locked(struct uib_qp *qp);
+static void uet_request_ack(struct uib_uet_outstanding *out);
 static int uet_schedule_refill_locked(struct uib_qp *qp);
 static void uet_free_outstanding(void *opaque);
 static void uet_process_refill_task(struct uib_uet_prep_task *task);
@@ -2069,6 +2070,9 @@ static int uet_drain_locked(struct uib_qp *qp)
 		candidate->deadline_ns = rto > UINT64_MAX - now_ns ?
 			UINT64_MAX : now_ns + rto;
 		__atomic_store_n(&candidate->tx_pending, 1, __ATOMIC_RELEASE);
+		if (uib_congestion_ack_request(&uet->congestion,
+					       UIB_UET_ACK_GEN_TRIGGER))
+			uet_request_ack(candidate);
 		if (!candidate->entropy)
 			uet_select_path(uet, candidate, now_ns);
 		vectors[count][0].iov_base = candidate->packet;
@@ -4056,6 +4060,18 @@ static enum uib_wc_status uet_response_wc_status(uint8_t response_code)
 	default:
 		return UIB_WC_REM_OP_ERR;
 	}
+}
+
+static void uet_request_ack(struct uib_uet_outstanding *out)
+{
+	struct uib_uet_prologue *prologue;
+	uint16_t value;
+
+	prologue = (struct uib_uet_prologue *)out->packet;
+	value = ntohs(prologue->type_next_flags);
+	if (value & UIB_UET_REQ_FLAG_AR)
+		return;
+	prologue->type_next_flags = htons(value | UIB_UET_REQ_FLAG_AR);
 }
 
 static void uet_mark_retransmit(void *packet)
