@@ -72,11 +72,12 @@ void uib_mr_put(struct uib_mr *mr)
 
 	if (!mr)
 		return;
-	pthread_mutex_lock(&mr->ref_lock);
 	refs = __atomic_sub_fetch(&mr->refs, 1, __ATOMIC_RELEASE);
-	if (refs == 1)
+	if (refs == 1) {
+		pthread_mutex_lock(&mr->ref_lock);
 		pthread_cond_signal(&mr->ref_cond);
-	pthread_mutex_unlock(&mr->ref_lock);
+		pthread_mutex_unlock(&mr->ref_lock);
+	}
 }
 
 static void mr_wait_unused(struct uib_mr *mr)
