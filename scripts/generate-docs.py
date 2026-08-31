@@ -14,6 +14,10 @@ ENV_SOURCE = ROOT / "include" / "uib" / "env.h"
 ENV_OUTPUT = ROOT / "docs" / "environment-variables.md"
 API_OUTPUT = ROOT / "docs" / "public-api.md"
 MAN_OUTPUT = ROOT / "man" / "uib.7"
+ENV_INPUT_EXCLUDES = {
+    ROOT / "tests" / "run_physical_afxdp.sh",
+    ROOT / "tests" / "run_physical_roce_interop.sh",
+}
 
 DOC_FORMAT_SOURCE = ROOT / "docs" / "generate-docs.json"
 DOC_FORMAT = json.loads(DOC_FORMAT_SOURCE.read_text())
@@ -204,6 +208,8 @@ def environment_inputs():
             if path.suffix in (".c", ".h", ".sh") or path.name == "Makefile":
                 paths.append(path)
     for path in paths:
+        if path in ENV_INPUT_EXCLUDES:
+            continue
         text = path.read_text(errors="ignore")
         inputs.update(re.findall(
             r'(?:getenv|setenv|env_u32)\(\s*"(UIB_[A-Z0-9_]+)"',
