@@ -32,6 +32,7 @@
 #define UIB_AFXDP_FILL_FRAMES XSK_RING_PROD__DEFAULT_NUM_DESCS
 #define UIB_AFXDP_RX_FRAMES   XSK_RING_CONS__DEFAULT_NUM_DESCS
 #define UIB_AFXDP_TX_FRAMES   XSK_RING_PROD__DEFAULT_NUM_DESCS
+#define UIB_AFXDP_RX_BATCH    64
 
 struct uib_afxdp_backend {
 	struct xsk_umem     *umem;
@@ -142,6 +143,44 @@ static int afxdp_decode_packet(struct uib_context *ctx, uint8_t *frame,
 	return 0;
 }
 
+static int afxdp_receive_batch(struct uib_context *ctx,
+			       struct uib_afxdp_backend *be)
+{
+	uint32_t rx_index = 0;
+	uint32_t fill_index = 0;
+	uint32_t count;
+	uint32_t i;
+
+	count = xsk_ring_cons__peek(&be->rx, UIB_AFXDP_RX_BATCH, &rx_index);
+	if (!count)
+		return 0;
+	while (xsk_ring_prod__reserve(&be->fq, count, &fill_index) != count) {
+		if (!__atomic_load_n(&be->worker_run, __ATOMIC_ACQUIRE))
+			return -ESHUTDOWN;
+	}
+
+	for (i = 0; i < count; i++) {
+		const struct xdp_desc *desc;
+		struct sockaddr_in src;
+		const uint8_t *payload;
+		uint64_t addr;
+		uint8_t *frame;
+		size_t length;
+
+		desc = xsk_ring_cons__rx_desc(&be->rx, rx_index + i);
+		addr = xsk_umem__extract_addr(desc->addr);
+		frame = xsk_umem__get_data(be->umem_area, desc->addr);
+		if (!uib_frame_parse(frame, desc->len, be->port, &src,
+				     &payload, &length) &&
+		    !afxdp_decode_packet(ctx, frame, desc->len, payload, length))
+			uib_transport_deliver(ctx, &src, payload, length);
+		*xsk_ring_prod__fill_addr(&be->fq, fill_index + i) = addr;
+	}
+	xsk_ring_prod__submit(&be->fq, count);
+	xsk_ring_cons__release(&be->rx, count);
+	return count;
+}
+
 static void *worker_loop(void *arg)
 {
 	struct uib_context *ctx = arg;
@@ -166,38 +205,8 @@ static void *worker_loop(void *arg)
 				uib_transport_retransmit_walk(ctx);
 		}
 
-		if (pfds[0].revents & POLLIN) {
-			uint32_t idx_rx = 0, idx_fq = 0, n, i;
-
-			n = xsk_ring_cons__peek(&be->rx, UIB_AFXDP_RX_FRAMES, &idx_rx);
-			if (!n)
-				continue;
-
-			while (xsk_ring_prod__reserve(&be->fq, n, &idx_fq) != n) {
-				if (!__atomic_load_n(&be->worker_run, __ATOMIC_ACQUIRE))
-					break;
-			}
-
-			for (i = 0; i < n; i++) {
-				const struct xdp_desc *d =
-					xsk_ring_cons__rx_desc(&be->rx, idx_rx + i);
-				uint64_t addr = xsk_umem__extract_addr(d->addr);
-				uint8_t *frame = xsk_umem__get_data(be->umem_area, d->addr);
-				struct sockaddr_in src;
-				const uint8_t *pay;
-				size_t paylen;
-
-				if (uib_frame_parse(frame, d->len, be->port, &src,
-						    &pay, &paylen) == 0 &&
-				    afxdp_decode_packet(ctx, frame, d->len, pay,
-						 paylen) == 0)
-					uib_transport_deliver(ctx, &src, pay, paylen);
-
-				*xsk_ring_prod__fill_addr(&be->fq, idx_fq + i) = addr;
-			}
-			xsk_ring_prod__submit(&be->fq, n);
-			xsk_ring_cons__release(&be->rx, n);
-		}
+		if (pfds[0].revents & POLLIN)
+			afxdp_receive_batch(ctx, be);
 	}
 	return NULL;
 }
