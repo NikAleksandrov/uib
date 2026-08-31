@@ -7,6 +7,7 @@
 
 #include "uib/bth.h"
 #include "uib/protocol.h"
+#include "../src/rocev2_internal.h"
 
 static int failures;
 
@@ -29,7 +30,16 @@ int main(void)
 	uint32_t src;
 	uint32_t dst;
 	uint32_t crc;
+	uint16_t sport;
 	int rc;
+
+	sport = uib_rocev2_udp_sport(1, 9);
+	check("rocev2.sport.linux-vector", sport == 0xc009);
+	check("rocev2.sport.symmetric",
+	      sport == uib_rocev2_udp_sport(9, 1));
+	check("rocev2.sport.distinct",
+	      sport != uib_rocev2_udp_sport(2, 10));
+	check("rocev2.sport.ephemeral", sport >= UIB_ROCEV2_UDP_SPORT_MIN);
 
 	uib_bth_pack(bth, UIB_OP_SEND_ONLY, UIB_DEFAULT_PKEY, 1, 0, 1);
 	memcpy(rdma + UIB_BTH_BYTES, "RXE-to-UIB", 10);
