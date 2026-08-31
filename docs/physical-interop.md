@@ -109,6 +109,49 @@ Reverse the roles and repeat. For an AF_XDP UIB endpoint, set the transport to
 Native RoCE offload and netdev XDP steering are hardware- and driver-specific;
 the raw mode is the control for wire-format interoperability.
 
+### Dedicated mlx5 port mode
+
+An mlx5 PF with native RoCE enabled consumes UDP/4791 in its hardware RDMA
+pipeline before PF_PACKET, raw sockets, XDP, AF_XDP, or UDP can receive it.
+UIB queue-pair numbers are not registered as mlx5 hardware QPs, so a UIB
+endpoint cannot receive mixed-provider traffic through those host transports
+while native RoCE remains enabled on the same PF.
+
+For an mlx5 port dedicated to the UIB endpoint, disable only RoCE processing.
+Leave the Ethernet and general RDMA auxiliary functions enabled:
+
+```sh
+devlink dev param show pci/0000:4f:00.0 name enable_roce
+sudo devlink dev param set pci/0000:4f:00.0 \
+  name enable_roce value false cmode driverinit
+sudo devlink dev reload pci/0000:4f:00.0
+```
+
+Replace the PCI address with the one reported by `ethtool -i INTERFACE`.
+The parameter has `driverinit` mode, so the reload is required. Confirm that
+the netdev retained its address and that the parameter is false before
+starting UIB. Keep RoCE enabled on the native mlx5 peer.
+
+Use UIB raw or AF_XDP mode for the data path. Ordinary UIB UDP socket mode is
+not a native RoCEv2 interoperability path because it does not provide the
+complete outer-header metadata needed by the wire ICRC implementation.
+
+Restore native RoCE after the test:
+
+```sh
+sudo devlink dev param set pci/0000:4f:00.0 \
+  name enable_roce value true cmode driverinit
+sudo devlink dev reload pci/0000:4f:00.0
+devlink dev param show pci/0000:4f:00.0 name enable_roce
+```
+
+This mode dedicates the PF to UIB for the duration of the run. Concurrent
+native mlx5 and UIB QPs on one RoCE-enabled PF require mlx5 hardware flow
+steering before the native RoCE classifier, such as a DevX/direct-rule
+transport that steers a reserved UIB destination-QPN range to a userspace raw
+packet receive queue. Netdev ntuple rules and XDP run too late to provide that
+coexistence.
+
 For RXE-to-RXE comparison, use `native` endpoints on both hosts, select each
 RXE device, and use its IPv4 RoCEv2 GID index. The runner always removes
 `LD_PRELOAD` from native endpoints so a UIB provider cannot be selected by

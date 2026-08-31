@@ -52,10 +52,13 @@ Run the matching UET/NSCC client on `192.0.2.2`:
       --iters=10000 --report_gbits -F 192.0.2.1
 
 Both endpoints must use the same protocol and service port. Socket-mode
-UIB-to-UIB traffic works without raw-socket privileges; raw mode is only for
-kernel RXE interoperability and requires `CAP_NET_RAW`. See the
-[transparent verbs guide](docs/transparent-verbs.md) for provider behavior
-and deployment details.
+UIB-to-UIB traffic works without raw-socket privileges. Raw and AF_XDP modes
+provide the complete frame metadata needed for native RoCEv2 interoperability;
+raw mode requires `CAP_NET_RAW`. See the
+[transparent verbs guide](docs/transparent-verbs.md) for provider behavior and
+deployment details, and the
+[physical interoperability guide](docs/physical-interop.md) for mlx5, RXE and
+AF_XDP setup.
 
 Requirements
 ------------
