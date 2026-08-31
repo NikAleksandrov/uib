@@ -40,14 +40,11 @@ void uib_transport_deliver(struct uib_context *ctx,
 	uib_transport_deliver_ecn(ctx, src, buf, len, 0, 0);
 }
 
-void uib_transport_deliver_ecn(struct uib_context *ctx,
-			       const struct sockaddr_in *src, const void *buf,
-			       size_t len, uint8_t ecn, uint64_t rx_time_ns)
+static void uib_transport_deliver_meta(struct uib_context *ctx,
+				       const struct sockaddr_in *src,
+				       const void *buf, size_t len,
+				       const struct uib_rx_meta *meta)
 {
-	struct uib_rx_meta meta = {
-		.rx_time_ns = rx_time_ns,
-		.ecn = ecn,
-	};
 	struct uib_qp *qp;
 	uint32_t dqpn;
 
@@ -64,8 +61,34 @@ void uib_transport_deliver_ecn(struct uib_context *ctx,
 		rcu_read_unlock();
 		return;
 	}
-	uib_qp_handle_packet_meta(qp, src, buf, len, &meta);
+	uib_qp_handle_packet_meta(qp, src, buf, len, meta);
 	rcu_read_unlock();
+}
+
+void uib_transport_deliver_ecn(struct uib_context *ctx,
+			       const struct sockaddr_in *src, const void *buf,
+			       size_t len, uint8_t ecn, uint64_t rx_time_ns)
+{
+	struct uib_rx_meta meta = {
+		.rx_time_ns = rx_time_ns,
+		.ecn = ecn,
+	};
+
+	uib_transport_deliver_meta(ctx, src, buf, len, &meta);
+}
+
+void uib_transport_deliver_validated(struct uib_context *ctx,
+				     const struct sockaddr_in *src,
+				     const void *buf, size_t len, uint8_t ecn,
+				     uint64_t rx_time_ns)
+{
+	struct uib_rx_meta meta = {
+		.rx_time_ns = rx_time_ns,
+		.ecn = ecn,
+		.integrity_validated = 1,
+	};
+
+	uib_transport_deliver_meta(ctx, src, buf, len, &meta);
 }
 
 void uib_transport_deliver_direct(struct uib_context *ctx,

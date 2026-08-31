@@ -155,6 +155,7 @@ struct uib_udp_rx_work {
 	uint64_t           rx_time_ns;
 	size_t             length;
 	uint8_t            ecn;
+	uint8_t            integrity_validated;
 	uint8_t            pool_class;
 	uint8_t            data[];
 };
@@ -347,9 +348,14 @@ static void *rx_worker_loop(void *argument)
 	for (;;) {
 		work = uib_ptr_ring_pop(&worker->queue);
 		if (work) {
-			uib_transport_deliver_ecn(be->ctx, &work->source,
-						  work->data, work->length,
-						  work->ecn, work->rx_time_ns);
+			if (work->integrity_validated)
+				uib_transport_deliver_validated(be->ctx, &work->source,
+					work->data, work->length, work->ecn,
+					work->rx_time_ns);
+			else
+				uib_transport_deliver_ecn(be->ctx, &work->source,
+					work->data, work->length, work->ecn,
+					work->rx_time_ns);
 			rx_work_release(worker, work);
 			continue;
 		}
@@ -367,7 +373,8 @@ static void *rx_worker_loop(void *argument)
 
 static void dispatch_packet(struct uib_context *ctx, const void *buffer,
 			    size_t length,
-			    const struct sockaddr_in *source, uint8_t ecn)
+			    const struct sockaddr_in *source, uint8_t ecn,
+			    uint8_t integrity_validated)
 {
 	struct uib_udp_backend *be = ctx->backend;
 	struct uib_udp_rx_worker *worker;
@@ -391,6 +398,7 @@ static void dispatch_packet(struct uib_context *ctx, const void *buffer,
 	work->rx_time_ns = uib_now_ns();
 	work->length = length;
 	work->ecn = ecn;
+	work->integrity_validated = integrity_validated;
 	memcpy(work->data, buffer, length);
 	rc = uib_ptr_ring_reserve(&worker->queue, 1, &position, &was_empty);
 	if (rc < 0) {
@@ -412,7 +420,8 @@ drop:
 
 static int raw_decode(struct uib_context *ctx, void *buffer, size_t frame_len,
 		      struct sockaddr_in *source, void **rdma_out,
-		      size_t *rdma_len_out, uint8_t *ecn)
+		      size_t *rdma_len_out, uint8_t *ecn,
+		      uint8_t *integrity_validated)
 {
 	struct uib_wire_meta meta;
 	uint8_t *frame = buffer;
@@ -451,9 +460,12 @@ static int raw_decode(struct uib_context *ctx, void *buffer, size_t frame_len,
 	meta.dst_port = udp->dest;
 	meta.ip_id = ntohs(ip->id);
 	*ecn = IPTOS_ECN(ip->tos);
-	if (ctx->pops->wire_decode &&
-	    ctx->pops->wire_decode(&meta, rdma, rdma_len) < 0)
-		return -1;
+	*integrity_validated = 0;
+	if (ctx->pops->wire_decode) {
+		if (ctx->pops->wire_decode(&meta, rdma, rdma_len) < 0)
+			return -1;
+		*integrity_validated = 1;
+	}
 
 	src_ip = ip->saddr;
 	src_port = udp->source;
@@ -474,12 +486,14 @@ static void deliver_packet(struct uib_context *ctx, void *buffer, size_t length,
 	struct sockaddr_in decoded_source = *source;
 	void *rdma = buffer;
 	size_t rdma_len = length;
+	uint8_t integrity_validated = 0;
 
 	if (be->raw_mode &&
 	    raw_decode(ctx, buffer, length, &decoded_source, &rdma,
-		       &rdma_len, &ecn) < 0)
+		       &rdma_len, &ecn, &integrity_validated) < 0)
 		return;
-	dispatch_packet(ctx, rdma, rdma_len, &decoded_source, ecn);
+	dispatch_packet(ctx, rdma, rdma_len, &decoded_source, ecn,
+			integrity_validated);
 	__atomic_fetch_add(&be->stats.rx_packets, 1, __ATOMIC_RELAXED);
 }
 

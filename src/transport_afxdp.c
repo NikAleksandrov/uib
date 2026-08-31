@@ -9,6 +9,7 @@
 #include "uib/env.h"
 #include "uib/protocol.h"
 #include "uib/afxdp_frame.h"
+#include "transport_internal.h"
 
 #ifdef UIB_HAVE_AFXDP
 
@@ -172,8 +173,13 @@ static int afxdp_receive_batch(struct uib_context *ctx,
 		frame = xsk_umem__get_data(be->umem_area, desc->addr);
 		if (!uib_frame_parse(frame, desc->len, be->port, &src,
 				     &payload, &length) &&
-		    !afxdp_decode_packet(ctx, frame, desc->len, payload, length))
-			uib_transport_deliver(ctx, &src, payload, length);
+		    !afxdp_decode_packet(ctx, frame, desc->len, payload, length)) {
+			if (ctx->pops->wire_decode)
+				uib_transport_deliver_validated(ctx, &src,
+					payload, length, 0, 0);
+			else
+				uib_transport_deliver(ctx, &src, payload, length);
+		}
 		*xsk_ring_prod__fill_addr(&be->fq, fill_index + i) = addr;
 	}
 	xsk_ring_prod__submit(&be->fq, count);
