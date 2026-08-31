@@ -158,8 +158,36 @@
  */
 #define UIB_ENV_UDP_WORKER_AFFINITY "UIB_UDP_WORKER_AFFINITY"
 
+/**
+ * DOC: UIB_TX_WORKERS
+ * @uib-env: Protocol transmit paths
+ * @default: `auto`, a bounded pool no larger than the allowed CPU count
+ * @values: `auto` or a positive integer
+ *
+ * Set the number of persistent workers that prepare admitted UET or RoCEv2
+ * work requests. PSN assignment, ordered publication, ACK handling, retries,
+ * congestion control, and CQ production remain sequenced per QP. With
+ * affinity enabled, an explicit count cannot exceed the process's allowed
+ * CPU count.
+ *
+ * Example:
+ * UIB_TX_WORKERS=8 LD_PRELOAD=$PWD/libuibv.so app
+ */
 #define UIB_ENV_TX_WORKERS "UIB_TX_WORKERS"
 
+/**
+ * DOC: UIB_TX_WORKER_AFFINITY
+ * @uib-env: Protocol transmit paths
+ * @default: `on`
+ * @values: `off` or `on`
+ *
+ * Pin UET and RoCEv2 preparation workers to distinct CPUs in the process's
+ * allowed CPU set. Set this to `off` when a scheduler or launcher controls
+ * placement.
+ *
+ * Example:
+ * UIB_TX_WORKERS=4 UIB_TX_WORKER_AFFINITY=off app
+ */
 #define UIB_ENV_TX_WORKER_AFFINITY "UIB_TX_WORKER_AFFINITY"
 
 #define UIB_ENV_UDP_FLOWS "UIB_UDP_FLOWS"

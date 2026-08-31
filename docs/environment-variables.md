@@ -13,7 +13,7 @@ when the relevant context, transport, benchmark, or test is created.
 - [Library and transparent provider](#library-and-transparent-provider)
 - [Transparent provider](#transparent-provider)
 - [UDP transports](#udp-transports)
-- [Ultra Ethernet transmit path](#ultra-ethernet-transmit-path)
+- [Protocol transmit paths](#protocol-transmit-paths)
 - [Ultra Ethernet UDP scaling](#ultra-ethernet-udp-scaling)
 - [AF_XDP transport](#afxdp-transport)
 - [TCP devmem transport](#tcp-devmem-transport)
@@ -62,12 +62,12 @@ when the relevant context, transport, benchmark, or test is created.
 | <code>UIB_UDP_WORKER_AFFINITY</code> | `on` | `off` or `on` | Pin UDP receive-dispatch workers and optional multi-flow RX/TX lane threads to CPUs from the process's allowed CPU set. Set this to `off` when an external scheduler manages thread placement. | <code>UIB_UDP_WORKERS=4 UIB_UDP_WORKER_AFFINITY=off app</code> |
 | <code>UIB_UDP_GSO</code> | `auto` | `auto`, `off`, or `on` | Combine equal-sized RDMA packets into UDP GSO sends. `on` fails context creation when the kernel does not support UDP GSO; `auto` falls back. | <code>UIB_UDP_GSO=off ./examples/stress_bench --protocol rocev2</code> |
 
-## Ultra Ethernet transmit path
+## Protocol transmit paths
 
 | Variable | Default | Accepted values | Description | Example |
 |---|---|---|---|---|
-| <code>UIB_TX_WORKERS</code> | `auto`, a bounded pool no larger than the allowed CPU count | `auto` or a positive integer | Set the number of persistent workers that prepare admitted UET work requests. PSN assignment, ordered publication, ACK handling, retries, congestion control, and CQ production remain sequenced per QP. With affinity enabled, an explicit count cannot exceed the process's allowed CPU count. | <code>UIB_TX_WORKERS=8 LD_PRELOAD=$PWD/libuibv.so app</code> |
-| <code>UIB_TX_WORKER_AFFINITY</code> | `on` | `off` or `on` | Pin UET preparation workers to distinct CPUs in the process's allowed CPU set. Set this to `off` when a scheduler or launcher controls placement. | <code>UIB_TX_WORKERS=4 UIB_TX_WORKER_AFFINITY=off app</code> |
+| <code>UIB_TX_WORKERS</code> | `auto`, a bounded pool no larger than the allowed CPU count | `auto` or a positive integer | Set the number of persistent workers that prepare admitted UET or RoCEv2 work requests. PSN assignment, ordered publication, ACK handling, retries, congestion control, and CQ production remain sequenced per QP. With affinity enabled, an explicit count cannot exceed the process's allowed CPU count. | <code>UIB_TX_WORKERS=8 LD_PRELOAD=$PWD/libuibv.so app</code> |
+| <code>UIB_TX_WORKER_AFFINITY</code> | `on` | `off` or `on` | Pin UET and RoCEv2 preparation workers to distinct CPUs in the process's allowed CPU set. Set this to `off` when a scheduler or launcher controls placement. | <code>UIB_TX_WORKERS=4 UIB_TX_WORKER_AFFINITY=off app</code> |
 
 ## Ultra Ethernet UDP scaling
 
