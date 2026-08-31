@@ -3260,6 +3260,69 @@ static int udp_sync_send(struct uib_context *ctx,
 	return udp_sync_send_entropy(ctx, destination, buffer, length, 0);
 }
 
+static int udp_sync_send_ref_batch_single(struct uib_context *ctx,
+					  const struct uib_transport_ref *refs,
+					  size_t count)
+{
+	size_t i;
+	int rc;
+
+	for (i = 0; i < count; i++) {
+		rc = udp_sync_send_entropy(ctx, refs[i].dst, refs[i].buf,
+					   refs[i].len, refs[i].entropy);
+		refs[i].release(refs[i].opaque);
+		if (rc < 0) {
+			for (i++; i < count; i++)
+				refs[i].release(refs[i].opaque);
+			return rc;
+		}
+	}
+	return 0;
+}
+
+static int udp_sync_send_iov_ref_batch(
+	struct uib_context *ctx, const struct uib_transport_iov_ref *refs,
+	size_t count);
+
+static int udp_sync_send_ref_batch_gso(struct uib_context *ctx,
+				       const struct uib_transport_ref *refs,
+				       size_t count)
+{
+	struct uib_transport_iov_ref iov_refs[UIB_URING_BATCH_MAX];
+	struct iovec vectors[UIB_URING_BATCH_MAX];
+	size_t batch;
+	size_t offset;
+	size_t i;
+	int rc;
+
+	offset = 0;
+	while (offset < count) {
+		batch = count - offset;
+		if (batch > UIB_URING_BATCH_MAX)
+			batch = UIB_URING_BATCH_MAX;
+		memset(iov_refs, 0, batch * sizeof(*iov_refs));
+		for (i = 0; i < batch; i++) {
+			vectors[i].iov_base = (void *)refs[offset + i].buf;
+			vectors[i].iov_len = refs[offset + i].len;
+			iov_refs[i].dst = refs[offset + i].dst;
+			iov_refs[i].iov = &vectors[i];
+			iov_refs[i].iov_count = 1;
+			iov_refs[i].len = refs[offset + i].len;
+			iov_refs[i].release = refs[offset + i].release;
+			iov_refs[i].opaque = refs[offset + i].opaque;
+			iov_refs[i].entropy = refs[offset + i].entropy;
+		}
+		rc = udp_sync_send_iov_ref_batch(ctx, iov_refs, batch);
+		offset += batch;
+		if (rc < 0) {
+			for (i = offset; i < count; i++)
+				refs[i].release(refs[i].opaque);
+			return rc;
+		}
+	}
+	return 0;
+}
+
 static int udp_sync_send_ref_batch(struct uib_context *ctx,
 				   const struct uib_transport_ref *refs,
 				   size_t count)
@@ -3273,21 +3336,12 @@ static int udp_sync_send_ref_batch(struct uib_context *ctx,
 	int sent;
 	int rc;
 
-	if (be->raw_mode || be->test_drop_tx ||
-	    ctx->zerocopy.mode != UIB_ZEROCOPY_OFF) {
-		for (i = 0; i < count; i++) {
-			rc = udp_sync_send_entropy(ctx, refs[i].dst,
-						   refs[i].buf, refs[i].len,
-						   refs[i].entropy);
-			refs[i].release(refs[i].opaque);
-			if (rc < 0) {
-				for (i++; i < count; i++)
-					refs[i].release(refs[i].opaque);
-				return rc;
-			}
-		}
-		return 0;
-	}
+	if (be->raw_mode || be->test_drop_tx)
+		return udp_sync_send_ref_batch_single(ctx, refs, count);
+	if (__atomic_load_n(&be->gso_enabled, __ATOMIC_ACQUIRE))
+		return udp_sync_send_ref_batch_gso(ctx, refs, count);
+	if (ctx->zerocopy.mode != UIB_ZEROCOPY_OFF)
+		return udp_sync_send_ref_batch_single(ctx, refs, count);
 
 	offset = 0;
 	while (offset < count) {
