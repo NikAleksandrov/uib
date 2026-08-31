@@ -20,13 +20,21 @@
 #undef ibv_query_port
 
 #include "uib/uib.h"
+#include "qp_internal.h"
+#include "utils.h"
 
 #define UIBV_DEV_NAME "uib0"
 #define UIBV_WR_INLINE_COUNT 16U
+#define UIBV_POLL_BATCH 64U
 #define UIBV_MAX_INLINE_DATA 4096U
 
 struct uibv_dev_pub {
 	struct ibv_device ibv;
+};
+
+struct uibv_device_list {
+	struct ibv_device **real;
+	struct ibv_device *devices[];
 };
 
 static struct uibv_dev_pub g_uibv_dev = {
@@ -85,6 +93,10 @@ struct uibv_qp_wrap {
 struct uibv_ah_wrap {
 	struct ibv_ah       ibv;
 	struct sockaddr_in  remote_addr;
+};
+
+struct uibv_ud_recv {
+	void *grh_addr;
 };
 
 struct efadv_device_attr;
@@ -312,26 +324,34 @@ static enum ibv_mtu active_mtu_from_env(const char *bind_ip)
 	return IBV_MTU_4096;
 }
 
-static enum uib_wr_opcode map_wr_op_in(enum ibv_wr_opcode op)
+static int map_wr_op_in(enum ibv_wr_opcode op, enum uib_wr_opcode *mapped)
 {
 	switch (op) {
 	case IBV_WR_SEND:
-		return UIB_WR_SEND;
+		*mapped = UIB_WR_SEND;
+		break;
 	case IBV_WR_SEND_WITH_IMM:
-		return UIB_WR_SEND_WITH_IMM;
+		*mapped = UIB_WR_SEND_WITH_IMM;
+		break;
 	case IBV_WR_RDMA_WRITE:
-		return UIB_WR_RDMA_WRITE;
+		*mapped = UIB_WR_RDMA_WRITE;
+		break;
 	case IBV_WR_RDMA_WRITE_WITH_IMM:
-		return UIB_WR_RDMA_WRITE_WITH_IMM;
+		*mapped = UIB_WR_RDMA_WRITE_WITH_IMM;
+		break;
 	case IBV_WR_RDMA_READ:
-		return UIB_WR_RDMA_READ;
+		*mapped = UIB_WR_RDMA_READ;
+		break;
 	case IBV_WR_ATOMIC_FETCH_AND_ADD:
-		return UIB_WR_ATOMIC_FETCH_ADD;
+		*mapped = UIB_WR_ATOMIC_FETCH_ADD;
+		break;
 	case IBV_WR_ATOMIC_CMP_AND_SWP:
-		return UIB_WR_ATOMIC_CMP_SWAP;
+		*mapped = UIB_WR_ATOMIC_CMP_SWAP;
+		break;
 	default:
-		return UIB_WR_SEND;
+		return -EOPNOTSUPP;
 	}
+	return 0;
 }
 
 static int map_send_flags_in(unsigned int f)
@@ -394,18 +414,22 @@ static enum ibv_wc_opcode map_wc_op_out(enum uib_wc_opcode op)
 	return IBV_WC_SEND;
 }
 
-static enum uib_qp_type map_qpt_in(enum ibv_qp_type t)
+static int map_qpt_in(enum ibv_qp_type type, enum uib_qp_type *mapped)
 {
-	switch (t) {
+	switch (type) {
 	case IBV_QPT_RC:
-		return UIB_QPT_RC;
+		*mapped = UIB_QPT_RC;
+		break;
 	case IBV_QPT_UC:
-		return UIB_QPT_UC;
+		*mapped = UIB_QPT_UC;
+		break;
 	case IBV_QPT_UD:
-		return UIB_QPT_UD;
+		*mapped = UIB_QPT_UD;
+		break;
 	default:
-		return UIB_QPT_RC;
+		return -EOPNOTSUPP;
 	}
+	return 0;
 }
 
 static enum uib_qp_state map_qps_in(enum ibv_qp_state s)
@@ -472,10 +496,13 @@ static int provider_convert_send_wr(struct uibv_qp_wrap *qp,
 				    struct uib_send_wr *destination)
 {
 	struct uibv_ah_wrap *ah;
+	int rc;
 
 	memset(destination, 0, sizeof(*destination));
 	destination->wr_id = source->wr_id;
-	destination->opcode = map_wr_op_in(source->opcode);
+	rc = map_wr_op_in(source->opcode, &destination->opcode);
+	if (rc < 0)
+		return rc;
 	destination->send_flags = map_send_flags_in(source->send_flags);
 	if (qp->sq_sig_all)
 		destination->send_flags |= UIB_SEND_SIGNALED;
@@ -571,6 +598,11 @@ out:
 	return rc < 0 ? -rc : rc;
 }
 
+static void provider_ud_recv_release(void *private_data)
+{
+	free(private_data);
+}
+
 static int provider_post_recv_ud(struct uibv_qp_wrap *qp,
 				 struct ibv_recv_wr *wr,
 				 struct ibv_recv_wr **bad)
@@ -579,48 +611,88 @@ static int provider_post_recv_ud(struct uibv_qp_wrap *qp,
 		struct uib_sge inline_sges[UIBV_WR_INLINE_COUNT];
 		struct uib_sge *sges = inline_sges;
 		struct uib_recv_wr request = {0};
-		struct ibv_grh *grh;
-		uint32_t ip;
+		struct uibv_ud_recv *receive;
+		struct uib_mr *mr;
 		int rc;
 
-		if (wr->num_sge < 1 || wr->sg_list[0].length < sizeof(*grh)) {
+		if (wr->num_sge < 1 || !wr->sg_list ||
+		    wr->sg_list[0].length < sizeof(struct ibv_grh)) {
 			if (bad)
 				*bad = wr;
 			return EINVAL;
 		}
+		mr = uib_mr_lookup_local(qp->core->pd, wr->sg_list[0].lkey,
+					 (void *)(uintptr_t)wr->sg_list[0].addr,
+					 sizeof(struct ibv_grh), 0);
+		if (!mr) {
+			if (bad)
+				*bad = wr;
+			return EINVAL;
+		}
+		receive = calloc(1, sizeof(*receive));
+		if (!receive) {
+			uib_mr_put(mr);
+			if (bad)
+				*bad = wr;
+			return ENOMEM;
+		}
+		uib_mr_put(mr);
+		receive->grh_addr = (void *)(uintptr_t)wr->sg_list[0].addr;
 		if (wr->num_sge > (int)UIBV_WR_INLINE_COUNT) {
 			sges = calloc((size_t)wr->num_sge, sizeof(*sges));
 			if (!sges) {
+				free(receive);
 				if (bad)
 					*bad = wr;
 				return ENOMEM;
 			}
 		}
 		memcpy(sges, wr->sg_list, (size_t)wr->num_sge * sizeof(*sges));
-		grh = (struct ibv_grh *)(uintptr_t)sges[0].addr;
-		memset(grh, 0, sizeof(*grh));
-		grh->version_tclass_flow = htonl(6U << 28);
-		grh->hop_limit = 64;
-		grh->dgid.raw[10] = 0xff;
-		grh->dgid.raw[11] = 0xff;
-		ip = qp->core->ctx->local_addr.sin_addr.s_addr;
-		memcpy(grh->dgid.raw + 12, &ip, sizeof(ip));
-		sges[0].addr += sizeof(*grh);
-		sges[0].length -= sizeof(*grh);
+		sges[0].addr += sizeof(struct ibv_grh);
+		sges[0].length -= sizeof(struct ibv_grh);
 
 		request.wr_id = wr->wr_id;
 		request.sg_list = sges;
 		request.num_sge = wr->num_sge;
-		rc = uib_post_recv(qp->core, &request, NULL);
+		rc = uib_post_recv_owned(qp->core, &request, receive,
+					 provider_ud_recv_release);
 		if (sges != inline_sges)
 			free(sges);
 		if (rc < 0) {
+			provider_ud_recv_release(receive);
 			if (bad)
 				*bad = wr;
 			return -rc;
 		}
 	}
 	return 0;
+}
+
+static void provider_complete_ud_recv(struct uibv_qp_wrap *qp,
+				      const struct uib_wc *core_wc)
+{
+	struct uibv_ud_recv *receive;
+	struct ibv_grh grh;
+	uint32_t ip;
+
+	receive = core_wc->private_data;
+	if (!receive)
+		return;
+	if (core_wc->status == UIB_WC_SUCCESS) {
+		memset(&grh, 0, sizeof(grh));
+		grh.version_tclass_flow = htonl(6U << 28);
+		grh.hop_limit = 64;
+		grh.sgid.raw[10] = 0xff;
+		grh.sgid.raw[11] = 0xff;
+		ip = core_wc->src_addr.sin_addr.s_addr;
+		memcpy(grh.sgid.raw + 12, &ip, sizeof(ip));
+		grh.dgid.raw[10] = 0xff;
+		grh.dgid.raw[11] = 0xff;
+		ip = qp->core->ctx->local_addr.sin_addr.s_addr;
+		memcpy(grh.dgid.raw + 12, &ip, sizeof(ip));
+		memcpy(receive->grh_addr, &grh, sizeof(grh));
+	}
+	provider_ud_recv_release(receive);
 }
 
 static int provider_post_recv_queue(struct uib_qp *qp, struct uib_srq *srq,
@@ -750,42 +822,65 @@ static int provider_post_recv(struct ibv_qp *qp_ibv, struct ibv_recv_wr *wr,
 	}
 }
 
+static void provider_copy_wc(struct uibv_cq_wrap *cq, struct ibv_wc *wc,
+			     const struct uib_wc *core_wc)
+{
+	struct uibv_qp_wrap *qp;
+
+	memset(wc, 0, sizeof(*wc));
+	wc->wr_id = core_wc->wr_id;
+	wc->status = map_wc_status_out(core_wc->status);
+	wc->opcode = map_wc_op_out(core_wc->opcode);
+	wc->byte_len = core_wc->byte_len;
+	wc->qp_num = core_wc->qp_num;
+	wc->src_qp = core_wc->src_qp;
+	wc->imm_data = core_wc->imm_data;
+	wc->vendor_err = core_wc->vendor_err;
+	if (core_wc->opcode == UIB_WC_RECV) {
+		pthread_mutex_lock(&cq->ibv.mutex);
+		for (qp = cq->recv_qps; qp; qp = qp->recv_next) {
+			if (qp->ibv.qp_num == core_wc->qp_num)
+				break;
+		}
+		if (qp && qp->ibv.qp_type == IBV_QPT_UD) {
+			provider_complete_ud_recv(qp, core_wc);
+			wc->byte_len += sizeof(struct ibv_grh);
+			wc->wc_flags |= IBV_WC_GRH;
+			wc->sl = 0xa;
+		}
+		pthread_mutex_unlock(&cq->ibv.mutex);
+	}
+	if (core_wc->opcode == UIB_WC_RECV_RDMA_WITH_IMM)
+		wc->wc_flags |= IBV_WC_WITH_IMM;
+}
+
 static int provider_poll_cq(struct ibv_cq *cq_ibv, int n, struct ibv_wc *wc)
 {
-	struct uibv_cq_wrap *cq = WRAP_OF(cq_ibv, struct uibv_cq_wrap, ibv);
-	struct uib_wc tmp[n];
-	int got = uib_poll_cq(cq->core, n, tmp);
-	int i;
+	struct uibv_cq_wrap *cq;
+	struct uib_wc tmp[UIBV_POLL_BATCH];
+	int total;
 
-	for (i = 0; i < got; i++) {
-		memset(&wc[i], 0, sizeof(wc[i]));
-		wc[i].wr_id    = tmp[i].wr_id;
-		wc[i].status   = map_wc_status_out(tmp[i].status);
-		wc[i].opcode   = map_wc_op_out(tmp[i].opcode);
-		wc[i].byte_len = tmp[i].byte_len;
-		wc[i].qp_num   = tmp[i].qp_num;
-		wc[i].src_qp   = tmp[i].src_qp;
-		wc[i].imm_data = tmp[i].imm_data;
-		wc[i].vendor_err = tmp[i].vendor_err;
-		if (tmp[i].opcode == UIB_WC_RECV) {
-			struct uibv_qp_wrap *qp;
+	if (!cq_ibv || n < 0 || (n && !wc))
+		return -EINVAL;
+	cq = WRAP_OF(cq_ibv, struct uibv_cq_wrap, ibv);
+	total = 0;
+	while (total < n) {
+		int batch;
+		int got;
+		int i;
 
-			pthread_mutex_lock(&cq->ibv.mutex);
-			for (qp = cq->recv_qps; qp; qp = qp->recv_next) {
-				if (qp->ibv.qp_num == tmp[i].qp_num)
-					break;
-			}
-			if (qp && qp->ibv.qp_type == IBV_QPT_UD) {
-				wc[i].byte_len += sizeof(struct ibv_grh);
-				wc[i].wc_flags |= IBV_WC_GRH;
-				wc[i].sl = 0xa;
-			}
-			pthread_mutex_unlock(&cq->ibv.mutex);
-		}
-		if (tmp[i].opcode == UIB_WC_RECV_RDMA_WITH_IMM)
-			wc[i].wc_flags |= IBV_WC_WITH_IMM;
+		batch = n - total < (int)UIBV_POLL_BATCH ?
+			n - total : (int)UIBV_POLL_BATCH;
+		got = uib_poll_cq(cq->core, batch, tmp);
+		if (got < 0)
+			return total ? total : got;
+		for (i = 0; i < got; i++)
+			provider_copy_wc(cq, &wc[total + i], &tmp[i]);
+		total += got;
+		if (got < batch)
+			break;
 	}
-	return got;
+	return total;
 }
 
 static int provider_req_notify_cq(struct ibv_cq *cq, int solicited_only)
@@ -800,8 +895,8 @@ static int provider_req_notify_cq(struct ibv_cq *cq, int solicited_only)
 
 struct ibv_device **ibv_get_device_list(int *num)
 {
+	struct uibv_device_list *wrapper;
 	struct ibv_device **real;
-	struct ibv_device **list;
 	int real_n = 0;
 	int i;
 
@@ -811,26 +906,32 @@ struct ibv_device **ibv_get_device_list(int *num)
 			real_n++;
 	}
 
-	list = calloc((size_t)real_n + 2, sizeof(*list));
-
-	if (!list) {
+	wrapper = calloc(1, sizeof(*wrapper) +
+			 (size_t)(real_n + 2) * sizeof(*wrapper->devices));
+	if (!wrapper) {
 		if (real && real_free_device_list)
 			real_free_device_list(real);
 		return NULL;
 	}
-	list[0] = &g_uibv_dev.ibv;
+	wrapper->real = real;
+	wrapper->devices[0] = &g_uibv_dev.ibv;
 	for (i = 0; i < real_n; i++)
-		list[i + 1] = real[i];
-	if (real && real_free_device_list)
-		real_free_device_list(real);
+		wrapper->devices[i + 1] = real[i];
 	if (num)
 		*num = real_n + 1;
-	return list;
+	return wrapper->devices;
 }
 
 void ibv_free_device_list(struct ibv_device **list)
 {
-	free(list);
+	struct uibv_device_list *wrapper;
+
+	if (!list)
+		return;
+	wrapper = WRAP_OF(list, struct uibv_device_list, devices);
+	if (wrapper->real && real_free_device_list)
+		real_free_device_list(wrapper->real);
+	free(wrapper);
 }
 
 const char *ibv_get_device_name(struct ibv_device *dev)
@@ -852,13 +953,13 @@ static uint16_t bind_port_from_env(void)
 	const char *p = getenv(UIB_ENV_BIND_PORT);
 	uint16_t default_port =
 		uib_protocol_default_port(getenv(UIB_ENV_PROTOCOL));
-	int value;
+	uint64_t value;
 
 	if (!p || !*p)
 		return default_port;
-	value = atoi(p);
-
-	return value > 0 ? (uint16_t)value : default_port;
+	if (uib_parse_u64(p, 10, &value) < 0 || !value || value > UINT16_MAX)
+		return default_port;
+	return (uint16_t)value;
 }
 
 struct ibv_context *ibv_open_device(struct ibv_device *dev)
@@ -902,14 +1003,16 @@ struct ibv_context *ibv_open_device(struct ibv_device *dev)
 int ibv_close_device(struct ibv_context *ctx)
 {
 	struct uibv_ctx_wrap *wrapper;
+	int rc;
 
 	if (!ctx_is_ours(ctx))
 		return real_close_device ? real_close_device(ctx) : -1;
 
 	wrapper = WRAP_OF(ctx, struct uibv_ctx_wrap, ibv);
-
+	rc = uib_close_device(wrapper->core);
+	if (rc < 0)
+		return -rc;
 	close(wrapper->ibv.async_fd);
-	uib_close_device(wrapper->core);
 	pthread_mutex_destroy(&wrapper->ibv.mutex);
 	free(wrapper);
 	return 0;
@@ -1435,13 +1538,15 @@ int ibv_destroy_cq(struct ibv_cq *cq)
 		return real_destroy_cq ? real_destroy_cq(cq) : -1;
 	wrapper = WRAP_OF(cq, struct uibv_cq_wrap, ibv);
 	rc = uib_destroy_cq(wrapper->core);
+	if (rc < 0)
+		return -rc;
 
 	if (cq->channel)
 		cq->channel->refcnt--;
 	pthread_cond_destroy(&wrapper->ibv.cond);
 	pthread_mutex_destroy(&wrapper->ibv.mutex);
 	free(wrapper);
-	return rc < 0 ? -rc : 0;
+	return 0;
 }
 
 struct ibv_qp *ibv_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
@@ -1453,11 +1558,28 @@ struct ibv_qp *ibv_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
 	struct uibv_qp_wrap *wrapper;
 	struct uib_qp_init_attr core_attr = {0};
 	struct uib_qp *core;
+	int rc;
 
+	if (!pd || !attr) {
+		errno = EINVAL;
+		return NULL;
+	}
 	if (!ctx_is_ours(pd->context))
 		return real_create_qp ? real_create_qp(pd, attr) : NULL;
-	if (attr->cap.max_inline_data > UIBV_MAX_INLINE_DATA) {
+	if (!attr->send_cq || !attr->recv_cq ||
+	    attr->send_cq->context != pd->context ||
+	    attr->recv_cq->context != pd->context ||
+	    attr->cap.max_inline_data > UIBV_MAX_INLINE_DATA ||
+	    attr->cap.max_send_wr > UIB_MAX_QP_WR ||
+	    attr->cap.max_recv_wr > UIB_MAX_QP_WR ||
+	    attr->cap.max_send_sge > UIB_MAX_SGE ||
+	    attr->cap.max_recv_sge > UIB_MAX_SGE) {
 		errno = EINVAL;
+		return NULL;
+	}
+	rc = map_qpt_in(attr->qp_type, &core_attr.qp_type);
+	if (rc < 0) {
+		errno = -rc;
 		return NULL;
 	}
 	pd_wrapper = WRAP_OF(pd, struct uibv_pd_wrap, ibv);
@@ -1473,7 +1595,6 @@ struct ibv_qp *ibv_create_qp(struct ibv_pd *pd, struct ibv_qp_init_attr *attr)
 		srq = WRAP_OF(attr->srq, struct uibv_srq_wrap, ibv);
 	}
 
-	core_attr.qp_type = map_qpt_in(attr->qp_type);
 	core_attr.send_cq = send_cq ? send_cq->core : NULL;
 	core_attr.recv_cq = recv_cq ? recv_cq->core : NULL;
 	core_attr.srq = srq ? srq->core : NULL;

@@ -175,7 +175,7 @@ when the relevant context, transport, benchmark, or test is created.
 | <code>UIB_CC_BENCH_ITERATIONS</code> | `1000` | A positive 32-bit integer. | Set measured operations per resilience matrix entry. | <code>UIB_CC_BENCH_ITERATIONS=10000 make benchmark-all</code> |
 | <code>UIB_CC_BENCH_SIZE</code> | `16384` bytes | A positive 32-bit byte count. | Set the payload size for resilience matrix operations. | <code>UIB_CC_BENCH_SIZE=65536 make benchmark-all</code> |
 | <code>UIB_CC_BENCH_WINDOW</code> | `16` | A positive operation count. | Set the maximum in-flight operation count for each resilience entry. | <code>UIB_CC_BENCH_WINDOW=64 make benchmark-all</code> |
-| <code>UIB_CC_BENCH_MTU</code> | `1500` bytes | A positive path MTU no larger than `4096` for RoCEv2 comparisons. | Set one common path MTU for all resilience matrix entries. | <code>UIB_CC_BENCH_MTU=4096 make benchmark-all</code> |
+| <code>UIB_CC_BENCH_MTU</code> | `1024` bytes | `256`, `512`, `1024`, `2048`, or `4096` when RoCEv2 is selected. | Set one common path MTU for all resilience matrix entries. | <code>UIB_CC_BENCH_MTU=4096 make benchmark-all</code> |
 | <code>UIB_CC_BENCH_TIMEOUT</code> | `120` seconds | A positive integer number of seconds. | Set the per-entry timeout, including retry delays caused by impairments. | <code>UIB_CC_BENCH_TIMEOUT=300 make benchmark-all</code> |
 
 ## Namespace benchmark harness

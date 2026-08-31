@@ -31,6 +31,20 @@ struct uib_protocol_ops {
 	const char *name;
 	uint16_t default_port;
 	size_t min_packet;
+	/*
+	 * Nonzero when a transport may reach one peer through several derived
+	 * destination ports. Protocols whose destination port is fixed by
+	 * their specification, such as RoCEv2 on 4791, must leave this clear
+	 * so that a transport never moves their traffic off that port.
+	 */
+	uint8_t multipath_ports;
+	/*
+	 * Optional. Return nonzero when the protocol can carry this path MTU.
+	 * A protocol that omits it accepts any value. RoCEv2 uses it to hold
+	 * the architectural set, which also keeps the value inside the packet
+	 * buffers it sizes from that maximum.
+	 */
+	int (*path_mtu_valid)(uint32_t path_mtu);
 
 	int (*init)(struct uib_context *ctx);
 	void (*fini)(struct uib_context *ctx);

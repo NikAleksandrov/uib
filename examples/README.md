@@ -58,8 +58,8 @@ changing the workload:
 It reports payload bandwidth, operation rate, process/user/system CPU time,
 CPU utilization, and min/average/p50/p95/p99/max completion latency. UET runs
 also print the final NSCC congestion-window, inflight-byte and base-RTT state.
-The protocol path MTU defaults to 1500 bytes; select another value with
-`--mtu BYTES` or `UIB_BENCH_MTU`.
+The protocol path MTU defaults to 1024 bytes for RoCEv2 and 1500 bytes for the
+other protocols. Select another value with `--mtu BYTES` or `UIB_BENCH_MTU`.
 
 Select DMA-BUF memory with `--memory dmabuf`. Select copied or socket
 zero-copy transport with UIB_ZEROCOPY=off or required. The stats distinguish

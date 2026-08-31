@@ -5,15 +5,12 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <netinet/in.h>
-#include "uib/congestion.h"
-#include "uib/psn_index.h"
 #include "uib/types.h"
 
 struct uib_context;
 struct uib_pd;
 struct uib_cq;
 struct uib_srq;
-struct uib_outstanding_pool;
 
 struct uib_sge {
 	uint64_t addr;
@@ -124,35 +121,6 @@ struct uib_rq_slot {
 	void          (*private_release)(void *private_data);
 };
 
-struct uib_outstanding {
-	struct uib_outstanding *next;
-	struct uib_outstanding *prev;
-	uint32_t                psn;
-	uint8_t                 wire_opcode;
-	uint8_t                 retries;
-	uint8_t                 signaled;
-	uint8_t                 is_read;
-	uint8_t                 is_final;
-	uint8_t                 indexed;
-	uint8_t                 pool_class;
-	uint8_t                 congestion_inflight;
-	uint8_t                 sent;
-	uint32_t                nominal_len;
-	uint64_t                wr_id;
-	enum uib_wr_opcode      wr_opcode;
-	uint64_t                tx_time_ns;
-	uint64_t                deadline_ns;
-	void                   *pkt;
-	size_t                  pkt_len;
-	struct sockaddr_in      dst;
-	struct uib_sge         *read_sgl;
-	int                     read_num_sge;
-	uint32_t                read_total_len;
-	uint32_t                refs;
-	struct uib_outstanding_pool *pool;
-	uint8_t                 packet[];
-};
-
 struct uib_qp {
 	struct uib_context *ctx;
 	struct uib_pd      *pd;
@@ -166,14 +134,11 @@ struct uib_qp {
 	uint32_t            dest_qp_num;
 	uint32_t            sq_psn;
 	uint32_t            rq_psn;
-	uint32_t            sequence_retry_psn;
-	uint8_t             sequence_retry_active;
 	uint32_t            qkey;
 	uint32_t            path_mtu;
 	struct sockaddr_in  remote_addr;
 	uint32_t            access_flags;
 	void               *protocol_private;
-	struct uib_congestion congestion;
 
 	struct uib_rq_slot *rq;
 	uint32_t            rq_size;
@@ -184,41 +149,23 @@ struct uib_qp {
 	uint32_t            max_recv_sge;
 	uint32_t            max_send_wr;
 
-	struct uib_outstanding *out_head;
-	struct uib_outstanding *out_tail;
-	struct uib_outstanding *read_head;
-	struct uib_outstanding *read_tail;
-	struct uib_outstanding_pool *out_pool;
-	struct uib_psn_index     out_index;
-	uint32_t                out_count;
-	uint32_t                last_acked_psn;
-	uint32_t                last_rx_psn;
-	uint32_t                atomic_ack_psn;
-	uint64_t                atomic_ack_value;
-	uint8_t                 last_rx_valid;
-	uint8_t                 atomic_ack_valid;
 	uint64_t                retry_deadline_ns;
 	uint32_t                retry_heap_index;
 	uint8_t                 retry_scheduled;
 
-	struct uib_rq_slot      frag_recv;
-	struct uib_mr          *frag_recv_mr;
-	uint8_t                 frag_recv_active;
-	uint32_t                frag_recv_offset;
-
-	uint64_t                frag_write_va;
-	uint32_t                frag_write_total;
-	uint32_t                frag_write_offset;
-	uint8_t                 frag_write_active;
-	struct uib_mr          *frag_write_mr;
-
-	struct uib_outstanding *frag_read_out;
-	uint32_t                frag_read_offset;
-
 	pthread_mutex_t     lock;
 };
 
+/*
+ * Default path MTU applied when a queue pair is created. It is a value every
+ * protocol accepts; a protocol that needs a different one sets it through
+ * uib_modify_qp, which validates it against that protocol.
+ */
+#define UIB_DEFAULT_PATH_MTU 4096
+
 #define UIB_MAX_RETRIES    7
+#define UIB_MAX_QP_WR   1024U
+#define UIB_MAX_SGE       16U
 
 void uib_qp_retransmit_tick(struct uib_qp *qp, uint64_t now_ns);
 
@@ -262,15 +209,5 @@ void uib_qp_emit_recv_slot(struct uib_qp *qp, struct uib_rq_slot *slot,
 			   enum uib_wc_status status,
 			   enum uib_wc_opcode opcode, uint32_t byte_len,
 			   uint32_t src_qp, uint32_t imm_data);
-
-int uib_rocev2_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
-			 struct uib_send_wr **bad);
-void uib_rocev2_qp_fini(struct uib_qp *qp);
-int uib_rocev2_qp_init(struct uib_qp *qp);
-void uib_rocev2_qp_modified(struct uib_qp *qp, int attr_mask);
-int uib_rocev2_handle_packet(struct uib_qp *qp,
-			    const struct sockaddr_in *src,
-			    const void *packet, size_t len);
-void uib_rocev2_retransmit_tick(struct uib_qp *qp, uint64_t now_ns);
 
 #endif

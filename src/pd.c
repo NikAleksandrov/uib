@@ -7,6 +7,7 @@
 #include "uib/context.h"
 #include "uib/mr.h"
 #include "uib/pd.h"
+#include "object_internal.h"
 #include "mr_internal.h"
 
 #define UIB_MR_TABLE_INITIAL_SIZE	64U
@@ -300,15 +301,40 @@ int uib_dealloc_pd(struct uib_pd *pd)
 	if (!pd)
 		return -EINVAL;
 	pthread_mutex_lock(&pd->mr_lock);
-	if (pd->mr_count) {
+	if (pd->mr_count || pd->refcnt != 1) {
 		pthread_mutex_unlock(&pd->mr_lock);
 		return -EBUSY;
 	}
+	pd->refcnt = 0;
 	pthread_mutex_unlock(&pd->mr_lock);
 	pthread_mutex_destroy(&pd->mr_lock);
 	mr_table_free(pd->mr_table);
 	free(pd);
 	return 0;
+}
+
+int uib_pd_get(struct uib_pd *pd)
+{
+	if (!pd)
+		return -EINVAL;
+	pthread_mutex_lock(&pd->mr_lock);
+	if (!pd->refcnt) {
+		pthread_mutex_unlock(&pd->mr_lock);
+		return -EINVAL;
+	}
+	pd->refcnt++;
+	pthread_mutex_unlock(&pd->mr_lock);
+	return 0;
+}
+
+void uib_pd_put(struct uib_pd *pd)
+{
+	if (!pd)
+		return;
+	pthread_mutex_lock(&pd->mr_lock);
+	if (pd->refcnt > 1)
+		pd->refcnt--;
+	pthread_mutex_unlock(&pd->mr_lock);
 }
 
 /**

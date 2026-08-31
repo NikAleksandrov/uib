@@ -12,6 +12,7 @@
 #include "uib/transport.h"
 #include "uib/context.h"
 #include "host_zc_internal.h"
+#include "qp_internal.h"
 
 struct uib_host_loan {
 	uib_transport_release_fn *segment_release;

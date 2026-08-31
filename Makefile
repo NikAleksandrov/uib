@@ -100,6 +100,9 @@ SRCS := \
 	src/qp.c \
 	src/protocol.c \
 	src/protocol_rocev2.c \
+	src/protocol_rocev2_tx.c \
+	src/protocol_rocev2_rx.c \
+	src/protocol_rocev2_wire.c \
 	src/protocol_dummy.c \
 	src/protocol_uet.c \
 	src/congestion.c \

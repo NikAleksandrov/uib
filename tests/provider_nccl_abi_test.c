@@ -111,6 +111,9 @@ int main(void)
 	struct ibv_qp_attr qp_attr;
 	struct ibv_recv_wr recv_wr;
 	struct ibv_recv_wr *bad_recv;
+	struct ibv_send_wr send_wr;
+	struct ibv_send_wr *bad_send;
+	struct ibv_sge recv_sge;
 	struct ibv_srq_init_attr srq_init_attr;
 	struct ibv_srq_attr srq_attr;
 	struct ibv_mr_init_attr mr_attr;
@@ -131,6 +134,7 @@ int main(void)
 	int count;
 	int rc = EXIT_FAILURE;
 	uint8_t mr_buffer[64];
+	int unchanged;
 
 	handle = dlopen("./libuibv.so", RTLD_NOW | RTLD_LOCAL);
 	if (!handle) {
@@ -264,6 +268,7 @@ int main(void)
 		goto out;
 	}
 	memset(&mr_attr, 0, sizeof(mr_attr));
+	memset(mr_buffer, 0xa5, sizeof(mr_buffer));
 	mr_attr.addr = mr_buffer;
 	mr_attr.length = sizeof(mr_buffer);
 	mr_attr.iova = (uintptr_t)mr_buffer;
@@ -274,11 +279,6 @@ int main(void)
 		fprintf(stderr, "provider extended MR registration failed\n");
 		goto out;
 	}
-	if (dereg_mr(mr)) {
-		fprintf(stderr, "provider extended MR deregistration failed\n");
-		goto out;
-	}
-	mr = NULL;
 	memset(&qp_init_attr, 0, sizeof(qp_init_attr));
 	qp_init_attr.send_cq = cq;
 	qp_init_attr.recv_cq = cq;
@@ -293,6 +293,45 @@ int main(void)
 		fprintf(stderr, "provider UD QP creation failed\n");
 		goto out;
 	}
+	if (dealloc_pd(pd) != EBUSY || destroy_cq(cq) != EBUSY) {
+		fprintf(stderr, "provider released resources used by a QP\n");
+		goto out;
+	}
+	if (context->ops.poll_cq(cq, -1, NULL) != -EINVAL) {
+		fprintf(stderr, "provider accepted a negative CQ poll count\n");
+		goto out;
+	}
+	memset(&send_wr, 0, sizeof(send_wr));
+	send_wr.opcode = (enum ibv_wr_opcode)-1;
+	bad_send = NULL;
+	if (context->ops.post_send(qp, &send_wr, &bad_send) != EOPNOTSUPP ||
+	    bad_send != &send_wr) {
+		fprintf(stderr, "provider accepted an unsupported send opcode\n");
+		goto out;
+	}
+	memset(&recv_sge, 0, sizeof(recv_sge));
+	recv_sge.addr = (uintptr_t)mr_buffer;
+	recv_sge.length = sizeof(mr_buffer);
+	recv_sge.lkey = mr->lkey;
+	memset(&recv_wr, 0, sizeof(recv_wr));
+	recv_wr.sg_list = &recv_sge;
+	recv_wr.num_sge = 1;
+	bad_recv = NULL;
+	if (context->ops.post_recv(qp, &recv_wr, &bad_recv)) {
+		fprintf(stderr, "provider UD receive posting failed\n");
+		goto out;
+	}
+	unchanged = 1;
+	for (i = 0; i < sizeof(struct ibv_grh); i++) {
+		if (mr_buffer[i] != 0xa5) {
+			unchanged = 0;
+			break;
+		}
+	}
+	if (!unchanged) {
+		fprintf(stderr, "provider modified a UD buffer while posting\n");
+		goto out;
+	}
 	memset(&qp_attr, 0, sizeof(qp_attr));
 	memset(&query_init_attr, 0, sizeof(query_init_attr));
 	if (query_qp(qp, &qp_attr, 0, &query_init_attr) ||
@@ -305,6 +344,20 @@ int main(void)
 		goto out;
 	}
 	qp = NULL;
+	if (dereg_mr(mr)) {
+		fprintf(stderr, "provider extended MR deregistration failed\n");
+		goto out;
+	}
+	mr = NULL;
+	memset(&qp_init_attr, 0, sizeof(qp_init_attr));
+	qp_init_attr.send_cq = cq;
+	qp_init_attr.recv_cq = cq;
+	qp_init_attr.qp_type = (enum ibv_qp_type)-1;
+	errno = 0;
+	if (create_qp(pd, &qp_init_attr) || errno != EOPNOTSUPP) {
+		fprintf(stderr, "provider accepted an unsupported QP type\n");
+		goto out;
+	}
 	memset(&srq_init_attr, 0, sizeof(srq_init_attr));
 	srq_init_attr.attr.max_wr = 8;
 	srq_init_attr.attr.max_sge = 1;
@@ -349,9 +402,9 @@ int main(void)
 	}
 	rc = EXIT_SUCCESS;
 out:
-	if (mr && dereg_mr(mr))
-		rc = EXIT_FAILURE;
 	if (qp && destroy_qp(qp))
+		rc = EXIT_FAILURE;
+	if (mr && dereg_mr(mr))
 		rc = EXIT_FAILURE;
 	if (srq && destroy_srq(srq))
 		rc = EXIT_FAILURE;

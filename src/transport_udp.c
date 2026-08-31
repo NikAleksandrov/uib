@@ -2808,7 +2808,7 @@ static int udp_flow_count(struct uib_context *ctx, unsigned int *count)
 	if (errno || end == setting || *end || !value ||
 	    value > UIB_UDP_FLOW_MAX)
 		return -EINVAL;
-	if (value > 1 && ctx->pops != &uib_uet_protocol_ops)
+	if (value > 1 && (!ctx->pops || !ctx->pops->multipath_ports))
 		return -EPROTONOSUPPORT;
 	*count = (unsigned int)value;
 	return 0;

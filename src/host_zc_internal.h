@@ -32,8 +32,4 @@ int uib_host_loan_place(struct uib_rq_slot *slot, uint32_t offset,
 int uib_qp_scatter_recv(struct uib_qp *qp, struct uib_rq_slot *slot,
 			uint32_t msg_offset, const uint8_t *in,
 			size_t in_len, size_t *consumed_out);
-int uib_post_recv_owned(struct uib_qp *qp, struct uib_recv_wr *request,
-			void *private_data,
-			void (*private_release)(void *private_data));
-
 #endif

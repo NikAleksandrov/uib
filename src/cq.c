@@ -12,6 +12,7 @@
 
 #include "uib/cq.h"
 #include "uib/context.h"
+#include "object_internal.h"
 
 /**
  * uib_create_comp_channel - Create a pollable completion-event channel.
@@ -122,6 +123,7 @@ struct uib_cq *uib_create_cq_channel(struct uib_context *ctx, int cqe,
 		cq->ring[i].sequence = i;
 	cq->channel = channel;
 	cq->event_context = event_context;
+	cq->refcnt = 1;
 	pthread_mutex_init(&cq->lock, NULL);
 	pthread_cond_init(&cq->cond, NULL);
 	if (channel) {
@@ -159,6 +161,11 @@ int uib_destroy_cq(struct uib_cq *cq)
 	if (!cq)
 		return -EINVAL;
 	pthread_mutex_lock(&cq->lock);
+	if (cq->refcnt != 1) {
+		pthread_mutex_unlock(&cq->lock);
+		return -EBUSY;
+	}
+	cq->refcnt = 0;
 	while (cq->events_outstanding)
 		pthread_cond_wait(&cq->cond, &cq->lock);
 	free(cq->armed_event);
@@ -175,6 +182,30 @@ int uib_destroy_cq(struct uib_cq *cq)
 	free(cq->ring);
 	free(cq);
 	return 0;
+}
+
+int uib_cq_get(struct uib_cq *cq)
+{
+	if (!cq)
+		return -EINVAL;
+	pthread_mutex_lock(&cq->lock);
+	if (!cq->refcnt) {
+		pthread_mutex_unlock(&cq->lock);
+		return -EINVAL;
+	}
+	cq->refcnt++;
+	pthread_mutex_unlock(&cq->lock);
+	return 0;
+}
+
+void uib_cq_put(struct uib_cq *cq)
+{
+	if (!cq)
+		return;
+	pthread_mutex_lock(&cq->lock);
+	if (cq->refcnt > 1)
+		cq->refcnt--;
+	pthread_mutex_unlock(&cq->lock);
 }
 
 static int channel_push(struct uib_comp_channel *channel,
@@ -223,8 +254,10 @@ int uib_cq_push(struct uib_cq *cq, const struct uib_wc *wc)
 		slot = &cq->ring[position & cq->mask];
 		sequence = __atomic_load_n(&slot->sequence, __ATOMIC_ACQUIRE);
 		difference = (intptr_t)(sequence - position);
-		if (difference < 0)
+		if (difference < 0) {
+			__atomic_store_n(&cq->overrun, 1, __ATOMIC_RELEASE);
 			return -ENOSPC;
+		}
 		if (difference > 0) {
 			position = __atomic_load_n(&cq->enqueue_pos,
 						   __ATOMIC_RELAXED);
@@ -281,7 +314,7 @@ int uib_poll_cq(struct uib_cq *cq, int n, struct uib_wc *out)
 						   __ATOMIC_ACQUIRE);
 			difference = (intptr_t)(sequence - (position + 1));
 			if (difference < 0)
-				return got;
+				goto out;
 			if (difference > 0) {
 				position = __atomic_load_n(&cq->dequeue_pos,
 							   __ATOMIC_RELAXED);
@@ -298,6 +331,10 @@ int uib_poll_cq(struct uib_cq *cq, int n, struct uib_wc *out)
 		__atomic_store_n(&slot->sequence, position + cq->cqe,
 				 __ATOMIC_RELEASE);
 	}
+out:
+	if (n && !got &&
+	    __atomic_exchange_n(&cq->overrun, 0, __ATOMIC_ACQ_REL))
+		return -EOVERFLOW;
 	return got;
 }
 

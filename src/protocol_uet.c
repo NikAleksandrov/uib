@@ -5383,6 +5383,7 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 const struct uib_protocol_ops uib_uet_protocol_ops = {
 	.name = "uet",
 	.default_port = UIB_UET_DEFAULT_PORT,
+	.multipath_ports = 1,
 	.min_packet = sizeof(struct uib_uet_prologue),
 	.init = uet_context_init,
 	.fini = uet_context_fini,

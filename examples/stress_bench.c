@@ -37,6 +37,7 @@ struct options {
 	uint16_t data_port;
 	enum benchmark_role role;
 	int csv;
+	int mtu_set;
 };
 
 struct benchmark_peer {
@@ -163,8 +164,11 @@ static int parse_options(int argc, char **argv, struct options *options)
 	if (value && *value && parse_u32(value, &options->window) < 0)
 		return -EINVAL;
 	value = getenv("UIB_BENCH_MTU");
-	if (value && *value && parse_u32(value, &options->mtu) < 0)
-		return -EINVAL;
+	if (value && *value) {
+		if (parse_u32(value, &options->mtu) < 0)
+			return -EINVAL;
+		options->mtu_set = 1;
+	}
 	value = getenv("UIB_BENCH_CONTROL_PORT");
 	if (value && *value) {
 		if (parse_u32(value, &parsed) < 0 || parsed > UINT16_MAX)
@@ -199,6 +203,7 @@ static int parse_options(int argc, char **argv, struct options *options)
 		case 'M':
 			if (parse_u32(optarg, &options->mtu) < 0)
 				return -EINVAL;
+			options->mtu_set = 1;
 			break;
 		case 'm':
 			options->memory = optarg;
@@ -245,6 +250,8 @@ static int parse_options(int argc, char **argv, struct options *options)
 	    strcmp(options->protocol, "uet") &&
 	    strcmp(options->protocol, "dummy"))
 		return -EINVAL;
+	if (!options->mtu_set && !strcmp(options->protocol, "rocev2"))
+		options->mtu = 1024;
 	if (!strcmp(options->protocol, "rocev2") && options->mtu > UIB_PMTU)
 		return -EINVAL;
 	if (strcmp(options->memory, "host") && strcmp(options->memory, "dmabuf") &&

@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include <pthread.h>
+#include <netinet/in.h>
 #include "uib/types.h"
 
 struct uib_context;
@@ -23,6 +24,19 @@ struct uib_comp_channel {
 	int                  fd;
 };
 
+/**
+ * struct uib_wc - Completed work request.
+ * @wr_id: Application work-request identifier
+ * @status: Generic completion status
+ * @opcode: Completed operation
+ * @byte_len: Completed payload length in bytes
+ * @qp_num: Local queue-pair number
+ * @src_qp: Remote queue-pair number for receive completions
+ * @imm_data: Immediate data supplied by the peer
+ * @vendor_err: Protocol-specific error code; UET returns the SES return code
+ * @src_addr: Source transport address for internal provider translation
+ * @private_data: Internal completion ownership state
+ */
 struct uib_wc {
 	uint64_t         wr_id;
 	enum uib_wc_status status;
@@ -32,6 +46,7 @@ struct uib_wc {
 	uint32_t         src_qp;
 	uint32_t         imm_data;
 	uint32_t         vendor_err;
+	struct sockaddr_in src_addr;
 	void            *private_data;
 };
 
@@ -51,6 +66,8 @@ struct uib_cq {
 	struct uib_cq_event *armed_event;
 	void                *event_context;
 	unsigned int         events_outstanding;
+	unsigned int         refcnt;
+	int                  overrun;
 	int                  notify_armed;
 	pthread_mutex_t     lock;
 	pthread_cond_t      cond;

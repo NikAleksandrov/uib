@@ -1159,7 +1159,7 @@ from defaults. Select it by its explicit `dcqcn-experimental` name.
 | `UIB_CC_BENCH_ITERATIONS` | `1000` | Positive operation count |
 | `UIB_CC_BENCH_SIZE` | `16384` | Positive message size in bytes |
 | `UIB_CC_BENCH_WINDOW` | `16` | Positive in-flight operation window |
-| `UIB_CC_BENCH_MTU` | `1500` | Positive active MTU |
+| `UIB_CC_BENCH_MTU` | `1024` | RoCEv2 architectural active MTU |
 | `UIB_CC_BENCH_TIMEOUT` | `120` | Positive timeout per case in seconds |
 
 `UIB_CC_BENCH_MATRIX` cannot be combined with either variant or condition

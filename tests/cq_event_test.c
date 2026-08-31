@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <poll.h>
+#include <errno.h>
 
 #include "uib/uib.h"
 
@@ -29,6 +30,7 @@ int main(void)
 	struct uib_context context;
 	struct uib_comp_channel *channel;
 	struct uib_cq *event_cq;
+	struct uib_cq *overflow_cq;
 	struct uib_cq *cq;
 	struct uib_wc completion;
 	struct uib_wc polled[3];
@@ -72,6 +74,19 @@ int main(void)
 	      polled[1].wr_id == 2 && polled[2].wr_id == 3);
 	check("cq.destroy", !uib_destroy_cq(cq));
 	check("channel.destroy", !uib_destroy_comp_channel(channel));
+
+	overflow_cq = uib_create_cq(&context, 2);
+	check("overflow.create", overflow_cq != NULL);
+	if (overflow_cq) {
+		check("overflow.first", !uib_cq_push(overflow_cq, &completion));
+		check("overflow.second", !uib_cq_push(overflow_cq, &completion));
+		check("overflow.detect", uib_cq_push(overflow_cq, &completion) ==
+		      -ENOSPC);
+		check("overflow.drain", uib_poll_cq(overflow_cq, 3, polled) == 2);
+		check("overflow.report", uib_poll_cq(overflow_cq, 1, polled) ==
+		      -EOVERFLOW);
+		check("overflow.destroy", !uib_destroy_cq(overflow_cq));
+	}
 
 	printf("RESULT %s\n", failed ? "FAIL" : "PASS");
 	return failed ? 1 : 0;

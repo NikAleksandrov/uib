@@ -240,6 +240,24 @@ int main(void)
 	      aqp2 && bqp2);
 	if (!apd || !bpd || !acq || !bcq || !aqp || !bqp || !aqp2 || !bqp2)
 		goto out;
+	check("lifetime.pd_busy", uib_dealloc_pd(apd) == -EBUSY);
+	check("lifetime.cq_busy", uib_destroy_cq(acq) == -EBUSY);
+	init.send_cq = NULL;
+	init.recv_cq = acq;
+	check("qp.missing_cq", uib_create_qp(apd, &init) == NULL &&
+	      errno == EINVAL);
+	init.send_cq = init.recv_cq = bcq;
+	check("qp.cross_context", uib_create_qp(apd, &init) == NULL &&
+	      errno == EINVAL);
+	init.send_cq = init.recv_cq = acq;
+	init.qp_type = (enum uib_qp_type)UINT32_MAX;
+	check("qp.unsupported_type", uib_create_qp(apd, &init) == NULL &&
+	      errno == EINVAL);
+	init.qp_type = UIB_QPT_RC;
+	init.max_recv_wr = UIB_MAX_QP_WR + 1;
+	check("qp.recv_depth_bound", uib_create_qp(apd, &init) == NULL &&
+	      errno == EINVAL);
+	init.max_recv_wr = 8;
 	check("dummy.connect", !connect_qp(aqp, bqp, 18517) &&
 	      !connect_qp(bqp, aqp, 18516) &&
 	      !connect_qp(aqp2, bqp2, 18517) &&

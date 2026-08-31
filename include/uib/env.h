@@ -1012,6 +1012,17 @@
  */
 #define UIB_ENV_CC_BENCH_WINDOW "UIB_CC_BENCH_WINDOW"
 
+/**
+ * DOC: UIB_CC_BENCH_MTU
+ * @uib-env: Complete benchmark matrix
+ * @default: `1024` bytes
+ * @values: `256`, `512`, `1024`, `2048`, or `4096` when RoCEv2 is selected.
+ *
+ * Set one common path MTU for all resilience matrix entries.
+ *
+ * Example:
+ * UIB_CC_BENCH_MTU=4096 make benchmark-all
+ */
 #define UIB_ENV_CC_BENCH_MTU "UIB_CC_BENCH_MTU"
 
 /**

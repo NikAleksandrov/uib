@@ -1499,53 +1499,6 @@ Return value:
 
 A pointer to the new object on success, or NULL on failure.
 
-### [`uib_rocev2_qp_init`](../include/uib/qp.h)
-
-```c
-int uib_rocev2_qp_init(struct uib_qp *qp);
-```
-
-Description:
-
-Initialize RoCEv2-specific QP state.
-
-Parameters:
-
-- `qp` — Queue pair
-
-Return value:
-
-0 on success or a negative error code on failure.
-
-### [`uib_rocev2_qp_modified`](../include/uib/qp.h)
-
-```c
-void uib_rocev2_qp_modified(struct uib_qp *qp, int attr_mask);
-```
-
-Description:
-
-Refresh RoCEv2 state after a QP change.
-
-Parameters:
-
-- `qp` — Queue pair
-- `attr_mask` — Bitmask selecting the modified attributes
-
-### [`uib_rocev2_qp_fini`](../include/uib/qp.h)
-
-```c
-void uib_rocev2_qp_fini(struct uib_qp *qp);
-```
-
-Description:
-
-Release RoCEv2-specific QP state.
-
-Parameters:
-
-- `qp` — Queue pair
-
 ### [`uib_destroy_qp`](../include/uib/qp.h)
 
 ```c
@@ -1778,27 +1731,6 @@ Parameters:
 - `src_qp` — Source queue pair number
 - `imm_data` — Immediate data in network byte order
 
-### [`uib_rocev2_post_send`](../include/uib/qp.h)
-
-```c
-int uib_rocev2_post_send(struct uib_qp *qp, struct uib_send_wr *wr,
-			 struct uib_send_wr **bad);
-```
-
-Description:
-
-Execute a RoCEv2 send work-request chain.
-
-Parameters:
-
-- `qp` — Queue pair
-- `wr` — First work request in the chain
-- `bad` — Output pointer for the first unposted work request
-
-Return value:
-
-0 on success or a negative error code on failure.
-
 ### [`uib_post_send`](../include/uib/qp.h)
 
 ```c
@@ -1895,29 +1827,6 @@ Parameters:
 
 - `slot` — Receive queue slot
 
-### [`uib_rocev2_handle_packet`](../include/uib/qp.h)
-
-```c
-int uib_rocev2_handle_packet(struct uib_qp *qp,
-			    const struct sockaddr_in *src,
-			    const void *packet, size_t len);
-```
-
-Description:
-
-Process one RoCEv2 packet for a QP.
-
-Parameters:
-
-- `qp` — Queue pair
-- `src` — Source transport address
-- `packet` — Packet buffer
-- `len` — Length of the byte range
-
-Return value:
-
-0 on success or a negative error code on failure.
-
 ### [`uib_qp_handle_packet`](../include/uib/qp.h)
 
 ```c
@@ -1939,21 +1848,6 @@ Parameters:
 Return value:
 
 0 on success or a negative error code on failure.
-
-### [`uib_rocev2_retransmit_tick`](../include/uib/qp.h)
-
-```c
-void uib_rocev2_retransmit_tick(struct uib_qp *qp, uint64_t now_ns);
-```
-
-Description:
-
-Retransmit expired RoCEv2 requests.
-
-Parameters:
-
-- `qp` — Queue pair
-- `now_ns` — Current monotonic time in nanoseconds
 
 ### [`uib_qp_retransmit_tick`](../include/uib/qp.h)
 
@@ -3333,6 +3227,208 @@ Parameters:
 
 ## Ultra Ethernet extensions
 
+### [`uib_uet_session_configure`](../include/uib/uet.h)
+
+```c
+int uib_uet_session_configure(struct uib_qp *qp,
+			      const struct uib_uet_session_config *config);
+```
+
+Description:
+
+Configure a QP's UET session parameters.
+
+Parameters:
+
+- `qp` — Queue pair
+- `config` — Configuration to apply or fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_session_query`](../include/uib/uet.h)
+
+```c
+int uib_uet_session_query(struct uib_qp *qp,
+			  struct uib_uet_session_config *config);
+```
+
+Description:
+
+Read a QP's UET session parameters.
+
+Parameters:
+
+- `qp` — Queue pair
+- `config` — Session configuration structure to fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_optimized_configure`](../include/uib/uet.h)
+
+```c
+int uib_uet_optimized_configure(struct uib_qp *qp,
+				enum uib_uet_optimized_mode mode);
+```
+
+Description:
+
+Select a QP's optimized-header policy.
+
+Parameters:
+
+- `qp` — Queue pair
+- `mode` — Mode to apply or fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_optimized_query`](../include/uib/uet.h)
+
+```c
+int uib_uet_optimized_query(struct uib_qp *qp,
+			    enum uib_uet_optimized_mode *mode,
+			    struct uib_uet_optimized_stats *stats);
+```
+
+Description:
+
+Read optimized-header counters and policy.
+
+Parameters:
+
+- `qp` — Queue pair
+- `mode` — Output for the optimized-header policy
+- `stats` — Statistics structure to fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_multipath_configure`](../include/uib/uet.h)
+
+```c
+int uib_uet_multipath_configure(struct uib_qp *qp,
+				const struct uib_uet_multipath_config *config);
+```
+
+Description:
+
+Configure a QP's entropy paths and policy.
+
+Parameters:
+
+- `qp` — Queue pair
+- `config` — Configuration to apply or fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_multipath_query`](../include/uib/uet.h)
+
+```c
+int uib_uet_multipath_query(struct uib_qp *qp,
+			    struct uib_uet_multipath_config *config,
+			    struct uib_uet_multipath_stats *stats);
+```
+
+Description:
+
+Read a QP's multipath state and counters.
+
+Parameters:
+
+- `qp` — Queue pair
+- `config` — Multipath configuration structure to fill
+- `stats` — Statistics structure to fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_atomic_datatype_size`](../include/uib/uet.h)
+
+```c
+size_t uib_uet_atomic_datatype_size(uint8_t datatype);
+```
+
+Description:
+
+Return a UET atomic datatype's byte size.
+
+Parameters:
+
+- `datatype` — Ultra Ethernet atomic datatype code
+
+Return value:
+
+The datatype width in bytes, or 0 if @datatype is unsupported.
+
+### [`uib_uet_post_atomic`](../include/uib/uet.h)
+
+```c
+int uib_uet_post_atomic(struct uib_qp *qp, struct uib_uet_atomic_wr *wr,
+			struct uib_uet_atomic_wr **bad);
+```
+
+Description:
+
+Post an extended Ultra Ethernet atomic operation.
+
+Parameters:
+
+- `qp` — Queue pair
+- `wr` — First work request in the chain
+- `bad` — Output pointer for the first unposted work request
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_nscc_configure_qp`](../include/uib/uet_nscc.h)
+
+```c
+int uib_uet_nscc_configure_qp(struct uib_qp *qp,
+			      const struct uib_uet_nscc_config *config);
+```
+
+Description:
+
+Configure NSCC for one UET QP.
+
+Parameters:
+
+- `qp` — Queue pair
+- `config` — Configuration to apply or fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
+### [`uib_uet_nscc_query_qp`](../include/uib/uet_nscc.h)
+
+```c
+int uib_uet_nscc_query_qp(struct uib_qp *qp, struct uib_uet_nscc *state);
+```
+
+Description:
+
+Read NSCC state from one UET QP.
+
+Parameters:
+
+- `qp` — Queue pair
+- `state` — NSCC state structure to fill
+
+Return value:
+
+0 on success or a negative error code on failure.
+
 ### [`uib_uet_prologue_pack`](../include/uib/uet.h)
 
 ```c
@@ -3607,207 +3703,29 @@ Return value:
 
 The encoded ACK length on success, or -EINVAL for invalid input.
 
-### [`uib_uet_session_configure`](../include/uib/uet.h)
+### [`uib_uet_build_nack`](../include/uib/uet.h)
 
 ```c
-int uib_uet_session_configure(struct uib_qp *qp,
-			      const struct uib_uet_session_config *config);
+int uib_uet_build_nack(void *packet, size_t capacity, uint8_t nack_code,
+		       uint32_t nack_psn, uint16_t spdcid, uint16_t dpdcid);
 ```
 
 Description:
 
-Configure a QP's UET session parameters.
+Build a UET negative acknowledgement packet.
 
 Parameters:
 
-- `qp` — Queue pair
-- `config` — Configuration to apply or fill
+- `packet` — Packet buffer
+- `capacity` — Capacity of the output buffer in bytes
+- `nack_code` — UET negative acknowledgement reason
+- `nack_psn` — Packet sequence number being rejected
+- `spdcid` — Source packet delivery context identifier
+- `dpdcid` — Destination packet delivery context identifier
 
 Return value:
 
-0 on success or a negative error code on failure.
-
-### [`uib_uet_session_query`](../include/uib/uet.h)
-
-```c
-int uib_uet_session_query(struct uib_qp *qp,
-			  struct uib_uet_session_config *config);
-```
-
-Description:
-
-Read a QP's UET session parameters.
-
-Parameters:
-
-- `qp` — Queue pair
-- `config` — Session configuration structure to fill
-
-Return value:
-
-0 on success or a negative error code on failure.
-
-### [`uib_uet_optimized_configure`](../include/uib/uet.h)
-
-```c
-int uib_uet_optimized_configure(struct uib_qp *qp,
-				enum uib_uet_optimized_mode mode);
-```
-
-Description:
-
-Select a QP's optimized-header policy.
-
-Parameters:
-
-- `qp` — Queue pair
-- `mode` — Mode to apply or fill
-
-Return value:
-
-0 on success or a negative error code on failure.
-
-### [`uib_uet_optimized_query`](../include/uib/uet.h)
-
-```c
-int uib_uet_optimized_query(struct uib_qp *qp,
-			    enum uib_uet_optimized_mode *mode,
-			    struct uib_uet_optimized_stats *stats);
-```
-
-Description:
-
-Read optimized-header counters and policy.
-
-Parameters:
-
-- `qp` — Queue pair
-- `mode` — Output for the optimized-header policy
-- `stats` — Statistics structure to fill
-
-Return value:
-
-0 on success or a negative error code on failure.
-
-### [`uib_uet_multipath_configure`](../include/uib/uet.h)
-
-```c
-int uib_uet_multipath_configure(struct uib_qp *qp,
-				const struct uib_uet_multipath_config *config);
-```
-
-Description:
-
-Configure a QP's entropy paths and policy.
-
-Parameters:
-
-- `qp` — Queue pair
-- `config` — Configuration to apply or fill
-
-Return value:
-
-0 on success or a negative error code on failure.
-
-### [`uib_uet_multipath_query`](../include/uib/uet.h)
-
-```c
-int uib_uet_multipath_query(struct uib_qp *qp,
-			    struct uib_uet_multipath_config *config,
-			    struct uib_uet_multipath_stats *stats);
-```
-
-Description:
-
-Read a QP's multipath state and counters.
-
-Parameters:
-
-- `qp` — Queue pair
-- `config` — Multipath configuration structure to fill
-- `stats` — Statistics structure to fill
-
-Return value:
-
-0 on success or a negative error code on failure.
-
-### [`uib_uet_atomic_datatype_size`](../include/uib/uet.h)
-
-```c
-size_t uib_uet_atomic_datatype_size(uint8_t datatype);
-```
-
-Description:
-
-Return a UET atomic datatype's byte size.
-
-Parameters:
-
-- `datatype` — Ultra Ethernet atomic datatype code
-
-Return value:
-
-The datatype width in bytes, or 0 if @datatype is unsupported.
-
-### [`uib_uet_post_atomic`](../include/uib/uet.h)
-
-```c
-int uib_uet_post_atomic(struct uib_qp *qp, struct uib_uet_atomic_wr *wr,
-			struct uib_uet_atomic_wr **bad);
-```
-
-Description:
-
-Post an extended Ultra Ethernet atomic operation.
-
-Parameters:
-
-- `qp` — Queue pair
-- `wr` — First work request in the chain
-- `bad` — Output pointer for the first unposted work request
-
-Return value:
-
-0 on success or a negative error code on failure.
-
-### [`uib_uet_nscc_configure_qp`](../include/uib/uet_nscc.h)
-
-```c
-int uib_uet_nscc_configure_qp(struct uib_qp *qp,
-			      const struct uib_uet_nscc_config *config);
-```
-
-Description:
-
-Configure NSCC for one UET QP.
-
-Parameters:
-
-- `qp` — Queue pair
-- `config` — Configuration to apply or fill
-
-Return value:
-
-0 on success or a negative error code on failure.
-
-### [`uib_uet_nscc_query_qp`](../include/uib/uet_nscc.h)
-
-```c
-int uib_uet_nscc_query_qp(struct uib_qp *qp, struct uib_uet_nscc *state);
-```
-
-Description:
-
-Read NSCC state from one UET QP.
-
-Parameters:
-
-- `qp` — Queue pair
-- `state` — NSCC state structure to fill
-
-Return value:
-
-0 on success or a negative error code on failure.
+The encoded NACK length on success, or -EINVAL for invalid input.
 
 ## Ultra Ethernet NSCC
 

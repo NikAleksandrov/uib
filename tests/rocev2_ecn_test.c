@@ -214,6 +214,9 @@ int main(void)
 	if (!pd || !cq || !mr || !qp)
 		goto out_context;
 	check("receiver.connect", !connect_qp(qp, 0x1234, &capture));
+	check("receiver.short_packet",
+	      uib_qp_handle_packet(qp, &capture, packet,
+				   UIB_ICRC_BYTES) == -EBADMSG);
 	receiver.sin_family = AF_INET;
 	receiver.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	receiver.sin_port = htons(RECEIVER_PORT);

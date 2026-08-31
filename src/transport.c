@@ -12,6 +12,7 @@
 #include "uib/protocol.h"
 #include "host_zc_internal.h"
 #include "transport_internal.h"
+#include "qp_internal.h"
 #include "utils.h"
 
 struct uib_direct_delivery {

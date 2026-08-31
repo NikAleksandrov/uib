@@ -15,7 +15,7 @@ matrix=${UIB_CC_BENCH_MATRIX:-}
 iterations=${UIB_CC_BENCH_ITERATIONS:-1000}
 message_size=${UIB_CC_BENCH_SIZE:-16384}
 window=${UIB_CC_BENCH_WINDOW:-16}
-mtu=${UIB_CC_BENCH_MTU:-1500}
+mtu=${UIB_CC_BENCH_MTU:-1024}
 timeout_seconds=${UIB_CC_BENCH_TIMEOUT:-120}
 trap 'rm -rf -- "$test_dir"' EXIT INT TERM
 
@@ -28,6 +28,19 @@ for numeric in "$iterations" "$message_size" "$window" "$mtu" \
 		;;
 	esac
 done
+selected_variants=$matrix
+[ -n "$selected_variants" ] || selected_variants=$variants
+case " $selected_variants " in
+*' rocev2:'*)
+	case $mtu in
+	256|512|1024|2048|4096) ;;
+	*)
+		echo "RoCEv2 congestion benchmarks require an architectural path MTU" >&2
+		exit 2
+		;;
+	esac
+	;;
+esac
 if [ -n "$matrix" ] &&
    { [ "${UIB_CC_BENCH_VARIANTS+x}" = x ] ||
      [ "${UIB_CC_BENCH_CONDITIONS+x}" = x ]; }; then
@@ -179,7 +192,8 @@ for entry in $matrix; do
 		printf 'PASS %-7s %-20s %-17s\n' "$protocol" "$algorithm" \
 			"$condition"
 	else
-		reason=$(grep -v '^/sbin/tc ' "$log" | tail -1 | tr ',' ';')
+		reason=$(grep -v '/tc qdisc' "$log" | tail -1 | tr ',' ';')
+		[ -n "$reason" ] || reason='workload exited without a diagnostic'
 		printf 'FAIL,%s,%s,%s,%s,,,,,,,,,,,,,,,,,,%s\n' "$protocol" \
 			"$algorithm" "$condition" "$experimental" "$reason" \
 			>>"$results"
