@@ -43,6 +43,7 @@
 #define UIB_UET_READ_FRAGMENTS_INLINE 8U
 #define UIB_UET_GATHER_POOL_WARM 8U
 #define UIB_UET_PREP_WORKER_QUEUE_SIZE 256U
+#define UIB_UET_SEQUENCE_QUEUE_SIZE 4096U
 #define UIB_UET_PREP_CHUNK 32U
 #define UIB_UET_PREP_WORKER_STACK_SIZE (256U * 1024U)
 #define UIB_UET_PREP_WORKERS_AUTO_MAX 2U
@@ -141,8 +142,16 @@ struct uib_uet_prep_worker {
 
 struct uib_uet_context {
 	struct uib_uet_prep_worker *workers;
+	struct uib_ptr_ring sequence_ready;
+	pthread_cond_t sequence_cond;
+	pthread_mutex_t sequence_lock;
+	pthread_t sequence_thread;
 	uint32_t worker_cursor;
 	unsigned int worker_count;
+	int sequence_sync_initialized;
+	int sequence_ready_initialized;
+	int sequence_started;
+	int sequence_run;
 	int run;
 };
 
@@ -232,6 +241,8 @@ struct uib_uet_qp {
 	uint32_t materialized_count;
 	uint32_t prep_pending;
 	int prep_closing;
+	int sequence_pending;
+	int sequence_queued;
 	int rx_initialized;
 	int tx_initialized;
 	struct uib_uet_outstanding *out_head;
@@ -306,6 +317,7 @@ struct uib_uet_qp {
 };
 
 static int uet_refill_locked(struct uib_qp *qp);
+static void uet_sequence_progress(struct uib_qp *qp);
 static void uet_request_ack(struct uib_uet_outstanding *out);
 static int uet_schedule_refill_locked(struct uib_qp *qp);
 static void uet_free_outstanding(void *opaque);
@@ -1075,6 +1087,57 @@ static void *uet_prep_worker(void *argument)
 	return NULL;
 }
 
+static void uet_sequence_notify(struct uib_qp *qp)
+{
+	struct uib_uet_context *context;
+	struct uib_uet_qp *uet;
+	int rc;
+
+	context = qp->ctx->protocol_private;
+	uet = qp->protocol_private;
+	__atomic_store_n(&uet->sequence_pending, 1, __ATOMIC_RELEASE);
+	if (__atomic_exchange_n(&uet->sequence_queued, 1,
+				__ATOMIC_ACQ_REL))
+		return;
+	for (;;) {
+		rc = uib_ptr_ring_push(&context->sequence_ready, qp);
+		if (!rc)
+			break;
+		sched_yield();
+	}
+	pthread_mutex_lock(&context->sequence_lock);
+	pthread_cond_signal(&context->sequence_cond);
+	pthread_mutex_unlock(&context->sequence_lock);
+}
+
+static void *uet_sequence_worker(void *argument)
+{
+	struct uib_uet_context *context;
+	struct uib_qp *qp;
+	int run;
+
+	context = argument;
+	for (;;) {
+		qp = uib_ptr_ring_pop(&context->sequence_ready);
+		if (qp) {
+			uet_sequence_progress(qp);
+			continue;
+		}
+		pthread_mutex_lock(&context->sequence_lock);
+		while (__atomic_load_n(&context->sequence_run,
+					       __ATOMIC_ACQUIRE) &&
+		       !uib_ptr_ring_count(&context->sequence_ready))
+			pthread_cond_wait(&context->sequence_cond,
+					  &context->sequence_lock);
+		run = __atomic_load_n(&context->sequence_run,
+				      __ATOMIC_ACQUIRE);
+		pthread_mutex_unlock(&context->sequence_lock);
+		if (!run && !uib_ptr_ring_count(&context->sequence_ready))
+			break;
+	}
+	return NULL;
+}
+
 static void uet_context_cleanup(struct uib_uet_context *context)
 {
 	struct uib_uet_prep_worker *worker;
@@ -1095,6 +1158,17 @@ static void uet_context_cleanup(struct uib_uet_context *context)
 		worker = &context->workers[i];
 		if (worker->started)
 			pthread_join(worker->thread, NULL);
+	}
+	__atomic_store_n(&context->sequence_run, 0, __ATOMIC_RELEASE);
+	if (context->sequence_sync_initialized) {
+		pthread_mutex_lock(&context->sequence_lock);
+		pthread_cond_broadcast(&context->sequence_cond);
+		pthread_mutex_unlock(&context->sequence_lock);
+	}
+	if (context->sequence_started)
+		pthread_join(context->sequence_thread, NULL);
+	for (i = 0; i < context->worker_count; i++) {
+		worker = &context->workers[i];
 		if (worker->free_initialized)
 			uib_ptr_ring_destroy(&worker->free_tasks);
 		if (worker->ready_initialized)
@@ -1104,6 +1178,12 @@ static void uet_context_cleanup(struct uib_uet_context *context)
 			pthread_mutex_destroy(&worker->lock);
 		}
 		free(worker->tasks);
+	}
+	if (context->sequence_ready_initialized)
+		uib_ptr_ring_destroy(&context->sequence_ready);
+	if (context->sequence_sync_initialized) {
+		pthread_cond_destroy(&context->sequence_cond);
+		pthread_mutex_destroy(&context->sequence_lock);
 	}
 	free(context->workers);
 	free(context);
@@ -1166,17 +1246,67 @@ static int uet_context_init(struct uib_context *ctx)
 				      UIB_UET_PREP_WORKERS_AUTO_MAX);
 	if (rc < 0)
 		return rc;
-	cpu_start = attr_ready ? uib_worker_cpu_reserve(count) : 0;
+	cpu_start = attr_ready ? uib_worker_cpu_reserve(count + 1) : 0;
 	context = calloc(1, sizeof(*context));
 	if (!context)
 		return -ENOMEM;
-	context->worker_count = count;
+	context->sequence_run = 1;
 	context->run = 1;
+	rc = pthread_mutex_init(&context->sequence_lock, NULL);
+	if (rc) {
+		rc = -rc;
+		goto error;
+	}
+	rc = pthread_cond_init(&context->sequence_cond, NULL);
+	if (rc) {
+		pthread_mutex_destroy(&context->sequence_lock);
+		rc = -rc;
+		goto error;
+	}
+	context->sequence_sync_initialized = 1;
+	rc = uib_ptr_ring_init(&context->sequence_ready,
+			       UIB_UET_SEQUENCE_QUEUE_SIZE);
+	if (rc < 0)
+		goto error;
+	context->sequence_ready_initialized = 1;
 	context->workers = calloc(count, sizeof(*context->workers));
 	if (!context->workers) {
 		rc = -ENOMEM;
 		goto error;
 	}
+	context->worker_count = count;
+	rc = pthread_attr_init(&attr);
+	if (rc) {
+		rc = -rc;
+		goto error;
+	}
+	rc = pthread_attr_setstacksize(&attr,
+				       UIB_UET_PREP_WORKER_STACK_SIZE);
+	if (rc) {
+		pthread_attr_destroy(&attr);
+		rc = -rc;
+		goto error;
+	}
+	if (attr_ready) {
+		cpu = uib_worker_cpu(&allowed, cpu_start);
+		CPU_ZERO(&worker_set);
+		CPU_SET(cpu, &worker_set);
+		rc = pthread_attr_setaffinity_np(&attr, sizeof(worker_set),
+					     &worker_set);
+		if (rc) {
+			pthread_attr_destroy(&attr);
+			rc = -rc;
+			goto error;
+		}
+	}
+	rc = pthread_create(&context->sequence_thread, &attr,
+			    uet_sequence_worker, context);
+	pthread_attr_destroy(&attr);
+	if (rc) {
+		rc = -rc;
+		goto error;
+	}
+	context->sequence_started = 1;
 	for (i = 0; i < count; i++) {
 		worker = &context->workers[i];
 		rc = uet_prep_worker_init(context, worker);
@@ -1195,7 +1325,7 @@ static int uet_context_init(struct uib_context *ctx)
 			goto error;
 		}
 		if (attr_ready) {
-			cpu = uib_worker_cpu(&allowed, cpu_start + i);
+			cpu = uib_worker_cpu(&allowed, cpu_start + i + 1);
 			CPU_ZERO(&worker_set);
 			CPU_SET(cpu, &worker_set);
 			rc = pthread_attr_setaffinity_np(&attr,
@@ -1848,7 +1978,8 @@ static void uet_qp_fini(struct uib_qp *qp)
 		return;
 	pthread_mutex_lock(&qp->lock);
 	uet->prep_closing = 1;
-	while (uet->prep_pending)
+	while (uet->prep_pending ||
+	       __atomic_load_n(&uet->sequence_queued, __ATOMIC_ACQUIRE))
 		pthread_cond_wait(&uet->prep_cond, &qp->lock);
 	pthread_mutex_unlock(&qp->lock);
 	for (out = uet->out_head; out; out = next) {
@@ -4138,8 +4269,8 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len,
 			status = uet_response_wc_status(view.response_code);
 			uet_remove_track_locked(qp, out->track, status);
 		}
-		uet_refill_locked(qp);
 		pthread_mutex_unlock(&qp->lock);
+		uet_sequence_notify(qp);
 		if (clear_required)
 			uet_send_control(qp, &qp->remote_addr,
 					 UIB_UET_CONTROL_CLEAR_COMMAND,
@@ -4158,8 +4289,8 @@ static int uet_handle_ack(struct uib_qp *qp, const void *packet, size_t len,
 		uet_complete_out_locked(qp, out, UIB_WC_SUCCESS);
 		rc = 0;
 	}
-	uet_refill_locked(qp);
 	pthread_mutex_unlock(&qp->lock);
+	uet_sequence_notify(qp);
 	if (clear_required)
 		uet_send_control(qp, &qp->remote_addr,
 				 UIB_UET_CONTROL_CLEAR_COMMAND,
@@ -4191,9 +4322,10 @@ static int uet_handle_nack(struct uib_qp *qp, const void *packet, size_t len)
 
 		uib_congestion_on_nack(&uet->congestion, &event);
 		uet_remove_track_locked(qp, out->track, UIB_WC_REM_OP_ERR);
-		uet_refill_locked(qp);
 	}
 	pthread_mutex_unlock(&qp->lock);
+	if (found)
+		uet_sequence_notify(qp);
 	return found ? -EREMOTEIO : 0;
 }
 
@@ -4225,7 +4357,6 @@ static int uet_handle_credit(struct uib_qp *qp,
 	struct uib_uet_qp *uet = qp->protocol_private;
 	struct uib_uet_rccc *rccc;
 	uint32_t cumulative_credit;
-	int rc;
 
 	if (!uet->rccc_enabled)
 		return -EOPNOTSUPP;
@@ -4234,9 +4365,9 @@ static int uet_handle_credit(struct uib_qp *qp,
 	rccc = (struct uib_uet_rccc *)uet->congestion.state.bytes;
 	uib_uet_rccc_on_credit(rccc, cumulative_credit);
 	uet->credit_request_deadline_ns = 0;
-	rc = uet_drain_locked(qp);
 	pthread_mutex_unlock(&qp->lock);
-	return rc;
+	uet_sequence_notify(qp);
+	return 0;
 }
 
 static int uet_handle_control(struct uib_qp *qp,
@@ -4947,7 +5078,7 @@ static int uet_refill_locked(struct uib_qp *qp)
 	return uet_drain_locked(qp);
 }
 
-static int uet_commit_prepared_locked(struct uib_qp *qp)
+static void uet_commit_prepared_locked(struct uib_qp *qp)
 {
 	struct uib_uet_qp *uet = qp->protocol_private;
 	struct uib_uet_wr_track *track;
@@ -4971,7 +5102,6 @@ static int uet_commit_prepared_locked(struct uib_qp *qp)
 	}
 	if (!uet->prep_pending)
 		pthread_cond_broadcast(&uet->prep_cond);
-	return uet_refill_locked(qp);
 }
 
 static int uet_admit_post(struct uib_uet_wr_track *track)
@@ -5023,14 +5153,13 @@ static uint64_t uet_post_nominal_bytes(const struct uib_send_wr *wr,
 static int uet_process_post(struct uib_uet_wr_track *track)
 {
 	struct uib_qp *qp;
-	int rc;
 
 	qp = track->qp;
 	pthread_mutex_lock(&qp->lock);
 	track->prep_ready = 1;
-	rc = uet_commit_prepared_locked(qp);
 	pthread_mutex_unlock(&qp->lock);
-	return rc;
+	uet_sequence_notify(qp);
+	return 0;
 }
 
 static void uet_free_task_packets(struct uib_uet_prep_task *task)
@@ -5061,7 +5190,8 @@ static void uet_commit_refills_locked(struct uib_qp *qp)
 	uet = qp->protocol_private;
 	rccc = uet->rccc_enabled ?
 		(struct uib_uet_rccc *)uet->congestion.state.bytes : NULL;
-	while (uet->refill_head && uet->refill_head->ready) {
+	while (uet->refill_head &&
+	       __atomic_load_n(&uet->refill_head->ready, __ATOMIC_ACQUIRE)) {
 		task = uet->refill_head;
 		uet->refill_head = task->refill_next;
 		if (!uet->refill_head)
@@ -5105,8 +5235,30 @@ static void uet_commit_refills_locked(struct uib_qp *qp)
 	}
 	if (!uet->prep_pending)
 		pthread_cond_broadcast(&uet->prep_cond);
-	uet_schedule_refill_locked(qp);
-	uet_drain_locked(qp);
+}
+
+static void uet_sequence_progress(struct uib_qp *qp)
+{
+	struct uib_uet_qp *uet;
+	int pending;
+
+	uet = qp->protocol_private;
+	do {
+		__atomic_store_n(&uet->sequence_pending, 0, __ATOMIC_RELEASE);
+		pthread_mutex_lock(&qp->lock);
+		uet_commit_prepared_locked(qp);
+		uet_commit_refills_locked(qp);
+		uet_refill_locked(qp);
+		pthread_mutex_unlock(&qp->lock);
+		pending = __atomic_exchange_n(&uet->sequence_pending, 0,
+					      __ATOMIC_ACQ_REL);
+	} while (pending);
+	__atomic_store_n(&uet->sequence_queued, 0, __ATOMIC_RELEASE);
+	if (__atomic_load_n(&uet->sequence_pending, __ATOMIC_ACQUIRE))
+		uet_sequence_notify(qp);
+	pthread_mutex_lock(&qp->lock);
+	pthread_cond_broadcast(&uet->prep_cond);
+	pthread_mutex_unlock(&qp->lock);
 }
 
 static struct uib_uet_prep_task *
@@ -5174,11 +5326,9 @@ static void uet_process_refill_task(struct uib_uet_prep_task *task)
 	}
 	if (rc < 0)
 		uet_free_task_packets(task);
-	pthread_mutex_lock(&qp->lock);
 	task->rc = rc;
-	task->ready = 1;
-	uet_commit_refills_locked(qp);
-	pthread_mutex_unlock(&qp->lock);
+	__atomic_store_n(&task->ready, 1, __ATOMIC_RELEASE);
+	uet_sequence_notify(qp);
 }
 
 static int uet_schedule_refill_locked(struct uib_qp *qp)
@@ -5351,7 +5501,6 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 		out = out->next;
 	}
 	uet->tx_cursor = uet_first_unsent(uet);
-	uet_refill_locked(qp);
 	if (uet->rccc_enabled && uet->tx_cursor &&
 	    uet->credit_request_deadline_ns &&
 	    uet->credit_request_deadline_ns < next_deadline)
@@ -5378,6 +5527,7 @@ static void uet_retransmit_tick(struct uib_qp *qp, uint64_t now_ns)
 	else
 		uib_qp_retry_cancel(qp);
 	pthread_mutex_unlock(&qp->lock);
+	uet_sequence_notify(qp);
 }
 
 const struct uib_protocol_ops uib_uet_protocol_ops = {
