@@ -1020,6 +1020,7 @@ test: shared-abi-test license-check examples $(TEST_BIN) $(FRAME_TEST) $(DMABUF_
 	./$(PTR_RING_TEST)
 	./$(REORDER_TEST)
 	./$(UET_CONCURRENT_POST_TEST)
+	UIB_TEST_PROTOCOL=rocev2 ./$(UET_CONCURRENT_POST_TEST)
 	./$(TRANSPORT_TEST)
 	./$(QP_SCALE_TEST)
 	./$(PSN_INDEX_TEST)

@@ -17,6 +17,8 @@
 #define TEST_BUFFER_LENGTH (TEST_INLINE_OFFSET + TEST_INLINE_LENGTH)
 #define TEST_TIMEOUT_NS (5ULL * 1000ULL * 1000ULL * 1000ULL)
 
+static const char *test_protocol;
+
 struct test_endpoint {
 	struct uib_context *context;
 	struct uib_pd *pd;
@@ -51,7 +53,8 @@ static int endpoint_init(struct test_endpoint *endpoint, const char *address)
 	struct uib_qp_init_attr initialization;
 
 	memset(endpoint, 0, sizeof(*endpoint));
-	endpoint->context = uib_open_device_protocol(address, TEST_PORT, "uet");
+	endpoint->context = uib_open_device_protocol(address, TEST_PORT,
+					    test_protocol);
 	if (!endpoint->context)
 		return -1;
 	endpoint->pd = uib_alloc_pd(endpoint->context);
@@ -244,6 +247,14 @@ int main(void)
 	pthread_t small_thread;
 	int rc;
 
+	test_protocol = getenv("UIB_TEST_PROTOCOL");
+	if (!test_protocol || !*test_protocol)
+		test_protocol = "uet";
+	if (strcmp(test_protocol, "uet") && strcmp(test_protocol, "rocev2")) {
+		fprintf(stderr, "unsupported test protocol: %s\n",
+			test_protocol);
+		return 2;
+	}
 	if (!getenv("UIB_TRANSPORT_MODE"))
 		setenv("UIB_TRANSPORT_MODE", "udp-sync", 1);
 	if (!getenv("UIB_UET_CC"))
@@ -325,6 +336,7 @@ int main(void)
 out:
 	endpoint_cleanup(&receiver);
 	endpoint_cleanup(&sender);
-	printf("concurrent UET post ordering: %s\n", rc ? "FAIL" : "PASS");
+	printf("concurrent %s post ordering: %s\n", test_protocol,
+	       rc ? "FAIL" : "PASS");
 	return rc;
 }
