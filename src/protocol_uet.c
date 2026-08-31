@@ -1230,23 +1230,20 @@ static int uet_context_init(struct uib_context *ctx)
 {
 	struct uib_uet_context *context;
 	struct uib_uet_prep_worker *worker;
-	pthread_attr_t attr;
 	cpu_set_t allowed;
-	cpu_set_t worker_set;
 	unsigned int count = 0;
 	unsigned int cpu_start;
 	unsigned int i;
-	int attr_ready;
-	int cpu;
+	int affinity;
 	int rc;
 
-	rc = uib_worker_configuration(&count, &allowed, &attr_ready,
+	rc = uib_worker_configuration(&count, &allowed, &affinity,
 				      UIB_ENV_TX_WORKERS,
 				      UIB_ENV_TX_WORKER_AFFINITY,
 				      UIB_UET_PREP_WORKERS_AUTO_MAX);
 	if (rc < 0)
 		return rc;
-	cpu_start = attr_ready ? uib_worker_cpu_reserve(count + 1) : 0;
+	cpu_start = affinity ? uib_worker_cpu_reserve(count + 1) : 0;
 	context = calloc(1, sizeof(*context));
 	if (!context)
 		return -ENOMEM;
@@ -1275,74 +1272,25 @@ static int uet_context_init(struct uib_context *ctx)
 		goto error;
 	}
 	context->worker_count = count;
-	rc = pthread_attr_init(&attr);
-	if (rc) {
-		rc = -rc;
+	rc = uib_worker_thread_start(&context->sequence_thread,
+				     uet_sequence_worker, context,
+				     UIB_UET_PREP_WORKER_STACK_SIZE, &allowed,
+				     cpu_start, affinity);
+	if (rc < 0)
 		goto error;
-	}
-	rc = pthread_attr_setstacksize(&attr,
-				       UIB_UET_PREP_WORKER_STACK_SIZE);
-	if (rc) {
-		pthread_attr_destroy(&attr);
-		rc = -rc;
-		goto error;
-	}
-	if (attr_ready) {
-		cpu = uib_worker_cpu(&allowed, cpu_start);
-		CPU_ZERO(&worker_set);
-		CPU_SET(cpu, &worker_set);
-		rc = pthread_attr_setaffinity_np(&attr, sizeof(worker_set),
-					     &worker_set);
-		if (rc) {
-			pthread_attr_destroy(&attr);
-			rc = -rc;
-			goto error;
-		}
-	}
-	rc = pthread_create(&context->sequence_thread, &attr,
-			    uet_sequence_worker, context);
-	pthread_attr_destroy(&attr);
-	if (rc) {
-		rc = -rc;
-		goto error;
-	}
 	context->sequence_started = 1;
 	for (i = 0; i < count; i++) {
 		worker = &context->workers[i];
 		rc = uet_prep_worker_init(context, worker);
 		if (rc < 0)
 			goto error;
-		rc = pthread_attr_init(&attr);
-		if (rc) {
-			rc = -rc;
+		rc = uib_worker_thread_start(&worker->thread, uet_prep_worker,
+					     worker,
+					     UIB_UET_PREP_WORKER_STACK_SIZE,
+					     &allowed, cpu_start + i + 1,
+					     affinity);
+		if (rc < 0)
 			goto error;
-		}
-		rc = pthread_attr_setstacksize(&attr,
-					       UIB_UET_PREP_WORKER_STACK_SIZE);
-		if (rc) {
-			pthread_attr_destroy(&attr);
-			rc = -rc;
-			goto error;
-		}
-		if (attr_ready) {
-			cpu = uib_worker_cpu(&allowed, cpu_start + i + 1);
-			CPU_ZERO(&worker_set);
-			CPU_SET(cpu, &worker_set);
-			rc = pthread_attr_setaffinity_np(&attr,
-						 sizeof(worker_set), &worker_set);
-			if (rc) {
-				pthread_attr_destroy(&attr);
-				rc = -rc;
-				goto error;
-			}
-		}
-		rc = pthread_create(&worker->thread, &attr, uet_prep_worker,
-				    worker);
-		pthread_attr_destroy(&attr);
-		if (rc) {
-			rc = -rc;
-			goto error;
-		}
 		worker->started = 1;
 	}
 	ctx->protocol_private = context;

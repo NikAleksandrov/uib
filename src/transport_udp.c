@@ -2955,41 +2955,6 @@ static int udp_flow_count(unsigned int *count)
 	return 0;
 }
 
-static int udp_flow_start_thread(pthread_t *thread,
-				 void *(*function)(void *), void *argument,
-				 const cpu_set_t *allowed, unsigned int index,
-				 int affinity)
-{
-	pthread_attr_t attr;
-	cpu_set_t thread_set;
-	int cpu;
-	int rc;
-
-	rc = pthread_attr_init(&attr);
-	if (rc)
-		return rc;
-	rc = pthread_attr_setstacksize(&attr, UIB_UDP_RX_WORKER_STACK);
-	if (rc)
-		goto out;
-	if (affinity) {
-		cpu = uib_worker_cpu(allowed, index);
-		if (cpu < 0) {
-			rc = EINVAL;
-			goto out;
-		}
-		CPU_ZERO(&thread_set);
-		CPU_SET(cpu, &thread_set);
-		rc = pthread_attr_setaffinity_np(&attr, sizeof(thread_set),
-						 &thread_set);
-	}
-	if (!rc)
-		rc = pthread_create(thread, &attr, function, argument);
-
-out:
-	pthread_attr_destroy(&attr);
-	return rc;
-}
-
 static int init_udp_flows(struct uib_context *ctx,
 			  struct uib_udp_backend *be)
 {
@@ -3057,22 +3022,23 @@ static int init_udp_flows(struct uib_context *ctx,
 			flow->rx_buffer = malloc(UIB_RECV_BUF_LEN);
 			if (!flow->rx_buffer)
 				return -ENOMEM;
-			rc = udp_flow_start_thread(&flow->rx_thread,
-						   udp_flow_rx_loop, flow,
-						   &allowed,
-						   cpu_start + cpu_index,
-						   affinity);
-			if (rc)
-				return -rc;
+			rc = uib_worker_thread_start(&flow->rx_thread,
+						     udp_flow_rx_loop, flow,
+						     UIB_UDP_RX_WORKER_STACK,
+						     &allowed,
+						     cpu_start + cpu_index,
+						     affinity);
+			if (rc < 0)
+				return rc;
 			flow->rx_started = 1;
 			cpu_index++;
 		}
-		rc = udp_flow_start_thread(&flow->tx_thread, udp_flow_tx_loop,
-					   flow, &allowed,
-					   cpu_start + cpu_index,
-					   affinity);
-		if (rc)
-			return -rc;
+		rc = uib_worker_thread_start(&flow->tx_thread,
+					     udp_flow_tx_loop, flow,
+					     UIB_UDP_RX_WORKER_STACK, &allowed,
+					     cpu_start + cpu_index, affinity);
+		if (rc < 0)
+			return rc;
 		flow->tx_started = 1;
 		cpu_index++;
 	}

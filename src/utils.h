@@ -2,6 +2,7 @@
 #ifndef UIB_UTILS_H
 #define UIB_UTILS_H
 
+#include <pthread.h>
 #include <sched.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -33,5 +34,9 @@ int uib_worker_configuration(unsigned int *count, cpu_set_t *allowed,
 			     unsigned int automatic_limit);
 int uib_worker_cpu(const cpu_set_t *allowed, unsigned int index);
 unsigned int uib_worker_cpu_reserve(unsigned int count);
+int uib_worker_thread_start(pthread_t *thread,
+			    void *(*routine)(void *), void *argument,
+			    size_t stack_size, const cpu_set_t *allowed,
+			    unsigned int cpu_index, int affinity);
 
 #endif

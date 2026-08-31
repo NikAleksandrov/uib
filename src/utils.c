@@ -9,6 +9,45 @@
 
 static unsigned int worker_cpu_next;
 
+struct uib_thread_start {
+	pthread_mutex_t lock;
+	pthread_cond_t cond;
+	void *(*routine)(void *);
+	void *argument;
+	int cpu;
+	int ready;
+	int rc;
+};
+
+static void *uib_worker_thread(void *argument)
+{
+	struct uib_thread_start *start = argument;
+	void *(*routine)(void *);
+	void *routine_argument;
+	cpu_set_t cpus;
+	int cpu;
+	int rc;
+
+	routine = start->routine;
+	routine_argument = start->argument;
+	cpu = start->cpu;
+	rc = 0;
+	if (cpu >= 0) {
+		CPU_ZERO(&cpus);
+		CPU_SET(cpu, &cpus);
+		rc = pthread_setaffinity_np(pthread_self(), sizeof(cpus),
+					    &cpus);
+	}
+	pthread_mutex_lock(&start->lock);
+	start->rc = rc ? -rc : 0;
+	start->ready = 1;
+	pthread_cond_signal(&start->cond);
+	pthread_mutex_unlock(&start->lock);
+	if (rc)
+		return NULL;
+	return routine(routine_argument);
+}
+
 uint64_t uib_now_ns(void)
 {
 	struct timespec ts;
@@ -142,4 +181,68 @@ int uib_worker_cpu(const cpu_set_t *allowed, unsigned int index)
 unsigned int uib_worker_cpu_reserve(unsigned int count)
 {
 	return __atomic_fetch_add(&worker_cpu_next, count, __ATOMIC_RELAXED);
+}
+
+int uib_worker_thread_start(pthread_t *thread,
+			    void *(*routine)(void *), void *argument,
+			    size_t stack_size, const cpu_set_t *allowed,
+			    unsigned int cpu_index, int affinity)
+{
+	struct uib_thread_start start;
+	pthread_attr_t attr;
+	int cpu;
+	int rc;
+	int start_rc;
+
+	if (!thread || !routine || (affinity && !allowed))
+		return -EINVAL;
+	cpu = -1;
+	if (affinity) {
+		cpu = uib_worker_cpu(allowed, cpu_index);
+		if (cpu < 0)
+			return -EINVAL;
+	}
+	memset(&start, 0, sizeof(start));
+	start.routine = routine;
+	start.argument = argument;
+	start.cpu = cpu;
+	rc = pthread_mutex_init(&start.lock, NULL);
+	if (rc)
+		return -rc;
+	rc = pthread_cond_init(&start.cond, NULL);
+	if (rc) {
+		pthread_mutex_destroy(&start.lock);
+		return -rc;
+	}
+	rc = pthread_attr_init(&attr);
+	if (rc)
+		goto destroy_cond;
+	if (stack_size) {
+		rc = pthread_attr_setstacksize(&attr, stack_size);
+		if (rc)
+			goto destroy_attr;
+	}
+	pthread_mutex_lock(&start.lock);
+	rc = pthread_create(thread, &attr, uib_worker_thread, &start);
+	pthread_attr_destroy(&attr);
+	if (rc) {
+		pthread_mutex_unlock(&start.lock);
+		goto destroy_cond;
+	}
+	while (!start.ready)
+		pthread_cond_wait(&start.cond, &start.lock);
+	start_rc = start.rc;
+	pthread_mutex_unlock(&start.lock);
+	if (start_rc)
+		pthread_join(*thread, NULL);
+	pthread_cond_destroy(&start.cond);
+	pthread_mutex_destroy(&start.lock);
+	return start_rc;
+
+destroy_attr:
+	pthread_attr_destroy(&attr);
+destroy_cond:
+	pthread_cond_destroy(&start.cond);
+	pthread_mutex_destroy(&start.lock);
+	return -rc;
 }
