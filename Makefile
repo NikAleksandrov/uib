@@ -904,6 +904,9 @@ context-scaling-benchmark: examples
 qp-scaling-benchmark: examples
 	./examples/qp_scaling_benchmark.sh
 
+single-qp-cpu-benchmark: examples
+	./examples/single_qp_cpu_benchmark.sh
+
 scaling-test: examples $(QP_SCALE_TEST) $(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) \
 		$(SCALING_PROVIDER_BENCH) $(SCALING_PROVIDER_WR_BENCH)
 	./$(QP_SCALE_TEST)
@@ -1170,6 +1173,7 @@ clean:
 	benchmark-all benchmark-local benchmark-congestion benchmark-report benchmark-doc \
 	benchmark-smoke ib-write-bw-test dummy-reorder-test \
 	scaling-benchmark context-scaling-benchmark qp-scaling-benchmark \
+	single-qp-cpu-benchmark \
 	scaling-test \
 	provider-dmabuf-test provider-cq-event-test provider-nccl-abi-test \
 	nccl-test rccl-test ucx-libfabric-test mpi-compat-test \

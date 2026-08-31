@@ -1424,6 +1424,59 @@
 #define UIB_ENV_QP_SCALE_PORT "UIB_QP_SCALE_PORT"
 
 /**
+ * DOC: UIB_SINGLE_QP_CPU_COUNTS
+ * @uib-env: Test and scaling harnesses
+ * @default: `1 2 4 8`
+ * @values: A whitespace-separated list of positive worker counts up to `256`.
+ *
+ * Set the ordered TX preparation worker counts measured for one queue pair.
+ *
+ * Example:
+ * UIB_SINGLE_QP_CPU_COUNTS="1 4 8" make single-qp-cpu-benchmark
+ */
+#define UIB_ENV_SINGLE_QP_CPU_COUNTS "UIB_SINGLE_QP_CPU_COUNTS"
+
+/**
+ * DOC: UIB_SINGLE_QP_CPU_TRIALS
+ * @uib-env: Test and scaling harnesses
+ * @default: `11`
+ * @values: A positive integer.
+ *
+ * Set the number of measurements collected for each worker count.
+ *
+ * Example:
+ * UIB_SINGLE_QP_CPU_TRIALS=5 make single-qp-cpu-benchmark
+ */
+#define UIB_ENV_SINGLE_QP_CPU_TRIALS "UIB_SINGLE_QP_CPU_TRIALS"
+
+/**
+ * DOC: UIB_SINGLE_QP_CPU_TIMEOUT
+ * @uib-env: Test and scaling harnesses
+ * @default: `120`
+ * @values: A positive number of seconds.
+ *
+ * Set the timeout for one single-queue-pair CPU scaling measurement.
+ *
+ * Example:
+ * UIB_SINGLE_QP_CPU_TIMEOUT=300 make single-qp-cpu-benchmark
+ */
+#define UIB_ENV_SINGLE_QP_CPU_TIMEOUT "UIB_SINGLE_QP_CPU_TIMEOUT"
+
+/**
+ * DOC: UIB_SINGLE_QP_CPU_PORT
+ * @uib-env: Test and scaling harnesses
+ * @default: `22650`
+ * @values: A positive port number no greater than `65534`.
+ *
+ * Set the first UDP port used by the single-queue-pair CPU scaling benchmark.
+ * Its peer uses the following port.
+ *
+ * Example:
+ * UIB_SINGLE_QP_CPU_PORT=24650 make single-qp-cpu-benchmark
+ */
+#define UIB_ENV_SINGLE_QP_CPU_PORT "UIB_SINGLE_QP_CPU_PORT"
+
+/**
  * DOC: UIB_MR_SCALE_LOOKUPS
  * @uib-env: Test and scaling harnesses
  * @default: `1000000`

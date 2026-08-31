@@ -58,7 +58,7 @@ when the relevant context, transport, benchmark, or test is created.
 
 | Variable | Default | Accepted values | Description | Example |
 |---|---|---|---|---|
-| <code>UIB_UDP_WORKERS</code> | `auto`, one receive-dispatch worker per allowed CPU | `auto` or a positive integer | Set the number of UDP receive-dispatch workers. Packets for one QP always use the same worker, while different QPs can be processed in parallel. With affinity enabled, an explicit count cannot exceed the process's allowed CPU count. | <code>UIB_UDP_WORKERS=8 LD_PRELOAD=$PWD/libuibv.so app</code> |
+| <code>UIB_UDP_WORKERS</code> | `auto`, a bounded pool no larger than the allowed CPU count | `auto` or a positive integer | Set the number of UDP receive-dispatch workers. Packets for one QP always use the same worker, while different QPs can be processed in parallel. With affinity enabled, an explicit count cannot exceed the process's allowed CPU count. | <code>UIB_UDP_WORKERS=8 LD_PRELOAD=$PWD/libuibv.so app</code> |
 | <code>UIB_UDP_WORKER_AFFINITY</code> | `on` | `off` or `on` | Pin UDP receive-dispatch workers and optional multi-flow RX/TX lane threads to CPUs from the process's allowed CPU set. Set this to `off` when an external scheduler manages thread placement. | <code>UIB_UDP_WORKERS=4 UIB_UDP_WORKER_AFFINITY=off app</code> |
 | <code>UIB_UDP_GSO</code> | `auto` | `auto`, `off`, or `on` | Combine equal-sized RDMA packets into UDP GSO sends. `on` fails context creation when the kernel does not support UDP GSO; `auto` falls back. | <code>UIB_UDP_GSO=off ./examples/stress_bench --protocol rocev2</code> |
 
@@ -66,7 +66,7 @@ when the relevant context, transport, benchmark, or test is created.
 
 | Variable | Default | Accepted values | Description | Example |
 |---|---|---|---|---|
-| <code>UIB_TX_WORKERS</code> | `auto`, one preparation worker per allowed CPU | `auto` or a positive integer | Set the number of persistent workers that prepare admitted UET work requests. PSN assignment, ordered publication, ACK handling, retries, congestion control, and CQ production remain sequenced per QP. With affinity enabled, an explicit count cannot exceed the process's allowed CPU count. | <code>UIB_TX_WORKERS=8 LD_PRELOAD=$PWD/libuibv.so app</code> |
+| <code>UIB_TX_WORKERS</code> | `auto`, a bounded pool no larger than the allowed CPU count | `auto` or a positive integer | Set the number of persistent workers that prepare admitted UET work requests. PSN assignment, ordered publication, ACK handling, retries, congestion control, and CQ production remain sequenced per QP. With affinity enabled, an explicit count cannot exceed the process's allowed CPU count. | <code>UIB_TX_WORKERS=8 LD_PRELOAD=$PWD/libuibv.so app</code> |
 | <code>UIB_TX_WORKER_AFFINITY</code> | `on` | `off` or `on` | Pin UET preparation workers to distinct CPUs in the process's allowed CPU set. Set this to `off` when a scheduler or launcher controls placement. | <code>UIB_TX_WORKERS=4 UIB_TX_WORKER_AFFINITY=off app</code> |
 
 ## Ultra Ethernet UDP scaling
@@ -216,6 +216,10 @@ when the relevant context, transport, benchmark, or test is created.
 | <code>UIB_QP_SCALE_TRIALS</code> | `3` | A positive integer. | Set the number of measurements for each shared-context QP count. | <code>UIB_QP_SCALE_TRIALS=5 make qp-scaling-benchmark</code> |
 | <code>UIB_QP_SCALE_TIMEOUT</code> | `120` | A positive number of seconds. | Set the timeout for one shared-context scaling measurement. | <code>UIB_QP_SCALE_TIMEOUT=300 make qp-scaling-benchmark</code> |
 | <code>UIB_QP_SCALE_PORT</code> | `22550` | A positive port number no greater than `65534`. | Set the first local UDP port used by the shared-context scaling benchmark. Its peer uses the following port. | <code>UIB_QP_SCALE_PORT=24550 make qp-scaling-benchmark</code> |
+| <code>UIB_SINGLE_QP_CPU_COUNTS</code> | `1 2 4 8` | A whitespace-separated list of positive worker counts up to `256`. | Set the ordered TX preparation worker counts measured for one queue pair. | <code>UIB_SINGLE_QP_CPU_COUNTS="1 4 8" make single-qp-cpu-benchmark</code> |
+| <code>UIB_SINGLE_QP_CPU_TRIALS</code> | `11` | A positive integer. | Set the number of measurements collected for each worker count. | <code>UIB_SINGLE_QP_CPU_TRIALS=5 make single-qp-cpu-benchmark</code> |
+| <code>UIB_SINGLE_QP_CPU_TIMEOUT</code> | `120` | A positive number of seconds. | Set the timeout for one single-queue-pair CPU scaling measurement. | <code>UIB_SINGLE_QP_CPU_TIMEOUT=300 make single-qp-cpu-benchmark</code> |
+| <code>UIB_SINGLE_QP_CPU_PORT</code> | `22650` | A positive port number no greater than `65534`. | Set the first UDP port used by the single-queue-pair CPU scaling benchmark. Its peer uses the following port. | <code>UIB_SINGLE_QP_CPU_PORT=24650 make single-qp-cpu-benchmark</code> |
 | <code>UIB_MR_SCALE_LOOKUPS</code> | `1000000` | A positive 32-bit integer. | Set lookups in the registered-memory scaling benchmark. | <code>UIB_MR_SCALE_LOOKUPS=5000000 make scaling-benchmark</code> |
 | <code>UIB_PROVIDER_CONTEXTS</code> | `64` | A positive 32-bit integer. | Set contexts created by the provider dispatch benchmark. | <code>UIB_PROVIDER_CONTEXTS=128 make scaling-benchmark</code> |
 | <code>UIB_PROVIDER_LOOKUPS</code> | `1000000` | A positive 32-bit integer. | Set calls made by the provider dispatch benchmark. | <code>UIB_PROVIDER_LOOKUPS=5000000 make scaling-benchmark</code> |

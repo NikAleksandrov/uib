@@ -342,11 +342,14 @@ static int post_send(struct qp_scale_group *group,
 	return uib_post_send(group->qps[qp_index], &send, &bad);
 }
 
-static void fill_message(uint8_t *buffer, uint32_t length, uint64_t sequence)
+static void stamp_message(uint8_t *buffer, uint32_t length, uint64_t sequence)
 {
-	memset(buffer, (int)sequence, length);
 	if (length >= sizeof(sequence))
 		memcpy(buffer, &sequence, sizeof(sequence));
+	else
+		buffer[0] = (uint8_t)sequence;
+	if (length > sizeof(sequence))
+		buffer[length - 1] = (uint8_t)sequence;
 }
 
 static int verify_message(const uint8_t *buffer, uint32_t length,
@@ -359,6 +362,8 @@ static int verify_message(const uint8_t *buffer, uint32_t length,
 	memcpy(&found, buffer, sizeof(found));
 	if (found != sequence)
 		return -EIO;
+	if (length == sizeof(found))
+		return 0;
 	return buffer[length - 1] == (uint8_t)sequence ? 0 : -EIO;
 }
 
@@ -424,7 +429,6 @@ static int post_qp_batch(struct qp_scale_group *sender,
 			 uint32_t count)
 {
 	uint8_t *source;
-	uint8_t *target;
 	uint64_t sequence;
 	uint32_t slot;
 	int rc;
@@ -433,9 +437,7 @@ static int post_qp_batch(struct qp_scale_group *sender,
 		sequence = (uint64_t)qp_index * options->iterations +
 			first + slot;
 		source = slot_buffer(sender, options, qp_index, slot);
-		target = slot_buffer(receiver, options, qp_index, slot);
-		fill_message(source, options->size, sequence);
-		memset(target, 0, options->size);
+		stamp_message(source, options->size, sequence);
 		rc = post_receive(receiver, options, qp_index, slot,
 				  first + slot);
 		if (rc < 0)
