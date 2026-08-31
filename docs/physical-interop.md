@@ -98,6 +98,11 @@ sudo -n env \
   tests/run_physical_roce_interop.sh
 ```
 
+Set `UIB_INTEROP_TRANSPORT=udp` to run the same mixed-provider test through
+UIB's ordinary kernel UDP socket. This is a separate control from raw RoCEv2:
+the kernel creates and consumes the IP/UDP headers, while raw mode gives UIB
+the complete frame metadata used by its interoperability path.
+
 Reverse the roles and repeat. For an AF_XDP UIB endpoint, set the transport to
 `afxdp`, configure `UIB_INTEROP_IFACE`, `UIB_INTEROP_QUEUE`, and
 `UIB_INTEROP_PEER_MAC`, and steer UDP destination port 4791 to that queue.

@@ -31,7 +31,7 @@ Required environment:
   UIB_INTEROP_ROLE=server|client
 Client also requires UIB_INTEROP_SERVER=<server IPv4>.
 UIB requires UIB_INTEROP_BIND=<local IPv4> and
-UIB_INTEROP_TRANSPORT=raw|afxdp.
+UIB_INTEROP_TRANSPORT=udp|raw|afxdp.
 Native endpoints require UIB_INTEROP_DEVICE and UIB_INTEROP_GID_INDEX.
 AF_XDP also requires UIB_INTEROP_IFACE and UIB_INTEROP_PEER_MAC.
 EOF
@@ -77,6 +77,9 @@ uib)
 		UIB_ACTIVE_MTU=1024
 		UIB_STATS_OUTPUT=stderr)
 	case "$transport" in
+	udp)
+		endpoint_env+=(UIB_TRANSPORT_MODE=udp-sync UIB_UDP_MODE=socket)
+		;;
 	raw)
 		endpoint_env+=(UIB_TRANSPORT_MODE=udp-sync UIB_UDP_MODE=raw)
 		;;
