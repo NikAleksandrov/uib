@@ -14,7 +14,7 @@ when the relevant context, transport, benchmark, or test is created.
 - [Transparent provider](#transparent-provider)
 - [UDP transports](#udp-transports)
 - [Protocol transmit paths](#protocol-transmit-paths)
-- [Ultra Ethernet UDP scaling](#ultra-ethernet-udp-scaling)
+- [UDP flow scaling](#udp-flow-scaling)
 - [AF_XDP transport](#afxdp-transport)
 - [TCP devmem transport](#tcp-devmem-transport)
 - [Provider-owned host-memory receive](#provider-owned-host-memory-receive)
@@ -69,11 +69,11 @@ when the relevant context, transport, benchmark, or test is created.
 | <code>UIB_TX_WORKERS</code> | `auto`, a bounded pool no larger than the allowed CPU count | `auto` or a positive integer | Set the number of persistent workers that prepare admitted UET or RoCEv2 work requests. PSN assignment, ordered publication, ACK handling, retries, congestion control, and CQ production remain sequenced per QP. With affinity enabled, an explicit count cannot exceed the process's allowed CPU count. | <code>UIB_TX_WORKERS=8 LD_PRELOAD=$PWD/libuibv.so app</code> |
 | <code>UIB_TX_WORKER_AFFINITY</code> | `on` | `off` or `on` | Pin UET and RoCEv2 preparation workers to distinct CPUs in the process's allowed CPU set. Set this to `off` when a scheduler or launcher controls placement. | <code>UIB_TX_WORKERS=4 UIB_TX_WORKER_AFFINITY=off app</code> |
 
-## Ultra Ethernet UDP scaling
+## UDP flow scaling
 
 | Variable | Default | Accepted values | Description | Example |
 |---|---|---|---|---|
-| <code>UIB_UDP_FLOWS</code> | `1`, one UDP flow | a positive integer from `1` through `64` | Select the number of UDP data flows used by UET with `udp-sync`. Values greater than one distribute a QP's messages across independent, bounded TX and RX lanes. This mode is optional and disabled by default. Every packet of one message remains on the same lane; adjacent messages may use different lanes. The QP receive sequencer preserves PSN, WQE, congestion-control, and completion ordering across the lanes. Each lane uses the base UDP port plus `(lane + 1) * 128`; those ports must be free and allowed by host and container networking. Multi-flow mode requires `udp-sync`, cannot be used with raw UDP, and rejects `UIB_ZEROCOPY=required`. | <code>UIB_UDP_FLOWS=4 UIB_TX_WORKERS=4 app</code> |
+| <code>UIB_UDP_FLOWS</code> | `1`, one UDP flow | a positive integer from `1` through `64` | Select the number of parallel UDP lanes used with `udp-sync`. This mode is optional and disabled by default. UET assigns each message to one lane and uses the base destination port plus `(lane + 1) * 128`. RoCEv2 assigns each QP to one stable source-port lane, keeps the configured destination port, and distributes incoming flows with `SO_REUSEPORT`. Ordering within a QP is unchanged in both modes. UET's additional destination ports and RoCEv2's local source ports starting at 49152 must be available. RoCEv2 also requires kernel UDP reuseport BPF support. Multi-flow mode requires `udp-sync`, cannot be used with raw UDP, and rejects `UIB_ZEROCOPY=required`. | <code>UIB_PROTOCOL=rocev2 UIB_TRANSPORT_MODE=udp-sync UIB_UDP_FLOWS=2 app</code> |
 
 ## AF_XDP transport
 

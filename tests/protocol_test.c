@@ -186,6 +186,20 @@ int main(void)
 	check("udp-flows.port-range", !config_context && errno == ERANGE);
 	errno = 0;
 	config_context = uib_open_device_protocol("127.0.0.1", 18520,
+						  "rocev2");
+	check("udp-flows.rocev2", config_context != NULL);
+	if (config_context)
+		uib_close_device(config_context);
+	config_context = NULL;
+	errno = 0;
+	config_context = uib_open_device_protocol("127.0.0.1", 49152,
+						  "rocev2");
+	check("udp-flows.rocev2-port-overlap", config_context != NULL);
+	if (config_context)
+		uib_close_device(config_context);
+	config_context = NULL;
+	errno = 0;
+	config_context = uib_open_device_protocol("127.0.0.1", 18520,
 						  "dummy");
 	check("udp-flows.protocol", !config_context &&
 	      errno == EPROTONOSUPPORT);

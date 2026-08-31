@@ -39,6 +39,8 @@ struct uib_protocol_ops {
 	 * so that a transport never moves their traffic off that port.
 	 */
 	uint8_t multipath_ports;
+	uint8_t source_port_entropy;
+	uint16_t flow_key_offset;
 	/*
 	 * Optional. Return nonzero when the protocol can carry this path MTU.
 	 * A protocol that omits it accepts any value. RoCEv2 uses it to hold

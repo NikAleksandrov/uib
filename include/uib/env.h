@@ -190,6 +190,27 @@
  */
 #define UIB_ENV_TX_WORKER_AFFINITY "UIB_TX_WORKER_AFFINITY"
 
+/**
+ * DOC: UIB_UDP_FLOWS
+ * @uib-env: UDP flow scaling
+ * @default: `1`, one UDP flow
+ * @values: a positive integer from `1` through `64`
+ *
+ * Select the number of parallel UDP lanes used with `udp-sync`. This mode is
+ * optional and disabled by default. UET assigns each message to one lane and
+ * uses the base destination port plus `(lane + 1) * 128`. RoCEv2 assigns each
+ * QP to one stable source-port lane, keeps the configured destination port,
+ * and distributes incoming flows with `SO_REUSEPORT`. Ordering within a QP is
+ * unchanged in both modes.
+ *
+ * UET's additional destination ports and RoCEv2's local source ports starting
+ * at 49152 must be available. RoCEv2 also requires kernel UDP reuseport BPF
+ * support. Multi-flow mode requires `udp-sync`, cannot be used with raw UDP,
+ * and rejects `UIB_ZEROCOPY=required`.
+ *
+ * Example:
+ * UIB_PROTOCOL=rocev2 UIB_TRANSPORT_MODE=udp-sync UIB_UDP_FLOWS=2 app
+ */
 #define UIB_ENV_UDP_FLOWS "UIB_UDP_FLOWS"
 
 /**
