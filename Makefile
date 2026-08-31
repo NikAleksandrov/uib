@@ -69,6 +69,12 @@ ifeq ($(HAVE_AFXDP),1)
   LDLIBS += $(AFXDP_LIBS)
 endif
 
+BPF_CLANG ?= clang
+BPF_ARCH ?= $(shell uname -m | sed -e 's/x86_64/x86/' -e 's/aarch64/arm64/')
+BPF_CFLAGS ?= -O2 -g -target bpf -D__TARGET_ARCH_$(BPF_ARCH) \
+	-I/usr/include/$(shell uname -m)-linux-gnu
+AFXDP_BPF_OBJ := bpf/uib_afxdp_kern.o
+
 # devmem TCP RX (tcp-devmem C2) needs the SO_DEVMEM uapi. When present the
 # tcp-devmem backend can compile its dma-buf-to-queue binding + devmem RX path.
 HAVE_DEVMEM ?= $(shell printf 'int x=SO_DEVMEM_DMABUF;\n' | $(CC) \
@@ -1100,6 +1106,11 @@ install-static: $(LIB_STANDALONE)
 	install -d $(DESTDIR)$(PREFIX)/lib
 	install -m 644 $(LIB_STANDALONE) $(DESTDIR)$(PREFIX)/lib/
 
+$(AFXDP_BPF_OBJ): bpf/uib_afxdp_kern.c
+	$(BPF_CLANG) $(BPF_CFLAGS) -c -o $@ $<
+
+afxdp-program: $(AFXDP_BPF_OBJ)
+
 clean:
 	$(MAKE) -C examples clean
 	rm -f $(OBJS) $(PROV_OBJS) $(STANDALONE_OBJS_0) \
@@ -1121,7 +1132,8 @@ clean:
 		$(QP_LOOKUP_BENCH) $(MR_SCALE_TEST) $(MR_LIFETIME_TEST) \
 		$(PROVIDER_DISPATCH_BENCH) \
 		$(PROVIDER_WR_BENCH) $(PSN_INDEX_TEST) $(HOST_ZC_TEST) \
-		$(HOST_ZC_E2E_TEST) $(HOST_ZC_BENCH)
+		$(HOST_ZC_E2E_TEST) $(HOST_ZC_BENCH) \
+		$(AFXDP_BPF_OBJ)
 
 .PHONY: shared-abi-test all license-check static static-test runtime-bundle runtime-bundle-portable \
 	runtime-bundle-portable-test \
@@ -1163,7 +1175,8 @@ clean:
 	simulation-kubeflow-e2e-test \
 	simulation-kubernetes-uib-test \
 	simulation-kuberay-e2e-test \
-	docs-check examples clean install install-static test rxe-test-build \
+	docs-check examples clean install install-static test afxdp-program \
+	rxe-test-build \
 	rxe-test rxe-tools-test \
 	uib-tools-test uet-test uet-error-test uet-tools-test simulation-mtu-test \
 	uet-loss-test rocev2-loss-test \

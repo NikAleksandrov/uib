@@ -350,6 +350,21 @@
 #define UIB_ENV_AFXDP_PEER_MAC "UIB_AFXDP_PEER_MAC"
 
 /**
+ * DOC: UIB_AFXDP_PROGRAM
+ * @uib-env: AF_XDP transport
+ * @default: Unset; libxdp installs its generic XSK redirect program.
+ * @values: A path to a compiled UIB AF_XDP BPF object.
+ *
+ * Load a selective XDP program that redirects only the configured UIB UDP
+ * destination port to the AF_XDP socket and passes other traffic to the host
+ * stack. Build the supplied object with `make afxdp-program`.
+ *
+ * Example:
+ * UIB_AFXDP_PROGRAM=bpf/uib_afxdp_kern.o UIB_TRANSPORT_MODE=udp-zc-afxdp app
+ */
+#define UIB_ENV_AFXDP_PROGRAM "UIB_AFXDP_PROGRAM"
+
+/**
  * DOC: UIB_DEVMEM_IFACE
  * @uib-env: TCP devmem transport
  * @default: Unset; device-memory queue binding is disabled.

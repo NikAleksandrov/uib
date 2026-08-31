@@ -82,6 +82,7 @@ when the relevant context, transport, benchmark, or test is created.
 | <code>UIB_AFXDP_IFACE</code> | Unset; AF_XDP is unavailable until it is set. | A local network-interface name. | Select the netdev to which the AF_XDP socket is attached. | <code>UIB_AFXDP_IFACE=eth0 UIB_TRANSPORT_MODE=udp-zc-afxdp app</code> |
 | <code>UIB_AFXDP_QUEUE</code> | `0` | A non-negative queue identifier. | Select the hardware RX/TX queue used by the AF_XDP socket. | <code>UIB_AFXDP_QUEUE=1 UIB_TRANSPORT_MODE=udp-zc-afxdp app</code> |
 | <code>UIB_AFXDP_PEER_MAC</code> | Unset; it is mandatory for AF_XDP. | A six-octet colon-separated MAC address. | Set the fixed next-hop destination MAC for emitted frames. | <code>UIB_AFXDP_PEER_MAC=02:00:00:00:00:02 app</code> |
+| <code>UIB_AFXDP_PROGRAM</code> | Unset; libxdp installs its generic XSK redirect program. | A path to a compiled UIB AF_XDP BPF object. | Load a selective XDP program that redirects only the configured UIB UDP destination port to the AF_XDP socket and passes other traffic to the host stack. Build the supplied object with `make afxdp-program`. | <code>UIB_AFXDP_PROGRAM=bpf/uib_afxdp_kern.o UIB_TRANSPORT_MODE=udp-zc-afxdp app</code> |
 
 ## TCP devmem transport
 

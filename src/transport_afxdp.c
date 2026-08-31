@@ -24,6 +24,8 @@
 #include <netinet/ip.h>
 #include <netinet/udp.h>
 #include <xdp/xsk.h>
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
 
 #define UIB_AFXDP_FRAME_SIZE  4096
 #define UIB_AFXDP_NUM_FRAMES  4096
@@ -34,6 +36,9 @@
 struct uib_afxdp_backend {
 	struct xsk_umem     *umem;
 	struct xsk_socket   *xsk;
+	struct bpf_object   *bpf_object;
+	struct bpf_link     *bpf_link;
+	int                  xsks_map_fd;
 	struct xsk_ring_prod fq;
 	struct xsk_ring_cons cq;
 	struct xsk_ring_cons rx;
@@ -212,14 +217,12 @@ static int afxdp_send_entropy(struct uib_context *ctx,
 
 	if (UIB_L2_HDRS_LEN + len > UIB_AFXDP_FRAME_SIZE)
 		return -EMSGSIZE;
+	if (len < ctx->pops->min_packet)
+		return -EINVAL;
 
 	pthread_mutex_lock(&be->tx_lock);
 	reap_completions(be);
 	if (be->tx_free_n == 0) {
-		rc = -EAGAIN;
-		goto out;
-	}
-	if (xsk_ring_prod__reserve(&be->tx, 1, &idx) != 1) {
 		rc = -EAGAIN;
 		goto out;
 	}
@@ -240,11 +243,6 @@ static int afxdp_send_entropy(struct uib_context *ctx,
 		rc = -EMSGSIZE;
 		goto out;
 	}
-	if (len < ctx->pops->min_packet) {
-		be->tx_free[be->tx_free_n++] = addr;
-		rc = -EINVAL;
-		goto out;
-	}
 	meta.src_ip = hi.src_ip;
 	meta.dst_ip = hi.dst_ip;
 	meta.src_port = hi.src_port;
@@ -254,6 +252,11 @@ static int afxdp_send_entropy(struct uib_context *ctx,
 	    ctx->pops->wire_encode(&meta, frame + UIB_L2_HDRS_LEN, len) < 0) {
 		be->tx_free[be->tx_free_n++] = addr;
 		rc = -EBADMSG;
+		goto out;
+	}
+	if (xsk_ring_prod__reserve(&be->tx, 1, &idx) != 1) {
+		be->tx_free[be->tx_free_n++] = addr;
+		rc = -EAGAIN;
 		goto out;
 	}
 
@@ -289,8 +292,12 @@ static void afxdp_fini(struct uib_context *ctx)
 	if (__atomic_exchange_n(&be->worker_run, 0, __ATOMIC_ACQ_REL))
 		pthread_join(be->worker, NULL);
 
+	if (be->bpf_link)
+		bpf_link__destroy(be->bpf_link);
 	if (be->xsk)
 		xsk_socket__delete(be->xsk);
+	if (be->bpf_object)
+		bpf_object__close(be->bpf_object);
 	if (be->umem)
 		xsk_umem__delete(be->umem);
 	if (be->timer_fd >= 0)
@@ -330,6 +337,52 @@ static int afxdp_configure(struct uib_context *ctx,
 	return 0;
 }
 
+static int afxdp_program_load(struct uib_afxdp_backend *be,
+			      const char *interface, const char *path)
+{
+	struct bpf_program *program;
+	struct bpf_map *port_map;
+	struct bpf_map *xsks_map;
+	uint32_t key = 0;
+	unsigned int interface_index;
+	int rc;
+
+	be->bpf_object = bpf_object__open_file(path, NULL);
+	rc = libbpf_get_error(be->bpf_object);
+	if (rc) {
+		be->bpf_object = NULL;
+		return rc;
+	}
+	rc = bpf_object__load(be->bpf_object);
+	if (rc)
+		return rc;
+
+	program = bpf_object__find_program_by_name(be->bpf_object,
+						   "uib_afxdp_redirect");
+	port_map = bpf_object__find_map_by_name(be->bpf_object,
+						"uib_afxdp_ports");
+	xsks_map = bpf_object__find_map_by_name(be->bpf_object, "xsks_map");
+	if (!program || !port_map || !xsks_map)
+		return -ENOENT;
+
+	rc = bpf_map_update_elem(bpf_map__fd(port_map), &key, &be->port,
+				 BPF_ANY);
+	if (rc)
+		return -errno;
+	be->xsks_map_fd = bpf_map__fd(xsks_map);
+
+	interface_index = if_nametoindex(interface);
+	if (!interface_index)
+		return -errno;
+	be->bpf_link = bpf_program__attach_xdp(program, interface_index);
+	rc = libbpf_get_error(be->bpf_link);
+	if (rc) {
+		be->bpf_link = NULL;
+		return rc;
+	}
+	return 0;
+}
+
 static int afxdp_socket_init(struct uib_context *ctx,
 			     struct uib_afxdp_backend *be,
 			     const char *interface, uint64_t umem_size,
@@ -353,6 +406,11 @@ static int afxdp_socket_init(struct uib_context *ctx,
 		rc = xsk_socket__create(&be->xsk, interface, be->queue_id,
 					be->umem, &be->rx, &be->tx,
 					socket_config);
+	}
+	if (!rc && be->xsks_map_fd >= 0) {
+		rc = xsk_socket__update_xskmap(be->xsk, be->xsks_map_fd);
+		if (rc > 0)
+			rc = -rc;
 	}
 	return rc < 0 ? rc : -rc;
 }
@@ -406,6 +464,7 @@ static int afxdp_init(struct uib_context *ctx)
 	const char *interface = getenv(UIB_ENV_AFXDP_IFACE);
 	const char *queue = getenv(UIB_ENV_AFXDP_QUEUE);
 	const char *peer_mac = getenv(UIB_ENV_AFXDP_PEER_MAC);
+	const char *program = getenv(UIB_ENV_AFXDP_PROGRAM);
 	uint64_t umem_size;
 	struct uib_afxdp_backend *be;
 	int rc;
@@ -416,12 +475,19 @@ static int afxdp_init(struct uib_context *ctx)
 	if (!be)
 		return -ENOMEM;
 	be->timer_fd = -1;
+	be->xsks_map_fd = -1;
 	ctx->backend = be;
 	pthread_mutex_init(&be->tx_lock, NULL);
 	rc = afxdp_configure(ctx, be, &socket_config, interface, queue,
 			     peer_mac);
 	if (rc < 0)
 		goto err;
+	if (program && *program) {
+		rc = afxdp_program_load(be, interface, program);
+		if (rc < 0)
+			goto err;
+		socket_config.libxdp_flags |= XSK_LIBXDP_FLAGS__INHIBIT_PROG_LOAD;
+	}
 	umem_size = (uint64_t)UIB_AFXDP_NUM_FRAMES * UIB_AFXDP_FRAME_SIZE;
 	rc = afxdp_socket_init(ctx, be, interface, umem_size, &umem_config,
 			       &socket_config);

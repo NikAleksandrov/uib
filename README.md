@@ -386,3 +386,6 @@ UIB's original code is licensed under the [Apache License 2.0](LICENSE). The
 source repository is a mixed-license distribution: files incorporating
 separately licensed material identify their terms with SPDX headers. See the
 [license map](LICENSES/README.md), [NOTICE](NOTICE), and [AUTHORS](AUTHORS).
+
+The optional GPL-2.0-only AF_XDP redirect program is built as a separate eBPF
+object and is not linked into or installed with the Apache-2.0 libraries.

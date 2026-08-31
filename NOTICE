@@ -35,3 +35,8 @@ Haggai Eran, Daniel Firestone, Chuanxiong Guo, Marina Lipshteyn, Yehonatan
 Liron, Jitendra Padhye, Shachar Raindel, Mohamad Haj Yahia, and Ming Zhang in
 "Congestion Control for Large-Scale RDMA Deployments," ACM SIGCOMM 2015,
 doi:10.1145/2785956.2787484.
+
+The AF_XDP redirect program follows the XSKMAP design documented and sampled
+by the Linux kernel project. It is distributed under GPL-2.0-only; see
+LICENSES/GPL-2.0-only.txt and
+https://www.kernel.org/doc/html/latest/networking/af_xdp.html.
