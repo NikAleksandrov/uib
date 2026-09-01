@@ -294,6 +294,10 @@ def validate_infrastructure(config):
                 not config["network"].get("dataInterface")):
             raise ConfigurationError(
                 "multi-guest virtme requires network.dataInterface")
+        if (config["virtme"]["mode"] == "kind" and
+                config["virtme"]["networkMode"] != "socket"):
+            raise ConfigurationError(
+                "virtme Kind requires socket networking")
         if config["virtme"]["mode"] == "multi-guest":
             expected_interface = (
                 "eth1" if config["virtme"]["networkMode"] == "socket"
@@ -652,6 +656,8 @@ def tools_for(config):
         tools.update({"ip", "ssh", "ssh-keygen"})
         if manager == "slurm":
             tools.update({"apt-get", "cc", "dpkg-deb", "make"})
+    if provider == "virtme" and config["virtme"]["mode"] == "kind":
+        tools.update({"docker", "kind", "mkfs.ext4", "ssh", "ssh-keygen"})
     if manager == "slurm" and provider in {"libvirt", "virtme"}:
         tools.update({"scp", "ssh"})
     elif manager == "slurm":

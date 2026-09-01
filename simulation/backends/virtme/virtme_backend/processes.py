@@ -189,7 +189,7 @@ def launch_guest(vng, config, guest, public_key, log):
     }
 
 
-def launch_api_forward(ssh, key, controller, port, log):
+def launch_api_forward(ssh, key, controller, port, log, remote_port=6443):
     from .core import VirtmeError
 
     command = [
@@ -203,7 +203,7 @@ def launch_api_forward(ssh, key, controller, port, log):
         "-o", "ExitOnForwardFailure=yes",
         "-o", "ServerAliveInterval=10",
         "-N",
-        "-L", f"127.0.0.1:{port}:127.0.0.1:6443",
+        "-L", f"127.0.0.1:{port}:127.0.0.1:{remote_port}",
         "-p", str(controller["sshPort"]),
         "root@127.0.0.1",
     ]

@@ -172,16 +172,18 @@ def record_kubernetes_image(args, reference, image_id, nodes):
 def stage_kubernetes_image(args, reference, allow_mutable_tags):
     from .core import ConfigurationError, run_command
     from .scheduler import command_executable
+    from .state import state_path
 
     validate_image_reference(reference, allow_mutable_tags)
     nodes, binary = owned_kubernetes_nodes(args)
     engine = command_executable("CONTAINER_ENGINE_COMMAND", "docker")
     image_id = inspect_local_image(engine, reference)
+    staging = state_path(args) / "infrastructure"
     archive = None
     try:
         with tempfile.NamedTemporaryFile(
                 prefix="uib-kubernetes-image-", suffix=".tar",
-                delete=False) as output:
+                dir=staging, delete=False) as output:
             archive = pathlib.Path(output.name)
             exported = run_command(
                 [engine, "image", "save", reference], stdout=output,

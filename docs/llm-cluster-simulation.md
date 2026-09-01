@@ -1965,10 +1965,17 @@ simulation/bin/uib-sim render-workload --profile real-kubernetes \
 ### virtme with Kind
 
 `virtme-kind` is the one-guest composition for a selected Linux kernel with
-Kind inside that guest. The existing `make virtme-test` gate proves one-shot
-guest execution; the persistent Kind lifecycle adapter remains pending. This
-mode is intended for io_uring, DMA-BUF, ZCRX, namespace, and kernel-version
-compatibility tests.
+Kind inside that guest. `uib-sim up` starts one persistent virtme guest, mounts
+a run-owned ext4 image at `/var/lib/docker`, starts an isolated Docker daemon,
+creates the configured Kind control plane and workers, and forwards the nested
+API server to the host. This mode is intended for io_uring, DMA-BUF, ZCRX,
+namespace, and kernel-version compatibility tests.
+
+The host needs virtme-ng, QEMU, SSH, Docker, Kind, and `mkfs.ext4`. The guest
+uses those host binaries through virtme's filesystem view; container state is
+kept on the owned disk rather than the host Docker data root. Only rootless
+virtme socket networking is supported in this mode. Use `virtme-kubernetes`
+when each scheduler node must have its own kernel or a bridged data plane.
 
 Example overlay:
 
@@ -1986,7 +1993,26 @@ cluster:
 nodes:
   cpu: 8
   memory: 16Gi
+  disk: 64Gi
 ```
+
+```text
+simulation/bin/uib-sim up --profile virtme-kind \
+  --run-id kernel-kind --state-dir simulation/.artifacts/runs
+simulation/bin/uib-sim kubeconfig --profile virtme-kind \
+  --run-id kernel-kind --state-dir simulation/.artifacts/runs
+simulation/bin/uib-sim load-image --profile virtme-kind \
+  --run-id kernel-kind --state-dir simulation/.artifacts/runs \
+  --image registry.example/uib-workload@sha256:<digest>
+simulation/bin/uib-sim down --profile virtme-kind \
+  --run-id kernel-kind --state-dir simulation/.artifacts/runs
+```
+
+`load-image` streams each explicit host image into the guest daemon and then
+uses standard `kind load docker-image`. `down` deletes the exact nested Kind
+cluster, stops only the recorded guest and API-forward PIDs, and removes the
+recorded ext4 image. A terminated guest is reported as `degraded`; cleanup
+still removes the remaining owned resources.
 
 ### Multiple virtme Kubernetes nodes
 
@@ -3980,6 +4006,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make rocev2-ecn-test` | Build dependencies and permission to open loopback UDP sockets | ECT(0) traffic produces an ACK but no CNP, while a valid CE-marked RoCEv2 packet produces exactly one ACK and one CNP; both io_uring multishot and batched receive metadata paths are tested |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
 | `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Rootless socket and optional bridge rendering, IPv4/MAC/SSH allocation, exact virtme-ng launch vectors, worker fault-scheduler provisioning and stable targets, run-owned key/inventory creation, PID/start-time ownership, terminated-guest degradation, remaining-process cleanup, bridge create/delete cleanup through fake standard commands, and invalid combination rejection |
+| `make simulation-virtme-kind-test` | Python 3, PyYAML, and POSIX shell tools; no guest boot, Docker daemon, or elevated permission | Persistent one-guest Kind rendering, owned ext4 Docker storage, nested daemon and cluster commands, host API forwarding, image loading, status, PID/start-time ownership, and exact cleanup through fake standard commands |
 | `make simulation-lifecycle-interruption-test` | Python 3 and POSIX shell tools; no cluster, hypervisor, or elevated privilege | SIGTERM propagation through the public CLI, Kind default cleanup and `--retain`, libvirt interruption during OpenTofu apply with owned destroy, and virtme interruption after guest launch with process and network cleanup |
 | `make simulation-workload-interruption-test` | Python 3 and POSIX shell tools; no scheduler or cluster | Kubernetes apply interruption with exact namespace cleanup, partial collection removal and successful retry, interrupted cleanup retry, and conservative Slurm `submission-unknown` recording when no numeric job ID was returned |
 | `make simulation-virtme-kubernetes-e2e-test` | virtme-ng 1.35, SSH, kubectl, QEMU with KVM or TCG, about 4 GiB memory for the two reduced-size guests, and download access for the pinned k3s binary on first use | A real controller and worker under separate virtme kernels, rootless socket data traffic, pinned k3s/containerd startup without systemd PID 1, both nodes Ready, host API access through an owned SSH forward, cached download reuse, and exact process cleanup |

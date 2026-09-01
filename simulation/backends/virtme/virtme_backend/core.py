@@ -13,6 +13,12 @@ import tempfile
 NAME = re.compile(r"^[a-z](?:[a-z0-9-]{1,46}[a-z0-9])$")
 
 
+IMAGE_DIGEST = re.compile(r"^\S+@sha256:[0-9a-f]{64}$")
+
+
+IMAGE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]*$")
+
+
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 
 
@@ -118,8 +124,18 @@ def load_config(path):
         raise VirtmeError("virtme requires exactly one control-plane guest")
     if "virtme" not in config:
         raise VirtmeError("configuration has no virtme settings")
-    if config["virtme"]["mode"] != "multi-guest":
-        raise VirtmeError("the topology renderer requires multi-guest mode")
+    mode = config["virtme"]["mode"]
+    if mode == "kind":
+        if config.get("cluster", {}).get("manager") != "kubernetes":
+            raise VirtmeError("virtme Kind requires Kubernetes")
+        if config["virtme"]["networkMode"] != "socket":
+            raise VirtmeError("virtme Kind requires socket networking")
+        if not IMAGE_DIGEST.fullmatch(
+                config.get("cluster", {}).get("nodeImage", "")):
+            raise VirtmeError("virtme Kind requires a pinned node image")
+        return config
+    if mode != "multi-guest":
+        raise VirtmeError(f"unsupported virtme mode: {mode}")
     if config.get("cluster", {}).get("manager") == "kubernetes":
         if config.get("kubernetes", {}).get("distribution") != "k3s":
             raise VirtmeError("virtme Kubernetes requires k3s")

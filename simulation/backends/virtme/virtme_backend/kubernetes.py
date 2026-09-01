@@ -35,10 +35,11 @@ def wait_for_kubernetes(ssh, key, controller, binary):
     raise VirtmeError("the virtme Kubernetes API did not become ready")
 
 
-def write_kubeconfig(state, value, port):
+def write_kubeconfig(state, value, port, source_port=6443):
     from .core import VirtmeError
 
-    pattern = r"server:\s*https://(?:127\.0\.0\.1|localhost):6443"
+    pattern = (r"server:\s*https://(?:127\.0\.0\.1|localhost):" +
+               str(source_port))
     replacement = f"server: https://127.0.0.1:{port}"
     updated, count = re.subn(pattern, replacement, value)
     if count != 1:

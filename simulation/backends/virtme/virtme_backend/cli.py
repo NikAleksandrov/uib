@@ -8,6 +8,7 @@ import sys
 
 def main():
     from .core import DEFAULT_CACHE, VirtmeError, interrupt_lifecycle
+    from .kind import command_load_kind_image
     from .lifecycle import command_down, command_kubeconfig, command_render, command_status, command_up
 
     parser = argparse.ArgumentParser(
@@ -36,6 +37,13 @@ def main():
     kubeconfig.add_argument("--name", required=True)
     kubeconfig.add_argument("--state-dir", required=True)
     kubeconfig.set_defaults(handler=command_kubeconfig)
+    load_image = commands.add_parser(
+        "load-image", help="load host images into nested Kind")
+    load_image.add_argument("--name", required=True)
+    load_image.add_argument("--state-dir", required=True)
+    load_image.add_argument("--image", action="append", required=True)
+    load_image.add_argument("--allow-mutable-tags", action="store_true")
+    load_image.set_defaults(handler=command_load_kind_image)
     down = commands.add_parser("down", help="destroy owned virtme guests")
     down.add_argument("--name", required=True)
     down.add_argument("--state-dir", required=True)

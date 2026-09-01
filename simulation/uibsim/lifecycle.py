@@ -158,11 +158,27 @@ def command_kubeconfig(args):
 def command_load_image(args):
     from .config import resolve
     from .images import stage_kubernetes_image, stage_slurm_image
+    from .state import state_path
 
     config = resolve(args)
 
     if config["infrastructure"]["provider"] in {"libvirt", "virtme"}:
         if config["cluster"]["manager"] == "kubernetes":
+            if (config["infrastructure"]["provider"] == "virtme" and
+                    config["virtme"]["mode"] == "kind"):
+                def virtme_kind_arguments(unused):
+                    command = [
+                        "load-image", "--name", args.run_id,
+                        "--state-dir",
+                        str(state_path(args) / "infrastructure"),
+                    ]
+                    for image in args.image:
+                        command.extend(["--image", image])
+                    if args.allow_mutable_tags:
+                        command.append("--allow-mutable-tags")
+                    return command
+
+                return invoke_backend(config, virtme_kind_arguments)
             for reference in args.image:
                 stage_kubernetes_image(
                     args, reference, args.allow_mutable_tags)

@@ -81,10 +81,16 @@ python3 "$project_dir/tests/cases/virtme_backend/lifecycle_status.py" "$test_dir
 	--state-dir "$test_dir/runs" > "$test_dir/exported-kubeconfig"
 grep -q 'server: https://127.0.0.1:23003' \
 	"$test_dir/exported-kubeconfig"
+TMPDIR="$test_dir/unavailable" \
 "$cli" load-image --profile virtme-kubernetes --overlay network/datacenter \
 	--run-id virtme-lifecycle --state-dir "$test_dir/runs" \
 	--allow-mutable-tags --image uib-training:test
 test "$(wc -l < "$test_dir/image-imports.log")" -eq 2
+if find "$test_dir/runs/virtme-lifecycle/infrastructure" -maxdepth 1 \
+	-name 'uib-kubernetes-image-*' -print -quit | grep -q .; then
+	echo "Kubernetes image staging archive was not removed" >&2
+	exit 1
+fi
 python3 "$project_dir/tests/cases/virtme_backend/network_evidence.py" \
 	"$test_dir/runs/virtme-lifecycle/infrastructure/kubernetes-images.json"
 [ "$(grep -c '/run/uib-network-schedule' "$test_dir/ssh.log")" -eq 2 ]

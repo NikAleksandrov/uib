@@ -387,6 +387,9 @@ simulation-kind-test:
 simulation-virtme-backend-test:
 	./tests/run_virtme_backend_test.sh
 
+simulation-virtme-kind-test:
+	./tests/run_virtme_kind_backend_test.sh
+
 simulation-lifecycle-interruption-test:
 	./tests/run_lifecycle_interruption_test.sh
 
@@ -1175,7 +1178,7 @@ clean:
 	simulation-rank-fault-test \
 	simulation-fault-e2e-test simulation-congestion-test \
 	simulation-kind-test simulation-kind-e2e-test \
-	simulation-virtme-backend-test \
+	simulation-virtme-backend-test simulation-virtme-kind-test \
 	simulation-lifecycle-interruption-test \
 	simulation-workload-interruption-test \
 	simulation-virtme-kubernetes-e2e-test \

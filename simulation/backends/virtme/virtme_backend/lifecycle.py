@@ -49,16 +49,22 @@ def load_ledger(state, run_id):
 
 def command_render(args):
     from .core import load_config, validate_name
+    from .kind import kind_topology
     from .topology import topology
 
     validate_name(args.name)
     config = load_config(args.config)
+    if config["virtme"]["mode"] == "kind":
+        print(json.dumps(
+            kind_topology(config, args.name), indent=2, sort_keys=True))
+        return
     print(json.dumps(topology(config, args.name), indent=2, sort_keys=True))
 
 
 def command_up(args):
     from .artifacts import acquire_k3s, acquire_slurm_packages, configure_kubernetes_storage, configure_slurm_storage, create_container_smoke_image, extract_slurm_runtime, prepare_container_runtime
     from .core import ENROOT_VERSION, PYXIS_VERSION, SLURM_VERSION, VirtmeError, executable, load_config, validate_name, write_json
+    from .kind import command_up_kind
     from .kubernetes import inventory, provision_kubernetes, write_kubeconfig
     from .network import apply_network_shaping, clear_network_shaping, create_network, delete_network, record_network_evidence
     from .processes import launch_api_forward, launch_guest, terminate_process, wait_for_ssh
@@ -67,6 +73,8 @@ def command_up(args):
 
     validate_name(args.name)
     config = load_config(args.config)
+    if config["virtme"]["mode"] == "kind":
+        return command_up_kind(args, config)
     state = pathlib.Path(args.state_dir).expanduser().resolve()
     try:
         state.mkdir(parents=True)
@@ -199,6 +207,7 @@ def command_up(args):
 
 def command_status(args):
     from .core import VirtmeError, executable, read_json, validate_name
+    from .kind import command_status_kind
     from .processes import owned_process_alive, remote_command
     from .slurm import slurm_command
 
@@ -206,6 +215,8 @@ def command_status(args):
     state = pathlib.Path(args.state_dir).expanduser().resolve()
     unused, ledger = load_ledger(state, args.name)
     topology_value = read_json(state / "topology.json", "virtme topology")
+    if ledger.get("mode") == "kind":
+        return command_status_kind(args, ledger, topology_value)
     processes = topology_value.get("ownership", {}).get("processes", [])
     expected = len(topology_value.get("guests", {}))
     guests = [process for process in processes
@@ -265,6 +276,7 @@ def command_kubeconfig(args):
 
 def command_down(args):
     from .core import VirtmeError, executable, read_json, validate_name, write_json
+    from .kind import command_down_kind
     from .network import clear_network_shaping, delete_network
     from .processes import terminate_process
 
@@ -274,6 +286,9 @@ def command_down(args):
     if ledger.get("state") == "destroyed" or ledger.get("cleanup") == "destroyed":
         return
     topology_value = read_json(state / "topology.json", "virtme topology")
+    if ledger.get("mode") == "kind":
+        return command_down_kind(
+            args, ledger_path, ledger, topology_value)
     processes = topology_value.get("ownership", {}).get("processes")
     if not isinstance(processes, list):
         raise VirtmeError("virtme topology has invalid process ownership")
