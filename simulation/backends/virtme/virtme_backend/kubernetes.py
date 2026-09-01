@@ -64,6 +64,8 @@ def provision_kubernetes(config, topology_value, ssh, key, binary):
         "--node-ip", controller["dataAddress"],
         "--flannel-iface", config["network"]["dataInterface"],
         "--snapshotter", "native",
+        "--kubelet-arg",
+        "root-dir=/var/lib/rancher/k3s/agent/kubelet",
     ]
     server = [
         "server", *common,
@@ -88,6 +90,8 @@ def provision_kubernetes(config, topology_value, ssh, key, binary):
             "--node-ip", guest["dataAddress"],
             "--flannel-iface", config["network"]["dataInterface"],
             "--snapshotter", "overlayfs",
+            "--kubelet-arg",
+            "root-dir=/var/lib/rancher/k3s/agent/kubelet",
         ]
         remote_command(
             ssh, key, guest,

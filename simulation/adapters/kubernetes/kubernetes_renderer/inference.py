@@ -73,10 +73,41 @@ def render_inference(config, run_id, allow_mutable_tags):
         "wait \"$server\" || true; trap - EXIT INT TERM"
     )
     entrypoint = LiteralString(shlex.join(["/bin/sh", "-c", lifecycle]))
+    ray_start_params = {"dashboard-host": "0.0.0.0"}
+    submitter_spec = None
+    if config["infrastructure"]["provider"] == "virtme":
+        ray_start_params.update({
+            "memory": "805306368",
+            "object-store-memory": "134217728",
+        })
+        submitter_spec = {
+            "restartPolicy": "Never",
+            "containers": [
+                {
+                    "name": "ray-job-submitter",
+                    "image": workload["image"],
+                    "imagePullPolicy": image_pull_policy,
+                    "resources": {
+                        "limits": {"cpu": "100m", "memory": "128Mi"},
+                        "requests": {"cpu": "50m", "memory": "64Mi"},
+                    },
+                }
+            ],
+            "nodeSelector": {
+                "node-role.kubernetes.io/control-plane": "true"
+            },
+            "tolerations": [
+                {
+                    "key": "node-role.kubernetes.io/control-plane",
+                    "operator": "Exists",
+                    "effect": "NoSchedule",
+                }
+            ],
+        }
     ray_cluster = {
         "rayVersion": "2.58.0",
         "headGroupSpec": {
-            "rayStartParams": {"dashboard-host": "0.0.0.0"},
+            "rayStartParams": ray_start_params,
             "template": ray_pod_template(config, "head", image_pull_policy),
         },
     }
@@ -94,6 +125,13 @@ def render_inference(config, run_id, allow_mutable_tags):
                 ),
             }
         ]
+    job_spec = {
+        "entrypoint": entrypoint,
+        "shutdownAfterJobFinishes": False,
+        "rayClusterSpec": ray_cluster,
+    }
+    if submitter_spec is not None:
+        job_spec["submitterPodTemplate"] = {"spec": submitter_spec}
     documents = [
         {
             "apiVersion": "v1",
@@ -122,11 +160,7 @@ def render_inference(config, run_id, allow_mutable_tags):
                 "namespace": run_id,
                 "labels": resource_labels,
             },
-            "spec": {
-                "entrypoint": entrypoint,
-                "shutdownAfterJobFinishes": False,
-                "rayClusterSpec": ray_cluster,
-            },
+            "spec": job_spec,
         },
     ]
     print(

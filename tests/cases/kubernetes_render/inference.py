@@ -24,9 +24,13 @@ assert "ttlSecondsAfterFinished" not in job["spec"]
 assert job["spec"]["entrypoint"].startswith("/bin/sh -c ")
 assert "inference serve" in job["spec"]["entrypoint"]
 assert "inference probe" in job["spec"]["entrypoint"]
+assert "submitterPodTemplate" not in job["spec"]
 cluster = job["spec"]["rayClusterSpec"]
 assert cluster["rayVersion"] == "2.58.0"
 assert "workerGroupSpecs" not in cluster
+assert cluster["headGroupSpec"]["rayStartParams"] == {
+    "dashboard-host": "0.0.0.0",
+}
 pod = cluster["headGroupSpec"]["template"]["spec"]
 assert pod["containers"][0]["name"] == "ray-head"
 assert [container["name"] for container in pod["initContainers"]] == [

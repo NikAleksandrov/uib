@@ -7,16 +7,13 @@ import yaml
 
 with open(sys.argv[1], encoding="utf-8") as source:
     job = list(yaml.safe_load_all(source))[2]
-pod = job["spec"]["rayClusterSpec"]["headGroupSpec"]["template"]["spec"]
-initializers = {item["name"]: item for item in pod["initContainers"]}
-assert initializers["model-cache"]["image"] == "uib-model-cache:test"
-assert initializers["model-cache"]["args"] == [
-    "mkdir -p /cache/huggingface && "
-    "cp -a /model-cache/huggingface/. /cache/huggingface/"
-]
-environment = {
-    item["name"]: item["value"] for item in pod["containers"][0]["env"]
-    if "value" in item
-}
-assert environment["HF_HUB_OFFLINE"] == "1"
-assert environment["TRANSFORMERS_OFFLINE"] == "1"
+workers = job["spec"]["rayClusterSpec"]["workerGroupSpecs"]
+assert len(workers) == 1
+assert workers[0]["replicas"] == 1
+assert workers[0]["minReplicas"] == 1
+assert workers[0]["maxReplicas"] == 1
+pod = workers[0]["template"]["spec"]
+assert pod["containers"][0]["name"] == "ray-worker"
+assert pod["affinity"]["podAntiAffinity"][
+    "requiredDuringSchedulingIgnoredDuringExecution"
+][0]["topologyKey"] == "kubernetes.io/hostname"

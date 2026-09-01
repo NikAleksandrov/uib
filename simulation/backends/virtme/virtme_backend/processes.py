@@ -51,8 +51,7 @@ def bootstrap_command(config, node, public_key):
     address = f"{node['dataAddress']}/{node['dataPrefix']}"
     key = shlex.quote(str(public_key))
     storage = ""
-    if (config["cluster"]["manager"] == "kubernetes" and
-            node["role"] == "worker"):
+    if config["cluster"]["manager"] == "kubernetes":
         storage = (
             "install -d -m 0700 /var/lib/rancher/k3s; "
             "mount -t ext4 /dev/vda /var/lib/rancher/k3s; ")

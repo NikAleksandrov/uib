@@ -92,6 +92,8 @@ python3 "$project_dir/tests/cases/virtme_backend/network_evidence.py" \
 [ "$(grep -c '/run/uib-fault-target' "$test_dir/ssh.log")" -eq 2 ]
 [ "$(grep -c -- '--snapshotter overlayfs' "$test_dir/ssh.log")" -eq 2 ]
 [ "$(grep -c -- '--snapshotter native' "$test_dir/ssh.log")" -eq 1 ]
+[ "$(grep -c -- '--kubelet-arg root-dir=/var/lib/rancher/k3s/agent/kubelet' \
+	"$test_dir/ssh.log")" -eq 3 ]
 grep -F -- '--target worker-01/data' "$test_dir/ssh.log" > /dev/null
 grep -F -- '--target worker-02/data' "$test_dir/ssh.log" > /dev/null
 grep -F -- 'ip link set dev eth1 mtu 1280' "$test_dir/ssh.log" \

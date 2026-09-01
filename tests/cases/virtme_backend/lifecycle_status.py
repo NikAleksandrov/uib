@@ -25,7 +25,7 @@ assert storage["guest"] == "/var/lib/rancher/k3s"
 assert storage["device"] == "/dev/vda"
 assert storage["filesystem"] == "ext4"
 assert storage["size"] == "32Gi"
-assert sorted(storage["images"]) == ["worker-01", "worker-02"]
+assert sorted(storage["images"]) == ["controller", "worker-01", "worker-02"]
 assert all(os.path.isfile(path) for path in storage["images"].values())
 with open(os.path.join(state, "network.json"), encoding="utf-8") as source:
     network = json.load(source)

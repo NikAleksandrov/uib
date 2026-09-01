@@ -1849,10 +1849,11 @@ build the portable runtime and inference images, download the pinned SmolLM2
 revision once into the ignored cache, create their selected disposable
 cluster, install the operator, and submit the standard inference request. They
 require a Docker-compatible engine, kubectl, Helm, network access for uncached
-images/charts, about 10 GB of image storage, and enough memory for the Ray
-head. Kind additionally requires Kind; virtme requires virtme-ng and QEMU.
+images/charts, and enough memory for the Ray head. The native containerd
+snapshotter needs a 64 GiB virtme worker disk for the current inference image.
+Kind additionally requires Kind; virtme requires virtme-ng and QEMU.
 The virtme test refuses to start unless `MemAvailable` covers every guest plus
-a 12 GiB host reserve. A successful run checks Ray readiness, all UIB init
+an 8 GiB host reserve. A successful run checks Ray readiness, all UIB init
 preflights, four requests,
 16 output tokens, the Transformers backend, and complete
 namespace/operator/cluster cleanup.
@@ -1890,18 +1891,19 @@ KubeRay gate options:
 | `SIMULATION_KUBERAY_RUNTIME_IMAGE` | `uib-runtime:test` | Portable UIB init image loaded into every disposable worker |
 | `SIMULATION_KUBERAY_MODEL_CACHE_IMAGE` | `uib-model-cache:test` | Disposable image built from the ignored Hugging Face cache |
 | `SIMULATION_KUBERAY_RESULTS` | `simulation/.artifacts/results` | Ignored persistent root for success and failure evidence |
-| `SIMULATION_STATE_DIR` | Per-run temporary directory | Optional retained infrastructure/workload state root for diagnostics |
+| `SIMULATION_STATE_DIR` | `simulation/.artifacts/runs` | Ignored infrastructure/workload state root; guest logs survive a failed run while owned resources are still removed |
 | `SIMULATION_KUBERNETES_PROFILE` | `kind-kubernetes` | Same owned-backend selection as training; `make simulation-virtme-kuberay-e2e-test` selects virtme |
 | `SIMULATION_KUBERNETES_WORKERS` | `1` | Worker guests or Kind workers; the checked-in single-head request has no distributed worker group |
 | `SIMULATION_KUBERNETES_CPU` | `4` | CPUs per disposable node; the virtme target uses `2` |
-| `SIMULATION_KUBERNETES_MEMORY` | `8Gi` | Advertised memory per node; the virtme KubeRay target uses `3Gi` |
-| `SIMULATION_KUBERNETES_DISK` | `32Gi` | Disk per disposable VM; ignored by Kind |
+| `SIMULATION_KUBERNETES_MEMORY` | `8Gi` | Advertised memory per node; the virtme KubeRay target uses `3200Mi` |
+| `SIMULATION_KUBERNETES_DISK` | `32Gi` | Disk per disposable VM; ignored by Kind; the virtme KubeRay target uses `64Gi` because containerd retains compressed content and native snapshots |
 | `SIMULATION_KUBERNETES_WORKLOAD_CPU` | `1` | CPU requested by the Ray head |
-| `SIMULATION_KUBERNETES_WORKLOAD_MEMORY` | `3Gi` | Memory requested by the Ray head; the virtme KubeRay target uses `2Gi` and leaves capacity for k3s and the operator |
+| `SIMULATION_KUBERNETES_WORKLOAD_MEMORY` | `3Gi` | Memory requested by the Ray head |
+| `SIMULATION_KUBERNETES_DISABLE` | Unset | Optional inline list of bundled k3s components to disable; the virtme KubeRay target disables `traefik`, `servicelb`, `metrics-server`, and `local-storage` |
 | `SIMULATION_VIRTME_SSH_PORT_BASE` | `23000` | First controller/worker host-forward port for virtme; all required ports must be free |
-| `SIMULATION_VIRTME_CONTROLLER_MEMORY` | Node memory | Controller guest memory; the virtme KubeRay target uses `2Gi`, matching the validated k3s controller floor |
-| `SIMULATION_VIRTME_WORKER_MEMORY` | Node memory | Worker guest memory; it cannot be smaller than `SIMULATION_KUBERNETES_MEMORY` |
-| `SIMULATION_HOST_MEMORY_RESERVE_GIB` | `12` | Non-negative GiB protected before a virtme Kubernetes E2E starts; `0` retains only the guest-allocation check |
+| `SIMULATION_VIRTME_CONTROLLER_MEMORY` | Node memory | Controller guest memory; the virtme KubeRay target uses `1Gi` and places only the operator and submitter there |
+| `SIMULATION_VIRTME_WORKER_MEMORY` | Node memory | Worker guest memory; the virtme target uses `3200Mi` and cannot be smaller than `SIMULATION_KUBERNETES_MEMORY` |
+| `SIMULATION_HOST_MEMORY_RESERVE_GIB` | `12` | Non-negative GiB protected before a virtme Kubernetes E2E starts; the Make target uses `8`, and `0` retains only the guest-allocation check |
 | `VIRTME_SSH_WAIT` | `90` seconds | Positive guest SSH-readiness timeout; the virtme KubeRay target uses `180` for loaded or TCG-only hosts |
 | `KIND_COMMAND`, `KUBECTL_COMMAND`, `HELM_COMMAND` | Standard command names | Exact clients; Kind is required only by the Kind profile |
 

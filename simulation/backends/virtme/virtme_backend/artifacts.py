@@ -33,8 +33,6 @@ def configure_kubernetes_storage(config, topology_value, state):
         },
     }
     for name, guest in topology_value["guests"].items():
-        if guest["role"] != "worker":
-            continue
         images[name] = str(create_node_disk(
             config, guest, root, f"uib-k3s-{guest['index']}"))
 

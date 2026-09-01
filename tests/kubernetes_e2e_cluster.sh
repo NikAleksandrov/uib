@@ -12,6 +12,10 @@ workload_memory=${SIMULATION_KUBERNETES_WORKLOAD_MEMORY:-$kubernetes_memory}
 kubernetes_profile_args="--set nodes.workers=$kubernetes_workers \
 --set nodes.cpu=$kubernetes_cpu --set nodes.memory=$kubernetes_memory \
 --set nodes.disk=$kubernetes_disk"
+if test -n "${SIMULATION_KUBERNETES_DISABLE:-}"; then
+	kubernetes_profile_args="$kubernetes_profile_args \
+--set kubernetes.disable=$SIMULATION_KUBERNETES_DISABLE"
+fi
 kubernetes_workload_args="$kubernetes_profile_args \
 --set workload.resources.cpu=$workload_cpu \
 --set workload.resources.memory=$workload_memory"

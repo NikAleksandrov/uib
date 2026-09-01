@@ -128,6 +128,11 @@ python3 "$project_dir/tests/cases/kubernetes_render/storage.py" "$test_dir/stora
 	--allow-mutable-tags > "$test_dir/inference.yaml"
 python3 "$project_dir/tests/cases/kubernetes_render/inference.py" "$test_dir/inference.yaml"
 
+"$cli" render-workload --profile virtme-kubernetes \
+	--request "$inference_request" --run-id uib-inference-virtme \
+	--allow-mutable-tags > "$test_dir/inference-virtme.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/inference_virtme.py" "$test_dir/inference-virtme.yaml"
+
 "$cli" render-workload --profile kind-kubernetes \
 	--request "$inference_request" --run-id uib-inference-two \
 	--allow-mutable-tags --set workload.parallelism.nodes=2 \
@@ -139,7 +144,7 @@ python3 "$project_dir/tests/cases/kubernetes_render/inference.py" "$test_dir/inf
 	--set nodes.gpus.vendor=nvidia --set nodes.gpus.perWorker=1 \
 	--set nodes.gpus.resourceName=nvidia.com/gpu \
 	> "$test_dir/inference-two.yaml"
-python3 "$project_dir/tests/cases/kubernetes_render/inference_virtme.py" "$test_dir/inference-two.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/inference_two.py" "$test_dir/inference-two.yaml"
 
 if "$cli" render-workload --profile kind-kubernetes \
 	--request "$inference_request" --run-id uib-inference-ranks \
@@ -162,7 +167,7 @@ fi
 	--allow-mutable-tags \
 	--set storage.modelCacheImage=uib-model-cache:test \
 	> "$test_dir/inference-cache.yaml"
-python3 "$project_dir/tests/cases/kubernetes_render/inference_two.py" "$test_dir/inference-cache.yaml"
+python3 "$project_dir/tests/cases/kubernetes_render/inference_cache.py" "$test_dir/inference-cache.yaml"
 
 if "$cli" render-workload --profile kind-kubernetes \
 	--request "$inference_request" --run-id uib-inference-cache-conflict \

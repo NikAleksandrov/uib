@@ -27,9 +27,10 @@ cache_image=${SIMULATION_KUBERAY_MODEL_CACHE_IMAGE:-uib-model-cache:test}
 kind_command=${KIND_COMMAND:-kind}
 kubectl_command=${KUBECTL_COMMAND:-kubectl}
 helm_command=${HELM_COMMAND:-helm}
+operator_placement=
 results_root=${SIMULATION_KUBERAY_RESULTS:-$project_dir/simulation/.artifacts/results}
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-kuberay-e2e.XXXXXX")
-state_dir=${SIMULATION_STATE_DIR:-$test_dir/state}
+state_dir=${SIMULATION_STATE_DIR:-$project_dir/simulation/.artifacts/runs}
 evidence=$results_root/$name
 bundle=$evidence/bundle
 logs=$evidence/inference.log
@@ -155,13 +156,25 @@ kubernetes_load_image "$inference_image"
 kubernetes_load_image "$runtime_image"
 kubernetes_load_image "$cache_image"
 
+if test "$kubernetes_profile" = virtme-kubernetes; then
+	operator_placement="--set nodeSelector.kubernetes\\.io/hostname=$name-controller \
+--set tolerations[0].key=node-role.kubernetes.io/control-plane \
+--set tolerations[0].operator=Exists \
+--set tolerations[0].effect=NoSchedule"
+fi
+
 "$helm_command" repo add kuberay \
 	https://ray-project.github.io/kuberay-helm/ --force-update
 "$helm_command" repo update kuberay
 "$helm_command" --kubeconfig "$kubeconfig" upgrade --install \
 	kuberay-operator kuberay/kuberay-operator \
 	--version "$operator_version" --namespace kuberay-system \
-	--create-namespace --wait --timeout "$operator_timeout"
+	--set resources.requests.cpu=50m \
+	--set resources.requests.memory=64Mi \
+	--set resources.limits.cpu=100m \
+	--set resources.limits.memory=256Mi \
+	--create-namespace --wait --timeout "$operator_timeout" \
+	$operator_placement
 
 # shellcheck disable=SC2086
 "$cli" run --profile "$kubernetes_profile" --request "$request" \
