@@ -111,6 +111,10 @@ SRCS := \
 	src/protocol_rocev2_wire.c \
 	src/protocol_dummy.c \
 	src/protocol_uet.c \
+	src/protocol_uet_wire.c \
+	src/protocol_uet_tx.c \
+	src/protocol_uet_rx.c \
+	src/protocol_uet_reliability.c \
 	src/congestion.c \
 	src/dcqcn.c \
 	src/uet_rccc.c \
@@ -122,6 +126,10 @@ SRCS := \
 	src/host_zc.c \
 	src/uring_zcrx.c \
 	src/transport_udp.c \
+	src/transport_udp_pool.c \
+	src/transport_udp_uring.c \
+	src/transport_udp_flow.c \
+	src/transport_udp_sync.c \
 	src/transport_afxdp.c \
 	src/transport_tcp_devmem.c \
 	src/afxdp_frame.c \

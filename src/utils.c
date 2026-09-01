@@ -126,9 +126,8 @@ int uib_worker_configuration(unsigned int *count, cpu_set_t *allowed,
 			     unsigned int automatic_limit)
 {
 	const char *setting;
-	unsigned long value;
+	uint64_t value;
 	unsigned int allowed_count;
-	char *end;
 	int rc;
 
 	rc = uib_env_bool(affinity_env, 1, affinity);
@@ -147,9 +146,8 @@ int uib_worker_configuration(unsigned int *count, cpu_set_t *allowed,
 			allowed_count;
 		return 0;
 	}
-	errno = 0;
-	value = strtoul(setting, &end, 10);
-	if (errno || end == setting || *end || !value || value > CPU_SETSIZE)
+	if (uib_parse_u64(setting, 10, &value) < 0 || !value ||
+	    value > CPU_SETSIZE)
 		return -EINVAL;
 	if (*affinity && value > allowed_count)
 		return -EINVAL;

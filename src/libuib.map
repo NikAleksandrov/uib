@@ -139,6 +139,7 @@ UIB_0.1 {
 		uib_udp_sync_ops;
 		uib_uet_atomic_datatype_size;
 		uib_uet_build_ack;
+		uib_uet_build_nack;
 		uib_uet_multipath_configure;
 		uib_uet_multipath_query;
 		uib_uet_nscc_ack_request;

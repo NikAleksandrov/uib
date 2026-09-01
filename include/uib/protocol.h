@@ -10,9 +10,18 @@ struct uib_context;
 struct uib_qp;
 struct uib_send_wr;
 
+/**
+ * struct uib_rx_meta - Network metadata attached to a received packet.
+ * @ecn: Two-bit IPv4 ECN value from the outer header
+ * @dscp: Six-bit IPv4 differentiated-services codepoint
+ * @rx_time_ns: Monotonic time the transport took the packet off the wire,
+ *              or zero when the transport does not stamp arrivals
+ * @integrity_validated: Packet integrity was validated by the wire transport
+ */
 struct uib_rx_meta {
 	uint64_t rx_time_ns;
 	uint8_t ecn;
+	uint8_t dscp;
 	uint8_t integrity_validated;
 };
 
@@ -68,6 +77,8 @@ struct uib_protocol_ops {
 			   void *packet, size_t len);
 	int (*wire_decode)(const struct uib_wire_meta *meta,
 			   void *packet, size_t len);
+	uint8_t (*ipv4_tos)(struct uib_context *ctx, const void *packet,
+			    size_t len);
 };
 
 extern const struct uib_protocol_ops uib_rocev2_protocol_ops;

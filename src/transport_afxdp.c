@@ -9,7 +9,9 @@
 #include "uib/env.h"
 #include "uib/protocol.h"
 #include "uib/afxdp_frame.h"
+#include "afxdp_frame_internal.h"
 #include "transport_internal.h"
+#include "utils.h"
 
 #ifdef UIB_HAVE_AFXDP
 
@@ -20,10 +22,8 @@
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <arpa/inet.h>
-#include <linux/if_ether.h>
 #include <linux/if_xdp.h>
 #include <netinet/ip.h>
-#include <netinet/udp.h>
 #include <xdp/xsk.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
@@ -121,24 +121,21 @@ static int afxdp_probe(void)
 	return (ifn && *ifn) ? 1 : 0;
 }
 
-static int afxdp_decode_packet(struct uib_context *ctx, uint8_t *frame,
-			       size_t frame_len, const uint8_t *payload,
-			       size_t paylen)
+static int afxdp_decode_packet(struct uib_context *ctx,
+			       const struct uib_frame_meta *frame_meta,
+			       const uint8_t *payload, size_t paylen,
+			       int truncated)
 {
-	const struct iphdr *ip;
-	const struct udphdr *udp;
 	struct uib_wire_meta meta;
 
-	if (frame_len < UIB_L2_HDRS_LEN || paylen < ctx->pops->min_packet)
+	if (paylen < ctx->pops->min_packet)
 		return -1;
-	ip = (const struct iphdr *)(frame + ETH_HLEN);
-	udp = (const struct udphdr *)((const uint8_t *)ip + (size_t)ip->ihl * 4);
-	meta.src_ip = ip->saddr;
-	meta.dst_ip = ip->daddr;
-	meta.src_port = udp->source;
-	meta.dst_port = udp->dest;
-	meta.ip_id = ntohs(ip->id);
-	if (ctx->pops->wire_decode &&
+	meta.src_ip = frame_meta->src_ip;
+	meta.dst_ip = frame_meta->dst_ip;
+	meta.src_port = frame_meta->src_port;
+	meta.dst_port = frame_meta->dst_port;
+	meta.ip_id = frame_meta->ip_id;
+	if (ctx->pops->wire_decode && !truncated &&
 	    ctx->pops->wire_decode(&meta, (void *)payload, paylen) < 0)
 		return -1;
 	return 0;
@@ -162,23 +159,32 @@ static int afxdp_receive_batch(struct uib_context *ctx,
 
 	for (i = 0; i < count; i++) {
 		const struct xdp_desc *desc;
+		struct uib_frame_meta meta;
 		struct sockaddr_in src;
 		const uint8_t *payload;
 		uint64_t addr;
 		uint8_t *frame;
 		size_t length;
+		uint8_t tos;
+		int truncated;
 
 		desc = xsk_ring_cons__rx_desc(&be->rx, rx_index + i);
 		addr = xsk_umem__extract_addr(desc->addr);
 		frame = xsk_umem__get_data(be->umem_area, desc->addr);
-		if (!uib_frame_parse(frame, desc->len, be->port, &src,
-				     &payload, &length) &&
-		    !afxdp_decode_packet(ctx, frame, desc->len, payload, length)) {
-			if (ctx->pops->wire_decode)
+		if (!uib_frame_parse_meta(frame, desc->len, be->port, &meta,
+					  &payload, &length, &truncated) &&
+		    !afxdp_decode_packet(ctx, &meta, payload, length, truncated)) {
+			memset(&src, 0, sizeof(src));
+			src.sin_family = AF_INET;
+			src.sin_addr.s_addr = meta.src_ip;
+			src.sin_port = meta.src_port;
+			tos = meta.tos;
+			if (ctx->pops->wire_decode && !truncated)
 				uib_transport_deliver_validated(ctx, &src,
-					payload, length, 0, 0);
+					payload, length, tos, 0);
 			else
-				uib_transport_deliver(ctx, &src, payload, length);
+				uib_transport_deliver_ecn(ctx, &src, payload,
+						  length, tos, 0);
 		}
 		*xsk_ring_prod__fill_addr(&be->fq, fill_index + i) = addr;
 	}
@@ -251,6 +257,8 @@ static int afxdp_send_entropy(struct uib_context *ctx,
 	hi.dst_ip   = dst->sin_addr.s_addr;
 	hi.src_port = entropy ? htons(entropy) : be->port;
 	hi.dst_port = dst->sin_port ? dst->sin_port : be->port;
+	hi.tos = ctx->pops->ipv4_tos ?
+		ctx->pops->ipv4_tos(ctx, buf, len) : IPTOS_ECN_ECT0;
 
 	flen = uib_frame_build(frame, UIB_AFXDP_FRAME_SIZE, &hi, buf, len);
 	if (flen < 0) {
@@ -330,11 +338,16 @@ static int afxdp_configure(struct uib_context *ctx,
 			   const char *interface, const char *queue,
 			   const char *peer_mac)
 {
+	uint64_t queue_id;
 	int rc;
 
+	queue_id = 0;
+	if (queue &&
+	    (uib_parse_u64(queue, 0, &queue_id) < 0 || queue_id > UINT32_MAX))
+		return -EINVAL;
 	be->port = htons(ctx->bind_port ? ctx->bind_port :
 			 ctx->pops->default_port);
-	be->queue_id = queue ? (uint32_t)atoi(queue) : 0;
+	be->queue_id = (uint32_t)queue_id;
 	be->zerocopy = ctx->zerocopy.mode != UIB_ZEROCOPY_OFF;
 	socket_config->bind_flags |= be->zerocopy ? XDP_ZEROCOPY : XDP_COPY;
 	rc = uib_afxdp_parse_mac(peer_mac, be->peer_mac);

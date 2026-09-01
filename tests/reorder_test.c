@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "uib/uib.h"
+#include "../src/transport_internal.h"
 
 #define TEST_BUFFER_LENGTH 256
 #define TEST_PAYLOAD_LENGTH 8
@@ -179,6 +180,24 @@ static int post_two_uet_sends(struct test_endpoint *endpoint)
 	}
 	requests[0].next = &requests[1];
 	return uib_post_send(endpoint->qp, requests, NULL);
+}
+
+static int post_one_uet_send(struct test_endpoint *endpoint)
+{
+	struct uib_send_wr request;
+	struct uib_sge sge;
+
+	memset(&request, 0, sizeof(request));
+	memset(&sge, 0, sizeof(sge));
+	sge.addr = (uintptr_t)endpoint->buffer;
+	sge.length = TEST_PAYLOAD_LENGTH;
+	sge.lkey = endpoint->mr->lkey;
+	request.wr_id = 0x200;
+	request.sg_list = &sge;
+	request.num_sge = 1;
+	request.opcode = UIB_WR_SEND;
+	request.send_flags = UIB_SEND_SIGNALED;
+	return uib_post_send(endpoint->qp, &request, NULL);
 }
 
 static int capture_uet_request(int fd, uint32_t *psn, uint16_t *msg_id,
@@ -920,6 +939,109 @@ out:
 	setenv("UIB_UET_OPTIMIZED", "auto", 1);
 }
 
+static void run_uet_trimmed_nack(void)
+{
+	struct uib_uet_pds_nack nack;
+	struct sockaddr_in source;
+	struct test_endpoint endpoint;
+	uint32_t retransmit_identity;
+	uint32_t identity;
+	uint32_t retransmit_psn;
+	uint32_t psn;
+	uint16_t retransmit_msg_id;
+	uint16_t msg_id;
+	int capture_fd;
+	int rc;
+
+	setenv("UIB_UET_OPTIMIZED", "off", 1);
+	capture_fd = ack_capture_open(19715);
+	check("uet.trim.capture", capture_fd >= 0);
+	check("uet.trim.setup",
+	      !endpoint_init(&endpoint, "uet", 19716, 800));
+	if (capture_fd < 0 || !endpoint.context || !endpoint.mr)
+		goto out;
+	check("uet.trim.remote", !endpoint_set_remote_port(&endpoint, 19715));
+	check("uet.trim.post", !post_one_uet_send(&endpoint));
+	rc = capture_uet_request(capture_fd, &psn, &msg_id, &identity);
+	memset(&source, 0, sizeof(source));
+	source.sin_family = AF_INET;
+	source.sin_port = htons(19715);
+	source.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (!rc && uib_uet_build_nack(&nack, sizeof(nack),
+				      UIB_UET_NACK_TRIMMED, psn, 7,
+				      (uint16_t)endpoint.qp->qp_num) < 0)
+		rc = -1;
+	if (!rc)
+		rc = uib_qp_handle_packet(endpoint.qp, &source, &nack,
+					  sizeof(nack));
+	if (!rc)
+		rc = capture_uet_request(capture_fd, &retransmit_psn,
+					 &retransmit_msg_id,
+					 &retransmit_identity);
+	check("uet.trim.retransmit",
+	      !rc && retransmit_psn == psn && retransmit_msg_id == msg_id &&
+	      retransmit_identity == identity);
+	check("uet.trim.no-error", completion_count(&endpoint) == 0);
+
+out:
+	if (capture_fd >= 0)
+		close(capture_fd);
+	endpoint_cleanup(&endpoint);
+	setenv("UIB_UET_OPTIMIZED", "auto", 1);
+}
+
+static void run_uet_trimmed_request(void)
+{
+	static const uint8_t payload[TEST_PAYLOAD_LENGTH] = {
+		0xc1, 1, 2, 3, 4, 5, 6, 7,
+	};
+	struct uib_uet_pds_nack nack;
+	struct sockaddr_in source;
+	struct test_endpoint endpoint;
+	uint8_t packet[128];
+	ssize_t length;
+	int capture_fd;
+
+	setenv("UIB_UET_DSCP_TRIMMABLE", "8", 1);
+	setenv("UIB_UET_DSCP_TRIMMED", "10", 1);
+	setenv("UIB_UET_DSCP_TRIMMED_LASTHOP", "11", 1);
+	capture_fd = ack_capture_open(19717);
+	check("uet.trim-request.capture", capture_fd >= 0);
+	check("uet.trim-request.setup",
+	      !endpoint_init(&endpoint, "uet", 19718, 900));
+	if (capture_fd < 0 || !endpoint.context || !endpoint.mr)
+		goto out;
+	memset(&source, 0, sizeof(source));
+	source.sin_family = AF_INET;
+	source.sin_port = htons(19717);
+	source.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	length = (ssize_t)build_uet_packet(packet, sizeof(packet),
+					   endpoint.qp->qp_num, 900, 50,
+					   UIB_UET_SES_FLAG_SOM |
+					   UIB_UET_SES_FLAG_EOM,
+					   0, sizeof(payload), payload);
+	if (length > 0)
+		uib_transport_deliver_ecn(endpoint.context, &source, packet,
+					  sizeof(struct uib_uet_pds_req),
+					  (uint8_t)(10 << 2), 0);
+	length = recv(capture_fd, &nack, sizeof(nack), 0);
+	check("uet.trim-request.nack",
+	      length == sizeof(nack) &&
+	      uib_uet_prologue_type(&nack.prologue) == UIB_UET_PDS_TYPE_NACK &&
+	      nack.nack_code == UIB_UET_NACK_TRIMMED &&
+	      ntohl(nack.nack_psn) == 900 &&
+	      ntohs(nack.dpdcid) == 7);
+	check("uet.trim-request.drop", completion_count(&endpoint) == 0);
+
+out:
+	if (capture_fd >= 0)
+		close(capture_fd);
+	endpoint_cleanup(&endpoint);
+	unsetenv("UIB_UET_DSCP_TRIMMABLE");
+	unsetenv("UIB_UET_DSCP_TRIMMED");
+	unsetenv("UIB_UET_DSCP_TRIMMED_LASTHOP");
+}
+
 static void run_uet_wrap(void)
 {
 	static const uint8_t payloads[3][TEST_PAYLOAD_LENGTH] = {
@@ -974,6 +1096,8 @@ int main(void)
 	run_uet_ordering();
 	run_uet_next_message_replay();
 	run_uet_sack_gap_is_not_loss();
+	run_uet_trimmed_nack();
+	run_uet_trimmed_request();
 	run_uet_wrap();
 	run_uet_write_imm_reorder();
 	run_uet_write_imm_error_cleanup();

@@ -8,6 +8,8 @@
 #include <netinet/udp.h>
 
 #include "uib/afxdp_frame.h"
+#include "afxdp_frame_internal.h"
+#include "utils.h"
 
 /**
  * uib_afxdp_parse_mac - Parse a colon-separated Ethernet MAC address.
@@ -73,43 +75,134 @@ uint16_t uib_inet_csum(const void *data, size_t len)
 int uib_frame_build(uint8_t *out, size_t cap, const struct uib_frame_hdr *hi,
 		    const void *payload, size_t paylen)
 {
-	struct ethhdr *eth;
-	struct iphdr  *ip;
-	struct udphdr *udp;
-	size_t total = UIB_L2_HDRS_LEN + paylen;
+	struct ethhdr eth;
+	struct iphdr ip;
+	struct udphdr udp;
+	size_t total;
 
+	if (!out || !hi || (paylen && !payload) ||
+	    paylen > UINT16_MAX - sizeof(ip) - sizeof(udp) ||
+	    paylen > SIZE_MAX - UIB_L2_HDRS_LEN)
+		return -1;
+	total = UIB_L2_HDRS_LEN + paylen;
 	if (total > cap)
 		return -1;
 
-	eth = (struct ethhdr *)out;
-	memcpy(eth->h_dest,   hi->dst_mac, 6);
-	memcpy(eth->h_source, hi->src_mac, 6);
-	eth->h_proto = htons(ETH_P_IP);
+	memset(&eth, 0, sizeof(eth));
+	memcpy(eth.h_dest, hi->dst_mac, sizeof(eth.h_dest));
+	memcpy(eth.h_source, hi->src_mac, sizeof(eth.h_source));
+	eth.h_proto = htons(ETH_P_IP);
+	memcpy(out, &eth, sizeof(eth));
 
-	ip = (struct iphdr *)(out + ETH_HLEN);
-	memset(ip, 0, sizeof(*ip));
-	ip->version  = 4;
-	ip->ihl      = 5;
-	ip->tos      = 0;
-	ip->tot_len  = htons((uint16_t)(sizeof(*ip) + sizeof(*udp) + paylen));
-	ip->id       = 0;
-	ip->frag_off = htons(0x4000);
-	ip->ttl      = 64;
-	ip->protocol = IPPROTO_UDP;
-	ip->saddr    = hi->src_ip;
-	ip->daddr    = hi->dst_ip;
-	ip->check    = 0;
-	ip->check    = htons(uib_inet_csum(ip, sizeof(*ip)));
+	memset(&ip, 0, sizeof(ip));
+	ip.version = 4;
+	ip.ihl = 5;
+	ip.tos = hi->tos;
+	ip.tot_len = htons((uint16_t)(sizeof(ip) + sizeof(udp) + paylen));
+	ip.frag_off = htons(0x4000);
+	ip.ttl = 64;
+	ip.protocol = IPPROTO_UDP;
+	ip.saddr = hi->src_ip;
+	ip.daddr = hi->dst_ip;
+	ip.check = htons(uib_inet_csum(&ip, sizeof(ip)));
+	memcpy(out + ETH_HLEN, &ip, sizeof(ip));
 
-	udp = (struct udphdr *)(out + ETH_HLEN + sizeof(*ip));
-	udp->source = hi->src_port;
-	udp->dest   = hi->dst_port;
-	udp->len    = htons((uint16_t)(sizeof(*udp) + paylen));
-	udp->check  = 0;
+	memset(&udp, 0, sizeof(udp));
+	udp.source = hi->src_port;
+	udp.dest = hi->dst_port;
+	udp.len = htons((uint16_t)(sizeof(udp) + paylen));
+	memcpy(out + ETH_HLEN + sizeof(ip), &udp, sizeof(udp));
 
 	if (paylen)
 		memcpy(out + UIB_L2_HDRS_LEN, payload, paylen);
 	return (int)total;
+}
+
+int uib_frame_parse_meta(const uint8_t *frame, size_t len,
+			 uint16_t want_dport, struct uib_frame_meta *meta,
+			 const uint8_t **payload, size_t *paylen,
+			 int *truncated)
+{
+	struct ethhdr eth;
+	struct iphdr ip;
+	struct udphdr udp;
+	size_t available_len;
+	size_t ip_hlen;
+	size_t ip_len;
+	size_t l4_off;
+	size_t udp_len;
+	uint16_t fragment;
+
+	if (!frame || len < UIB_L2_HDRS_LEN)
+		return -1;
+
+	memcpy(&eth, frame, sizeof(eth));
+	if (eth.h_proto != htons(ETH_P_IP))
+		return -1;
+
+	memcpy(&ip, frame + ETH_HLEN, sizeof(ip));
+	if (ip.version != 4 || ip.protocol != IPPROTO_UDP)
+		return -1;
+	ip_hlen = (size_t)ip.ihl * 4;
+	if (ip_hlen < sizeof(ip))
+		return -1;
+	ip_len = ntohs(ip.tot_len);
+	if (ip_len < ip_hlen + sizeof(udp))
+		return -1;
+	fragment = ntohs(ip.frag_off);
+	if (fragment & (IP_MF | IP_OFFMASK))
+		return -1;
+	l4_off = ETH_HLEN + ip_hlen;
+	if (l4_off > len || len - l4_off < sizeof(udp))
+		return -1;
+
+	memcpy(&udp, frame + l4_off, sizeof(udp));
+	if (udp.dest != want_dport)
+		return -1;
+
+	udp_len = ntohs(udp.len);
+	available_len = len - l4_off;
+	if (udp_len < sizeof(udp) || udp_len > ip_len - ip_hlen)
+		return -1;
+
+	if (meta) {
+		meta->src_ip = ip.saddr;
+		meta->dst_ip = ip.daddr;
+		meta->src_port = udp.source;
+		meta->dst_port = udp.dest;
+		meta->ip_id = ntohs(ip.id);
+		meta->tos = ip.tos;
+	}
+	if (payload)
+		*payload = frame + l4_off + sizeof(udp);
+	if (paylen)
+		*paylen = min_t(size_t, udp_len, available_len) - sizeof(udp);
+	if (truncated)
+		*truncated = udp_len > available_len;
+	return 0;
+}
+
+int uib_frame_parse_available(const uint8_t *frame, size_t len,
+			      uint16_t want_dport, struct sockaddr_in *src,
+			      const uint8_t **payload, size_t *paylen,
+			      uint8_t *tos, int *truncated)
+{
+	struct uib_frame_meta meta;
+	int rc;
+
+	rc = uib_frame_parse_meta(frame, len, want_dport, &meta, payload,
+				  paylen, truncated);
+	if (rc < 0)
+		return rc;
+	if (src) {
+		memset(src, 0, sizeof(*src));
+		src->sin_family = AF_INET;
+		src->sin_addr.s_addr = meta.src_ip;
+		src->sin_port = meta.src_port;
+	}
+	if (tos)
+		*tos = meta.tos;
+	return 0;
 }
 
 /**
@@ -128,45 +221,12 @@ int uib_frame_parse(const uint8_t *frame, size_t len, uint16_t want_dport,
 		    struct sockaddr_in *src, const uint8_t **payload,
 		    size_t *paylen)
 {
-	const struct ethhdr *eth;
-	const struct iphdr  *ip;
-	const struct udphdr *udp;
-	size_t ip_hlen, l4_off, udp_len;
+	int truncated;
+	int rc;
 
-	if (len < UIB_L2_HDRS_LEN)
+	rc = uib_frame_parse_available(frame, len, want_dport, src, payload,
+				       paylen, NULL, &truncated);
+	if (rc < 0 || truncated)
 		return -1;
-
-	eth = (const struct ethhdr *)frame;
-	if (eth->h_proto != htons(ETH_P_IP))
-		return -1;
-
-	ip = (const struct iphdr *)(frame + ETH_HLEN);
-	if (ip->version != 4 || ip->protocol != IPPROTO_UDP)
-		return -1;
-	ip_hlen = (size_t)ip->ihl * 4;
-	if (ip_hlen < sizeof(*ip))
-		return -1;
-	l4_off = ETH_HLEN + ip_hlen;
-	if (l4_off + sizeof(*udp) > len)
-		return -1;
-
-	udp = (const struct udphdr *)(frame + l4_off);
-	if (udp->dest != want_dport)
-		return -1;
-
-	udp_len = ntohs(udp->len);
-	if (udp_len < sizeof(*udp) || l4_off + udp_len > len)
-		return -1;
-
-	if (src) {
-		memset(src, 0, sizeof(*src));
-		src->sin_family = AF_INET;
-		src->sin_addr.s_addr = ip->saddr;
-		src->sin_port = udp->source;
-	}
-	if (payload)
-		*payload = frame + l4_off + sizeof(*udp);
-	if (paylen)
-		*paylen = udp_len - sizeof(*udp);
 	return 0;
 }

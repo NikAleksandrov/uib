@@ -1,4 +1,18 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * tcp-devmem backend.
+ *
+ * C1 (this file, always built): a reliable TCP transport. Each protocol packet
+ * is length-prefixed (4-byte big-endian) since TCP is a byte stream. One
+ * connection per peer, keyed by the peer's *listening* address: the connector
+ * announces its listening addr in an 8-byte handshake so the acceptor can
+ * key the peer and so ACK/READ-RESPONSE packets flow back over the same
+ * connection.
+ *
+ * C2 (guarded by UIB_HAVE_DEVMEM): bind a DMA-BUF to a netdev RX queue. A
+ * complete opaque device-memory receive path is not advertised because this
+ * framed transport must parse its UIB headers before MR placement.
+ */
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -21,6 +35,7 @@
 #include "uib/host_zc.h"
 #include "host_zc_internal.h"
 #include "uring_zcrx.h"
+#include "utils.h"
 
 #define UIB_TCP_MAX_PEERS 64
 #define UIB_TCP_MAX_FRAME 65536
@@ -646,6 +661,7 @@ static int tcp_zcrx_init(struct uib_tcp_backend *be)
 	const char *zcrx_mode;
 	const char *zcrx_iface;
 	const char *zcrx_queue;
+	uint64_t queue_id;
 	int zcrx_required;
 	int rc;
 
@@ -653,13 +669,18 @@ static int tcp_zcrx_init(struct uib_tcp_backend *be)
 	zcrx_iface = getenv(UIB_ENV_HOST_ZC_IFACE);
 	zcrx_queue = getenv(UIB_ENV_HOST_ZC_QUEUE);
 	zcrx_required = zcrx_mode && !strcmp(zcrx_mode, "required");
+	queue_id = 0;
 	if (zcrx_mode && strcmp(zcrx_mode, "auto") &&
 	    strcmp(zcrx_mode, "off") && strcmp(zcrx_mode, "required"))
+		return -EINVAL;
+	if (zcrx_queue &&
+	    (uib_parse_u64(zcrx_queue, 0, &queue_id) < 0 ||
+	     queue_id > UINT32_MAX))
 		return -EINVAL;
 	if ((!zcrx_mode || strcmp(zcrx_mode, "off")) && zcrx_iface &&
 	    *zcrx_iface) {
 		rc = uib_zcrx_create(&be->zcrx, zcrx_iface,
-				      zcrx_queue ? (uint32_t)atoi(zcrx_queue) : 0,
+				      (uint32_t)queue_id,
 				      UIB_TCP_ZCRX_ENTRIES,
 				      UIB_TCP_ZCRX_AREA_SIZE);
 		if (rc < 0 && zcrx_required)
@@ -796,15 +817,20 @@ static int tcp_mr_register(struct uib_context *ctx, struct uib_mr *mr)
 	const char *ifn = getenv(UIB_ENV_DEVMEM_IFACE);
 	const char *qs  = getenv(UIB_ENV_DEVMEM_QUEUE);
 	struct uib_devmem_binding *b;
+	uint64_t queue_id;
 	int rc;
 
 	(void)ctx;
 	if (!ifn || !*ifn)
 		return -ENODEV;
+	queue_id = 0;
+	if (qs && (uib_parse_u64(qs, 0, &queue_id) < 0 ||
+		   queue_id > UINT32_MAX))
+		return -EINVAL;
 	b = calloc(1, sizeof(*b));
 	if (!b)
 		return -ENOMEM;
-	rc = uib_devmem_bind_rx(ifn, qs ? (uint32_t)atoi(qs) : 0, mr->dmabuf_fd, b);
+	rc = uib_devmem_bind_rx(ifn, (uint32_t)queue_id, mr->dmabuf_fd, b);
 	if (rc < 0) {
 		free(b);
 		return rc;

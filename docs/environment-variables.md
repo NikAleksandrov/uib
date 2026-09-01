@@ -19,6 +19,7 @@ when the relevant context, transport, benchmark, or test is created.
 - [TCP devmem transport](#tcp-devmem-transport)
 - [Provider-owned host-memory receive](#provider-owned-host-memory-receive)
 - [Ultra Ethernet](#ultra-ethernet)
+- [Ultra Ethernet trimming](#ultra-ethernet-trimming)
 - [Ultra Ethernet RCCC](#ultra-ethernet-rccc)
 - [RoCEv2](#rocev2)
 - [DCQCN](#dcqcn)
@@ -110,6 +111,14 @@ when the relevant context, transport, benchmark, or test is created.
 | <code>UIB_UET_OPTIMIZED</code> | `auto` | `off`, `auto`, `small`, or `medium` | Select the SES request-header optimization policy. | <code>UIB_PROTOCOL=uet UIB_UET_OPTIMIZED=medium app</code> |
 | <code>UIB_UET_MULTIPATH</code> | `off` | `off`, `oblivious`, or `path-aware` | Select entropy multipathing and path-failure tracking mode. | <code>UIB_PROTOCOL=uet UIB_UET_MULTIPATH=path-aware app</code> |
 | <code>UIB_UET_DEBUG</code> | Unset and disabled. | Any non-empty value enables logging. | Enable diagnostic UET packet and completion logging. | <code>UIB_PROTOCOL=uet UIB_UET_DEBUG=1 ./tests/loopback</code> |
+
+## Ultra Ethernet trimming
+
+| Variable | Default | Accepted values | Description | Example |
+|---|---|---|---|---|
+| <code>UIB_UET_DSCP_TRIMMABLE</code> | Unset; packet trimming is disabled. | The network's DSCP_TRIMMABLE value from `0` through `63`. | Mark UET requests as eligible for network packet trimming on raw UDP and AF_XDP transports. Configure all three UET trimming DSCP values together. | <code>UIB_UET_DSCP_TRIMMABLE=8 UIB_UET_DSCP_TRIMMED=10 \ UIB_UET_DSCP_TRIMMED_LASTHOP=11 app</code> |
+| <code>UIB_UET_DSCP_TRIMMED</code> | Unset; packet trimming is disabled. | The network's DSCP_TRIMMED value from `0` through `63`. | Identify UET packets trimmed by the network. Configure all three UET trimming DSCP values together; they must be different. | <code>UIB_UET_DSCP_TRIMMABLE=8 UIB_UET_DSCP_TRIMMED=10 \ UIB_UET_DSCP_TRIMMED_LASTHOP=11 app</code> |
+| <code>UIB_UET_DSCP_TRIMMED_LASTHOP</code> | Unset; packet trimming is disabled. | The network's DSCP_TRIMMED_LASTHOP value from `0` through `63`. | Identify UET packets trimmed on the destination's last network hop. | <code>UIB_UET_DSCP_TRIMMABLE=8 UIB_UET_DSCP_TRIMMED=10 \ UIB_UET_DSCP_TRIMMED_LASTHOP=11 app</code> |
 
 ## Ultra Ethernet RCCC
 

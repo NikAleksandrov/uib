@@ -456,6 +456,8 @@ uint8_t uib_uet_prologue_flags(const struct uib_uet_prologue *prologue);
 int uib_uet_build_ack(void *packet, size_t capacity, uint32_t cack_psn,
 		      uint32_t ack_psn, uint16_t spdcid, uint16_t dpdcid,
 		      uint8_t next_header);
+int uib_uet_build_nack(void *packet, size_t capacity, uint8_t nack_code,
+		       uint32_t nack_psn, uint16_t spdcid, uint16_t dpdcid);
 void uib_uet_nscc_wire_pack(struct uib_uet_nscc_wire_state *state,
 			    uint32_t service_time_ns, uint8_t restore,
 			    uint8_t penalty, uint32_t received_bytes,

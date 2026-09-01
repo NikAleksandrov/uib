@@ -14,6 +14,7 @@
 #include "uib/transport.h"
 #include "uib/protocol.h"
 #include "observability.h"
+#include "utils.h"
 
 #define UIB_RETRY_TIMEOUT_DEFAULT_US 20000ULL
 #define UIB_RETRY_TIMEOUT_MIN_US      1000ULL
@@ -22,17 +23,14 @@
 static int retry_timeout_init(struct uib_context *ctx)
 {
 	const char *setting;
-	unsigned long long timeout_us;
-	char *end;
+	uint64_t timeout_us;
 
 	setting = getenv(UIB_ENV_RETRY_TIMEOUT_US);
 	if (!setting) {
 		ctx->retry_timeout_ns = UIB_RETRY_TIMEOUT_DEFAULT_US * 1000ULL;
 		return 0;
 	}
-	errno = 0;
-	timeout_us = strtoull(setting, &end, 10);
-	if (errno || end == setting || *end ||
+	if (uib_parse_u64(setting, 10, &timeout_us) < 0 ||
 	    timeout_us < UIB_RETRY_TIMEOUT_MIN_US ||
 	    timeout_us > UIB_RETRY_TIMEOUT_MAX_US)
 		return -EINVAL;

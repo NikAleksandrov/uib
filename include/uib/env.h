@@ -495,6 +495,50 @@
 #define UIB_ENV_UET_CC_EXPERIMENTAL "UIB_UET_CC_EXPERIMENTAL"
 
 /**
+ * DOC: UIB_UET_DSCP_TRIMMABLE
+ * @uib-env: Ultra Ethernet trimming
+ * @default: Unset; packet trimming is disabled.
+ * @values: The network's DSCP_TRIMMABLE value from `0` through `63`.
+ *
+ * Mark UET requests as eligible for network packet trimming on raw UDP and
+ * AF_XDP transports. Configure all three UET trimming DSCP values together.
+ *
+ * Example:
+ * UIB_UET_DSCP_TRIMMABLE=8 UIB_UET_DSCP_TRIMMED=10 \
+ * UIB_UET_DSCP_TRIMMED_LASTHOP=11 app
+ */
+#define UIB_ENV_UET_DSCP_TRIMMABLE "UIB_UET_DSCP_TRIMMABLE"
+
+/**
+ * DOC: UIB_UET_DSCP_TRIMMED
+ * @uib-env: Ultra Ethernet trimming
+ * @default: Unset; packet trimming is disabled.
+ * @values: The network's DSCP_TRIMMED value from `0` through `63`.
+ *
+ * Identify UET packets trimmed by the network. Configure all three UET
+ * trimming DSCP values together; they must be different.
+ *
+ * Example:
+ * UIB_UET_DSCP_TRIMMABLE=8 UIB_UET_DSCP_TRIMMED=10 \
+ * UIB_UET_DSCP_TRIMMED_LASTHOP=11 app
+ */
+#define UIB_ENV_UET_DSCP_TRIMMED "UIB_UET_DSCP_TRIMMED"
+
+/**
+ * DOC: UIB_UET_DSCP_TRIMMED_LASTHOP
+ * @uib-env: Ultra Ethernet trimming
+ * @default: Unset; packet trimming is disabled.
+ * @values: The network's DSCP_TRIMMED_LASTHOP value from `0` through `63`.
+ *
+ * Identify UET packets trimmed on the destination's last network hop.
+ *
+ * Example:
+ * UIB_UET_DSCP_TRIMMABLE=8 UIB_UET_DSCP_TRIMMED=10 \
+ * UIB_UET_DSCP_TRIMMED_LASTHOP=11 app
+ */
+#define UIB_ENV_UET_DSCP_TRIMMED_LASTHOP "UIB_UET_DSCP_TRIMMED_LASTHOP"
+
+/**
  * DOC: UIB_UET_NSCC_MAX_WND
  * @uib-env: Ultra Ethernet
  * @default: The maximum window calculated by NSCC configuration.

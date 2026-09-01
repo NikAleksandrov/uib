@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include <netinet/ip.h>
 #include <urcu-bp.h>
 
 #include "uib/transport.h"
@@ -67,11 +68,12 @@ static void uib_transport_deliver_meta(struct uib_context *ctx,
 
 void uib_transport_deliver_ecn(struct uib_context *ctx,
 			       const struct sockaddr_in *src, const void *buf,
-			       size_t len, uint8_t ecn, uint64_t rx_time_ns)
+			       size_t len, uint8_t tos, uint64_t rx_time_ns)
 {
 	struct uib_rx_meta meta = {
 		.rx_time_ns = rx_time_ns,
-		.ecn = ecn,
+		.ecn = IPTOS_ECN(tos),
+		.dscp = tos >> 2,
 	};
 
 	uib_transport_deliver_meta(ctx, src, buf, len, &meta);
@@ -79,12 +81,13 @@ void uib_transport_deliver_ecn(struct uib_context *ctx,
 
 void uib_transport_deliver_validated(struct uib_context *ctx,
 				     const struct sockaddr_in *src,
-				     const void *buf, size_t len, uint8_t ecn,
+				     const void *buf, size_t len, uint8_t tos,
 				     uint64_t rx_time_ns)
 {
 	struct uib_rx_meta meta = {
 		.rx_time_ns = rx_time_ns,
-		.ecn = ecn,
+		.ecn = IPTOS_ECN(tos),
+		.dscp = tos >> 2,
 		.integrity_validated = 1,
 	};
 

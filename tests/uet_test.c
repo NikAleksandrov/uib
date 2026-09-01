@@ -24,6 +24,7 @@ int main(void)
 		0x11, 0x22, 0x33, 0x44,
 	};
 	struct uib_uet_pds_ack ack;
+	struct uib_uet_pds_nack nack;
 	struct uib_uet_nscc_wire_state cc_state;
 	struct uib_uet_rccc_wire_state credit_state;
 	uint32_t credit_target;
@@ -72,6 +73,18 @@ int main(void)
 	check("ack.cumulative", ntohl(ack.cack_psn) == 0xdeadfeed);
 	check("ack.pdc_ids", ntohs(ack.spdcid) == 0x1122 &&
 	      ntohs(ack.dpdcid) == 0x3344);
+
+	memset(&nack, 0, sizeof(nack));
+	len = uib_uet_build_nack(&nack, sizeof(nack),
+				 UIB_UET_NACK_TRIMMED, 0x12345678,
+				 0x1122, 0x3344);
+	check("nack.length", len == sizeof(nack));
+	check("nack.type", uib_uet_prologue_type(&nack.prologue) ==
+	      UIB_UET_PDS_TYPE_NACK);
+	check("nack.reason", nack.nack_code == UIB_UET_NACK_TRIMMED);
+	check("nack.psn", ntohl(nack.nack_psn) == 0x12345678);
+	check("nack.pdc_ids", ntohs(nack.spdcid) == 0x1122 &&
+	      ntohs(nack.dpdcid) == 0x3344);
 
 	uib_uet_nscc_wire_pack(&cc_state, 129, 1, 64, 65537, 17);
 	uib_uet_nscc_wire_unpack(&cc_state, &service, &restore, &penalty,

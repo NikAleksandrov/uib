@@ -15,6 +15,7 @@ struct uib_frame_hdr {
 	uint32_t dst_ip;
 	uint16_t src_port;
 	uint16_t dst_port;
+	uint8_t  tos;
 };
 
 int uib_afxdp_parse_mac(const char *text, uint8_t mac[6]);

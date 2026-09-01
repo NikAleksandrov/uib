@@ -12,6 +12,7 @@
 #include "uib/context.h"
 #include "uib/env.h"
 #include "uib/zerocopy.h"
+#include "utils.h"
 
 #define UIB_ZEROCOPY_DEFAULT_THRESHOLD (10U * 1024U)
 #define UIB_ZEROCOPY_FORCED_THRESHOLD  1024U
@@ -54,8 +55,7 @@ static enum uib_zerocopy_mode mode_from_env(void)
 void uib_zerocopy_init(struct uib_context *ctx)
 {
 	const char *threshold = getenv(UIB_ENV_ZEROCOPY_THRESHOLD);
-	unsigned long parsed;
-	char *end = NULL;
+	uint64_t parsed;
 
 	memset(&ctx->zerocopy, 0, sizeof(ctx->zerocopy));
 	pthread_mutex_init(&ctx->zerocopy_lock, NULL);
@@ -66,9 +66,7 @@ void uib_zerocopy_init(struct uib_context *ctx)
 		ctx->zerocopy.threshold = UIB_ZEROCOPY_FORCED_THRESHOLD;
 	if (!threshold || !*threshold)
 		return;
-	errno = 0;
-	parsed = strtoul(threshold, &end, 0);
-	if (!errno && end && !*end && parsed <= SIZE_MAX)
+	if (!uib_parse_u64(threshold, 0, &parsed) && parsed <= SIZE_MAX)
 		ctx->zerocopy.threshold = (size_t)parsed;
 }
 
