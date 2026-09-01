@@ -98,11 +98,20 @@ grep -F -- '--target worker-01/data' "$test_dir/ssh.log" > /dev/null
 grep -F -- '--target worker-02/data' "$test_dir/ssh.log" > /dev/null
 grep -F -- 'ip link set dev eth1 mtu 1280' "$test_dir/ssh.log" \
 	> /dev/null
+python3 "$project_dir/tests/cases/virtme_backend/topology_state.py" \
+	"$test_dir/runs/virtme-lifecycle/infrastructure/topology.json"
+if "$cli" status --profile virtme-kubernetes --overlay network/datacenter \
+	--run-id virtme-lifecycle --state-dir "$test_dir/runs" \
+	> "$test_dir/degraded-status.json"; then
+	echo "virtme did not report a terminated guest" >&2
+	exit 1
+fi
+python3 "$project_dir/tests/cases/virtme_backend/degraded_status.py" "$test_dir/degraded-status.json"
 "$cli" down --profile virtme-kubernetes --overlay network/datacenter \
 	--run-id virtme-lifecycle \
 	--state-dir "$test_dir/runs"
 test "$(grep -c '/run/uib-netem clear eth1' "$test_dir/ssh.log")" -eq 2
-python3 "$project_dir/tests/cases/virtme_backend/topology_state.py" "$test_dir/runs/virtme-lifecycle/infrastructure/ledger.json" \
+python3 "$project_dir/tests/cases/virtme_backend/owned_state.py" "$test_dir/runs/virtme-lifecycle/infrastructure/ledger.json" \
 	"$test_dir/runs/virtme-lifecycle/infrastructure/topology.json"
 unset VIRTME_TEST_SHAPING
 unset VIRTME_TEST_MTU

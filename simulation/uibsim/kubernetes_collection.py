@@ -34,7 +34,7 @@ def _kubernetes_stage_run(config_path, ledger, missing, run_dir, temporary):
     copy_file(manifest, temporary / 'scheduler' / 'workload.yaml')
     copy_file(config_path, temporary / 'resolved-values.json')
     copy_file(COMPATIBILITY, temporary / 'compatibility-lock.json')
-    for name in ('render.stderr', 'kubectl-apply.stdout', 'kubectl-apply.stderr'):
+    for name in ('render.stderr', 'kubectl-apply.stdout', 'kubectl-apply.stderr', 'fault-scheduler.stdout', 'fault-scheduler.stderr'):
         source = run_dir / name
         if source.is_file() and (not source.is_symlink()):
             copy_file(source, temporary / 'scheduler' / name)
@@ -111,8 +111,8 @@ def _kubernetes_collect_logs(args, config, missing, status, temporary):
     write_json(temporary / 'preflight.json', {'schemaVersion': 1, 'uibEnabled': config['uib']['enabled'], 'runtimePreflight': 'pod-init-container' if config['uib']['enabled'] else 'not-applicable', 'expectedPods': len(status['pods']), 'recordedPods': preflight_pods, 'passedPods': passed_preflights, 'verifiedByCollector': verified, 'evidence': 'logs/*.uib-runtime-check.log'})
     return verified
 
-def _kubernetes_collect_evidence(config, temporary):
-    from .evidence import collect_workload_metrics, file_manifest, provider_counter_evidence, transport_evidence
+def _kubernetes_collect_evidence(config, missing, run_dir, temporary):
+    from .evidence import collect_fault_evidence, collect_workload_metrics, file_manifest, provider_counter_evidence, transport_evidence
     from .state import copy_file, copy_run_provenance, load_ledger, owned_state_file, path_is_within, read_json, state_path, utc_now, write_json
 
     transport = transport_evidence(config, [('logs', temporary / 'logs')])
@@ -120,13 +120,20 @@ def _kubernetes_collect_evidence(config, temporary):
     counters = provider_counter_evidence(config, [('logs', temporary / 'logs')])
     write_json(temporary / 'provider-counters.json', counters)
     metrics = collect_workload_metrics(config, [('logs', temporary / 'logs')], temporary / 'metrics' / 'workload.jsonl')
+    fault_files, fault_records, applied_fault_targets, recovered_fault_targets = collect_fault_evidence(run_dir, temporary / 'faults.jsonl')
+    expected_recovery = {fault['target'] for fault in config.get('faults', []) if fault['action'] in {'checkpoint-storage-delay', 'delay-worker'}}
+    expected_termination = {f"rank-{fault['rank']}" for fault in config.get('faults', []) if fault['action'] == 'terminate-rank'}
+    if expected_recovery - (applied_fault_targets & recovered_fault_targets):
+        missing.append('fault-evidence/completed-targets')
+    if expected_termination - applied_fault_targets:
+        missing.append('fault-evidence/terminated-ranks')
     return counters, fault_files, fault_records, metrics, transport
 
-def _kubernetes_finalize_bundle(args, config, counters, metrics, missing, output, probes, status, temporary, transport, verified):
-    from .evidence import collect_workload_metrics, file_manifest, provider_counter_evidence, transport_evidence
+def _kubernetes_finalize_bundle(args, config, counters, fault_files, fault_records, metrics, missing, output, probes, status, temporary, transport, verified):
+    from .evidence import collect_fault_evidence, collect_workload_metrics, file_manifest, provider_counter_evidence, transport_evidence
     from .state import copy_file, copy_run_provenance, load_ledger, owned_state_file, path_is_within, read_json, state_path, utc_now, write_json
 
-    summary = {'schemaVersion': 1, 'runId': args.run_id, 'collectedAt': utc_now(), 'completeSchedulerSnapshot': status['terminal'], 'scheduler': 'kubernetes', 'schedulerState': status['state'], 'namespace': args.run_id, 'resource': f"{status['resource']}/{args.run_id}", 'podPhases': status['podPhases'], 'workloadStatusRecorded': True, 'uibEnabled': config['uib']['enabled'], 'uibPreflightVerified': verified, 'protocol': config['uib']['protocol'] if config['uib']['enabled'] else None, 'congestionControl': config['uib']['congestionControl'] if config['uib']['enabled'] else None, 'memoryMode': config['uib']['memoryMode'] if config['uib']['enabled'] else None, 'communicationFrontend': config['communication']['frontend'], 'validationLevel': 'not-assigned', 'uibTrafficEvidence': transport['classification'], 'uibCounterEvidence': counters['classification'], 'transportEvidence': 'transport-evidence.json', 'providerCounters': 'provider-counters.json', 'workloadMetrics': 'metrics/workload.jsonl', 'workloadMetricRecords': len(metrics), 'hostProbes': 'host-probes.json', 'hostProbeNodes': len(probes), 'promotionEligible': False, 'missingArtifacts': missing}
+    summary = {'schemaVersion': 1, 'runId': args.run_id, 'collectedAt': utc_now(), 'completeSchedulerSnapshot': status['terminal'], 'scheduler': 'kubernetes', 'schedulerState': status['state'], 'namespace': args.run_id, 'resource': f"{status['resource']}/{args.run_id}", 'podPhases': status['podPhases'], 'workloadStatusRecorded': True, 'uibEnabled': config['uib']['enabled'], 'uibPreflightVerified': verified, 'protocol': config['uib']['protocol'] if config['uib']['enabled'] else None, 'congestionControl': config['uib']['congestionControl'] if config['uib']['enabled'] else None, 'memoryMode': config['uib']['memoryMode'] if config['uib']['enabled'] else None, 'communicationFrontend': config['communication']['frontend'], 'validationLevel': 'not-assigned', 'uibTrafficEvidence': transport['classification'], 'uibCounterEvidence': counters['classification'], 'transportEvidence': 'transport-evidence.json', 'providerCounters': 'provider-counters.json', 'workloadMetrics': 'metrics/workload.jsonl', 'workloadMetricRecords': len(metrics), 'hostProbes': 'host-probes.json', 'hostProbeNodes': len(probes), 'faultEvidenceFiles': fault_files, 'faultEvidenceRecords': fault_records, 'promotionEligible': False, 'missingArtifacts': missing}
     write_json(temporary / 'summary.json', summary)
     (temporary / 'summary.md').write_text(f"# UIB simulation result: {args.run_id}\n\nKubernetes {status['resource']}/{args.run_id} was `{status['state']}`. This is {('a terminal' if status['terminal'] else 'an incomplete diagnostic')} snapshot.\n\nCollection verifies runtime preflight logs but does not by itself prove that application traffic used UIB. Inspect transport, correctness, and network evidence before promotion.\n", encoding='utf-8')
     write_json(temporary / 'manifest.json', file_manifest(temporary))
@@ -135,7 +142,7 @@ def _kubernetes_finalize_bundle(args, config, counters, metrics, missing, output
 def command_kubernetes_collect(args):
     from .kubernetes import query_kubernetes_status
     from .core import COMPATIBILITY, ConfigurationError, DEFAULT_RESULT_DIR
-    from .evidence import collect_workload_metrics, file_manifest, provider_counter_evidence, transport_evidence
+    from .evidence import collect_fault_evidence, collect_workload_metrics, file_manifest, provider_counter_evidence, transport_evidence
     from .state import copy_file, copy_run_provenance, load_ledger, owned_state_file, path_is_within, read_json, state_path, utc_now, write_json
 
     run_dir = state_path(args)
@@ -173,8 +180,8 @@ def command_kubernetes_collect(args):
         _kubernetes_stage_run(config_path, ledger, missing, run_dir, temporary)
         probes = _kubernetes_collect_scheduler(args, config, missing, status, temporary)
         verified = _kubernetes_collect_logs(args, config, missing, status, temporary)
-        counters, fault_files, fault_records, metrics, transport = _kubernetes_collect_evidence(config, temporary)
-        _kubernetes_finalize_bundle(args, config, counters, metrics, missing, output, probes, status, temporary, transport, verified)
+        counters, fault_files, fault_records, metrics, transport = _kubernetes_collect_evidence(config, missing, run_dir, temporary)
+        _kubernetes_finalize_bundle(args, config, counters, fault_files, fault_records, metrics, missing, output, probes, status, temporary, transport, verified)
     except (ConfigurationError, OSError) as error:
         shutil.rmtree(temporary, ignore_errors=True)
         if isinstance(error, ConfigurationError):

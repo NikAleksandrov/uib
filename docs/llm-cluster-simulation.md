@@ -540,6 +540,37 @@ The job also requires Python 3 and `jq`. Network faults additionally require
 must be unique and must match the request exactly. A request without `faults`
 does not start a scheduler or require this setup.
 
+Kubernetes executes `terminate-rank`, `delay-worker`, and
+`checkpoint-storage-delay` from an owned host scheduler. Rank termination
+sorts workload pods carrying the `uib-runtime-check` init container and
+deletes the selected pod. Worker delay cordons the exact named node and
+uncordons it after `duration` or during interrupted cleanup. Checkpoint delay
+creates a run-namespaced Chaos Mesh `IOChaos` resource for `/results`, so that
+action requires an installed Chaos Mesh controller and a supported persistent
+volume. The other Kubernetes actions do not require Chaos Mesh. Kubernetes
+network faults are rejected until a pod-network executor is selected.
+
+```yaml
+faults:
+  - at: 0s
+    action: delay-worker
+    target: worker-02
+    duration: 30s
+  - at: 2m
+    action: terminate-rank
+    rank: 1
+  - at: 3m
+    action: checkpoint-storage-delay
+    target: /results
+    latency: 50ms
+    duration: 20s
+```
+
+`uib-sim down` stops only the PID whose start time matches the run ledger,
+restores active worker and storage faults, and then deletes the run namespace.
+The collector copies the scheduler JSONL and reports incomplete apply/recovery
+evidence in `summary.json`.
+
 ## Configuration syntax and values
 
 Configuration is merged in this order, with later values winning:
@@ -688,11 +719,11 @@ vice versa.
 | `measurement.steps` | Positive integer | Measured iterations |
 | `faults[].at` | Integer plus `ms`, `s`, `m`, or `h` | Time-relative fault |
 | `faults[].afterEvent` | Event name | Event-relative fault alternative |
-| `faults[].action` | `add-delay`, `packet-loss`, `partition`, `link-down`, `terminate-rank` | Fault type |
-| `faults[].target` | Backend endpoint name | Required by every network action |
-| `faults[].latency` | Nonzero netem duration | Required only by `add-delay` |
+| `faults[].action` | `add-delay`, `packet-loss`, `partition`, `link-down`, `terminate-rank`, `delay-worker`, `checkpoint-storage-delay` | Fault type; the selected scheduler must implement it |
+| `faults[].target` | Endpoint, worker, or `/results` | Network actions use `worker-NN/data`, worker delay uses `worker-NN`, and checkpoint delay uses `/results` |
+| `faults[].latency` | Nonzero duration | Required by `add-delay` and `checkpoint-storage-delay` |
 | `faults[].percent` | Number greater than 0 and at most 100 | Required only by `packet-loss` |
-| `faults[].duration` | Nonzero `ms`, `s`, `m`, or `h` offset | Required by every network action so cleanup can restore the link |
+| `faults[].duration` | Nonzero `ms`, `s`, `m`, or `h` offset | Required by recoverable network, worker, and checkpoint-storage faults |
 | `faults[].rank` | Non-negative rank number | Required only by `terminate-rank` |
 
 The rank invariant is:
@@ -3948,7 +3979,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-mtu-test` | Build dependencies, `ip`, `timeout`, `ibv_rc_pingpong`, and permission to create network namespaces and veth pairs | Actual 2051-byte multi-packet RoCEv2 traffic at link MTUs 576 and 1280, plus UET at 576; both endpoints use and advertise the automatically derived active MTU |
 | `make rocev2-ecn-test` | Build dependencies and permission to open loopback UDP sockets | ECT(0) traffic produces an ACK but no CNP, while a valid CE-marked RoCEv2 packet produces exactly one ACK and one CNP; both io_uring multishot and batched receive metadata paths are tested |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
-| `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Rootless socket and optional bridge rendering, IPv4/MAC/SSH allocation, exact virtme-ng launch vectors, worker fault-scheduler provisioning and stable targets, run-owned key/inventory creation, PID/start-time ownership, CLI `up/status/down`, bridge create/delete cleanup through fake standard commands, and invalid combination rejection |
+| `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Rootless socket and optional bridge rendering, IPv4/MAC/SSH allocation, exact virtme-ng launch vectors, worker fault-scheduler provisioning and stable targets, run-owned key/inventory creation, PID/start-time ownership, terminated-guest degradation, remaining-process cleanup, bridge create/delete cleanup through fake standard commands, and invalid combination rejection |
 | `make simulation-lifecycle-interruption-test` | Python 3 and POSIX shell tools; no cluster, hypervisor, or elevated privilege | SIGTERM propagation through the public CLI, Kind default cleanup and `--retain`, libvirt interruption during OpenTofu apply with owned destroy, and virtme interruption after guest launch with process and network cleanup |
 | `make simulation-workload-interruption-test` | Python 3 and POSIX shell tools; no scheduler or cluster | Kubernetes apply interruption with exact namespace cleanup, partial collection removal and successful retry, interrupted cleanup retry, and conservative Slurm `submission-unknown` recording when no numeric job ID was returned |
 | `make simulation-virtme-kubernetes-e2e-test` | virtme-ng 1.35, SSH, kubectl, QEMU with KVM or TCG, about 4 GiB memory for the two reduced-size guests, and download access for the pinned k3s binary on first use | A real controller and worker under separate virtme kernels, rootless socket data traffic, pinned k3s/containerd startup without systemd PID 1, both nodes Ready, host API access through an owned SSH forward, cached download reuse, and exact process cleanup |
@@ -3962,6 +3993,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-libvirt-inference-e2e-test` | The libvirt gate requirements, the local inference image or build access, the downloaded SmolLM2 cache, 8 GiB per VM, 64 GiB guest disks, and about 8 GiB ignored host image-cache space | Everything in the libvirt gate, bounded-memory SquashFS staging, verified Hugging Face cache transfer, real offline four-request CPU serving through Slurm/Pyxis/Enroot, request trace and artifact ledgers, and cleanup; the one-task workload itself has no UIB traffic |
 | `make simulation-kubernetes-render-test` | Python 3, PyYAML, and `jsonschema`; no cluster or container engine | Kubeflow Trainer v2.2.1 and KubeRay v1.6.2 resource shapes, ownership labels, unchanged workload JSON, UIB init and environment injection, protocol switching, native baseline, fixed Ray worker shape, digest enforcement, and rejection of unsafe combinations |
 | `make simulation-kubernetes-lifecycle-test` | The Kubernetes renderer requirements; no cluster, operator, or container engine | Exclusive run ownership, standard `kubectl apply/get/logs/version/delete` delegation, terminal and explicit incomplete snapshots, pod placement, per-container logs, per-pod UIB preflight, client/server and Node host probes, namespace cleanup, and SHA-256 evidence integrity using a fake kubectl executable |
+| `make simulation-kubernetes-fault-test` | The Kubernetes renderer requirements; no cluster, operator, Chaos Mesh installation, or container engine | Owned scheduler startup, exact pod termination, worker cordon/recovery, rendered `IOChaos` checkpoint latency, JSONL evidence, PID/start-time ownership, and signal-driven cleanup through a fake standard `kubectl` executable |
 | `make simulation-transport-evidence-test` | Python 3, PyYAML, and `jsonschema`; no cluster or communication library | Bounded NCCL, RCCL, UCX, and libfabric positive-selection rules; forbidden fallback precedence; insufficient, single-rank, Gloo, and native classifications; and oversized-log skipping |
 | `make simulation-provider-counter-evidence-test` | Python 3; no cluster or communication library | UIB close-time counter aggregation; traffic, incomplete-rank, no-traffic, error, backend-mismatch, unavailable, invalid, single-rank, and native classifications |
 | `make simulation-workload-metrics-test` | Python 3, PyYAML, and `jsonschema`; no cluster, model, or dataset | Training and inference result normalization, duplicate-source merging, units and key metrics, run ownership, and rejection of non-finite values |

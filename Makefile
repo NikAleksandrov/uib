@@ -426,6 +426,9 @@ simulation-kubernetes-render-test:
 simulation-kubernetes-lifecycle-test:
 	./tests/run_kubernetes_lifecycle_test.sh
 
+simulation-kubernetes-fault-test:
+	./tests/run_kubernetes_fault_test.sh
+
 simulation-transport-evidence-test:
 	./tests/run_transport_evidence_test.sh
 
@@ -1183,7 +1186,7 @@ clean:
 	simulation-virtme-inference-e2e-test \
 	simulation-virtme-netem-e2e-test \
 	simulation-kubernetes-render-test simulation-slurm-render-test \
-	simulation-kubernetes-lifecycle-test \
+	simulation-kubernetes-lifecycle-test simulation-kubernetes-fault-test \
 	simulation-transport-evidence-test \
 	simulation-provider-counter-evidence-test \
 	simulation-workload-metrics-test \

@@ -31,6 +31,7 @@ def add_state_dir_arg(parser):
 
 def main():
     from .core import ConfigurationError, DEFAULT_HUGGINGFACE_CACHE, LifecycleInterrupted, interrupt_lifecycle
+    from .faults import command_internal_kubernetes_fault_schedule
     from .lifecycle import command_collect, command_doctor, command_down, command_kubeconfig, command_load_cache, command_load_image, command_render, command_render_workload, command_run, command_status, command_up
 
     parser = argparse.ArgumentParser(
@@ -116,9 +117,22 @@ def main():
         "--infrastructure", action="store_true",
         help="also remove same-run Kubernetes infrastructure")
     down.set_defaults(handler=command_down)
+    fault_schedule = commands.add_parser(
+        "_kubernetes-fault-schedule", help=argparse.SUPPRESS)
+    fault_schedule.add_argument("config")
+    fault_schedule.add_argument("--namespace", required=True)
+    fault_schedule.add_argument("--output", required=True)
+    fault_schedule.add_argument("--ready", required=True)
+    fault_schedule.add_argument("--wait-timeout", type=float, default=300)
+    fault_schedule.add_argument(
+        "--kubectl", nargs=argparse.REMAINDER, required=True)
+    fault_schedule.set_defaults(
+        handler=command_internal_kubernetes_fault_schedule)
     args = parser.parse_args()
     previous_handlers = {}
-    if args.command in {"up", "run", "collect", "down"}:
+    if args.command in {
+            "up", "run", "collect", "down",
+            "_kubernetes-fault-schedule"}:
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous_handlers[signum] = signal.signal(
                 signum, interrupt_lifecycle)

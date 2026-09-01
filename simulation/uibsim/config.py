@@ -517,6 +517,8 @@ def validate_faults(config):
         "link-down": {"target", "duration"},
         "partition": {"target", "duration"},
         "terminate-rank": {"rank"},
+        "delay-worker": {"target", "duration"},
+        "checkpoint-storage-delay": {"target", "latency", "duration"},
     }
     optional_fields = {"at", "afterEvent", "action"}
     for index, fault in enumerate(config.get("faults", [])):
@@ -546,6 +548,17 @@ def validate_faults(config):
                     (parallel["nodes"] * parallel["processesPerNode"])):
                 raise ConfigurationError(
                     f"faults[{index}] rank is outside the workload")
+        if action == "delay-worker":
+            target = fault["target"].removesuffix("/data")
+            if f"{target}/data" not in expected_targets:
+                raise ConfigurationError(
+                    f"faults[{index}] delay-worker has unknown target")
+        if action == "checkpoint-storage-delay":
+            target = pathlib.PurePosixPath(fault["target"])
+            if (not target.is_absolute() or ".." in target.parts or
+                    target != pathlib.PurePosixPath("/results")):
+                raise ConfigurationError(
+                    f"faults[{index}] checkpoint storage target must be /results")
         if "percent" in fault and fault["percent"] <= 0:
             raise ConfigurationError(
                 f"faults[{index}] percent must be greater than zero")

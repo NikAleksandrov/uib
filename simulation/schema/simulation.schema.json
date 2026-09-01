@@ -348,7 +348,7 @@
           "at": { "$ref": "#/$defs/timeOffset" },
           "afterEvent": { "type": "string", "minLength": 1 },
           "action": {
-            "enum": ["add-delay", "packet-loss", "link-down", "partition", "terminate-rank"]
+            "enum": ["add-delay", "packet-loss", "link-down", "partition", "terminate-rank", "delay-worker", "checkpoint-storage-delay"]
           },
           "target": { "type": "string", "minLength": 1 },
           "rank": { "type": "integer", "minimum": 0 },

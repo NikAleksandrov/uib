@@ -91,14 +91,16 @@ def query_kubernetes_status(args, config, resource=None):
 def command_kubernetes_run(args):
     from .config import resolve
     from .core import ConfigurationError, KUBERNETES_RENDERER, LifecycleInterrupted, run_command
-    from .faults import run_kubectl
+    from .faults import run_kubectl, start_kubernetes_fault_scheduler, stop_kubernetes_fault_scheduler
     from .state import prepare_run_directory, record_run_inputs, utc_now, write_json
 
     config = resolve(args)
-    if config.get("faults"):
-        raise ConfigurationError(
-            "Kubernetes run does not yet execute fault schedules; refusing "
-            "to submit one that would be silently ignored")
+    supported_faults = {
+        "checkpoint-storage-delay", "delay-worker", "terminate-rank"}
+    for index, fault in enumerate(config.get("faults", [])):
+        if fault["action"] not in supported_faults:
+            raise ConfigurationError(
+                f"faults[{index}] {fault['action']} has no Kubernetes executor")
     config["runId"] = args.run_id
     run_dir = prepare_run_directory(args, config)
     resource = kubernetes_resource(config)
@@ -159,6 +161,16 @@ def command_kubernetes_run(args):
 
     ledger["state"] = "rendered"
     write_json(ledger_path, ledger)
+    if config.get("faults"):
+        try:
+            ledger["faultScheduler"] = start_kubernetes_fault_scheduler(
+                args, config, config_path, run_dir)
+        except ConfigurationError as error:
+            ledger["state"] = "fault-scheduler-failed"
+            ledger["error"] = str(error)
+            write_json(ledger_path, ledger)
+            raise
+        write_json(ledger_path, ledger)
     try:
         submitted = run_kubectl(
             args, config, ["apply", "-f", str(manifest)],
@@ -167,6 +179,8 @@ def command_kubernetes_run(args):
         ledger["state"] = "interrupted"
         ledger["interruptedStage"] = "submission"
         ledger["error"] = str(error)
+        ledger["faultSchedulerCleanup"] = \
+            stop_kubernetes_fault_scheduler(run_dir, ledger)
         cleanup = run_kubectl(args, config, [
             "delete", "namespace", args.run_id, "--ignore-not-found",
             "--wait=false",
@@ -183,6 +197,8 @@ def command_kubernetes_run(args):
     if submitted.returncode:
         ledger["state"] = "submission-failed"
         ledger["submissionExitCode"] = submitted.returncode
+        ledger["faultSchedulerCleanup"] = \
+            stop_kubernetes_fault_scheduler(run_dir, ledger)
         write_json(ledger_path, ledger)
         if submitted.stderr:
             print(submitted.stderr, file=sys.stderr, end="")
@@ -216,7 +232,8 @@ from .kubernetes_collection import command_kubernetes_collect
 
 
 def command_kubernetes_down(args):
-    from .faults import run_kubectl
+    from .core import ConfigurationError
+    from .faults import run_kubectl, stop_kubernetes_fault_scheduler
     from .state import load_ledger, owned_state_file, read_json, state_path, utc_now, write_json
 
     ledger_path, ledger = load_ledger(args, "kubernetes")
@@ -224,6 +241,12 @@ def command_kubernetes_down(args):
     config = read_json(owned_state_file(
         run_dir, ledger["resolvedConfig"], "resolved configuration"),
         "resolved configuration")
+    ledger["faultSchedulerCleanup"] = \
+        stop_kubernetes_fault_scheduler(run_dir, ledger)
+    if ledger["faultSchedulerCleanup"] == "failed":
+        write_json(ledger_path, ledger)
+        raise ConfigurationError(
+            "cannot stop the owned Kubernetes fault scheduler")
     result = run_kubectl(args, config, [
         "delete", "namespace", args.run_id, "--ignore-not-found",
         "--wait=false",
