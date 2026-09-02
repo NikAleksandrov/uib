@@ -607,7 +607,7 @@ use a small YAML overlay for a group of related values.
 | virtme network | `virtme-bridge` (optional; the profiles default to rootless socket networking) |
 | Communication | `communication/nccl`, `communication/rccl`, `communication/ucx`, `communication/libfabric` |
 | Protocol and congestion | `protocol/rocev2`, `protocol/rocev2-dcqcn`, `protocol/rocev2-nscc-experimental`, `protocol/uet-nscc`, `protocol/uet-rccc`, `protocol/uet-none`, `protocol/uet-dcqcn-experimental` |
-| Network condition and placement | `network/clean`, `network/latency`, `network/drops`, `network/reordered`, `network/drops-reordered`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/bursty`, `network/ecn`, `network/asymmetric`, `network/minimum-mtu`, `network/jumbo`, `network/host-tap-ingress`, `network/oversubscribed` |
+| Network condition and placement | `network/clean`, `network/latency`, `network/drops`, `network/reordered`, `network/drops-reordered`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/bursty`, `network/duplicated`, `network/corrupted`, `network/jittery`, `network/wan`, `network/mixed`, `network/ecn`, `network/asymmetric`, `network/minimum-mtu`, `network/jumbo`, `network/host-tap-ingress`, `network/oversubscribed` |
 
 A later overlay from the same layer replaces the earlier layer settings.
 Network overlays replace shaping and per-worker shaping; an overlay changes
@@ -1175,7 +1175,8 @@ and network condition.
 ## Protocol and congestion-control resilience benchmark
 
 `make benchmark-congestion` compares the same host-memory traffic under clean,
-latency, drop, reordering, and combined drop-plus-reordering conditions. Each
+latency, drop, reordering, duplication, corruption, variable-delay, WAN-like,
+and mixed-impairment conditions. Each
 case runs in a disposable network namespace, applies the checked-in netem
 overlay to loopback, and writes `congestion-comparison.csv`. `make
 benchmark-all` includes this matrix, and `make benchmark-report` adds it to the
@@ -1185,8 +1186,8 @@ The default matrix is:
 
 | Protocol | Algorithms | Conditions |
 |---|---|---|
-| RoCEv2 | `dcqcn`, `none` | `clean`, `latency`, `drops`, `reordered`, `drops-reordered` |
-| UET | `rccc`, `nscc`, `none` | The same five conditions |
+| RoCEv2 | `dcqcn`, `none` | `clean`, `latency`, `drops`, `reordered`, `drops-reordered`, `duplicated`, `corrupted`, `jittery`, `wan`, `mixed` |
+| UET | `rccc`, `nscc`, `none` | The same ten conditions |
 
 The UET/DCQCN cross-protocol experiment is supported but intentionally omitted
 from defaults. Select it by its explicit `dcqcn-experimental` name.
@@ -1194,7 +1195,7 @@ from defaults. Select it by its explicit `dcqcn-experimental` name.
 | Variable | Default | Syntax |
 |---|---|---|
 | `UIB_CC_BENCH_VARIANTS` | Native/default algorithms above | Space-separated `protocol:algorithm` entries |
-| `UIB_CC_BENCH_CONDITIONS` | Five conditions above | Space-separated checked-in network overlay names |
+| `UIB_CC_BENCH_CONDITIONS` | Ten conditions above | Space-separated checked-in network overlay names |
 | `UIB_CC_BENCH_MATRIX` | Cartesian product of variants and conditions | Space-separated exact `protocol:algorithm:condition` entries |
 | `UIB_CC_BENCH_ITERATIONS` | `1000` | Positive operation count |
 | `UIB_CC_BENCH_SIZE` | `16384` | Positive message size in bytes |
@@ -3329,6 +3330,11 @@ The checked-in conditions are intentionally small and readable:
 | `network/lossy` | 1 ms delay, 1% random loss, 25% loss correlation, 1024-packet queue, seed 12345 |
 | `network/bursty` | 1 ms delay and a Gilbert-Elliott model with 0.5% bad-state entry, 20% recovery, 80% loss while bad, 0.01% loss while good, 1024-packet queue, seed 12345 |
 | `network/reordered` | 2 ms delay, 500 us normal jitter, 10% reordering, 25% correlation, gap 5, seed 12345 |
+| `network/duplicated` | 1 ms delay, 2% duplication with 25% correlation, 1024-packet queue, seed 12345 |
+| `network/corrupted` | 1 ms delay, 1% corruption with 10% correlation, 1024-packet queue, seed 12345 |
+| `network/jittery` | 5 ms delay, 4 ms Pareto-normal jitter, 25% delay correlation, 2048-packet queue, seed 12345 |
+| `network/wan` | 1 Gbit/s, 20 ms delay, 5 ms normal jitter, 0.1% loss, 24-byte packet overhead, 4096-packet queue, seed 12345 |
+| `network/mixed` | 5 Gbit/s, 2 ms delay, 1 ms jitter, 0.5% loss, 0.2% duplication, 0.1% corruption, and 2% reordering, seed 12345 |
 | `network/ecn` | 10 Gbit/s, 250 us delay, 2% loss decision model converted to ECN marks for ECN-capable packets, 512-packet queue, seed 12345 |
 | `network/asymmetric` | 250 us default; worker 1 uses 100 us, while worker 2 uses 1 Gbit/s and 5 ms |
 | `network/minimum-mtu` | Shaping disabled and link MTU 576 |
@@ -4224,7 +4230,7 @@ and exact process cleanup.
 | `VIRTME_DOWNLOAD_CACHE` | `simulation/.artifacts/downloads/virtme` | Reusable verified package, source, runtime, plugin, and smoke-image cache |
 | `UIB_RUNTIME_SOURCE` | `simulation/.artifacts/uib-runtime` | Host path to the complete portable runtime shared read-only with every guest |
 | `VIRTME_MODEL_CACHE` | `simulation/.artifacts/huggingface` | Host path shared read-write at `storage.modelCachePath` in every guest |
-| `VIRTME_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty or a checked-in network overlay: `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, `ecn`, `asymmetric`, `minimum-mtu`, or `jumbo` |
+| `VIRTME_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty or a checked-in network overlay: `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, `duplicated`, `corrupted`, `jittery`, `wan`, `mixed`, `ecn`, `asymmetric`, `minimum-mtu`, or `jumbo` |
 | `VIRTME_SLURM_JOB_WAIT` | `120` | Positive seconds allowed for the end-to-end workload job to reach a terminal state |
 | `SLURM_IMAGE_CACHE` | `simulation/.artifacts/slurm-images` | Reusable verified host SquashFS cache shared with the virtme guests |
 | `PORTABLE_RUNTIME_CONTAINER_ENGINE` | `docker` | Docker-compatible engine used to build and verify the portable runtime dependency |
@@ -4299,7 +4305,7 @@ committed.
 |---|---|---|
 | `LIBVIRT_URI` | `qemu:///session` | Exact libvirt URI; rootless mode requires the session URI |
 | `LIBVIRT_NETWORK_MODE` | `rootless` | `rootless` for passt plus multicast, or `bridge` for managed networks |
-| `LIBVIRT_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty for the profile setting, or a checked-in network overlay: `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, `ecn`, `asymmetric`, `minimum-mtu`, or `jumbo` |
+| `LIBVIRT_NETWORK_CONDITION` | Unset; the netem target sets `datacenter` | Empty for the profile setting, or a checked-in network overlay: `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, `duplicated`, `corrupted`, `jittery`, `wan`, `mixed`, `ecn`, `asymmetric`, `minimum-mtu`, or `jumbo` |
 | `LIBVIRT_POOL` | Unique run ID | Active pool name; the gate creates and later removes a missing session pool |
 | `LIBVIRT_POOL_DIR` | Ignored run-specific path | Directory backing a session pool created by the gate; not used for a pre-existing pool |
 | `LIBVIRT_WORKERS` | `2` | Positive worker count; two or more place the UIB traffic ranks on distinct VMs |
@@ -4372,7 +4378,7 @@ never changes the host root qdisc. Its options are:
 
 | Variable | Default | Syntax and values |
 |---|---|---|
-| `SIMULATION_CC_MATRIX` | Experimental RoCEv2 clean/datacenter/lossy NSCC, constrained `none`, and plugin cases; UET clean/datacenter/constrained/lossy/bursty/reordered NSCC, constrained `none`, and plugin cases | Space-separated `protocol:algorithm:condition` entries. Protocol is `rocev2` or `uet`; test algorithms are `nscc`, `none`, and `test-pass`; RoCEv2+NSCC entries are experimental only; condition is any checked-in network overlay such as `clean`, `datacenter`, `constrained`, `lossy`, `bursty`, `reordered`, or `ecn` |
+| `SIMULATION_CC_MATRIX` | Native RoCEv2 DCQCN and UET RCCC cases across clean, duplicate, corrupt, jitter, and mixed conditions, plus focused NSCC, no-control, and plug-in cases | Space-separated `protocol:algorithm:condition` entries. Protocol is `rocev2` or `uet`; test algorithms are `dcqcn`, `rccc`, `nscc`, `none`, and `test-pass`; RoCEv2+NSCC entries are experimental only; condition is any checked-in network overlay |
 | `SIMULATION_CC_TIMEOUT` | `60` | Positive timeout in seconds for each matrix entry |
 | `SIMULATION_CC_MAX_WINDOW` | `65536` | NSCC maximum window in bytes |
 | `SIMULATION_NETNS_PRIVILEGE` | Unset | Optional command prefix used only to execute `unshare --net` when root and unprivileged user namespaces are unavailable |

@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+network:
+  shaping:
+    enabled: true
+    latency: 1ms
+    corruptPercent: 1
+    corruptCorrelationPercent: 10
+    queueLimit: 1024
+    seed: 12345

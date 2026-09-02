@@ -1065,6 +1065,17 @@
  */
 #define UIB_ENV_CC_BENCH_VARIANTS "UIB_CC_BENCH_VARIANTS"
 
+/**
+ * DOC: UIB_CC_BENCH_CONDITIONS
+ * @uib-env: Complete benchmark matrix
+ * @default: `clean latency drops reordered drops-reordered duplicated corrupted jittery wan mixed`
+ * @values: Space-separated checked-in network profile names.
+ *
+ * Select the netem conditions applied to every selected congestion variant.
+ *
+ * Example:
+ * UIB_CC_BENCH_CONDITIONS='clean drops reordered' make benchmark-all
+ */
 #define UIB_ENV_CC_BENCH_CONDITIONS "UIB_CC_BENCH_CONDITIONS"
 
 /**

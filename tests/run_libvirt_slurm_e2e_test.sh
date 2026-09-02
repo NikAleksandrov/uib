@@ -46,7 +46,7 @@ network_condition=${LIBVIRT_NETWORK_CONDITION:-}
 case $network_condition in
 '')
 	;;
-clean|datacenter|constrained|lossy|bursty|reordered|ecn|asymmetric|minimum-mtu|jumbo)
+clean|datacenter|constrained|lossy|bursty|reordered|ecn|asymmetric|duplicated|corrupted|jittery|wan|mixed|minimum-mtu|jumbo)
 	;;
 *)
 	echo "LIBVIRT_NETWORK_CONDITION must name a checked-in network overlay" >&2

@@ -50,7 +50,7 @@ fi
 network_condition=${VIRTME_NETWORK_CONDITION:-}
 case $network_condition in
 '') ;;
-clean|datacenter|constrained|lossy|bursty|reordered|ecn|asymmetric|minimum-mtu|jumbo)
+clean|datacenter|constrained|lossy|bursty|reordered|ecn|asymmetric|duplicated|corrupted|jittery|wan|mixed|minimum-mtu|jumbo)
 	profile_args="$profile_args --overlay network/$network_condition"
 	;;
 *)

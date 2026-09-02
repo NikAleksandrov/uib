@@ -53,7 +53,8 @@ cleanup()
 
 trap cleanup EXIT INT TERM
 
-for condition in clean datacenter constrained lossy bursty reordered ecn; do
+for condition in clean datacenter constrained lossy bursty reordered ecn \
+	duplicated corrupted jittery wan mixed; do
 	"$cli" render --profile kind-kubernetes \
 		--overlay "network/$condition" --format json \
 		> "$test_dir/$condition.json"
@@ -90,6 +91,18 @@ grep -F 'loss gemodel 0.5% 20% 80% 0.01%' \
 	"$test_dir/bursty.command" >/dev/null
 grep -F 'reorder 10% 25% gap 5' "$test_dir/reordered.command" >/dev/null
 grep -F 'loss random 2% ecn' "$test_dir/ecn.command" >/dev/null
+grep -F 'duplicate 2% 25%' "$test_dir/duplicated.command" >/dev/null
+grep -F 'corrupt 1% 10%' "$test_dir/corrupted.command" >/dev/null
+grep -F 'delay 5ms 4ms 25% distribution paretonormal' \
+	"$test_dir/jittery.command" >/dev/null
+grep -F 'delay 20ms 5ms 10% distribution normal' \
+	"$test_dir/wan.command" >/dev/null
+grep -F 'loss random 0.1%' "$test_dir/wan.command" >/dev/null
+grep -F 'rate 1Gbit 24' "$test_dir/wan.command" >/dev/null
+grep -F 'loss random 0.5% duplicate 0.2% corrupt 0.1%' \
+	"$test_dir/mixed.command" >/dev/null
+grep -F 'reorder 2% 10% gap 10 rate 5Gbit' \
+	"$test_dir/mixed.command" >/dev/null
 grep -F 'delay 250us' "$test_dir/asymmetric.command" >/dev/null
 grep -F 'delay 100us' "$test_dir/asymmetric-worker-01.command" >/dev/null
 grep -F 'delay 5ms' "$test_dir/asymmetric-worker-02.command" >/dev/null

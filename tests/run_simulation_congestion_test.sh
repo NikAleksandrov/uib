@@ -10,11 +10,12 @@ plugin=$project_dir/tests/congestion_plugin.so
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/uib-congestion-sim.XXXXXX")
 matrix=${SIMULATION_CC_MATRIX:-}
 if [ -z "$matrix" ]; then
-	matrix='rocev2:nscc:clean rocev2:nscc:datacenter
-rocev2:nscc:lossy rocev2:none:constrained rocev2:test-pass:datacenter
-uet:nscc:clean uet:nscc:datacenter uet:nscc:constrained
-uet:nscc:lossy uet:nscc:bursty uet:nscc:reordered uet:none:constrained
-uet:test-pass:datacenter'
+	matrix='rocev2:dcqcn:clean rocev2:dcqcn:duplicated
+rocev2:dcqcn:corrupted
+rocev2:none:constrained rocev2:nscc:datacenter rocev2:test-pass:datacenter
+uet:rccc:clean uet:rccc:duplicated uet:rccc:corrupted
+uet:nscc:lossy uet:nscc:bursty uet:nscc:reordered
+uet:none:constrained uet:test-pass:datacenter'
 fi
 timeout_seconds=${SIMULATION_CC_TIMEOUT:-60}
 max_window=${SIMULATION_CC_MAX_WINDOW:-65536}
@@ -30,11 +31,13 @@ if [ "${1:-}" = inner ]; then
 	environment=(UIB_PROTOCOL="$protocol" \
 		UIB_TRANSPORT_MODE=udp-sync UIB_ZEROCOPY=off)
 	if [ "$protocol" = uet ]; then
-		environment+=(UIB_UET_CC="$algorithm"
-			UIB_UET_NSCC_MAX_WND="$max_window")
+		environment+=(UIB_UET_CC="$algorithm")
+		[ "$algorithm" != nscc ] || \
+			environment+=(UIB_UET_NSCC_MAX_WND="$max_window")
 	else
-		environment+=(UIB_ROCEV2_CC="$algorithm"
-			UIB_ROCEV2_NSCC_MAX_WND="$max_window")
+		environment+=(UIB_ROCEV2_CC="$algorithm")
+		[ "$algorithm" != nscc ] || \
+			environment+=(UIB_ROCEV2_NSCC_MAX_WND="$max_window")
 	fi
 	[ "$use_plugin" != 1 ] || environment+=(LD_PRELOAD="$plugin"
 		CONGESTION_PLUGIN_TEST=1)
@@ -79,6 +82,20 @@ for entry in $matrix; do
 	esac
 	use_plugin=0
 	case $algorithm in
+	dcqcn)
+		[ "$protocol" = rocev2 ] || {
+			echo "DCQCN test requires RoCEv2" >&2
+			exit 2
+		}
+		protocol_overlay=protocol/rocev2-dcqcn
+		;;
+	rccc)
+		[ "$protocol" = uet ] || {
+			echo "RCCC test requires UET" >&2
+			exit 2
+		}
+		protocol_overlay=protocol/uet-rccc
+		;;
 	nscc)
 		if [ "$protocol" = rocev2 ]; then
 			protocol_overlay=protocol/rocev2-nscc-experimental
