@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import grp
 import json
+import pwd
 import sys
 
 
@@ -23,3 +25,9 @@ macs = {
 }
 assert len(macs) == 6
 assert all(mac.startswith("52:54:00:") for mac in macs)
+account = pwd.getpwuid(int(values["volume_owner"]))
+try:
+    group = grp.getgrnam(account.pw_name).gr_gid
+except KeyError:
+    group = account.pw_gid
+assert values["volume_group"] == str(group)

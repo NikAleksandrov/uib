@@ -80,6 +80,14 @@ export LIBVIRT_TEST_LOG="$test_dir/log"
 kubernetes_infra=$test_dir/state/uib-kubernetes-test/infrastructure
 [ -f "$kubernetes_infra/kubeconfig" ]
 [ "$(stat -c %a "$kubernetes_infra/ansible-vars.json")" = 600 ]
+grep -F 'file = libvirt_volume.disk[each.key].path' \
+	"$kubernetes_infra/opentofu/main.tf" > /dev/null
+grep -F 'file = libvirt_volume.cloudinit[each.key].path' \
+	"$kubernetes_infra/opentofu/main.tf" > /dev/null
+if grep -F 'mode = "bind"' "$kubernetes_infra/opentofu/main.tf" > /dev/null; then
+	echo "libvirt channel requests a provider-unstable mode" >&2
+	exit 1
+fi
 if grep -F 'uib_k3s_token' "$kubernetes_infra/lifecycle.log" >/dev/null; then
 	echo "the k3s token was written to the lifecycle log" >&2
 	exit 1

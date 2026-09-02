@@ -111,7 +111,11 @@ def qemu_identity(config):
     if group is None:
         group = qemu_config_value("group")
     if group is None:
-        group_id = str(pwd.getpwuid(int(owner_id)).pw_gid)
+        account = pwd.getpwuid(int(owner_id))
+        try:
+            group_id = str(grp.getgrnam(account.pw_name).gr_gid)
+        except KeyError:
+            group_id = str(account.pw_gid)
     else:
         group_id = account_id(group, grp.getgrnam, "gr_gid", "QEMU group")
     return owner_id, group_id

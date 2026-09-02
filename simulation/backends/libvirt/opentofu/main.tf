@@ -163,9 +163,8 @@ resource "libvirt_domain" "node" {
     disks = [
       {
         source = {
-          volume = {
-            pool   = libvirt_volume.disk[each.key].pool
-            volume = libvirt_volume.disk[each.key].name
+          file = {
+            file = libvirt_volume.disk[each.key].path
           }
         }
         target = {
@@ -179,9 +178,8 @@ resource "libvirt_domain" "node" {
       {
         device = "cdrom"
         source = {
-          volume = {
-            pool   = libvirt_volume.cloudinit[each.key].pool
-            volume = libvirt_volume.cloudinit[each.key].name
+          file = {
+            file = libvirt_volume.cloudinit[each.key].path
           }
         }
         target = {
@@ -240,9 +238,7 @@ resource "libvirt_domain" "node" {
     ]
     channels = [{
       source = {
-        unix = {
-          mode = "bind"
-        }
+        unix = {}
       }
       target = {
         virt_io = {
