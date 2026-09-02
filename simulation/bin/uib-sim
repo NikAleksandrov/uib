@@ -13,6 +13,7 @@ from uibsim.evidence import (
     provider_counter_evidence,
     normalize_workload_result,
     collect_workload_metrics,
+    normalized_result,
 )
 
 

@@ -19,7 +19,22 @@ loader.exec_module(module)
 
 
 def config(kind):
-    return {"runId": "uib-metrics", "workload": {"kind": kind}}
+    return {
+        "runId": "uib-metrics",
+        "workload": {
+            "kind": kind,
+            "parallelism": {"nodes": 2, "processesPerNode": 1},
+        },
+        "uib": {
+            "enabled": True,
+            "protocol": "rocev2",
+            "memoryMode": "host-staged",
+            "congestionControl": {
+                "algorithm": "dcqcn", "abi": 1, "parameters": {},
+            },
+        },
+        "communication": {"frontend": "nccl"},
+    }
 
 
 training = {
@@ -73,6 +88,7 @@ with tempfile.TemporaryDirectory(prefix="uib-workload-metrics.") as value:
     assert records[0]["loss"] == {"first": 4.0, "last": 2.0}
     assert records[0]["sourceFiles"] == [
         "workload/training.json", "workload/training.log"]
+    training_records = records
 
     (root / "inference.json").write_text(
         json.dumps(inference) + "\n", encoding="utf-8")
@@ -90,6 +106,20 @@ with tempfile.TemporaryDirectory(prefix="uib-workload-metrics.") as value:
     invalid = dict(training)
     invalid["runId"] = "another-run"
     assert module.normalize_workload_result(config("training"), invalid) is None
+
+    evidence = {"classification": "confirmed"}
+    kubernetes = module.normalized_result(
+        config("training"), "kubernetes", "COMPLETED", True,
+        training_records,
+        evidence, evidence, 2, ["scheduler/events.yaml"])
+    slurm = module.normalized_result(
+        config("training"), "slurm", "COMPLETED", True, training_records,
+        evidence, evidence, 2, ["scheduler/events.yaml"])
+    assert kubernetes["workload"] == slurm["workload"]
+    assert kubernetes["communication"] == slurm["communication"]
+    assert kubernetes["evidence"] == slurm["evidence"]
+    assert kubernetes["scheduler"]["kind"] == "kubernetes"
+    assert slurm["scheduler"]["kind"] == "slurm"
 
 print("normalized workload metrics test: PASS")
 PY

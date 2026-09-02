@@ -358,6 +358,30 @@ The values above illustrate the shape of the request. Schema validation must
 enforce the selected framework's exact DP, TP, PP, EP, node, and process
 relationships.
 
+### Runnable production-shaped requests
+
+The repository includes two complete, schema-validated requests rather than
+only fragments:
+
+```text
+simulation/bin/uib-sim render --profile libvirt-kubernetes \
+  --request simulation/requests/training-production-cpu.yaml
+
+simulation/bin/uib-sim render --profile libvirt-kubernetes \
+  --request simulation/requests/inference-production-cpu.yaml
+```
+
+The training request pins Tiny GPT-2 and TinyStories revisions and exercises
+DDP, gradient accumulation, activation checkpointing, and periodic optimizer
+checkpoints. The inference request pins SmolLM2 and exercises concurrent,
+rate-limited streaming requests. Models and datasets are downloaded into the
+ignored shared cache on first use; they are not stored in the repository.
+
+Use the same request with `real-kubernetes` or `real-slurm` after replacing
+the image and runtime tags with site-published immutable digests. GPU promotion
+changes the training device and precision, or selects the vLLM backend and
+parallel degrees, without changing the infrastructure lifecycle.
+
 ### Infrastructure profile example
 
 ```yaml
@@ -3910,6 +3934,7 @@ results/<run-id>/
   preflight.json
   transport-evidence.json
   provider-counters.json
+  normalized-result.json
   host-probes.json
   network-emulation.json      # when infrastructure supplied validated evidence
   manifest.json
@@ -3958,6 +3983,12 @@ unchanged under `workload/`.
 `manifest.json` records the size and SHA-256 digest of every regular file other
 than the manifest itself. Files absent because a batch failed early are named
 in `summary.json.missingArtifacts`.
+
+`normalized-result.json` has the same schema for Kubernetes and Slurm. It
+contains the scheduler outcome, requested topology, selected communication
+layers, normalized workload records, and evidence classifications. Scheduler-
+specific raw objects remain in their existing directories; consumers can
+compare the normalized file without parsing two collector formats.
 
 The long-term common summary states:
 
@@ -4096,6 +4127,8 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kuberay-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, roughly 10 GB of image storage, four CPU cores and 8 GiB for the Ray head; network access for uncached images, source archives, chart, and model revision | Required actual two-worker UIB verbs traffic, portable-runtime compatibility, KubeRay v1.6.2 admission, common `run/status/collect`, Ray 2.58.0 readiness, offline cached SmolLM2 inference, four-result correctness, retained integrity-checked evidence, and complete cleanup; the single-rank inference portion itself sends no UIB traffic |
 | `make simulation-virtme-kubeflow-e2e-test` | virtme-ng, QEMU, kubectl, Helm, a Docker-compatible engine, about 6 GiB memory for three small guests, cached training/runtime images, and first-use operator download access | The same Kubeflow chart, TrainJob, collector, placement, preflight, result, and cleanup assertions as the Kind gate across separate virtme kernels |
 | `make simulation-virtme-kuberay-e2e-test` | virtme-ng, QEMU, kubectl, Helm, a Docker-compatible engine, about 5.2 GiB guest memory plus the configurable protected host reserve, roughly 10 GB image storage, and first-use chart/model access | The same KubeRay chart, offline SmolLM2 request, collector, preflight, result, and cleanup assertions as the Kind inference gate across separate virtme kernels; the request remains single-rank and the test skips before image builds or guest creation when its memory guard fails |
+| `make simulation-libvirt-kubeflow-e2e-test` | System libvirt, OpenTofu, Ansible, kubectl, Helm, a Docker-compatible engine, 6 GiB guest memory plus the protected 8 GiB host reserve, and image storage | The common Kubeflow training operator, two-worker placement, UIB preflight, result collection, and owned libvirt cleanup path |
+| `make simulation-libvirt-kuberay-e2e-test` | System libvirt, OpenTofu, Ansible, kubectl, Helm, a Docker-compatible engine, about 6.4 GiB guest memory plus the protected 8 GiB host reserve, and image storage | The common KubeRay inference operator, cached SmolLM2 workload, UIB preflight, normalized result, and owned libvirt cleanup path |
 
 Run the hardware-neutral gates:
 

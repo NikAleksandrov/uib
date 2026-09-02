@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: Apache-2.0
+uib:
+  bundle: uib-runtime:test
+workload:
+  kind: inference
+  image: uib-inference:test
+  entrypoint: /opt/uib-inference/bin/inference
+  resources:
+    cpu: 4
+    memory: 4Gi
+  parallelism:
+    nodes: 1
+    processesPerNode: 1
+    data: 1
+    tensor: 1
+    pipeline: 1
+    expert: 1
+  parameters:
+    config:
+      schemaVersion: 1
+      runId: replaced-by-adapter
+      backend: transformers
+      model:
+        id: HuggingFaceTB/SmolLM2-135M-Instruct
+        revision: 12fd25f77366fa6b3b4b768ec3050bf629380bac
+        servedName: smollm2-135m
+        trustRemoteCode: false
+      server:
+        host: 127.0.0.1
+        port: 8000
+        dtype: float32
+        quantization: null
+        maxModelLength: 128
+        tensorParallel: 1
+        pipelineParallel: 1
+        dataParallel: 1
+        replicas: 1
+        gpuMemoryUtilization: 0.5
+        distributedExecutor: null
+        seed: 20260828
+      load:
+        requests: 16
+        concurrency: 4
+        requestRate: 4
+        promptTokens: 16
+        outputTokens: 8
+        streaming: true
+        warmupRequests: 2
+        timeoutSeconds: 180
+        seed: 20260828
+      result:
+        directory: /results

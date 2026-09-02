@@ -174,7 +174,15 @@ assert summary["uibPreflightVerified"] is True
 assert summary["uibTrafficEvidence"] == "not-exercised-non-rdma-backend"
 assert summary["uibCounterEvidence"] == "insufficient"
 assert summary["providerCounters"] == "provider-counters.json"
+assert summary["normalizedResult"] == "normalized-result.json"
 assert summary["promotionEligible"] is False
+with (root / "normalized-result.json").open(encoding="utf-8") as source:
+    normalized = json.load(source)
+assert normalized["scheduler"] == {
+    "kind": "kubernetes", "state": "COMPLETED", "terminal": True}
+assert normalized["workload"]["requestedRanks"] == 2
+assert normalized["communication"]["protocol"] == "rocev2"
+assert normalized["evidence"]["uibCounters"] == "insufficient"
 with (root / "transport-evidence.json").open(encoding="utf-8") as source:
     transport = json.load(source)
 assert transport["classification"] == "not-exercised-non-rdma-backend"
@@ -189,6 +197,7 @@ assert len(metrics) == 1
 assert metrics[0]["kind"] == "training"
 assert metrics[0]["samplesPerSecond"] == 8.0
 assert len(metrics[0]["sourceFiles"]) == 2
+assert "sourceFiles" not in normalized["workload"]["results"][0]
 assert summary["workloadMetricRecords"] == 1
 with (root / "host-probes.json").open(encoding="utf-8") as source:
     probes = json.load(source)

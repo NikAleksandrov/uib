@@ -147,11 +147,19 @@ assert summary["uibTrafficEvidence"] == "confirmed"
 assert summary["uibCounterEvidence"] == "traffic-observed"
 assert summary["transportEvidence"] == "transport-evidence.json"
 assert summary["providerCounters"] == "provider-counters.json"
+assert summary["normalizedResult"] == "normalized-result.json"
 assert summary["faultEvidenceFiles"] == 3
 assert summary["faultEvidenceRecords"] == 5
 assert "fault-evidence/completed-targets" not in summary["missingArtifacts"]
 assert "fault-evidence/terminated-ranks" not in summary["missingArtifacts"]
 assert summary["promotionEligible"] is False
+with (root / "normalized-result.json").open(encoding="utf-8") as source:
+    normalized = json.load(source)
+assert normalized["scheduler"] == {
+    "kind": "slurm", "state": "COMPLETED", "terminal": True}
+assert normalized["workload"]["requestedRanks"] == 2
+assert normalized["communication"]["protocol"] == "uet"
+assert normalized["evidence"]["uibTraffic"] == "confirmed"
 with (root / "transport-evidence.json").open(encoding="utf-8") as source:
     transport = json.load(source)
 assert transport["classification"] == "confirmed"

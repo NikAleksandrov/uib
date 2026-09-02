@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: Apache-2.0
+uib:
+  bundle: uib-runtime:test
+workload:
+  kind: training
+  image: uib-training:test
+  entrypoint: /opt/uib-training/bin/train
+  arguments: [--config, /etc/uib-workload/workload.json]
+  resources:
+    cpu: 2
+    memory: 4Gi
+  parallelism:
+    nodes: 2
+    processesPerNode: 1
+    data: 2
+    tensor: 1
+    pipeline: 1
+    expert: 1
+  parameters:
+    config:
+      schemaVersion: 1
+      runId: replaced-by-adapter
+      model:
+        source: huggingface
+        id: sshleifer/tiny-gpt2
+        revision: 5f91d94bd9cd7190a9f3216ff93cd1dd95f2c7be
+      dataset:
+        source: huggingface
+        id: roneneldan/TinyStories
+        revision: f54c09fd23315a6f9c86f9dc80f725de7d8f9c64
+        split: validation
+        textField: text
+      parallelism:
+        strategy: ddp
+        tensor: 1
+        pipeline: 1
+      training:
+        steps: 8
+        sequenceLength: 64
+        microBatchSize: 1
+        globalBatchSize: 8
+        learningRate: 0.00005
+        weightDecay: 0.01
+        adamBeta1: 0.9
+        adamBeta2: 0.999
+        adamEpsilon: 1.0e-8
+        warmupSteps: 2
+        gradientClipNorm: 1.0
+        gradientCheckpointing: true
+        device: cpu
+        precision: fp32
+        seed: 20260828
+      checkpoint:
+        directory: /results/checkpoints
+        interval: 4
+        resume: null
+      result:
+        directory: /results

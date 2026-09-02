@@ -406,6 +406,54 @@ def collect_workload_metrics(config, roots, destination):
     return values
 
 
+def normalized_result(config, scheduler, scheduler_state, terminal, metrics,
+                      transport, counters, host_probe_nodes, missing):
+    parallel = config["workload"]["parallelism"]
+    workload_results = []
+    for record in metrics:
+        workload_results.append({
+            key: value for key, value in record.items()
+            if key != "sourceFiles"
+        })
+    workload_results.sort(
+        key=lambda value: json.dumps(value, sort_keys=True))
+    return {
+        "schemaVersion": 1,
+        "runId": config["runId"],
+        "scheduler": {
+            "kind": scheduler,
+            "state": scheduler_state,
+            "terminal": terminal,
+        },
+        "workload": {
+            "kind": config["workload"]["kind"],
+            "requestedNodes": parallel["nodes"],
+            "processesPerNode": parallel["processesPerNode"],
+            "requestedRanks": (
+                parallel["nodes"] * parallel["processesPerNode"]),
+            "results": workload_results,
+        },
+        "communication": {
+            "frontend": config["communication"]["frontend"],
+            "uibEnabled": config["uib"]["enabled"],
+            "protocol": (config["uib"]["protocol"]
+                         if config["uib"]["enabled"] else None),
+            "congestionControl": (
+                config["uib"]["congestionControl"]
+                if config["uib"]["enabled"] else None),
+            "memoryMode": (config["uib"]["memoryMode"]
+                           if config["uib"]["enabled"] else None),
+        },
+        "evidence": {
+            "uibTraffic": transport["classification"],
+            "uibCounters": counters["classification"],
+            "hostProbeNodes": host_probe_nodes,
+            "missingArtifacts": sorted(set(missing)),
+        },
+        "promotionEligible": False,
+    }
+
+
 def collect_fault_evidence(workload, destination):
     from .core import ConfigurationError
 
