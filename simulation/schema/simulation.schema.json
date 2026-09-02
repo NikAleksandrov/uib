@@ -44,6 +44,8 @@
         "sshPortBase": { "type": "integer", "minimum": 1024, "maximum": 65534 },
         "baseImage": { "type": "string", "pattern": "^https://\\S+$" },
         "baseImageSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "volumeOwner": { "type": "string", "pattern": "^(?:[0-9]+|[a-z_][a-z0-9_-]*)$" },
+        "volumeGroup": { "type": "string", "pattern": "^(?:[0-9]+|[a-z_][a-z0-9_-]*)$" },
         "sshUser": { "type": "string", "pattern": "^[a-z_][a-z0-9_-]{0,31}$" },
         "diagnosticImage": { "type": "string", "pattern": "^\\S+@sha256:[0-9a-f]{64}$" }
       }

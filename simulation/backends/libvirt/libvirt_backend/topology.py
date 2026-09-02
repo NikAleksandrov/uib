@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
+import grp
 import ipaddress
+import os
+import pathlib
+import pwd
+import re
 
 
 def networks(config, node_count):
@@ -48,6 +53,68 @@ def node_values(config, run_id):
             "data_mac": mac_address(run_id, name, "data"),
         }
     return result
+
+
+def account_id(value, database, attribute, description):
+    from .core import LibvirtError
+
+    if value.isdigit():
+        return value
+    try:
+        return str(getattr(database(value), attribute))
+    except KeyError as error:
+        raise LibvirtError(f"unknown {description}: {value}") from error
+
+
+def qemu_config_value(name):
+    try:
+        value = pathlib.Path("/etc/libvirt/qemu.conf").read_text(
+            encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(rf'^\s*{name}\s*=\s*"([^"]+)"\s*$', value,
+                      re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def qemu_identity(config):
+    from .core import LibvirtError
+
+    settings = config["libvirt"]
+    uri = settings["uri"]
+    owner = settings.get("volumeOwner")
+    group = settings.get("volumeGroup")
+
+    if uri == "qemu:///session":
+        return str(os.getuid()), str(os.getgid())
+    if uri != "qemu:///system":
+        if owner is None or group is None:
+            raise LibvirtError(
+                "remote libvirt requires volumeOwner and volumeGroup")
+        if not owner.isdigit() or not group.isdigit():
+            raise LibvirtError(
+                "remote volumeOwner and volumeGroup must be decimal IDs")
+        return owner, group
+    if owner is None:
+        owner = qemu_config_value("user")
+    if owner is None:
+        for candidate in ("libvirt-qemu", "qemu"):
+            try:
+                pwd.getpwnam(candidate)
+                owner = candidate
+                break
+            except KeyError:
+                continue
+    if owner is None:
+        raise LibvirtError("cannot determine the libvirt QEMU account")
+    owner_id = account_id(owner, pwd.getpwnam, "pw_uid", "QEMU user")
+    if group is None:
+        group = qemu_config_value("group")
+    if group is None:
+        group_id = str(pwd.getpwuid(int(owner_id)).pw_gid)
+    else:
+        group_id = account_id(group, grp.getgrnam, "gr_gid", "QEMU group")
+    return owner_id, group_id
 
 
 def inventory(values, private_key, manager):

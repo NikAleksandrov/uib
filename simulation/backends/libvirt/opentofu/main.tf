@@ -29,9 +29,6 @@ resource "libvirt_network" "management" {
       }]
     }
   }]
-  metadata = {
-    xml = "<uib:run xmlns:uib=\"https://uib.example/libvirt\" id=\"${var.run_id}\" layer=\"management\"/>"
-  }
 }
 
 resource "libvirt_network" "data" {
@@ -46,24 +43,6 @@ resource "libvirt_network" "data" {
     address = local.data_gateway
     prefix  = local.data_prefix
   }]
-  metadata = {
-    xml = "<uib:run xmlns:uib=\"https://uib.example/libvirt\" id=\"${var.run_id}\" layer=\"data\"/>"
-  }
-}
-
-resource "libvirt_volume" "base" {
-  name = "${var.run_id}-base.qcow2"
-  pool = var.pool
-  target = {
-    format = {
-      type = "qcow2"
-    }
-  }
-  create = {
-    content = {
-      url = var.base_image
-    }
-  }
 }
 
 resource "libvirt_volume" "disk" {
@@ -76,11 +55,15 @@ resource "libvirt_volume" "disk" {
     format = {
       type = "qcow2"
     }
+    permissions = {
+      owner = var.volume_owner
+      group = var.volume_group
+      mode  = "0600"
+    }
   }
-  backing_store = {
-    path = libvirt_volume.base.path
-    format = {
-      type = "qcow2"
+  create = {
+    content = {
+      url = var.base_image
     }
   }
 }
@@ -143,6 +126,13 @@ resource "libvirt_volume" "cloudinit" {
 
   name = "${var.run_id}-${each.key}-cloudinit.iso"
   pool = var.pool
+  target = {
+    permissions = {
+      owner = var.volume_owner
+      group = var.volume_group
+      mode  = "0640"
+    }
+  }
   create = {
     content = {
       url = libvirt_cloudinit_disk.node[each.key].path
@@ -160,9 +150,6 @@ resource "libvirt_domain" "node" {
   type        = "kvm"
   running     = true
 
-  metadata = {
-    xml = "<uib:run xmlns:uib=\"https://uib.example/libvirt\" id=\"${var.run_id}\" role=\"${each.value.role}\"/>"
-  }
   cpu = {
     mode = "host-passthrough"
   }

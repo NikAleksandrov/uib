@@ -630,11 +630,12 @@ overlay when both are needed.
 | `virtme.sshPortBase` | Integer 1024-65534; default `23000` | Controller SSH-forward port; worker ports are consecutive |
 | `virtme.extraKernelArguments` | List of non-empty strings | Extra `--append` arguments added separately to every generated virtme-ng command |
 | `libvirt.uri` | Libvirt connection URI | `qemu:///system` for bridge mode or `qemu:///session` for passwordless rootless mode |
-| `libvirt.pool` | Existing active storage-pool name | Pool in which run-owned overlays and cloud-init volumes are created |
+| `libvirt.pool` | Existing active storage-pool name | Pool in which run-owned node and cloud-init volumes are created |
 | `libvirt.networkMode` | `bridge`, `rootless` | Managed libvirt networks, or passt management plus an unprivileged multicast data plane |
 | `libvirt.sshPortBase` | Integer 1024-65534; default `22000` | First localhost SSH-forward port in rootless mode; the controller uses the base and workers use consecutive ports |
 | `libvirt.baseImage` | HTTPS URL | Pinned Ubuntu cloud image downloaded once into the ignored cache |
 | `libvirt.baseImageSha256` | 64 lowercase hexadecimal digits | Required digest checked before the cached base image is used |
+| `libvirt.volumeOwner`, `.volumeGroup` | Linux name or decimal ID | Optional QEMU volume identity; local URIs detect it automatically, while remote URIs require both as decimal IDs |
 | `libvirt.sshUser` | Linux user name | Cloud-init administrator used only through the run-owned SSH key |
 | `libvirt.diagnosticImage` | OCI reference with an `@sha256:` digest | Image used by the Pyxis/Enroot provisioning preflight |
 | `cluster.manager` | `kubernetes`, `slurm` | Scheduler/control plane |
@@ -2713,9 +2714,13 @@ controller and its shared result storage are disposable.
 
 The named `libvirt.pool` must already be active. The caller also needs normal
 permission to use the configured URI and create networks. Each run receives
-its own OpenTofu state, overlays, cloud-init volume, key, networks, domains,
+its own OpenTofu state, node volumes, cloud-init volumes, key, networks, domains,
 inventory, and lifecycle log under
 `simulation/.artifacts/runs/<run-id>/infrastructure/`.
+For local URIs, the backend resolves the QEMU user and group and applies that
+identity only to run-owned volumes. Set `libvirt.volumeOwner` and
+`libvirt.volumeGroup` to the remote host's decimal IDs when the URI points at
+a remote libvirt daemon.
 
 Rootless mode provides a passwordless functional path for development. It
 uses `qemu:///session`, passt management interfaces with deterministic

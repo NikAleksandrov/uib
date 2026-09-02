@@ -9,14 +9,18 @@ import urllib.request
 
 def tofu_values(config, run_id, base_image, public_key):
     from .core import multicast_endpoint
-    from .topology import node_values
+    from .topology import node_values, qemu_identity
 
     multicast_address, multicast_port = multicast_endpoint(run_id)
+    volume_owner, volume_group = qemu_identity(config)
+
     return {
         "run_id": run_id,
         "libvirt_uri": config["libvirt"]["uri"],
         "pool": config["libvirt"]["pool"],
         "base_image": str(pathlib.Path(base_image).resolve()),
+        "volume_owner": volume_owner,
+        "volume_group": volume_group,
         "ssh_user": config["libvirt"]["sshUser"],
         "ssh_public_key": public_key.strip(),
         "network_mode": config["libvirt"]["networkMode"],

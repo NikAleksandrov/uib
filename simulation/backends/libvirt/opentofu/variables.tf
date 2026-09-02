@@ -21,6 +21,14 @@ variable "base_image" {
   type = string
 }
 
+variable "volume_owner" {
+  type = string
+}
+
+variable "volume_group" {
+  type = string
+}
+
 variable "ssh_user" {
   type = string
 }
