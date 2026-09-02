@@ -48,12 +48,17 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as source:
     values = json.load(source)
 assert values["uib_run_id"] in (
-    "uib-kubernetes-test", "uib-libvirt-test", "uib-libvirt-failed")
+    "uib-kubernetes-test", "uib-host-tap-test", "uib-host-over-test",
+    "uib-libvirt-test", "uib-libvirt-failed")
 assert values["uib_enabled"] is True
 assert values["uib_data_interface"] == "eth1"
 assert values["uib_network_mtu"] == 1500
 assert values["uib_active_mtu"] == 1024
-assert values["uib_network_shaping"] == {"enabled": False}
+if values["uib_network_emulation_point"] == "host-tap-ingress":
+    if values["uib_network_shaping"]["enabled"]:
+        assert values["uib_network_shaping"]["bandwidth"] == "25Gbit"
+else:
+    assert values["uib_network_shaping"] == {"enabled": False}
 assert values["uib_netem_source"].endswith("/simulation/network/netem")
 assert values["uib_fault_schedule_source"].endswith(
     "/simulation/faults/network-schedule")
@@ -63,10 +68,8 @@ assert values["uib_fault_targets"] == {
     "worker-01": "worker-01/data",
     "worker-02": "worker-02/data",
 }
-assert values["uib_endpoint_shaping"] == {
-    "worker-01": {"enabled": False},
-    "worker-02": {"enabled": False},
-}
+assert all(shaping == values["uib_network_shaping"]
+           for shaping in values["uib_endpoint_shaping"].values())
 assert values["uib_stage_image_source"].endswith(
     "/simulation/adapters/slurm/stage-image")
 assert values["uib_stage_cache_source"].endswith(
@@ -74,7 +77,7 @@ assert values["uib_stage_cache_source"].endswith(
 assert values["uib_node_cpu"] == 2
 assert values["uib_node_memory_mib"] == 4096
 state = pathlib.Path(values["uib_run_state"])
-if values["uib_run_id"] == "uib-kubernetes-test":
+if values["uib_cluster_group"] == "kubernetes_cluster":
     assert values["uib_cluster_group"] == "kubernetes_cluster"
     assert values["uib_k3s_version"] == "v1.35.5+k3s1"
     assert values["uib_k3s_url"].endswith("/v1.35.5%2Bk3s1/k3s")

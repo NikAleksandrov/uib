@@ -253,13 +253,14 @@
     "network": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["topology", "mtu", "shaping"],
+      "required": ["topology", "mtu", "emulationPoint", "shaping", "oversubscription"],
       "properties": {
         "topology": { "enum": ["pairwise", "full-mesh", "leaf-spine", "physical"] },
         "managementCIDR": { "$ref": "#/$defs/cidr" },
         "dataCIDR": { "$ref": "#/$defs/cidr" },
         "dataInterface": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,15}$" },
         "mtu": { "type": "integer", "minimum": 576, "maximum": 65535 },
+        "emulationPoint": { "enum": ["guest-egress", "host-tap-ingress"] },
         "shaping": { "$ref": "#/$defs/shaping" },
         "endpointShaping": {
           "type": "object",
@@ -267,6 +268,16 @@
             "pattern": "^worker-[0-9]{2,4}/data$"
           },
           "additionalProperties": { "$ref": "#/$defs/shaping" }
+        },
+        "oversubscription": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "bandwidth": { "$ref": "#/$defs/rate" },
+            "queueLimit": { "type": "integer", "minimum": 1 }
+          }
         }
       }
     },

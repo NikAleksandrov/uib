@@ -37,6 +37,7 @@ for name, guest in guests.items():
     assert guest["dataMac"] in qemu
 assert topology["ownership"] == {
     "bridges": [],
+    "ifbs": [],
     "processes": [],
     "taps": [],
     "temporaryRoots": [],

@@ -41,7 +41,10 @@ network:
   managementCIDR: 192.0.2.0/24
   dataCIDR: 198.51.100.0/24
   mtu: 1500
+  emulationPoint: guest-egress
   shaping:
+    enabled: false
+  oversubscription:
     enabled: false
 measurement:
   seed: 12345

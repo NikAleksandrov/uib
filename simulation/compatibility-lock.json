@@ -124,7 +124,7 @@
         ],
         "slurmInferenceTestTarget": "make simulation-virtme-inference-e2e-test",
         "slurmInferenceStatus": "implemented-local-resource-gate-pending",
-        "bridgeDataPlane": "rendered-and-mocked-lifecycle",
+        "bridgeDataPlane": "privileged-host-ifb-validated-backend-lifecycle-mocked",
         "intendedValidationLevel": "L0"
       },
       "kubernetesOperators": {
@@ -201,7 +201,8 @@
         },
         "testTargets": [
           "make simulation-libvirt-test",
-          "make simulation-libvirt-e2e-test"
+          "make simulation-libvirt-e2e-test",
+          "sudo make simulation-host-network-test"
         ],
         "clusterManagers": {
           "slurm": "validated-rootless-three-vm-uib-lifecycle",

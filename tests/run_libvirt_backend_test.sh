@@ -17,11 +17,15 @@ cp "$test_dir/base.img" "$cached_image"
 cp "$project_dir/tests/fakes/libvirt/ssh-keygen" "$test_dir/bin/ssh-keygen"
 cp "$project_dir/tests/fakes/libvirt/tofu" "$test_dir/bin/tofu"
 cp "$project_dir/tests/fakes/libvirt/ansible-playbook" "$test_dir/bin/ansible-playbook"
+cp "$project_dir/tests/fakes/libvirt/virsh" "$test_dir/bin/virsh"
+cp "$project_dir/tests/fakes/libvirt/netem" "$test_dir/bin/netem"
+cp "$project_dir/tests/fakes/libvirt/tc" "$test_dir/bin/tc"
 cp "$project_dir/tests/fakes/libvirt/ssh" "$test_dir/bin/ssh"
 cp "$project_dir/tests/fakes/libvirt/scp" "$test_dir/bin/scp"
 cp "$project_dir/tests/fakes/libvirt/docker" "$test_dir/bin/docker"
 chmod +x "$test_dir/bin/ssh-keygen" "$test_dir/bin/tofu" \
-	"$test_dir/bin/ansible-playbook" "$test_dir/bin/ssh" \
+	"$test_dir/bin/ansible-playbook" "$test_dir/bin/virsh" \
+	"$test_dir/bin/netem" "$test_dir/bin/tc" "$test_dir/bin/ssh" \
 	"$test_dir/bin/scp" "$test_dir/bin/docker"
 
 "$cli" render --profile libvirt-slurm --format json \
@@ -104,6 +108,52 @@ python3 "$project_dir/tests/cases/libvirt_backend/kubernetes_status.py" "$kubern
 	--set "libvirt.baseImage=https://example.invalid/base.img" \
 	--set "libvirt.baseImageSha256=$image_sha"
 
+VIRSH_COMMAND=$test_dir/bin/virsh \
+NETEM_COMMAND=$test_dir/bin/netem \
+TC_COMMAND=$test_dir/bin/tc \
+"$cli" up --profile libvirt-kubernetes \
+	--overlay network/datacenter --overlay network/host-tap-ingress \
+	--run-id uib-host-tap-test --state-dir "$test_dir/state" \
+	--set "libvirt.baseImage=https://example.invalid/base.img" \
+	--set "libvirt.baseImageSha256=$image_sha" \
+	--set nodes.cpu=2 --set nodes.memory=4Gi --set nodes.disk=16Gi \
+	> /dev/null
+host_infra=$test_dir/state/uib-host-tap-test/infrastructure
+python3 "$project_dir/tests/cases/libvirt_backend/kubernetes_images.py" "$host_infra/network.json" "$host_infra/host-network.json"
+grep -F 'apply-ingress' "$test_dir/log/netem.args" >/dev/null
+VIRSH_COMMAND=$test_dir/bin/virsh \
+NETEM_COMMAND=$test_dir/bin/netem \
+TC_COMMAND=$test_dir/bin/tc \
+"$cli" down --profile libvirt-kubernetes \
+	--overlay network/datacenter --overlay network/host-tap-ingress \
+	--run-id uib-host-tap-test --state-dir "$test_dir/state" \
+	--set "libvirt.baseImage=https://example.invalid/base.img" \
+	--set "libvirt.baseImageSha256=$image_sha"
+grep -F 'clear-ingress vnet11' "$test_dir/log/netem.args" >/dev/null
+grep -F 'destroy-ingress ui' "$test_dir/log/netem.args" >/dev/null
+
+VIRSH_COMMAND=$test_dir/bin/virsh \
+NETEM_COMMAND=$test_dir/bin/netem \
+TC_COMMAND=$test_dir/bin/tc \
+"$cli" up --profile libvirt-kubernetes \
+	--overlay network/oversubscribed \
+	--run-id uib-host-over-test --state-dir "$test_dir/state" \
+	--set "libvirt.baseImage=https://example.invalid/base.img" \
+	--set "libvirt.baseImageSha256=$image_sha" \
+	--set nodes.cpu=2 --set nodes.memory=4Gi --set nodes.disk=16Gi \
+	> /dev/null
+over_infra=$test_dir/state/uib-host-over-test/infrastructure
+python3 "$project_dir/tests/cases/libvirt_backend/host_network.py" "$over_infra/network.json"
+grep -F 'attach-ingress vnet12' "$test_dir/log/netem.args" >/dev/null
+VIRSH_COMMAND=$test_dir/bin/virsh \
+NETEM_COMMAND=$test_dir/bin/netem \
+TC_COMMAND=$test_dir/bin/tc \
+"$cli" down --profile libvirt-kubernetes \
+	--overlay network/oversubscribed \
+	--run-id uib-host-over-test --state-dir "$test_dir/state" \
+	--set "libvirt.baseImage=https://example.invalid/base.img" \
+	--set "libvirt.baseImageSha256=$image_sha"
+
 "$cli" up --profile libvirt-slurm --run-id uib-libvirt-test \
 	--state-dir "$test_dir/state" \
 	--set "libvirt.baseImage=https://example.invalid/base.img" \
@@ -119,14 +169,14 @@ infra=$test_dir/state/uib-libvirt-test/infrastructure
 [ -f "$infra/id_ed25519" ]
 [ -f "$infra/opentofu/main.tf" ]
 [ -f "$infra/network.json" ]
-python3 "$project_dir/tests/cases/libvirt_backend/kubernetes_images.py" "$infra/ledger.json"
-python3 "$project_dir/tests/cases/libvirt_backend/host_network.py" "$infra/network.json"
+python3 "$project_dir/tests/cases/libvirt_backend/oversubscription.py" "$infra/ledger.json"
+python3 "$project_dir/tests/cases/libvirt_backend/owned_ledger.py" "$infra/network.json"
 grep -F -- ' init -input=false' "$test_dir/log/tofu.args" > /dev/null
 grep -F -- ' apply -auto-approve ' "$test_dir/log/tofu.args" > /dev/null
 
 "$cli" status --profile libvirt-slurm --run-id uib-libvirt-test \
 	--state-dir "$test_dir/state" > "$test_dir/status.json"
-python3 "$project_dir/tests/cases/libvirt_backend/oversubscription.py" "$test_dir/status.json"
+python3 "$project_dir/tests/cases/libvirt_backend/network_state.py" "$test_dir/status.json"
 
 export SSH_COMMAND="$test_dir/bin/ssh"
 export SCP_COMMAND="$test_dir/bin/scp"
@@ -151,7 +201,7 @@ staged_cache=$("$cli" load-cache --profile libvirt-slurm \
 	--run-id uib-libvirt-test --state-dir "$test_dir/state" \
 	--source "$test_dir/huggingface")
 [ "$staged_cache" = /var/cache/uib/models/huggingface ]
-python3 "$project_dir/tests/cases/libvirt_backend/owned_ledger.py" "$test_dir/state/uib-libvirt-test/infrastructure/caches.json" \
+python3 "$project_dir/tests/cases/libvirt_backend/status.py" "$test_dir/state/uib-libvirt-test/infrastructure/caches.json" \
 	"$SLURM_CACHE_INVENTORY/inventory.json"
 
 staged_image=$("$cli" load-image --profile libvirt-slurm \
@@ -162,8 +212,8 @@ staged_image=$("$cli" load-image --profile libvirt-slurm \
 [ -f "$SLURM_IMAGE_CACHE/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sqsh.sha256" ]
 [ "$(cat "$test_dir/log/docker-removed")" = \
 	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ]
-python3 "$project_dir/tests/cases/libvirt_backend/network_state.py" "$test_dir/state/uib-libvirt-test/infrastructure/images.json"
-python3 "$project_dir/tests/cases/libvirt_backend/status.py" "$SLURM_IMAGE_CACHE/inventory.json"
+python3 "$project_dir/tests/cases/libvirt_backend/cache_inventory.py" "$test_dir/state/uib-libvirt-test/infrastructure/images.json"
+python3 "$project_dir/tests/cases/libvirt_backend/image_state.py" "$SLURM_IMAGE_CACHE/inventory.json"
 rm "$LIBVIRT_REMOTE_ROOT/images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sqsh"
 rm "$test_dir/log/docker-removed"
 cached_image_path=$("$cli" load-image --profile libvirt-slurm \
@@ -246,7 +296,7 @@ fi
 [ -f "$test_dir/collected/staged-images.json" ]
 [ -f "$test_dir/collected/staged-caches.json" ]
 [ -f "$test_dir/collected/network-emulation.json" ]
-python3 "$project_dir/tests/cases/libvirt_backend/cache_inventory.py" "$test_dir/collected/summary.json" \
+python3 "$project_dir/tests/cases/libvirt_backend/image_inventory.py" "$test_dir/collected/summary.json" \
 	"$test_dir/collected/images.json" \
 	"$test_dir/collected/network-emulation.json"
 
@@ -265,7 +315,7 @@ fi
 	--set "libvirt.baseImageSha256=$image_sha"
 grep -F -- ' destroy -auto-approve ' "$test_dir/log/tofu.args" > /dev/null
 [ "$(cat "$test_dir/log/scancel.job")" = 7654 ]
-python3 "$project_dir/tests/cases/libvirt_backend/image_state.py" "$infra/ledger.json"
+python3 "$project_dir/tests/cases/libvirt_backend/collection.py" "$infra/ledger.json"
 
 before=$(wc -l < "$test_dir/log/tofu.args")
 "$cli" down --profile libvirt-slurm --run-id uib-libvirt-test \
@@ -292,6 +342,6 @@ fi
 	--state-dir "$test_dir/state" \
 	--set "libvirt.baseImage=https://example.invalid/base.img" \
 	--set "libvirt.baseImageSha256=$image_sha"
-python3 "$project_dir/tests/cases/libvirt_backend/image_inventory.py" "$test_dir/state/uib-libvirt-failed/infrastructure/ledger.json"
+python3 "$project_dir/tests/cases/libvirt_backend/down_state.py" "$test_dir/state/uib-libvirt-failed/infrastructure/ledger.json"
 
 echo "libvirt backend test: PASS"

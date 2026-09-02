@@ -1,0 +1,24 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+printf '%s\n' "$*" >> "$LIBVIRT_TEST_LOG/netem.args"
+case $1 in
+apply-ingress)
+	printf '%s\n' 'tc qdisc replace dev test-ifb root netem delay 100us'
+	;;
+attach-ingress|clear-ingress|destroy-ingress)
+	;;
+show-ingress)
+	cat <<'EOF_QDISC'
+qdisc ingress ffff: parent ffff:fff1
+ Sent 4096 bytes 32 pkt (dropped 0, overlimits 0 requeues 0)
+qdisc netem 10: root refcnt 2 limit 8192 delay 100us
+ Sent 4096 bytes 32 pkt (dropped 0, overlimits 0 requeues 0)
+EOF_QDISC
+	;;
+*)
+	echo "unexpected netem command: $*" >&2
+	exit 2
+	;;
+esac

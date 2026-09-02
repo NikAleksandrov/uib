@@ -46,19 +46,27 @@ cp "$project_dir/tests/fakes/virtme/ssh" "$test_dir/fakes/ssh"
 cp "$project_dir/tests/fakes/virtme/k3s" "$test_dir/fakes/k3s"
 cp "$project_dir/tests/fakes/virtme/docker" "$test_dir/fakes/docker"
 cp "$project_dir/tests/fakes/virtme/ip" "$test_dir/fakes/ip"
+cp "$project_dir/tests/fakes/virtme/bridge" "$test_dir/fakes/bridge"
+cp "$project_dir/tests/fakes/virtme/netem" "$test_dir/fakes/netem"
+cp "$project_dir/tests/fakes/virtme/tc" "$test_dir/fakes/tc"
 chmod +x "$test_dir/fakes/ssh-keygen" "$test_dir/fakes/vng" \
 	"$test_dir/fakes/ssh" "$test_dir/fakes/ip" "$test_dir/fakes/k3s" \
-	"$test_dir/fakes/docker"
+	"$test_dir/fakes/docker" "$test_dir/fakes/bridge" \
+	"$test_dir/fakes/netem" "$test_dir/fakes/tc"
 
 export SSH_KEYGEN_COMMAND="$test_dir/fakes/ssh-keygen"
 export VNG_COMMAND="$test_dir/fakes/vng"
 export SSH_COMMAND="$test_dir/fakes/ssh"
 export IP_COMMAND="$test_dir/fakes/ip"
+export BRIDGE_COMMAND="$test_dir/fakes/bridge"
+export NETEM_COMMAND="$test_dir/fakes/netem"
+export TC_COMMAND="$test_dir/fakes/tc"
 export K3S_BINARY="$test_dir/fakes/k3s"
 export CONTAINER_ENGINE_COMMAND="$test_dir/fakes/docker"
 export VIRTME_SSH_WAIT=2
 export VIRTME_TEST_VNG_LOG="$test_dir/vng.log"
 export VIRTME_TEST_IP_LOG="$test_dir/ip.log"
+export VIRTME_TEST_NETEM_LOG="$test_dir/netem.log"
 export VIRTME_TEST_SSH_LOG="$test_dir/ssh.log"
 export VIRTME_TEST_IMAGE_IMPORTS="$test_dir/image-imports.log"
 export VIRTME_API_FORWARD_CHECK_COMMAND=/bin/true
@@ -129,6 +137,24 @@ unset VIRTME_TEST_MTU
 test "$(wc -l < "$test_dir/ip.log")" -eq 4
 grep -q '^link add name uibv-' "$test_dir/ip.log"
 grep -q '^link delete dev uibv-' "$test_dir/ip.log"
+
+"$cli" render --profile virtme-kubernetes --overlay virtme-bridge \
+	--overlay network/datacenter --overlay network/host-tap-ingress \
+	--format json > "$test_dir/host-bridge-config.json"
+"$backend" render "$test_dir/host-bridge-config.json" \
+	--name virtme-host-bridge > "$test_dir/host-bridge-topology.json"
+export VIRTME_TEST_FDB="$test_dir/fdb.json"
+python3 "$project_dir/tests/cases/virtme_backend/host_bridge_topology.py" "$test_dir/host-bridge-topology.json" "$VIRTME_TEST_FDB"
+"$backend" up "$test_dir/host-bridge-config.json" \
+	--name virtme-host-bridge --state-dir "$test_dir/host-bridge-state" \
+	> /dev/null
+python3 "$project_dir/tests/cases/virtme_backend/host_bridge_state.py" "$test_dir/host-bridge-state/network.json" \
+	"$test_dir/host-bridge-state/topology.json"
+"$backend" down --name virtme-host-bridge \
+	--state-dir "$test_dir/host-bridge-state"
+grep -F 'apply-ingress' "$VIRTME_TEST_NETEM_LOG" >/dev/null
+grep -F 'clear-ingress tapw1' "$VIRTME_TEST_NETEM_LOG" >/dev/null
+grep -F 'destroy-ingress ui' "$VIRTME_TEST_NETEM_LOG" >/dev/null
 
 if "$cli" render --profile virtme-kubernetes \
 	--set virtme.sshPortBase=65534 > /dev/null 2>&1; then

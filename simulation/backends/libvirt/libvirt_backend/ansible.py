@@ -40,6 +40,7 @@ def common_ansible_values(config, values, state, run_id):
         "uib_ssh_user": config["libvirt"]["sshUser"],
         "uib_data_interface": config["network"]["dataInterface"],
         "uib_network_mtu": config["network"]["mtu"],
+        "uib_network_emulation_point": config["network"]["emulationPoint"],
         "uib_active_mtu": verbs_active_mtu(config["network"]["mtu"]),
         "uib_network_shaping": config["network"]["shaping"],
         "uib_network_mode": config["libvirt"]["networkMode"],

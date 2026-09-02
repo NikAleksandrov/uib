@@ -607,7 +607,7 @@ use a small YAML overlay for a group of related values.
 | virtme network | `virtme-bridge` (optional; the profiles default to rootless socket networking) |
 | Communication | `communication/nccl`, `communication/rccl`, `communication/ucx`, `communication/libfabric` |
 | Protocol and congestion | `protocol/rocev2`, `protocol/rocev2-dcqcn`, `protocol/rocev2-nscc-experimental`, `protocol/uet-nscc`, `protocol/uet-rccc`, `protocol/uet-none`, `protocol/uet-dcqcn-experimental` |
-| Network condition | `network/clean`, `network/latency`, `network/drops`, `network/reordered`, `network/drops-reordered`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/bursty`, `network/ecn`, `network/asymmetric`, `network/minimum-mtu`, `network/jumbo` |
+| Network condition and placement | `network/clean`, `network/latency`, `network/drops`, `network/reordered`, `network/drops-reordered`, `network/datacenter`, `network/constrained`, `network/lossy`, `network/bursty`, `network/ecn`, `network/asymmetric`, `network/minimum-mtu`, `network/jumbo`, `network/host-tap-ingress`, `network/oversubscribed` |
 
 A later overlay from the same layer replaces the earlier layer settings.
 Network overlays replace shaping and per-worker shaping; an overlay changes
@@ -666,6 +666,10 @@ overlay when both are needed.
 | `network.mtu` | Integer 576-65535; default `1500` | Exact worker data-link MTU; UIB's active verbs MTU is derived automatically |
 | `network.shaping` | Complete shaping object | Default network condition for every worker |
 | `network.endpointShaping` | Map from `worker-NN/data` to complete shaping objects | Optional per-worker replacements; unknown workers are rejected |
+| `network.emulationPoint` | `guest-egress`, `host-tap-ingress` | Apply netem in each worker, or redirect each owned host tap ingress through an IFB |
+| `network.oversubscription.enabled` | `true`, `false` | Enable one shared IFB bottleneck for every worker tap |
+| `network.oversubscription.bandwidth` | Integer plus `kbit`, `Mbit`, or `Gbit` | Required aggregate rate when oversubscription is enabled |
+| `network.oversubscription.queueLimit` | Positive integer | Optional shared bottleneck queue in packets |
 
 ### UIB and communication values
 
@@ -754,6 +758,9 @@ nodes * processesPerNode == data * tensor * pipeline * expert
 | virtme `socket` with an interface other than `eth1`, or `bridge` with an interface other than `eth0` | TCP SSH creates a management NIC; the selected data backend has a fixed, validated device order |
 | virtme `bridge` without permission for `ip link` and QEMU bridge attachment | The optional host bridge/tap path needs network-administration permission and QEMU bridge authorization |
 | `libvirt.networkMode: bridge` without permission to create libvirt networks | Managed bridge/tap networking needs the normal system-libvirt network privileges |
+| `host-tap-ingress` outside libvirt or multi-guest virtme bridge mode | Rootless transports and Kind do not expose owned host taps |
+| Oversubscription without `host-tap-ingress` and an explicit bandwidth | The shared bottleneck is an IFB attached to owned tap ingress |
+| Oversubscription combined with default or per-worker shaping | A packet cannot use both the shared bottleneck and an independent endpoint IFB in the current unambiguous pipeline |
 | libvirt Kubernetes with `networkMode: rootless` | Per-guest passt management networks cannot form the required Kubernetes control plane; use bridge mode |
 | Rootless mode for network-performance conclusions | Passt and multicast tunnels are functional transports, not an accurate model of physical fabric performance |
 | RCCL without `nodes.gpus.vendor: amd` | RCCL requires AMD/ROCm hardware |
@@ -3176,11 +3183,11 @@ Configurable link features include:
 - deterministic random seed;
 - timed link degradation and recovery.
 
-`tc netem` is the default impairment mechanism. The virtme and libvirt Slurm
-backends apply it to each disposable worker's data-interface egress. Kind and
-host-side libvirt tap placement remain backend extensions. A real-cluster
-profile normally disables shaping and records physical NIC and switch counters
-instead.
+`tc netem` is the default impairment mechanism. The virtme and libvirt
+backends can apply it to each disposable worker data-interface egress or to
+each owned host tap ingress through an IFB. A shared IFB supplies an explicit
+aggregate-rate oversubscription bottleneck. A real-cluster profile normally
+disables shaping and records physical NIC and switch counters instead.
 
 Faults can also terminate a pod, Slurm rank, virtme guest, or VM. Each fault is
 recorded with planned time, actual time, target, result, and recovery time.
@@ -3201,6 +3208,13 @@ simulation/network/netem render /tmp/uib-config.json tap-uib-0 \
 simulation/network/netem apply  /tmp/uib-config.json tap-uib-0
 simulation/network/netem show   tap-uib-0
 simulation/network/netem clear  tap-uib-0
+
+simulation/network/netem render-ingress /tmp/uib-config.json \
+  tap-uib-0 ifb-uib-0 --target worker-01/data
+sudo simulation/network/netem apply-ingress /tmp/uib-config.json \
+  tap-uib-0 ifb-uib-0 --target worker-01/data
+sudo simulation/network/netem clear-ingress tap-uib-0
+sudo simulation/network/netem destroy-ingress ifb-uib-0
 ```
 
 `render` is read-only. `apply` prints the command before invoking it. It may
@@ -3208,6 +3222,32 @@ replace an existing root `netem` qdisc, but refuses to replace a different
 root qdisc unless `--replace-existing` is explicitly supplied. `clear` deletes
 only a root qdisc whose kind is `netem`; it does not delete an unrelated qdisc.
 Set `NETEM_TC=/path/to/tc` when `tc` is outside `PATH`.
+
+Select host ingress after selecting a condition:
+
+```text
+simulation/bin/uib-sim up --profile libvirt-kubernetes \
+  --overlay network/datacenter --overlay network/host-tap-ingress \
+  --run-id uib-host-ingress
+```
+
+`network/oversubscribed` instead disables independent endpoint conditions and
+creates one 10 Gbit/s, 4096-packet shared bottleneck. Override the aggregate
+rate without changing backend code:
+
+```text
+simulation/bin/uib-sim render --profile libvirt-kubernetes \
+  --overlay network/oversubscribed \
+  --set network.oversubscription.bandwidth=25Gbit
+```
+
+Libvirt resolves each worker data tap from the owned domain and network.
+virtme learns each worker tap from its recorded MAC on the owned bridge. Both
+backends derive collision-resistant IFB names from the run and stable target,
+record taps and IFBs before mutation, collect host kernel/iproute2/qdisc
+evidence after traffic, and remove ingress qdiscs and IFBs before destroying
+the domains or bridge. The shared bottleneck records one IFB for all workers;
+independent host ingress records one IFB per shaped worker.
 
 The virtme and libvirt Slurm lifecycles apply the same adapter automatically
 before their actual cross-worker UIB traffic gates:
@@ -4002,6 +4042,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 |---|---|---|
 | `make simulation-cli-test` | Python 3, PyYAML, and `jsonschema` | Every profile, named layer replacement, schema and semantic rejection, typed `--set`, and the read-only `doctor` report |
 | `make simulation-netem-test` | The CLI requirements plus `jq` | Every checked-in uniform and per-worker network condition renders to the expected `tc netem` command; unsafe interfaces, targets, and invalid combinations are rejected; it does not modify a qdisc |
+| `sudo make simulation-host-network-test` | The netem-test requirements plus `ip`, `tc`, IFB support, and network-administration permission | Two isolated endpoints exchange real packets through an owned Linux bridge and shared ingress IFB bottleneck; nonzero counters, IFB type checks, and exact qdisc/interface/namespace cleanup are required |
 | `make simulation-fault-schedule-test` | Python 3, `jq`, and the CLI requirements; no network privilege | Overlapping delay, loss, partition, and link-down transitions, direct and noninteractive privileged command dispatch, exact JSONL evidence, base-condition recovery, missing targets, and signal-interruption cleanup through controlled standard-command adapters |
 | `make simulation-rank-fault-test` | Python 3 and POSIX shell tools; no Slurm installation or elevated privilege | Monotonic rank-fault timing, exclusive run-owned markers, JSONL evidence, invalid schedule rejection, and actual SIGTERM of an unchanged wrapped process |
 | `make simulation-fault-e2e-test` | Build dependencies, `ip`, `jq`, `tc`, `timeout`, `unshare`, and permission to create a network namespace | A timed delay carries the complete RoCEv2 operation matrix; a separate 100% loss partition drops initial UIB traffic, then the unchanged workload completes after exact recovery. Nonzero qdisc counters and complete transition evidence are required |
@@ -4010,14 +4051,14 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-mtu-test` | Build dependencies, `ip`, `timeout`, `ibv_rc_pingpong`, and permission to create network namespaces and veth pairs | Actual 2051-byte multi-packet RoCEv2 traffic at link MTUs 576 and 1280, plus UET at 576; both endpoints use and advertise the automatically derived active MTU |
 | `make rocev2-ecn-test` | Build dependencies and permission to open loopback UDP sockets | ECT(0) traffic produces an ACK but no CNP, while a valid CE-marked RoCEv2 packet produces exactly one ACK and one CNP; both io_uring multishot and batched receive metadata paths are tested |
 | `make simulation-kind-test` | Python 3 and PyYAML; no container daemon | Digest-pinned standard Kind YAML, worker count, safe named create/status/kubeconfig/delete delegation using a fake Kind executable |
-| `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Rootless socket and optional bridge rendering, IPv4/MAC/SSH allocation, exact virtme-ng launch vectors, worker fault-scheduler provisioning and stable targets, run-owned key/inventory creation, PID/start-time ownership, terminated-guest degradation, remaining-process cleanup, bridge create/delete cleanup through fake standard commands, and invalid combination rejection |
+| `make simulation-virtme-backend-test` | Python 3, PyYAML, and `jsonschema`; no guest boot or elevated network permission | Rootless socket and optional bridge rendering, IPv4/MAC/SSH allocation, exact virtme-ng launch vectors, host-tap discovery, per-worker IFB evidence and cleanup, worker fault targets, PID/start-time ownership, terminated-guest degradation, bridge cleanup through fake standard commands, and invalid combination rejection |
 | `make simulation-virtme-kind-test` | Python 3, PyYAML, and POSIX shell tools; no guest boot, Docker daemon, or elevated permission | Persistent one-guest Kind rendering, owned ext4 Docker storage, nested daemon and cluster commands, host API forwarding, image loading, status, PID/start-time ownership, and exact cleanup through fake standard commands |
 | `make simulation-lifecycle-interruption-test` | Python 3 and POSIX shell tools; no cluster, hypervisor, or elevated privilege | SIGTERM propagation through the public CLI, Kind default cleanup and `--retain`, libvirt interruption during OpenTofu apply with owned destroy, and virtme interruption after guest launch with process and network cleanup |
 | `make simulation-workload-interruption-test` | Python 3 and POSIX shell tools; no scheduler or cluster | Kubernetes apply interruption with exact namespace cleanup, partial collection removal and successful retry, interrupted cleanup retry, and conservative Slurm `submission-unknown` recording when no numeric job ID was returned |
 | `make simulation-virtme-kubernetes-e2e-test` | virtme-ng 1.35, SSH, kubectl, QEMU with KVM or TCG, about 4 GiB memory for the two reduced-size guests, and download access for the pinned k3s binary on first use | A real controller and worker under separate virtme kernels, rootless socket data traffic, pinned k3s/containerd startup without systemd PID 1, both nodes Ready, host API access through an owned SSH forward, cached download reuse, and exact process cleanup |
 | `make simulation-virtme-slurm-e2e-test` | virtme-ng 1.35, SSH/SCP, QEMU with KVM or TCG, `jq`, `tc`, Slurm/Pyxis build tools, a Docker-compatible engine for the portable runtime and workload image, about 6 GiB memory, and download access on the first run | A real controller/two-worker Slurm/Pyxis/Enroot lifecycle, direct and containerized cross-worker UIB traffic, automatic pinned-image staging, remote two-rank `run`/`status`/`collect`, clean network evidence, portable-runtime preflight, and exact cleanup |
 | `make simulation-virtme-netem-e2e-test` | The virtme Slurm gate requirements | The same complete workload lifecycle while the selected condition is active on both worker data interfaces; exact qdisc/kernel/iproute2 evidence and cleanup are validated |
-| `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge/rootless VM rendering; Slurm and bridge-only Kubernetes playbook selection; pinned k3s inputs, non-logged join token, kubeconfig export, cached-image verification, worker network and fault-scheduler provisioning, Slurm remote lifecycle, exclusive ownership, and exact-state cleanup with fake standard commands |
+| `make simulation-libvirt-test` | Python 3, PyYAML, `jsonschema`, POSIX shell tools, and no libvirt daemon | Deterministic bridge/rootless VM rendering; host-tap discovery; independent and shared IFB application, evidence, and cleanup; Slurm and Kubernetes playbook selection; pinned k3s inputs, kubeconfig export, cached-image verification, remote lifecycle, and exact-state cleanup through fake standard commands |
 | `make simulation-kind-e2e-test` | Kind, an accessible Docker-compatible runtime, `timeout`, network access for the pinned node image on its first run, and resources for the requested nodes | A real disposable Kind control plane and workers become ready, expose kubeconfig, optionally load images, report the exact node count, and are absent after cleanup |
 | `make simulation-libvirt-e2e-test` | A Docker-compatible engine for the portable runtime, OpenTofu 1.12.3, libvirt provider 0.9.8, Ansible Core, libvirt/QEMU/KVM, `virsh`, SSH/SCP, passt, NFS-capable Ubuntu guests, roughly 12 GiB memory for the default three VMs, and download access on the first run | Actual controller/two-worker VMs, private data networking, NFSv4, exact Slurm 23.11.4 packages, Munge, Enroot 4.2.1, Pyxis 0.24.0, ordinary worker tasks, cross-VM standard RC payload through UIB, remote batch submission and status, two-rank pinned OCI execution with portable UIB preflight, result collection, state-based destruction, and domain/pool absence; no NCCL or GPU claim |
 | `make simulation-libvirt-netem-e2e-test` | The libvirt gate requirements; guest iproute2 and `jq` are installed automatically | The selected checked-in condition is active on both worker data interfaces before actual cross-VM UIB traffic, exact qdisc/kernel/iproute2 evidence is collected, the Slurm lifecycle passes, and the VMs are removed; rootless timing and throughput are not physical-fabric measurements |

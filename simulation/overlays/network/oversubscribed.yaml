@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+network:
+  emulationPoint: host-tap-ingress
+  shaping:
+    enabled: false
+  oversubscription:
+    enabled: true
+    bandwidth: 10Gbit
+    queueLimit: 4096

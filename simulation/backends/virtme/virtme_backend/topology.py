@@ -138,6 +138,7 @@ def topology(config, run_id):
         "ownership": {
             "processes": [],
             "taps": [],
+            "ifbs": [],
             "bridges": bridges,
             "temporaryRoots": [],
         },

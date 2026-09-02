@@ -20,7 +20,7 @@ def command_render(args):
 def command_up(args):
     from .ansible import common_ansible_values, finalize_kubeconfig, kubernetes_ansible_values, slurm_ansible_values
     from .core import LibvirtError, MODULE, PLAYBOOKS, SIMULATION, executable, load_config, run_logged, validate_name, write_json
-    from .network import record_network_evidence
+    from .network import apply_host_network, clear_host_network, record_host_network_evidence, record_network_evidence
     from .tofu import acquire_base_image, destroy, tofu_environment, tofu_values
     from .topology import inventory
 
@@ -48,6 +48,7 @@ def command_up(args):
     write_json(state / "resolved-simulation.json", config)
     log = state / "lifecycle.log"
     apply_started = False
+    host_network_applied = False
     try:
         image = acquire_base_image(config, cache)
         key = state / "id_ed25519"
@@ -78,6 +79,8 @@ def command_up(args):
             tofu, f"-chdir={state / 'opentofu'}", "apply", "-auto-approve",
             f"-var-file={state / 'terraform.tfvars.json'}",
         ], log, environment)
+        host_network_applied = apply_host_network(
+            state, config, values, args.name)
         ledger["state"] = "provisioning"
         write_json(ledger_path, ledger)
 
@@ -94,8 +97,12 @@ def command_up(args):
             ansible, "-i", str(state / "inventory.yaml"),
             str(PLAYBOOKS[manager]), "--extra-vars", f"@{extra_vars_path}",
         ], log)
-        network_evidence = record_network_evidence(
-            state, config, values, args.name)
+        if host_network_applied:
+            network_evidence = record_host_network_evidence(
+                state, config, args.name)
+        else:
+            network_evidence = record_network_evidence(
+                state, config, values, args.name)
         ledger["state"] = "ready"
         ledger["baseImage"] = str(image)
         ledger["networkEvidence"] = network_evidence.name
@@ -110,6 +117,7 @@ def command_up(args):
         write_json(ledger_path, ledger)
         if apply_started and not args.retain:
             try:
+                clear_host_network(state, args.name)
                 destroy(state, cache, log)
                 ledger["cleanup"] = "destroyed"
                 write_json(ledger_path, ledger)
@@ -157,6 +165,7 @@ def command_kubeconfig(args):
 
 def command_down(args):
     from .core import load_ledger, validate_name, write_json
+    from .network import clear_host_network
     from .tofu import destroy
 
     validate_name(args.name)
@@ -166,6 +175,7 @@ def command_down(args):
     if ledger.get("state") == "destroyed" or ledger.get("cleanup") == "destroyed":
         return
     log = state / "lifecycle.log"
+    clear_host_network(state, args.name)
     destroy(state, cache, log)
     ledger["state"] = "destroyed"
     write_json(ledger_path, ledger)

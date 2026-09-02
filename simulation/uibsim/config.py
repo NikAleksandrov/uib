@@ -91,14 +91,23 @@ def apply_overlay(config, name):
                 protocol["environment"])
         return config
     if name.startswith("network/"):
-        config["network"]["shaping"] = copy.deepcopy(
-            overlay["network"]["shaping"])
+        network = overlay["network"]
+        if "shaping" in network:
+            config["network"]["shaping"] = copy.deepcopy(
+                network["shaping"])
+            config["network"]["emulationPoint"] = "guest-egress"
+            config["network"]["oversubscription"] = {"enabled": False}
+            config["network"].pop("endpointShaping", None)
         if "mtu" in overlay["network"]:
             config["network"]["mtu"] = overlay["network"]["mtu"]
-        config["network"].pop("endpointShaping", None)
-        if "endpointShaping" in overlay["network"]:
+        if "emulationPoint" in network:
+            config["network"]["emulationPoint"] = network["emulationPoint"]
+        if "oversubscription" in network:
+            config["network"]["oversubscription"] = copy.deepcopy(
+                network["oversubscription"])
+        if "endpointShaping" in network:
             config["network"]["endpointShaping"] = copy.deepcopy(
-                overlay["network"]["endpointShaping"])
+                network["endpointShaping"])
         return config
     return merge(config, overlay)
 
@@ -498,6 +507,31 @@ def validate_network(config):
                 "shaping an existing cluster requires allowExistingMutations=true")
     validate_shaping(config["network"]["shaping"], "network.shaping")
     endpoint_shaping = config["network"].get("endpointShaping", {})
+    emulation_point = config["network"]["emulationPoint"]
+    oversubscription = config["network"]["oversubscription"]
+    if emulation_point == "host-tap-ingress":
+        bridge_mode = (
+            provider == "libvirt" and
+            config["libvirt"]["networkMode"] == "bridge") or (
+            provider == "virtme" and config["virtme"]["mode"] == "multi-guest" and
+            config["virtme"]["networkMode"] == "bridge")
+        if not bridge_mode:
+            raise ConfigurationError(
+                "host-tap-ingress requires libvirt or multi-guest virtme bridge networking")
+    if oversubscription["enabled"]:
+        if "bandwidth" not in oversubscription:
+            raise ConfigurationError(
+                "enabled network.oversubscription requires bandwidth")
+        if emulation_point != "host-tap-ingress":
+            raise ConfigurationError(
+                "network oversubscription requires host-tap-ingress")
+        if config["network"]["shaping"]["enabled"] or any(
+                shaping["enabled"] for shaping in endpoint_shaping.values()):
+            raise ConfigurationError(
+                "network oversubscription cannot be combined with endpoint shaping")
+    elif set(oversubscription) != {"enabled"}:
+        raise ConfigurationError(
+            "disabled network.oversubscription cannot have parameters")
 
 
 

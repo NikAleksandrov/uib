@@ -1,6 +1,14 @@
 ---
 # SPDX-License-Identifier: Apache-2.0
 
+- name: Create the local helper directory
+  ansible.builtin.file:
+    path: /usr/local/libexec
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
 - name: Install the common netem adapter
   ansible.builtin.copy:
     src: "{{ uib_netem_source }}"
@@ -77,6 +85,7 @@
       - --replace-existing
   register: uib_netem_apply
   changed_when: uib_endpoint_shaping[inventory_hostname].enabled | bool
+  when: uib_network_emulation_point == 'guest-egress'
 
 - name: Preserve the applied netem command for post-traffic evidence
   ansible.builtin.copy:
@@ -85,3 +94,4 @@
     group: root
     mode: "0644"
     content: "{{ uib_netem_apply.stdout | trim }}\n"
+  when: uib_network_emulation_point == 'guest-egress'

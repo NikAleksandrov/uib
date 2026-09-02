@@ -3,12 +3,13 @@
 import json
 import sys
 
-
 with open(sys.argv[1], encoding="utf-8") as source:
-    ledger = json.load(source)
-assert ledger["schemaVersion"] == 1
-assert ledger["runId"] == "uib-libvirt-test"
-assert ledger["provider"] == "libvirt"
-assert ledger["clusterManager"] == "slurm"
-assert ledger["state"] == "ready"
-assert ledger["networkEvidence"] == "network.json"
+    evidence = json.load(source)
+with open(sys.argv[2], encoding="utf-8") as source:
+    ownership = json.load(source)
+assert evidence["scope"] == "worker-data-host-tap-ingress"
+assert evidence["emulationPoint"] == "host-tap-ingress"
+assert evidence["oversubscription"] == {"enabled": False}
+assert evidence["endpoints"]["worker-01"]["tap"] == "vnet11"
+assert "qdisc netem " in evidence["endpoints"]["worker-01"]["qdisc"]
+assert ownership["endpoints"]["worker-01"]["ifb"].startswith("ui")

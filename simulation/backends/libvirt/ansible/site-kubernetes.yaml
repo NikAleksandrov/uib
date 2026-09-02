@@ -80,3 +80,4 @@
       ansible.builtin.include_role:
         name: network_shaping
         tasks_from: evidence
+      when: uib_network_emulation_point == 'guest-egress'

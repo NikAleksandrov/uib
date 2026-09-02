@@ -1,0 +1,10 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+if [ "$*" = -Version ]; then
+	echo 'tc utility, iproute2-test'
+	exit 0
+fi
+echo "unexpected tc command: $*" >&2
+exit 2

@@ -5,9 +5,10 @@ import sys
 
 
 with open(sys.argv[1], encoding="utf-8") as source:
-    status = json.load(source)
-assert status == {
-    "provider": "libvirt",
-    "runId": "uib-libvirt-test",
-    "state": "ready",
-}
+    ledger = json.load(source)
+assert ledger["schemaVersion"] == 1
+assert ledger["runId"] == "uib-libvirt-test"
+assert ledger["provider"] == "libvirt"
+assert ledger["clusterManager"] == "slurm"
+assert ledger["state"] == "ready"
+assert ledger["networkEvidence"] == "network.json"

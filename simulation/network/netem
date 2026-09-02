@@ -4,6 +4,7 @@ set -eu
 
 netem_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$netem_dir/netem_lib/common.sh"
+. "$netem_dir/netem_lib/ingress.sh"
 . "$netem_dir/netem_lib/command.sh"
 
 tc_command=${NETEM_TC:-}
@@ -90,6 +91,136 @@ show)
 	[ "$#" -eq 2 ] || { usage; exit 2; }
 	valid_interface "$2" || { echo "invalid network interface: $2" >&2; exit 2; }
 	"$tc_command" -s qdisc show dev "$2"
+	;;
+render-ingress|apply-ingress)
+	[ "$#" -ge 4 ] || { usage; exit 2; }
+	config=$2
+	interface=$3
+	ifb=$4
+	target=
+	oversubscription=false
+	replace_existing=false
+	shift 4
+	while [ "$#" -gt 0 ]; do
+		case $1 in
+		--target)
+			[ "$#" -ge 2 ] || { usage; exit 2; }
+			target=$2
+			shift 2
+			;;
+		--oversubscription)
+			oversubscription=true
+			shift
+			;;
+		--replace-existing)
+			replace_existing=true
+			shift
+			;;
+		*) usage; exit 2 ;;
+		esac
+	done
+	valid_interface "$interface" || {
+		echo "invalid network interface: $interface" >&2
+		exit 2
+	}
+	valid_interface "$ifb" || {
+		echo "invalid IFB interface: $ifb" >&2
+		exit 2
+	}
+	if [ -n "$target" ] && [ "$oversubscription" = true ]; then
+		echo "target and oversubscription are mutually exclusive" >&2
+		exit 2
+	fi
+	if [ -n "$target" ]; then
+		case $target in
+		worker-[0-9][0-9]/data|worker-[0-9][0-9][0-9]/data|\
+		worker-[0-9][0-9][0-9][0-9]/data) ;;
+		*) echo "invalid network target: $target" >&2; exit 2 ;;
+		esac
+	fi
+	if [ "$oversubscription" = true ]; then
+		shaping=$(jq -ce '.network.oversubscription |
+			select(.enabled == true and (.bandwidth | type == "string"))' \
+			"$config")
+	else
+		shaping=$(jq -ce --arg target "$target" '
+			if $target == "" then .network.shaping
+			else .network.endpointShaping[$target] // .network.shaping end |
+			select(.enabled == true)' "$config")
+	fi
+	resolve_ip
+	netem_seed_supported=true
+	build_command "$ifb"
+	if [ "$action" = render-ingress ]; then
+		printf '%q ' "$ip_command" link add name "$ifb" type ifb
+		printf '\n'
+		printf '%q ' "$ip_command" link set dev "$ifb" up
+		printf '\n'
+		print_command
+		printf '%q ' "$tc_command" qdisc add dev "$interface" \
+			handle ffff: ingress
+		printf '\n'
+		printf '%q ' "$tc_command" filter add dev "$interface" \
+			parent ffff: protocol all matchall action mirred egress \
+			redirect dev "$ifb"
+		printf '\n'
+		exit 0
+	fi
+	if "$ip_command" link show dev "$ifb" >/dev/null 2>&1; then
+		echo "refusing to reuse existing IFB interface $ifb" >&2
+		exit 1
+	fi
+	"$ip_command" link add name "$ifb" type ifb
+	if ! "$ip_command" link set dev "$ifb" up; then
+		"$ip_command" link delete dev "$ifb" type ifb
+		exit 1
+	fi
+	if [ -n "$(jq -r '.seed // empty' <<<"$shaping")" ] &&
+	   ! "$tc_command" qdisc add dev "$ifb" root netem help 2>&1 | \
+		grep -Eq '(^|[[:space:]])seed([[:space:]]|$)'; then
+		netem_seed_supported=false
+		echo "warning: target netem has no seed support; omitting seed" >&2
+		build_command "$ifb"
+	fi
+	print_command
+	if ! "${command[@]}" ||
+	   ! attach_ingress "$interface" "$ifb" "$replace_existing"; then
+		clear_ingress "$interface"
+		destroy_ingress "$ifb"
+		exit 1
+	fi
+	;;
+attach-ingress)
+	[ "$#" -ge 3 ] || { usage; exit 2; }
+	valid_interface "$2" || { echo "invalid network interface: $2" >&2; exit 2; }
+	valid_interface "$3" || { echo "invalid IFB interface: $3" >&2; exit 2; }
+	replace_existing=false
+	if [ "$#" -eq 4 ] && [ "$4" = --replace-existing ]; then
+		replace_existing=true
+	elif [ "$#" -ne 3 ]; then
+		usage
+		exit 2
+	fi
+	resolve_ip
+	"$ip_command" link show dev "$3" >/dev/null
+	attach_ingress "$2" "$3" "$replace_existing"
+	;;
+clear-ingress)
+	[ "$#" -eq 2 ] || { usage; exit 2; }
+	valid_interface "$2" || { echo "invalid network interface: $2" >&2; exit 2; }
+	clear_ingress "$2"
+	;;
+destroy-ingress)
+	[ "$#" -eq 2 ] || { usage; exit 2; }
+	valid_interface "$2" || { echo "invalid IFB interface: $2" >&2; exit 2; }
+	destroy_ingress "$2"
+	;;
+show-ingress)
+	[ "$#" -eq 3 ] || { usage; exit 2; }
+	valid_interface "$2" || { echo "invalid network interface: $2" >&2; exit 2; }
+	valid_interface "$3" || { echo "invalid IFB interface: $3" >&2; exit 2; }
+	"$tc_command" -s qdisc show dev "$2"
+	"$tc_command" -s qdisc show dev "$3"
 	;;
 *)
 	usage

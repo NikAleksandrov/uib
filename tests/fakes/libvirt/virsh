@@ -1,0 +1,27 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+for argument in "$@"; do
+	domain=$argument
+done
+case $domain in
+*-worker-01)
+	run=${domain%-worker-01}
+	tap=vnet11
+	;;
+*-worker-02)
+	run=${domain%-worker-02}
+	tap=vnet12
+	;;
+*)
+	echo "unexpected domain: $domain" >&2
+	exit 2
+	;;
+esac
+cat <<EOF_TABLE
+ Interface   Type      Source       Model    MAC
+-------------------------------------------------------------
+ vnet10      network   ${run}-mgmt  virtio   52:54:00:00:00:10
+ $tap        network   ${run}-data  virtio   52:54:00:00:00:11
+EOF_TABLE

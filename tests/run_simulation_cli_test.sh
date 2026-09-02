@@ -55,6 +55,12 @@ done
 	--format json > "$test_dir/uet-overlay.json"
 "$cli" render --profile virtme-kubernetes --overlay network/asymmetric \
 	--format json > "$test_dir/asymmetric.json"
+"$cli" render --profile libvirt-kubernetes --overlay network/datacenter \
+	--overlay network/host-tap-ingress --format json \
+	> "$test_dir/host-tap-ingress.json"
+"$cli" render --profile libvirt-kubernetes \
+	--overlay network/oversubscribed --format json \
+	> "$test_dir/oversubscribed.json"
 python3 - "$test_dir/asymmetric.json" <<'PY'
 import json
 import sys
@@ -66,6 +72,43 @@ assert config["network"]["endpointShaping"]["worker-01/data"]["latency"] == \
 assert config["network"]["endpointShaping"]["worker-02/data"]["bandwidth"] == \
     "1Gbit"
 PY
+python3 - "$test_dir/host-tap-ingress.json" \
+	"$test_dir/oversubscribed.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    ingress = json.load(source)["network"]
+with open(sys.argv[2], encoding="utf-8") as source:
+    oversubscribed = json.load(source)["network"]
+assert ingress["emulationPoint"] == "host-tap-ingress"
+assert ingress["shaping"]["bandwidth"] == "25Gbit"
+assert ingress["oversubscription"] == {"enabled": False}
+assert oversubscribed["emulationPoint"] == "host-tap-ingress"
+assert oversubscribed["shaping"] == {"enabled": False}
+assert oversubscribed["oversubscription"] == {
+    "enabled": True,
+    "bandwidth": "10Gbit",
+    "queueLimit": 4096,
+}
+PY
+if "$cli" render --profile virtme-kubernetes \
+	--overlay network/host-tap-ingress > /dev/null 2>&1; then
+	echo "socket virtme accepted host-tap ingress" >&2
+	exit 1
+fi
+if "$cli" render --profile libvirt-kubernetes \
+	--set network.oversubscription.enabled=true > /dev/null 2>&1; then
+	echo "oversubscription without host ingress and bandwidth was accepted" >&2
+	exit 1
+fi
+if "$cli" render --profile libvirt-kubernetes \
+	--overlay network/datacenter --overlay network/host-tap-ingress \
+	--set network.oversubscription.enabled=true \
+	--set network.oversubscription.bandwidth=10Gbit > /dev/null 2>&1; then
+	echo "oversubscription was combined with endpoint shaping" >&2
+	exit 1
+fi
 if "$cli" render --profile virtme-kubernetes \
 	--set 'network.endpointShaping={worker-03/data: {enabled: true, latency: 1ms}}' \
 	> /dev/null 2>&1; then
