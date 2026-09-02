@@ -32,11 +32,19 @@ quantity_mib()
 
 kubernetes_host_memory_preflight()
 {
-	if test "$kubernetes_profile" != virtme-kubernetes; then
+	case $kubernetes_profile in
+	virtme-kubernetes)
+		controller_memory=${SIMULATION_VIRTME_CONTROLLER_MEMORY:-$kubernetes_memory}
+		worker_memory=${SIMULATION_VIRTME_WORKER_MEMORY:-$kubernetes_memory}
+		;;
+	libvirt-kubernetes)
+		controller_memory=$kubernetes_memory
+		worker_memory=$kubernetes_memory
+		;;
+	*)
 		return 0
-	fi
-	controller_memory=${SIMULATION_VIRTME_CONTROLLER_MEMORY:-$kubernetes_memory}
-	worker_memory=${SIMULATION_VIRTME_WORKER_MEMORY:-$kubernetes_memory}
+		;;
+	esac
 	reserve_gib=${SIMULATION_HOST_MEMORY_RESERVE_GIB:-12}
 	available_kib=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
 	controller_mib=$(quantity_mib "$controller_memory")
@@ -51,7 +59,7 @@ kubernetes_host_memory_preflight()
 	required_mib=$((controller_mib +
 			kubernetes_workers * worker_mib + reserve_gib * 1024))
 	if test "$available_kib" -lt "$((required_mib * 1024))"; then
-		echo "SKIP virtme Kubernetes E2E: ${required_mib}Mi available memory required, $((available_kib / 1024))Mi available" >&2
+		echo "SKIP $kubernetes_profile E2E: ${required_mib}Mi available memory required, $((available_kib / 1024))Mi available" >&2
 		return 77
 	fi
 }

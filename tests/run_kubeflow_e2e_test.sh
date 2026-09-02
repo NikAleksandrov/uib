@@ -26,6 +26,16 @@ SIMULATION_KUBERNETES_WORKLOAD_CPU=${SIMULATION_KUBERNETES_WORKLOAD_CPU:-1}
 SIMULATION_KUBERNETES_WORKLOAD_MEMORY=${SIMULATION_KUBERNETES_WORKLOAD_MEMORY:-1Gi}
 . "$project_dir/tests/kubernetes_e2e_cluster.sh"
 
+memory_status=0
+kubernetes_host_memory_preflight || memory_status=$?
+if test "$memory_status" = 77; then
+	rm -rf -- "$test_dir"
+	exit 0
+fi
+if test "$memory_status" -ne 0; then
+	exit "$memory_status"
+fi
+
 collect_diagnostics()
 {
 	[ -s "$kubeconfig" ] || return 0
