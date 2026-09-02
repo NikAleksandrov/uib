@@ -63,7 +63,7 @@ kind: Config
 users: []
 CONFIG
 	;;
-*'ctr images import -'*)
+*'ctr images import '*' -'*)
 	cat > /dev/null
 	printf '%s\n' imported >> "$VIRTME_TEST_IMAGE_IMPORTS"
 	;;

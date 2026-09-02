@@ -11,7 +11,10 @@ spec = job["spec"]
 submitter_spec = spec["submitterPodTemplate"]["spec"]
 submitter = submitter_spec["containers"][0]
 assert submitter["name"] == "ray-job-submitter"
-assert submitter["image"] == "uib-inference:test"
+assert submitter["image"] == (
+    "docker.io/rayproject/ray:2.58.0-py312-cpu@sha256:"
+    "c3c9573c5c6bfe4127885f79622d6a32064d34cafc7d156ec728aab8657be250"
+)
 assert submitter["imagePullPolicy"] == "IfNotPresent"
 assert submitter["resources"]["requests"] == {
     "cpu": "50m", "memory": "64Mi"}

@@ -181,7 +181,8 @@ def command_load_image(args):
                 return invoke_backend(config, virtme_kind_arguments)
             for reference in args.image:
                 stage_kubernetes_image(
-                    args, reference, args.allow_mutable_tags)
+                    args, reference, args.allow_mutable_tags,
+                    args.include_controller)
             return 0
         for reference in args.image:
             print(stage_slurm_image(args, reference,

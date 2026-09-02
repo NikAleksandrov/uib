@@ -649,6 +649,7 @@ overlay when both are needed.
 | `container.integration` | `none`, `pyxis` | Slurm/container integration |
 | `launcher.training` | `kubeflow`, `jobset`, `slurm` | Training submitter |
 | `launcher.inference` | `kuberay`, `vllm-multiprocessing`, `slurm-ray` | Inference submitter |
+| `launcher.raySubmitterImage` | Digest-pinned Ray image | Image used by the constrained virtme KubeRay job submitter |
 | `slurm.partition` | Letters, digits, `.`, `_`, or `-` | Required target partition |
 | `slurm.account`, `.qos`, `.reservation`, `.constraint` | Optional Slurm name | Site allocation or placement selection |
 | `slurm.memory` | Integer plus `Mi`, `Gi`, or `Ti`, such as `12Gi` | Optional Slurm-specific memory override per node; it takes precedence over `workload.resources.memory`. For libvirt it cannot exceed `nodes.memory - 512Mi` |
@@ -1890,6 +1891,9 @@ cluster, install the operator, and submit the standard inference request. They
 require a Docker-compatible engine, kubectl, Helm, network access for uncached
 images/charts, and enough memory for the Ray head. The native containerd
 snapshotter needs a 64 GiB virtme worker disk for the current inference image.
+The controller receives the pinned Ray submitter image because KubeRay runs its
+job submitter there. The much larger inference, runtime, and model-cache images
+remain worker-only.
 Kind additionally requires Kind; virtme requires virtme-ng and QEMU.
 The virtme test refuses to start unless `MemAvailable` covers every guest plus
 an 8 GiB host reserve. A successful run checks Ray readiness, all UIB init
@@ -1926,9 +1930,10 @@ KubeRay gate options:
 | `SIMULATION_KUBERAY_OPERATOR_TIMEOUT` | `10m` | Helm duration for operator installation |
 | `SIMULATION_KUBERAY_PROVISIONING_TIMEOUT` | `1800` | Positive seconds allowed after RayJob creation for image unpacking and RayCluster readiness |
 | `SIMULATION_KUBERAY_WORKLOAD_TIMEOUT` | `900` | Positive seconds allowed after the deployment enters `Running` |
-| `SIMULATION_KUBERAY_INFERENCE_IMAGE` | `uib-inference:test` | Existing host image loaded into every disposable worker |
+| `SIMULATION_KUBERAY_INFERENCE_IMAGE` | `uib-inference:test` | Existing host image loaded into every disposable worker for Ray pods |
 | `SIMULATION_KUBERAY_RUNTIME_IMAGE` | `uib-runtime:test` | Portable UIB init image loaded into every disposable worker |
 | `SIMULATION_KUBERAY_MODEL_CACHE_IMAGE` | `uib-model-cache:test` | Disposable image built from the ignored Hugging Face cache |
+| `SIMULATION_KUBERAY_SUBMITTER_IMAGE` | Pinned Ray 2.58.0 CPU image | Small multi-architecture Ray CLI image staged for the virtme controller-side submitter; changing it produces an unqualified compatibility run |
 | `SIMULATION_KUBERAY_RESULTS` | `simulation/.artifacts/results` | Ignored persistent root for success and failure evidence |
 | `SIMULATION_STATE_DIR` | `simulation/.artifacts/runs` | Ignored infrastructure/workload state root; guest logs survive a failed run while owned resources are still removed |
 | `SIMULATION_KUBERNETES_PROFILE` | `kind-kubernetes` | Same owned-backend selection as training; `make simulation-virtme-kuberay-e2e-test` selects virtme |
@@ -1940,7 +1945,7 @@ KubeRay gate options:
 | `SIMULATION_KUBERNETES_WORKLOAD_MEMORY` | `3Gi` | Memory requested by the Ray head |
 | `SIMULATION_KUBERNETES_DISABLE` | Unset | Optional inline list of bundled k3s components to disable; the virtme KubeRay target disables `traefik`, `servicelb`, `metrics-server`, and `local-storage` |
 | `SIMULATION_VIRTME_SSH_PORT_BASE` | `23000` | First controller/worker host-forward port for virtme; all required ports must be free |
-| `SIMULATION_VIRTME_CONTROLLER_MEMORY` | Node memory | Controller guest memory; the virtme KubeRay target uses `1Gi` and places only the operator and submitter there |
+| `SIMULATION_VIRTME_CONTROLLER_MEMORY` | Node memory | Controller guest memory; the virtme KubeRay target uses `2Gi` and places only the operator and submitter there |
 | `SIMULATION_VIRTME_WORKER_MEMORY` | Node memory | Worker guest memory; the virtme target uses `3200Mi` and cannot be smaller than `SIMULATION_KUBERNETES_MEMORY` |
 | `SIMULATION_HOST_MEMORY_RESERVE_GIB` | `12` | Non-negative GiB protected before a virtme Kubernetes E2E starts; the Make target uses `8`, and `0` retains only the guest-allocation check |
 | `VIRTME_SSH_WAIT` | `90` seconds | Positive guest SSH-readiness timeout; the virtme KubeRay target uses `180` for loaded or TCG-only hosts |
@@ -2144,14 +2149,20 @@ every worker of an owned virtme or libvirt k3s lab:
 simulation/bin/uib-sim load-image --profile virtme-kubernetes \
   --run-id uib-k8s-lab --allow-mutable-tags \
   --image uib-runtime:test --image uib-training:test
+
+simulation/bin/uib-sim load-image --profile virtme-kubernetes \
+  --run-id uib-k8s-lab --include-controller \
+  --image docker.io/rayproject/ray:2.58.0-py312-cpu@sha256:c3c9573c5c6bfe4127885f79622d6a32064d34cafc7d156ec728aab8657be250
 ```
 
 `CONTAINER_ENGINE_COMMAND` selects the Docker-compatible local engine. The
 command exports each image once, imports it through the ordinary `k3s ctr`
 interface on every recorded worker, and writes `kubernetes-images.json` in the
 run's infrastructure state. Immutable digest references remain the default;
-mutable tags are only for local development. Existing clusters are not
-modified by this command and should pull the same digest from their registry.
+mutable tags are only for local development. `--include-controller` also
+imports the image on the owned controller when an operator runs a helper there.
+Existing clusters are not modified by this command and should pull the same
+digest from their registry.
 
 This profile requires `libvirt.networkMode: bridge`; rootless passt management
 networks isolate the guests from the controller endpoint. Its real VM
@@ -4078,7 +4089,7 @@ library or hardware is absent; they do not turn missing coverage into a pass.
 | `make simulation-kubeflow-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, cached training/runtime images, network access for the operator on first use, and two workers' CPU/memory | Actual Trainer installation, common `run/status/collect`, admission, two-node torchrun rendezvous, distinct placement, per-pod UIB preflight evidence, CPU DDP result, integrity manifest, and complete cleanup; no UIB traffic |
 | `make simulation-kuberay-e2e-test` | The pinned Kind/kubectl/Helm clients, a Docker-compatible engine, roughly 10 GB of image storage, four CPU cores and 8 GiB for the Ray head; network access for uncached images, source archives, chart, and model revision | Required actual two-worker UIB verbs traffic, portable-runtime compatibility, KubeRay v1.6.2 admission, common `run/status/collect`, Ray 2.58.0 readiness, offline cached SmolLM2 inference, four-result correctness, retained integrity-checked evidence, and complete cleanup; the single-rank inference portion itself sends no UIB traffic |
 | `make simulation-virtme-kubeflow-e2e-test` | virtme-ng, QEMU, kubectl, Helm, a Docker-compatible engine, about 6 GiB memory for three small guests, cached training/runtime images, and first-use operator download access | The same Kubeflow chart, TrainJob, collector, placement, preflight, result, and cleanup assertions as the Kind gate across separate virtme kernels |
-| `make simulation-virtme-kuberay-e2e-test` | virtme-ng, QEMU, kubectl, Helm, a Docker-compatible engine, 5 GiB guest memory plus the configurable protected host reserve, roughly 10 GB image storage, and first-use chart/model access | The same KubeRay chart, offline SmolLM2 request, collector, preflight, result, and cleanup assertions as the Kind inference gate across separate virtme kernels; the request remains single-rank and the test skips before image builds or guest creation when its memory guard fails |
+| `make simulation-virtme-kuberay-e2e-test` | virtme-ng, QEMU, kubectl, Helm, a Docker-compatible engine, about 5.2 GiB guest memory plus the configurable protected host reserve, roughly 10 GB image storage, and first-use chart/model access | The same KubeRay chart, offline SmolLM2 request, collector, preflight, result, and cleanup assertions as the Kind inference gate across separate virtme kernels; the request remains single-rank and the test skips before image builds or guest creation when its memory guard fails |
 
 Run the hardware-neutral gates:
 

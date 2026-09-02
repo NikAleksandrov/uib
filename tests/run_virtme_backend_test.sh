@@ -94,6 +94,10 @@ TMPDIR="$test_dir/unavailable" \
 	--run-id virtme-lifecycle --state-dir "$test_dir/runs" \
 	--allow-mutable-tags --image uib-training:test
 test "$(wc -l < "$test_dir/image-imports.log")" -eq 2
+"$cli" load-image --profile virtme-kubernetes --overlay network/datacenter \
+	--run-id virtme-lifecycle --state-dir "$test_dir/runs" \
+	--allow-mutable-tags --include-controller --image uib-submitter:test
+test "$(wc -l < "$test_dir/image-imports.log")" -eq 5
 if find "$test_dir/runs/virtme-lifecycle/infrastructure" -maxdepth 1 \
 	-name 'uib-kubernetes-image-*' -print -quit | grep -q .; then
 	echo "Kubernetes image staging archive was not removed" >&2
@@ -104,8 +108,12 @@ python3 "$project_dir/tests/cases/virtme_backend/network_evidence.py" \
 [ "$(grep -c '/run/uib-network-schedule' "$test_dir/ssh.log")" -eq 2 ]
 [ "$(grep -c '/run/uib-rank-schedule' "$test_dir/ssh.log")" -eq 2 ]
 [ "$(grep -c '/run/uib-fault-target' "$test_dir/ssh.log")" -eq 2 ]
-[ "$(grep -c -- '--snapshotter overlayfs' "$test_dir/ssh.log")" -eq 2 ]
-[ "$(grep -c -- '--snapshotter native' "$test_dir/ssh.log")" -eq 1 ]
+[ "$(grep -c -- '--snapshotter overlayfs' "$test_dir/ssh.log")" -eq 6 ]
+[ "$(grep -c -- '--snapshotter native' "$test_dir/ssh.log")" -eq 2 ]
+[ "$(grep -c 'ctr images import --local --platform linux/amd64 --snapshotter overlayfs --sync-fs -' \
+	"$test_dir/ssh.log")" -eq 4 ]
+[ "$(grep -c 'ctr images import --local --platform linux/amd64 --snapshotter native --sync-fs -' \
+	"$test_dir/ssh.log")" -eq 1 ]
 [ "$(grep -c -- '--kubelet-arg root-dir=/var/lib/rancher/k3s/agent/kubelet' \
 	"$test_dir/ssh.log")" -eq 3 ]
 grep -F -- '--target worker-01/data' "$test_dir/ssh.log" > /dev/null

@@ -130,7 +130,8 @@
         "training": { "enum": ["kubeflow", "jobset", "slurm"] },
         "inference": {
           "enum": ["kuberay", "vllm-multiprocessing", "slurm-ray"]
-        }
+        },
+        "raySubmitterImage": { "type": "string", "minLength": 1 }
       }
     },
     "slurm": {

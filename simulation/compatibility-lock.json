@@ -116,6 +116,8 @@
         "rootlessDataPlane": "validated-two-guest-qemu-socket-ping",
         "kubernetes": "validated-two-guest-k3s-lifecycle",
         "kubernetesTestTarget": "make simulation-virtme-kubernetes-e2e-test",
+        "kubernetesInference": "validated-one-controller-one-worker-kuberay-cpu",
+        "kubernetesInferenceTestTarget": "make simulation-virtme-kuberay-e2e-test",
         "slurm": "validated-controller-two-worker-lifecycle-and-cpu-training",
         "slurmTestTargets": [
           "make simulation-virtme-slurm-e2e-test",
@@ -147,10 +149,12 @@
           "version": "v1.6.2",
           "api": "ray.io/v1",
           "ray": "2.58.0",
+          "submitterImage": "docker.io/rayproject/ray:2.58.0-py312-cpu@sha256:c3c9573c5c6bfe4127885f79622d6a32064d34cafc7d156ec728aab8657be250",
           "status": "validated-local-cpu-lifecycle",
           "testTargets": [
             "make simulation-kubernetes-render-test",
-            "make simulation-kuberay-e2e-test"
+            "make simulation-kuberay-e2e-test",
+            "make simulation-virtme-kuberay-e2e-test"
           ],
           "validatedClients": {
             "helm": "v3.21.3",

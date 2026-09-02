@@ -22,7 +22,7 @@ def validate_image_reference(reference, allow_mutable_tags):
             "use --allow-mutable-tags only for local development images")
 
 
-def owned_kubernetes_nodes(args):
+def owned_kubernetes_nodes(args, include_controller=False):
     from .config import load
     from .core import ConfigurationError
     from .state import read_json, state_path
@@ -53,7 +53,10 @@ def owned_kubernetes_nodes(args):
         children = all_hosts["children"]
         workers = children["kubernetes_workers"]["hosts"]
         cluster = children["kubernetes_cluster"]["hosts"]
-        hosts = {name: cluster[name] for name in workers}
+        if include_controller:
+            hosts = cluster
+        else:
+            hosts = {name: cluster[name] for name in workers}
         user = variables["ansible_user"]
         key = pathlib.Path(
             variables["ansible_ssh_private_key_file"]).resolve()
@@ -87,6 +90,7 @@ def owned_kubernetes_nodes(args):
             "name": name,
             "port": port,
             "provider": provider,
+            "role": "worker" if name in workers else "controller",
             "target": f"{user}@{host}",
         })
 
@@ -117,11 +121,12 @@ def node_ssh_command(node):
 
 
 def inspect_local_image(engine, reference):
-    from .core import ConfigurationError, HEX_DIGEST, run_command
+    from .core import ConfigurationError, HEX_DIGEST, IMAGE_PLATFORM, run_command
 
     try:
         inspected = run_command([
-            engine, "image", "inspect", "--format={{.Id}}", reference,
+            engine, "image", "inspect",
+            "--format={{.Id}}\t{{.Os}}/{{.Architecture}}", reference,
         ], text=True, capture_output=True)
         if inspected.returncode:
             pulled = run_command(
@@ -131,21 +136,25 @@ def inspect_local_image(engine, reference):
                     print(pulled.stderr, file=sys.stderr, end="")
                 raise ConfigurationError(f"cannot pull image: {reference}")
             inspected = run_command([
-                engine, "image", "inspect", "--format={{.Id}}", reference,
+                engine, "image", "inspect",
+                "--format={{.Id}}\t{{.Os}}/{{.Architecture}}", reference,
             ], text=True, capture_output=True)
     except OSError as error:
         raise ConfigurationError(
             f"cannot invoke container engine: {error}") from error
-    image_id = inspected.stdout.strip()
+    image = inspected.stdout.strip().split("\t", 1)
+    image_id = image[0] if image else ""
+    platform = image[1] if len(image) == 2 else ""
     if (inspected.returncode or not image_id.startswith("sha256:") or
-            not HEX_DIGEST.fullmatch(image_id[7:])):
+            not HEX_DIGEST.fullmatch(image_id[7:]) or
+            not IMAGE_PLATFORM.fullmatch(platform)):
         if inspected.stderr:
             print(inspected.stderr, file=sys.stderr, end="")
         raise ConfigurationError(f"cannot inspect local image: {reference}")
-    return image_id
+    return image_id, platform
 
 
-def record_kubernetes_image(args, reference, image_id, nodes):
+def record_kubernetes_image(args, reference, image_id, platform, nodes):
     from .core import ConfigurationError
     from .state import read_json, state_path, utc_now, write_json
 
@@ -164,20 +173,22 @@ def record_kubernetes_image(args, reference, image_id, nodes):
     images[reference] = {
         "imageId": image_id,
         "nodes": [node["name"] for node in nodes],
+        "platform": platform,
         "stagedAt": utc_now(),
     }
     write_json(path, record)
 
 
-def stage_kubernetes_image(args, reference, allow_mutable_tags):
+def stage_kubernetes_image(args, reference, allow_mutable_tags,
+                           include_controller=False):
     from .core import ConfigurationError, run_command
     from .scheduler import command_executable
     from .state import state_path
 
     validate_image_reference(reference, allow_mutable_tags)
-    nodes, binary = owned_kubernetes_nodes(args)
+    nodes, binary = owned_kubernetes_nodes(args, include_controller)
     engine = command_executable("CONTAINER_ENGINE_COMMAND", "docker")
-    image_id = inspect_local_image(engine, reference)
+    image_id, platform = inspect_local_image(engine, reference)
     staging = state_path(args) / "infrastructure"
     archive = None
     try:
@@ -193,7 +204,16 @@ def stage_kubernetes_image(args, reference, allow_mutable_tags):
                 print(exported.stderr, file=sys.stderr, end="")
             raise ConfigurationError(f"cannot export image: {reference}")
         for node in nodes:
-            remote = [binary, "ctr", "images", "import", "-"]
+            remote = [
+                binary, "ctr", "images", "import",
+                "--local", "--platform", platform,
+            ]
+            if node["provider"] == "virtme":
+                snapshotter = (
+                    "native" if node["role"] == "controller"
+                    else "overlayfs")
+                remote.extend(["--snapshotter", snapshotter])
+            remote.extend(["--sync-fs", "-"])
             if node["provider"] == "libvirt":
                 remote = ["sudo", "-n", *remote]
             with archive.open("rb") as source:
@@ -209,7 +229,7 @@ def stage_kubernetes_image(args, reference, allow_mutable_tags):
     finally:
         if archive is not None:
             archive.unlink(missing_ok=True)
-    record_kubernetes_image(args, reference, image_id, nodes)
+    record_kubernetes_image(args, reference, image_id, platform, nodes)
 
 
 def sha256_file(path):

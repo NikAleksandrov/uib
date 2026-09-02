@@ -5,7 +5,10 @@ digest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 container=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 case "$1 $2" in
 'image inspect')
-	echo "sha256:$digest"
+	case "$*" in
+	*'.Os'*) printf 'sha256:%s\tlinux/amd64\n' "$digest" ;;
+	*) echo "sha256:$digest" ;;
+	esac
 	;;
 'image save')
 	printf '%s\n' fake-oci-archive

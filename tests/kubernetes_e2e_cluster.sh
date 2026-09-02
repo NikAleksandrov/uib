@@ -99,10 +99,14 @@ kubernetes_up()
 
 kubernetes_load_image()
 {
+	controller_arg=
+	if test "${2:-}" = include-controller; then
+		controller_arg=--include-controller
+	fi
 	# shellcheck disable=SC2086
 	"$cli" load-image --profile "$kubernetes_profile" --run-id "$name" \
 		--state-dir "$state_dir" --image "$1" --allow-mutable-tags \
-		$kubernetes_profile_args
+		$controller_arg $kubernetes_profile_args
 }
 
 kubernetes_down()

@@ -8,6 +8,7 @@ container:
 launcher:
   training: kubeflow
   inference: kuberay
+  raySubmitterImage: docker.io/rayproject/ray:2.58.0-py312-cpu@sha256:c3c9573c5c6bfe4127885f79622d6a32064d34cafc7d156ec728aab8657be250
 nodes:
   controlPlane: 1
   workers: 1

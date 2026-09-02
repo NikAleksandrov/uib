@@ -24,6 +24,7 @@ workload_timeout=${SIMULATION_KUBERAY_WORKLOAD_TIMEOUT:-900}
 inference_image=${SIMULATION_KUBERAY_INFERENCE_IMAGE:-uib-inference:test}
 runtime_image=${SIMULATION_KUBERAY_RUNTIME_IMAGE:-uib-runtime:test}
 cache_image=${SIMULATION_KUBERAY_MODEL_CACHE_IMAGE:-uib-model-cache:test}
+submitter_image=${SIMULATION_KUBERAY_SUBMITTER_IMAGE:-docker.io/rayproject/ray:2.58.0-py312-cpu@sha256:c3c9573c5c6bfe4127885f79622d6a32064d34cafc7d156ec728aab8657be250}
 kind_command=${KIND_COMMAND:-kind}
 kubectl_command=${KUBECTL_COMMAND:-kubectl}
 helm_command=${HELM_COMMAND:-helm}
@@ -157,6 +158,7 @@ kubernetes_load_image "$runtime_image"
 kubernetes_load_image "$cache_image"
 
 if test "$kubernetes_profile" = virtme-kubernetes; then
+	kubernetes_load_image "$submitter_image" include-controller
 	operator_placement="--set nodeSelector.kubernetes\\.io/hostname=$name-controller \
 --set tolerations[0].key=node-role.kubernetes.io/control-plane \
 --set tolerations[0].operator=Exists \
@@ -181,6 +183,7 @@ fi
 	--run-id "$run_id" --allow-mutable-tags \
 	--state-dir "$state_dir" --kubeconfig "$kubeconfig" \
 	--set "workload.image=$inference_image" \
+	--set "launcher.raySubmitterImage=$submitter_image" \
 	--set "uib.bundle=$runtime_image" \
 	--set "storage.modelCacheImage=$cache_image" $kubernetes_workload_args
 

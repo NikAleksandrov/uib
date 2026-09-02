@@ -12,7 +12,7 @@ case "$command" in
 'test -d /var/lib/uib/results/uib-libvirt-test')
 	exit 0
 	;;
-'sudo -n /usr/local/bin/k3s ctr images import -')
+'sudo -n /usr/local/bin/k3s ctr images import --local --platform linux/amd64 --sync-fs -')
 	cat > /dev/null
 	printf '%s\n' imported >> "$LIBVIRT_TEST_LOG/kubernetes-imports"
 	;;

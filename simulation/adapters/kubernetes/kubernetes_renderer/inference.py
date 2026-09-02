@@ -85,7 +85,7 @@ def render_inference(config, run_id, allow_mutable_tags):
             "containers": [
                 {
                     "name": "ray-job-submitter",
-                    "image": workload["image"],
+                    "image": config["launcher"]["raySubmitterImage"],
                     "imagePullPolicy": image_pull_policy,
                     "resources": {
                         "limits": {"cpu": "100m", "memory": "128Mi"},

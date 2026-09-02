@@ -3,7 +3,14 @@
 set -eu
 case "$1 $2" in
 'image inspect')
-	printf '%s\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+	case "$*" in
+	*'.Os'*)
+		printf 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tlinux/amd64\n'
+		;;
+	*)
+		printf '%s\n' 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+		;;
+	esac
 	;;
 'image save')
 	printf '%s\n' fake-oci-archive

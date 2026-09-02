@@ -75,6 +75,9 @@ def validate_common(config, run_id, allow_mutable_tags):
     if not workload:
         raise RenderError("the Kubernetes adapter requires a workload")
     validate_image(workload["image"], allow_mutable_tags)
+    submitter_image = config["launcher"].get("raySubmitterImage")
+    if submitter_image:
+        validate_image(submitter_image, allow_mutable_tags)
     storage = config["storage"]
     cache_image = storage.get("modelCacheImage")
     if cache_image:

@@ -69,6 +69,9 @@ def main():
     load_image.add_argument(
         "--allow-mutable-tags", action="store_true",
         help="allow local development tags instead of immutable digests")
+    load_image.add_argument(
+        "--include-controller", action="store_true",
+        help="also stage images on an owned Kubernetes controller")
     add_state_dir_arg(load_image)
     load_image.set_defaults(handler=command_load_image)
     load_cache = commands.add_parser(
