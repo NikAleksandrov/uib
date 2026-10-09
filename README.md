@@ -8,6 +8,10 @@ run unchanged. It is useful for CI, protocol validation and deployment
 simulation. UIB has been tested with software RXE and hardware (Mellanox
 NICs).
 
+Disclaimer: Parts of uib have been vibecoded. Its initial purpose was to
+            verify, test and experiment with RDMA protocols. It has also
+            been useful for cluster simulation and CI/CD.
+
 Example: transparently running libibverbs software with UIB
 -----------------------------------------------------------
 
